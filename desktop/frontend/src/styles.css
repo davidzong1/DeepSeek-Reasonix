@@ -5796,8 +5796,7 @@ button.reasoning-summary:focus-visible {
 }
 
 .mermaid-diagram__preview:active,
-.mermaid-diagram__preview svg:active,
-.mermaid-diagram__preview .svg-pan-zoom_viewport:active {
+.mermaid-diagram__preview svg:active {
   cursor: grabbing;
 }
 
@@ -5807,6 +5806,7 @@ button.reasoning-summary:focus-visible {
   height: 100%;
   max-width: none;
   cursor: grab;
+  touch-action: none;
 }
 
 .mermaid-diagram__preview a {
@@ -7110,6 +7110,17 @@ body > .mermaid-diagram--fullscreen {
   scrollbar-width: thin;           /* restore scrollbar when resized */
 }
 .composer-card--resized .composer__input::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.composer-card--auto-overflow .composer__input {
+  /* Autosize mode keeps the scrollbar hidden while content fits; once the
+     inline overflow-y flips to auto (content exceeds the max height) restore
+     the thin scrollbar so long drafts expose their scrollability
+     (#8494/#8742/#9019). */
+  scrollbar-width: thin;
+}
+.composer-card--auto-overflow .composer__input::-webkit-scrollbar {
   display: block;
   width: 6px;
 }
@@ -10036,7 +10047,6 @@ body > .mermaid-diagram--fullscreen {
 /* ── workspace side panel ────────────────────────────────────────────────── */
 .workspace-panel {
   --workspace-tree-width: 280px;
-  --workspace-tree-rail-width: 44px;
   --workspace-preview-min-width: 360px;
   position: relative;
   min-width: 0;
@@ -10052,15 +10062,6 @@ body > .mermaid-diagram--fullscreen {
 .workspace-panel--embedded {
   border-left: none;
 }
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) {
-  grid-template-columns: var(--workspace-tree-rail-width) minmax(var(--workspace-preview-min-width), 1fr) var(--workspace-tree-width);
-}
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-files {
-  grid-column: 3;
-}
-.workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-preview {
-  grid-column: 2;
-}
 .workspace-panel--tree-hidden {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -10073,8 +10074,7 @@ body > .mermaid-diagram--fullscreen {
 .workspace-panel--detail-only {
   grid-template-columns: minmax(0, 1fr);
 }
-.workspace-panel--detail-only .workspace-files,
-.workspace-panel--detail-only .workspace-tree-rail {
+.workspace-panel--detail-only .workspace-files {
   display: none;
 }
 .workspace-panel--detail-only .workspace-preview {
@@ -10118,9 +10118,6 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
   cursor: col-resize;
   touch-action: none;
-}
-.workspace-panel--with-tree-rail .workspace-tree-resizer {
-  left: calc(100% - var(--workspace-tree-width) - 4px);
 }
 .workspace-tree-resizer::after {
   content: "";
@@ -10344,78 +10341,6 @@ body > .mermaid-diagram--fullscreen {
 }
 .workspace-iconbtn--on {
   color: var(--fg-dim);
-}
-.workspace-tree-rail {
-  grid-row: 1;
-  grid-column: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 6px;
-  background: var(--workspace-files-bg);
-  border-right: 1px solid var(--border-soft);
-}
-.workspace-panel--embedded .workspace-tree-rail {
-  padding-top: 9px;
-}
-.workspace-tree-reveal {
-  background: var(--bg-elev);
-  border: 1px solid var(--border-soft);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
-}
-.workspace-preview__meta {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--border-soft);
-  color: var(--fg-faint);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-.workspace-panel--embedded .workspace-preview__meta {
-  padding: 7px 12px;
-}
-.workspace-preview__meta span,
-.workspace-crumb {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.workspace-crumb,
-.workspace-crumb-group {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 7px;
-}
-.workspace-crumb {
-  --wails-draggable: no-drag;
-  max-width: 160px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--fg-dim);
-  font: inherit;
-}
-.workspace-crumb:hover {
-  color: var(--fg);
-}
-.workspace-crumb--current {
-  color: var(--fg);
-  cursor: default;
-}
-.workspace-crumb--current:hover {
-  color: var(--fg);
-}
-.workspace-preview__size {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-family: var(--mono);
 }
 .workspace-preview__body {
   position: relative;
@@ -24427,6 +24352,28 @@ body > .mermaid-diagram--fullscreen {
   user-select: none;
 }
 
+.project-tree__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.project-tree__skeleton-bar {
+  display: block;
+  height: 12px;
+  width: 72%;
+  border-radius: 4px;
+  background: var(--fg-faint);
+  opacity: 0.16;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.project-tree__skeleton-bar--short {
+  width: 48%;
+}
+
 .project-tree__header-actions .project-tree__add-project:focus-visible,
 .project-tree__header-actions .project-tree__collapse-all:focus-visible,
 .project-tree__header-actions .project-tree__header-action-btn:focus-visible {
@@ -24731,6 +24678,36 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 
+.project-tree__topic-recovery {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.project-tree__catalog-rebuild {
+  flex: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.project-tree__catalog-rebuild:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
 .project-tree__topic-im {
   flex: 0 1 auto;
   min-width: 0;
@@ -24781,6 +24758,22 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 5px;
   background: color-mix(in srgb, var(--project-accent, var(--accent)) 11%, transparent);
   color: color-mix(in srgb, var(--project-accent, var(--accent)) 72%, var(--fg-dim));
+  font-size: 10.5px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.project-tree__topic-recovery-copies {
+  flex: 0 0 auto;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+  color: var(--fg-faint);
   font-size: 10.5px;
   font-weight: 620;
   line-height: 1;
@@ -25306,6 +25299,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__catalog-progress {
+	display: flex;
+	align-items: center;
+	gap: 8px;
   padding: 4px 10px 6px;
   color: var(--fg-muted);
   font-size: 11px;
@@ -27423,8 +27419,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 7px;
 }
 
-.workspace-preview__head,
-.workspace-preview__meta {
+.workspace-preview__head {
   border-color: var(--border-soft);
 }
 
@@ -29522,8 +29517,7 @@ body > .mermaid-diagram--fullscreen {
   text-align: center;
 }
 
-:root[data-theme-style] .workspace-preview__head,
-:root[data-theme-style] .workspace-preview__meta {
+:root[data-theme-style] .workspace-preview__head {
   border-color: var(--border-soft);
 }
 
@@ -29543,8 +29537,7 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 650;
 }
 
-:root[data-theme-style] .workspace-current-file__path,
-:root[data-theme-style] .workspace-preview__meta {
+:root[data-theme-style] .workspace-current-file__path {
   font-family: var(--mono);
 }
 
@@ -29554,20 +29547,6 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg);
   border-color: var(--border);
   background: var(--bg-soft);
-}
-
-:root[data-theme-style] .workspace-preview__meta {
-  min-height: 32px;
-  padding: 6px 12px;
-  background: var(--chat-bg);
-}
-
-:root[data-theme-style] .workspace-crumb {
-  color: var(--fg-dim);
-}
-
-:root[data-theme-style] .workspace-crumb--current {
-  color: var(--fg);
 }
 
 :root[data-theme-style] .workspace-preview__body {
@@ -31849,7 +31828,7 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto !important;
   line-height: 1.25 !important;
   min-height: 20px !important;
-  max-height: 96px !important;
+  max-height: min(30vh, 160px) !important;
   padding: 4px 0 !important;
   overflow-y: auto !important;
   resize: none !important;
@@ -34696,12 +34675,6 @@ body > .mermaid-diagram--fullscreen {
 /* Recent-files dropdown is not useful on Changes overview. */
 .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__recent,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__recent {
-  display: none;
-}
-
-/* Second layer: breadcrumb path row (hide — duplicates the first path). */
-.app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__meta,
-:root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-preview__meta {
   display: none;
 }
 
