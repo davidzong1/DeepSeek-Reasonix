@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(/home/zwc/Agent/DeepSeek-Reasonix/*)",
+      "Bash(git:*)",
+      "Bash(pwd:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(which:*)",
+      "Bash(whoami:*)",
+      "Bash(date:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(python3 -m compileall:*)"
+    ]
+  }
+}

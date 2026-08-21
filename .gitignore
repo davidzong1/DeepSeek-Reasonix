@@ -77,3 +77,11 @@ site/.generated/
 
 # Committed pointer at REASONIX.md; overrides a global CLAUDE.md ignore rule.
 !/CLAUDE.md
+
+# Team manager
+.reasonix/team/**
+.reasonix/contexts/**
+cache/**
+
+# repolint binary built by `go build ./tools/repolint` into the repo root.
+/repolint

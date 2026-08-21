@@ -321,7 +321,10 @@ type chatTUI struct {
 	// /provider. It never invokes a raw-mode prompt inside Bubble Tea.
 	quickPick *quickPicker
 	copyPick  *copyPicker
-	lastEsc   time.Time
+	// teamPick is the team roster overlay opened by the TEAM button (nil when
+	// closed). While set, keys navigate it and it renders as a card.
+	teamPick *teamPicker
+	lastEsc  time.Time
 
 	// mcp is the interactive "/mcp" manager overlay. mcpDisabled tracks servers
 	// turned off only for this chat session, matching the desktop connector
@@ -1114,6 +1117,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && m.teamButtonHit(msg.X, msg.Y) {
+			m.onTeamButtonClick()
+			return m, nil
+		}
 		// Match the complete terminal right-click convention while Reasonix owns
 		// the mouse: copy an active selection, otherwise paste clipboard text into
 		// the visible composer. Left-press begins a selection unless it lands on
@@ -1380,6 +1387,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Copy picker is modal while open.
 		if m.copyPick != nil {
 			return m.handleCopyPickerKey(msg)
+		}
+		// The team roster is modal while open: keys navigate it.
+		if m.teamPick != nil {
+			return m.handleTeamPickerKey(msg)
 		}
 		// The resume picker is modal while open: keys navigate it.
 		if m.resumePick != nil {
@@ -2269,6 +2280,7 @@ func (m chatTUI) bottomRows() int {
 		m.renderResumePicker(),
 		m.renderQuickPicker(),
 		m.renderCopyPicker(),
+		m.renderTeamPicker(),
 		m.renderCompletion(),
 	} {
 		if s != "" {
@@ -2309,7 +2321,7 @@ func (m chatTUI) bottomRows() int {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
-	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.copyPick != nil || m.rewind != nil || m.pendingApproval != nil {
+	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.copyPick != nil || m.teamPick != nil || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
 	return m.chooser != nil && !m.chooser.typing
@@ -3388,7 +3400,7 @@ func (m chatTUI) View() tea.View {
 		modeTag = modeTagStyle(background, foreground).Render(m.modeTagText())
 	}
 
-	primaryStatus := m.primaryStatusLine(modeTag, shellMode, cancelRequested)
+	primaryStatus := m.appendTeamButton(m.primaryStatusLine(modeTag, shellMode, cancelRequested))
 	// The spinning "thinking…" indicator is its own line ABOVE the input box (shown
 	// only while a turn runs); the status/data rows stay below. This mirrors Claude
 	// Code: live progress over the composer, shortcuts + stats under it.
@@ -3427,6 +3439,10 @@ func (m chatTUI) View() tea.View {
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
 	if card := m.renderCopyPicker(); card != "" {
+		parts = append(parts, card)
+		rowsAboveBox += strings.Count(card, "\n") + 1
+	}
+	if card := m.renderTeamPicker(); card != "" {
 		parts = append(parts, card)
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
@@ -4005,7 +4021,7 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 	if shellMode {
 		modeTag = " Shell "
 	}
-	primaryStatus := m.primaryStatusLine(modeTag, shellMode, cancelRequested)
+	primaryStatus := m.appendTeamButton(m.primaryStatusLine(modeTag, shellMode, cancelRequested))
 	statusBlock := m.renderStatusBlock(primaryStatus, width)
 
 	// Replicate the working (spinner) line from View(), shown only while a turn runs.

@@ -1969,6 +1969,12 @@ func TestMouseMiddleClickPasteOverSSHDoesNotReadRemotePrimary(t *testing.T) {
 
 func TestMiddleClickUsesPrimarySelectionOutsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
+	// The paste path treats any SSH session as remote and skips the desktop
+	// PRIMARY selection, so pin the test to a local session regardless of the
+	// host environment (see TestMouseMiddleClickPasteOverSSHDoesNotReadRemotePrimary).
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_CLIENT", "")
+	t.Setenv("SSH_TTY", "")
 	previousTmux := readTmuxPasteBuffer
 	previousPrimary := readPrimaryPasteSelection
 	t.Cleanup(func() {

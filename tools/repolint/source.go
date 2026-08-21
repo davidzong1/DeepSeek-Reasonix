@@ -16,6 +16,9 @@ import (
 // wailsjs holds Wails-generated Go bindings and is gitignored: measuring it
 // reports debt against a build product nobody can edit, and its presence
 // depends on whether a desktop build has run locally.
+// cache is the read-only migration reference source (legacy Python project
+// snapshots), not production Go code: excluded so stray files there never
+// accrue lint debt (see docs/team-mcp-port/TASK.md §5.4).
 var skipDirs = map[string]bool{
 	"node_modules": true,
 	"third_party":  true,
@@ -24,6 +27,7 @@ var skipDirs = map[string]bool{
 	"dist":         true,
 	"bin":          true,
 	"wailsjs":      true,
+	"cache":        true,
 }
 
 var generatedRe = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
