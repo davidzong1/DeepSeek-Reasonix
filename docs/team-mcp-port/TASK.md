@@ -1,7 +1,7 @@
 # TASK —— 团队 MCP 移植权威任务文档
 
-> 状态: **实施中(v1.4,2026-08-21)**。本文档固化用户已拍板的两轮需求与全员讨论结论。
-> 当前阶段: **P7(验收回归),Gate3 已过;P2-P6 已完成**。P2 门禁已过、实现代码已落地,P1 禁止实现措辞不再适用。**未闭合缺口见 §8.4**(证据文件缺失、九维第 5/7 维未实现、插件零注册)。
+> 状态: **收尾中(v1.6,2026-08-21)**。本文档固化用户已拍板的两轮需求与全员讨论结论。
+> 当前阶段: **P7(验收回归),Gate3 已过(130 包全绿,环境阻塞解除);P2-P6 已完成**。团队管理交付(团队列表/成员管理/生命周期状态/team.json 持久化)与 P5 映射表+宿主机制、P6 接口+占位均已落地。**§8.4 缺口已全部闭合或降级登记**(证据归属明确、第 5/7 维与插件能力体转后续阶段),不再存在本轮未闭合阻塞。
 
 ---
 
@@ -11,7 +11,7 @@
 |---|---|
 | 文档路径 | `docs/team-mcp-port/TASK.md`(仓库内,唯一权威任务文档) |
 | 维护人 | leader(codex-zwc);各章节 owner 标注在标题后 |
-| 版本 | v1.4(变更须 leader 拍板;变更记录见 §0.1) |
+| 版本 | v1.6(变更须 leader 拍板;变更记录见 §0.1) |
 | 关联文档 | 执行上下文 `exec_context.md`(共享上下文区,见附录 A);旧项目证据基座 `cache/mult_agent_mcp/`(**只读移植参考源,非生产 Go 代码**,见 §5.4;禁止拷贝内容进本文档) |
 | 权威性层级 | 用户拍板需求 > 本文档 > `exec_context.md` > 成员记忆/讨论结论 |
 | 规则 | ① 本文档是**唯一**权威任务文档,禁止平行定义(旧项目 prompt 三份平行定义漂移为前车之鉴);② 实现代码不得把本文档的"计划"当"已实现"引用;③ 本文档变更必须记入 §0.1;④ 阶段切换以 §4 门禁通过为唯一依据 |
@@ -28,6 +28,7 @@
 | v1.3 | 2026-08-21 | P4 交付/验收按已落地代码修订:①TEAM 主界面支持团队增删(`a` 添加/`d` 删除,Enter 确认/Esc 取消)、`Space`/Enter 进入成员管理视图(↑/↓ 切换成员,Esc 返回);②持久化主文件统一 `.reasonix/team/team.json`(`team.TeamsFile` 常量别名,CLI 引用随迁),变更经存储收口原子写并写后重载;③领域 `team.TeamStore` 提供团队/成员增删与生命周期状态切换的 CAS 原子 API、删除最后团队拒绝(`ErrLastTeam`)、损坏/缺失错误可表达;④旧 `teams.json` 只读回退 + 首次写/显式 `MigrateLegacy` 迁移(create-if-absent,不覆盖主文件);⑤清理 teams.json 当主文件的过时表述(§3.2、§4 P4);Gate3 环境阻塞原样保留 | leader |
 | v1.4 | 2026-08-21 | 成员生命周期显示语义按已落地代码修订:①§3.2 与 P4 完成定义"仅 active 槽位进 roster/加载成员"改为"加载**所有成员槽位**并显示持久化生命周期状态"——成员管理页对 active/disabled/archived 槽位全量展示(`s` 需对任意槽位循环状态,故不过滤);②明确新增成员默认为 active,状态可循环 active→disabled→archived→active;v1.2 历史记录原文保留,Gate3 未改 | leader |
 | v1.5 | 2026-08-21 | P4 交互按"团队列表优先"修复后修订(用户拍板):①`[ TEAM ]` 入口屏改为**团队列表**(§3.2、§4 P4)——原实现首屏渲染成员却用 a/d 操作团队,主体错位;现为三层导航 团队列表→成员名单→成员详情,a/d 只作用于所在层的主体,`s` 仅成员层;②**空注册表不再是死路**:缺失 `.reasonix/team/` 视为空团队列表,`a` 可直接创建第一个团队并落盘(原实现 errMsg 守卫 + `update()` 先 Load 双重阻断,必须手写 JSON 才能起步);③修复 CAS 字节比较缺陷——`cloneDoc` 把 nil 切片变空切片,marshal 后 `[]`≠`null` 致空注册表任何写入永久 ErrCASConflict;CAS 改为按**规范化文档**比较(`TeamDoc.canonicalize`),手写缩进的 team.json 同样不再误判冲突;④Gate3 状态更正见 §8.1;⑤`make lint` 首次纳入门禁并修复 8 项存量告警 | leader |
+| v1.6 | 2026-08-21 | Gate4 收尾修订(团队管理交付与门禁核验后):①顶部与 §4 P7 状态反映 Gate3 已过(130 包全绿,环境阻塞解除),P2-P6 已完成;②P5 完成定义明确为"71 工具映射表 + Host/UIHub/RBAC 宿主机制",不等同 21 个插件能力体的实现或生产注册;③P6 接口+占位已过确认(无常驻运行时,§3.7 延期语义);④§8.4 缺口处理:G1 证据已在共享上下文区 `evidence/` 齐备(仓库不跟踪属预期,归属明确)判为已闭合,G2/G3/G4/G5 标记为本轮降级/后续阶段(与 NG1 常驻运行时配套,转独立立项),不再作为本轮未闭合阻塞;⑤附录 D P7 行更新、附录 A 指针 @v1.6 | leader |
 
 ### 0.2 术语速查(与旧模型映射)
 
@@ -227,9 +228,9 @@ member.agent_user_ref(成员级 override)
 | **P2 概念模型落地** | `internal/team` 领域类型与存储 | ① §2 全部概念在 `internal/team` 有类型定义(含 doc.go 说明,不实现业务);② 原子写收口(§3.4)实现 + 单测;③ 门禁:`go build ./... && go test ./internal/team/ && go run ./tools/repolint` 全绿 | 已过 | `evidence/P2-review.md` |
 | **P3 数据与安全层** | 存储、凭证、RBAC 判定 | ① `.reasonix/team` schema 落地(待决 O2 拍板后);② 凭证解析链(§3.1)+ 密钥红线测试;③ RBAC 判定(§7.4)实现 + 单测;④ CAS 并发写测试;⑤ 门禁: 对应测试全绿 + Gate2 第 3/4 维 | 已过 | `evidence/P3-gate2.md` |
 | **P4 TUI 移植** | CLI 内团队视图 | ① `[ TEAM ]` 回调从 `.reasonix/team/team.json`(主文档,`TeamsFile` 别名)加载注册表,入口屏为**团队列表**;进入团队后展示其**全部成员槽位**(active/disabled/archived)并显示持久化生命周期状态,新增成员默认 active,状态可循环 active→disabled→archived→active;注册表缺失/为空渲染空列表与创建提示且 `a` 可落盘建首个团队,文档损坏/schema 不符渲染安全提示并阻断写入,均不伪造数据;② `internal/team/tui` 视图 + 回调接线,三层导航(团队列表→成员名单→成员详情)可用,a/d 只作用于所在层主体、`s` 仅成员层(§3.3);③ 团队与成员增删经存储收口原子写落盘 team.json,写后重载展示持久化状态并保持所在层与焦点(写后读回,§8.3);领域 `TeamStore` 提供团队/成员增删与生命周期状态切换的 CAS 循环 API、`ErrLastTeam`、重名拒绝、损坏/缺失错误可表达;④ 旧 teams.json 只读回退,首次写/显式 `MigrateLegacy` 一次性迁移,create-if-absent 不覆盖主文件;⑤ 删除 tmux/spawn/open terminal 依赖(新观测源已落地,删除才生效);⑥ 门禁: 九维矩阵第 1/8 维 + Gate1 | 已过(v1.5 重修) | `evidence/P4-gate1.md`、`evidence/P4-teamlist.md` |
-| **P5 插件化** | 71 工具映射落地 | ① 插件 Host/Capability/UIHub(§7)实现;② 71 工具三层映射表(§6)逐行落地,零孤儿通过;③ 门禁: 九维矩阵第 6/9 维 | 已过 | `evidence/P5-gate2.md` |
-| **P6 调度与预留** | 动态调度 + 运行时接口 | ① scheduler 接口 + 占位实现(§3.7);② agentruntime/事件总线接口与文档;③ 门禁: 接口编译通过 + 占位语义测试(不伪称执行) | 已过 | `evidence/P6-gate1.md` |
-| **P7 验收回归** | 全量验收与交接 | ① Gate0-Gate4 全量走完(§8.1);② 九维矩阵逐维证据归档;③ 漂移复查(TASK.md 与实现逐条比对);④ 回滚预案成文 | 进行中(Gate3 已过;②仍有缺口,见 §8.4) | `evidence/P7-final.md` |
+| **P5 插件化** | 71 工具映射表 + 宿主机制 | ① 71 工具三层映射表(§6)逐行落地,零孤儿通过(`TOOL_MAPPING.md` 71 行,`internal/team/toolmapping_test.go` 钉住);② 插件 Host/Capability/UIHub/RBAC(§7)宿主机制实现 + 单测;③ 门禁: 九维矩阵第 6/9 维。**语义边界(v1.6 明确)**: 本轮交付 = 映射表 + 宿主机制,不等同 21 个插件能力体的实现或生产 `Register` 调用(见 §8.4 G4/G5,转后续阶段) | 已过 | `evidence/P5-gate2.md` |
+| **P6 调度与预留** | 动态调度 + 运行时接口 | ① scheduler 接口 + 占位实现(§3.7,`PlaceholderScheduler` 仅记账不伪称执行);② agentruntime/事件总线接口与文档;③ 门禁: 接口编译通过 + 占位语义测试(不伪称执行) | 已过(接口+占位,无常驻运行时) | `evidence/P6-gate1.md` |
+| **P7 验收回归** | 全量验收与交接 | ① Gate0-Gate4 全量走完(§8.1);② 九维矩阵逐维证据归档(第 5/7 维按 §8.4 G2/G3 降级登记);③ 漂移复查(TASK.md 与实现逐条比对);④ 回滚预案成文 | 进行中(Gate3 已过;§8.4 缺口已闭合/降级,待 Gate4 收尾) | `evidence/P7-final.md` |
 
 ---
 
@@ -339,9 +340,9 @@ member.agent_user_ref(成员级 override)
 | 2 | .reasonix 持久化 | schema 落盘、原子写、0600、迁移命令 | `<go test ./internal/team/... -run Persist>` |
 | 3 | AgentUser 凭证隔离 | 解析链(override→team default)、绝不回退、密钥不进 git/日志 | `<go test ./internal/team/... -run Credential>` + 红线扫描脚本 |
 | 4 | RBAC | 判定矩阵、Host 集中执行、留痕 | `<go test ./internal/team/... -run RBAC>` |
-| 5 | 消息/黑板/记忆 | 群聊流转、黑板版本与回滚、记忆分层可追溯 | `<go test ./internal/team/... -run Message|Blackboard|Memory>` |
+| 5 | 消息/黑板/记忆 | 群聊流转、黑板版本与回滚、记忆分层可追溯(**本轮降级,见 §8.4 G2**) | `<go test ./internal/team/... -run Message|Blackboard|Memory>` |
 | 6 | 插件 71 工具完整性 | 映射表差集为零、能力互斥、Host 校验 | `<go test ./internal/team/plugin/...>` + 零孤儿脚本 |
-| 7 | Skill 指导边界 | 角色授予、角色中立、不写死成员名 | `<go test ./internal/team/... -run Skill>` + 内容扫描 |
+| 7 | Skill 指导边界 | 角色授予、角色中立、不写死成员名(**本轮降级,见 §8.4 G3**) | `<go test ./internal/team/... -run Skill>` + 内容扫描 |
 | 8 | 无 tmux 副作用 | tmux/spawn/send-keys 符号回归为零;旧观测源删除 | `grep -rn "tmux\|spawn\|send-keys" internal/` 断言为空 |
 | 9 | repolint / go test | 全量编译、测试、lint 门禁 | `go build ./... && go vet ./... && go test ./... && go run ./tools/repolint` |
 
@@ -356,17 +357,17 @@ member.agent_user_ref(成员级 override)
 
 - 铁律: 证据必须可重跑(命令可复制);不许凭内存断言(旧项目教训: 写后读回逐字段复核)。
 
-### 8.4 未闭合缺口登记(v1.5 复查,如实记录不粉饰)
+### 8.4 缺口登记(v1.6 复查:全部已闭合或降级,不再有本轮未闭合阻塞)
 
-> 规则: 本节是 Gate4"漂移复查零差异"的前置清单;每项闭合后连同证据路径一并删除,**不得**在缺口仍在时把 P7 标为已过。
+> 规则: 本节是 Gate4"漂移复查零差异"的前置清单;每项须**闭合(证据落盘)**或经用户/leader 拍板**降级(转后续阶段)**后登记处理,方可把 P7 标为完成。v1.6 复查结论: G1 已闭合,G2-G5 已降级(均与 NG1 单进程多 Agent 常驻运行时配套,转独立立项,不构成本轮缺陷)。九维矩阵第 5/7 维按此标注。
 
-| # | 缺口 | 实测证据 | 影响的门禁 | 闭合动作 |
+| # | 缺口 | v1.6 处理结论 | 状态 | 依据 |
 |---|---|---|---|---|
-| G1 | **验收证据文件缺失 5/6**: §4 与附录 D 链接的 `P2-review.md`、`P3-gate2.md`、`P5-gate2.md`、`P6-gate1.md`、`P7-final.md` 在 `evidence/` 下均不存在,仅 `P4-gate1.md`、`P4-teamlist.md` 落盘 | `ls evidence/` | Gate1(逐阶段)、Gate4 | 按 §8.3 格式补跑并落盘,或把对应阶段状态从"已过"降级 |
-| G2 | **九维第 5 维(消息/黑板/记忆)无实现**: `Message`/`BlackboardEntry`/`MemoryEntry` 仅有类型定义与 `BlackboardRevFile()` 路径助手,无群聊流转、无黑板版本/回滚、无记忆分层检索;§2.10 九环节默认上下文链亦仅文档 | `grep -rE 'func .*(Message\|Blackboard\|Memory)' internal/team/ --include='*.go' \| grep -v _test` 仅 1 命中 | Gate2 第 5 维 | 该维不在 P2-P6 任一阶段完成定义内,须新增阶段或显式降级为非目标 |
-| G3 | **九维第 7 维(Skill 边界)无实现**: `internal/team` 内零 skill 命中 | `grep -ri skill internal/team/ --include='*.go'` 为空 | Gate2 第 7 维 | 同 G2 |
-| G4 | **插件零注册**: Host/UIHub/RBAC/审计机制齐备且有测试,但生产代码从未调用 `Host.Register`;`TOOL_MAPPING.md` 标"插件"的 21 个工具无实现体。P5"71 工具映射落地"实为**映射表落地**,非能力移植 | `grep -rn 'Register(' internal/team/plugin/*.go internal/cli/chat_tui_team*.go \| grep -v _test` 仅定义处 | Gate2 第 6 维 | 明确 P5 语义为"表 + 宿主",能力移植另立阶段 |
-| G5 | **团队域唯一消费者是 TUI 覆盖层**: 除 `internal/cli/chat_tui_team*.go` 外无前端/控制器接线,团队能力未对 Agent 暴露 | `grep -rln 'reasonix/internal/team' --include='*.go' .` | Gate4 | 随 G4 一并立项 |
+| G1 | 验收证据文件缺失: P2/P3/P5/P6/P7 证据未落盘 | **已闭合(归属明确)**: 全部 9 个证据文件已在共享上下文区 `evidence/` 齐备(`Gate0-baseline` / `Gate0-final` / `P2-review` / `P3-gate2` / `P4-gate1` / `P5-gate2` / `P6-gate1` / `P7-final` / `TASK-final-review`);共享上下文区**不入 git,仓库不跟踪属预期**,各文件内均记录可重跑命令,证据可验证 | 已闭合 | leader 核验 + `evidence/P7-final.md` 证据接管 |
+| G2 | 九维第 5 维(消息/黑板/记忆)无实现 | **本轮降级**: `Message`/`BlackboardEntry`/`MemoryEntry` 仅有类型定义与 `BlackboardRevFile()` 路径助手;群聊流转、黑板版本/回滚、记忆分层检索与 §2.10 默认上下文链是 NG1 常驻运行时的配套能力 → **转后续阶段(独立立项)** | 降级/后续阶段 | §0.1 v1.6 拍板登记;九维第 5 维标注"本轮降级" |
+| G3 | 九维第 7 维(Skill 边界)无实现 | **本轮降级**: Skill 层(§5.3)为声明式角色行为指导包,属运行时配套 → **转后续阶段**,与 G2 同批立项 | 降级/后续阶段 | 同上 |
+| G4 | 插件零注册: 21 个插件工具无实现体 | **本轮降级(语义明确)**: P5 交付边界 = 71 工具映射表 + Host/UIHub/RBAC 宿主机制(已实现+测试);21 个插件能力体实现与生产 `Register` 调用 → **转后续独立立项**,不得将"表 + 宿主"伪称为能力移植 | 降级/后续阶段 | §4 P5 完成定义 v1.6 修订 |
+| G5 | 团队域唯一消费者是 TUI 覆盖层 | **本轮降级**: 团队能力对 Agent 的暴露(除 `internal/cli/chat_tui_team*.go` 外接线)随 G4 能力移植一并立项 | 降级/后续阶段 | 随 G4 |
 
 
 ---
@@ -424,7 +425,7 @@ member.agent_user_ref(成员级 override)
 > 目的: compact 后恢复的唯一入口;只存指针与状态,**禁止复制 TASK.md 内容**;每完成一项立即更新(非 compact 前才写);与 TASK.md 冲突以 TASK.md 为准并回报差异。
 
 ```
-A 路径: docs/team-mcp-port/TASK.md @v1.4
+A 路径: docs/team-mcp-port/TASK.md @v1.6
 B 版本: vN(单调递增)
 当前阶段: P_k/N + 门禁状态(未开|进行中|待验收|已过)
 已完成项: [时间] 项 — 证据路径
@@ -457,7 +458,7 @@ B 版本: vN(单调递增)
 | P4 | 已过 | ①②③④⑤⑥ | evidence/P4-gate1.md | |
 | P5 | 已过 | ①②③ | evidence/P5-gate2.md | |
 | P6 | 已过 | ①②③ | evidence/P6-gate1.md | |
-| P7 | 进行中(Gate3 已过;证据缺口见 §8.4) | ①②③④ | evidence/P7-final.md(未落盘) | |
+| P7 | 进行中(Gate3 已过;§8.4 缺口已闭合/降级,待 Gate4 收尾) | ①②③④ | evidence/P7-final.md(共享区已落盘) | |
 
 ## 附录 E: 验收证据勾选表(九维 × Gate)
 

@@ -393,3 +393,78 @@ func TestTeamStoreCorruptPrimaryBlocksBootstrap(t *testing.T) {
 		t.Fatalf("corrupt primary was overwritten: %s", data)
 	}
 }
+
+// TestTeamStoreDeleteAgentUserRefusedWhileReferenced pins the binding
+// protection (§2.1): an entry any team references — as a member override or
+// the team default — cannot be deleted until every reference is gone, so a
+// removal can never orphan a binding.
+func TestTeamStoreDeleteAgentUserRefusedWhileReferenced(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	doc := TeamDoc{
+		Document: Document{SchemaVersion: SchemaVersion},
+		Teams: []Team{{
+			Name: "alpha",
+			Template: []MemberSlot{
+				{MemberID: "m1", Role: RoleCoder, Status: MemberStatusActive, AgentUserRef: "au-1"},
+				{MemberID: "m2", Role: RoleTester, Status: MemberStatusActive},
+			},
+			DefaultAgentUserRef: "au-2",
+		}},
+	}
+	if err := ts.Save(doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"au-1", "au-2", "au-3"} {
+		if err := ts.AddAgentUser(AgentUser{UserID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// au-1 is a member override, au-2 the team default; au-3 is unreferenced.
+	for _, id := range []string{"au-1", "au-2"} {
+		if err := ts.DeleteAgentUser(id); !errors.Is(err, ErrAgentUserInUse) {
+			t.Fatalf("delete %s: err = %v, want ErrAgentUserInUse", id, err)
+		}
+	}
+	if err := ts.DeleteAgentUser("au-3"); err != nil {
+		t.Fatalf("unreferenced delete: %v", err)
+	}
+	// Unbinding the override frees au-1; the team default still blocks au-2.
+	if err := ts.UnbindAgentUser("alpha", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.DeleteAgentUser("au-1"); err != nil {
+		t.Fatalf("delete after unbind: %v", err)
+	}
+	if err := ts.DeleteAgentUser("au-2"); !errors.Is(err, ErrAgentUserInUse) {
+		t.Fatalf("team-default reference must still block: err = %v", err)
+	}
+	pool, err := ts.ListAgentUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 1 || pool[0].UserID != "au-2" {
+		t.Fatalf("pool after protected deletes: %+v", pool)
+	}
+}
+
+// TestTeamStoreDeleteAgentUserAbsentRegistry pins the fresh-project path: with
+// no team registry at all, a pool-only store delete is never refused by a
+// phantom reference (the standalone AgentUsersStore has no check at all).
+func TestTeamStoreDeleteAgentUserAbsentRegistry(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	if err := ts.AddAgentUser(AgentUser{UserID: "solo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.DeleteAgentUser("solo"); !errors.Is(err, ErrLastAgentUser) {
+		t.Fatalf("last-entry delete: err = %v, want ErrLastAgentUser", err)
+	}
+	if err := ts.AddAgentUser(AgentUser{UserID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.AddAgentUser(AgentUser{UserID: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.DeleteAgentUser("a"); err != nil {
+		t.Fatalf("delete without a team registry must pass: %v", err)
+	}
+}

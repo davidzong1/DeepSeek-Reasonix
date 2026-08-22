@@ -311,26 +311,25 @@ func TestTeamPickerDeleteMemberEscCancelDoesNotWrite(t *testing.T) {
 	}
 }
 
-// TestTeamPickerStatusCyclePersists pins the s shortcut: it advances the
-// focused member's lifecycle status, keeps the member on screen, and lands
-// each step in team.json.
-func TestTeamPickerStatusCyclePersists(t *testing.T) {
+// TestTeamMemberEditStatusPersists pins the member editor's status field: e
+// opens the editor, the picker cycles active → disabled, s publishes the draft
+// to team.json. The s key no longer cycles status — it saves the editor.
+func TestTeamMemberEditStatusPersists(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
-	// One full cycle: each s press lands the next status on screen —
-	// active → disabled → archived → active — and the disk catches up.
-	for _, want := range []string{"(disabled)", "(archived)", "(active)"} {
-		m = teamKey(m, tea.KeyPressMsg{Code: 's'})
-		got := ansi.Strip(m.renderTeamPicker())
-		if !strings.Contains(got, want) {
-			t.Fatalf("after s, the member should show %q, got:\n%s", want, got)
-		}
-	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 'e'}) // compact roster → member editor
+	// role → leader → status
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the status picker
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // active → disabled
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save the draft
 	doc := readStoredTeamDoc(t)
-	if st := doc.Teams[0].Template[0].Status; st != team.MemberStatusActive {
-		t.Fatalf("cycle should end on active, got %q", st)
+	if st := doc.Teams[0].Template[0].Status; st != team.MemberStatusDisabled {
+		t.Fatalf("s should persist the edited status, got %q", st)
 	}
 }
 
@@ -348,19 +347,6 @@ func TestTeamPickerStatusKeyIsMemberOnly(t *testing.T) {
 	}
 	if got := m.teamPick.model.Mode(); got != tui.ModeTeams {
 		t.Fatalf("s on the team list must not navigate, got %q", got)
-	}
-}
-
-func TestNextStatusCyclesLifecycle(t *testing.T) {
-	order := []team.MemberStatus{
-		team.MemberStatusActive,
-		team.MemberStatusDisabled,
-		team.MemberStatusArchived,
-	}
-	for i, st := range order {
-		if got, want := nextStatus(st), order[(i+1)%len(order)]; got != want {
-			t.Fatalf("nextStatus(%q)=%q, want %q", st, got, want)
-		}
 	}
 }
 
@@ -405,5 +391,59 @@ func TestTeamPickerFirstWriteMigratesLegacyTeamsJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(".reasonix", "team", team.TeamsLegacyFile)); err != nil {
 		t.Fatalf("legacy teams.json should remain as fallback: %v", err)
+	}
+}
+
+// TestTeamMemberEditLeaderPersists pins the member editor's leader field: e
+// opens the editor, the leader picker flips off → on, s publishes the draft to
+// team.json. t no longer toggles the marker — it opens the session (leader
+// only), and the leader property is an editor field now.
+func TestTeamMemberEditLeaderPersists(t *testing.T) {
+	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
+		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+	}})
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: 'e'}) // compact roster → member editor
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the leader picker (off)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // off → on
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
+	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Leader: on") {
+		t.Fatalf("the draft should render the new leader value, got:\n%s", got)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'}) // save the draft
+	doc := readStoredTeamDoc(t)
+	if !doc.Teams[0].Template[0].Leader {
+		t.Fatal("s should persist the leader flag in team.json")
+	}
+	// The roster row shows the leader marker after the save.
+	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Leader: on") {
+		t.Fatalf("the editor should keep showing the persisted value, got:\n%s", got)
+	}
+}
+
+// TestTeamCompactRosterKeysRouteToDetail pins the compact-roster key surface:
+// b (bind) and s (status) are inert on the roster — its keys are a/d/p/t/e —
+// while e descends into the member detail, where b arms the bind cycle.
+func TestTeamCompactRosterKeysRouteToDetail(t *testing.T) {
+	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
+		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+	}})
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: 'b'}) // inert on the compact roster
+	if got := m.teamPick.kind; got != teamInputNone {
+		t.Fatalf("b on the compact roster must not arm the bind cycle, got %v", got)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'}) // inert on the compact roster
+	if doc := readStoredTeamDoc(t); doc.Teams[0].Template[0].Status != team.MemberStatusActive {
+		t.Fatal("s on the compact roster must not cycle status")
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 'e'})
+	if mode := m.teamPick.model.Mode(); mode != tui.ModeContext {
+		t.Fatalf("e should open the member detail, got %q", mode)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 'b'}) // detail-owned key
+	if got := m.teamPick.kind; got != teamInputBind {
+		t.Fatalf("b on the detail screen should arm the bind cycle, got %v", got)
 	}
 }

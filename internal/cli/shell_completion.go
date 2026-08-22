@@ -55,6 +55,19 @@ func catalogCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
 	return completionSpec("catalogs", []cliCompletionFlag{help}, completionSpec("reindex", []cliCompletionFlag{help}, reindex...))
 }
 
+// teamCompletionSpec covers the team subcommands: the one-way mult_agent_mcp
+// import (team_import.go), where --credentials opts into plaintext keys and
+// --yes skips the confirmation.
+func teamCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
+	return completionSpec("team", []cliCompletionFlag{help},
+		completionSpec("import", []cliCompletionFlag{
+			completionFlag("--from", cliCompletionPathValue),
+			completionFlag("--credentials --yes", cliCompletionNoValue),
+			help,
+		}),
+	)
+}
+
 func cliCompletionRootSpec() cliCompletionSpec {
 	model := completionFlag("--model", cliCompletionModelValue)
 	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
@@ -267,6 +280,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionSpec("review", []cliCompletionFlag{
 			completionFlag("--base --commit --instructions", cliCompletionStaticValue), model, help,
 		}),
+		teamCompletionSpec(help),
 		completionSpec("bot", []cliCompletionFlag{help},
 			completionSpec("start", []cliCompletionFlag{completionFlag("--channels --dir", cliCompletionStaticValue), model, help}),
 			completionSpec("doctor", []cliCompletionFlag{completionFlag("--json --deep", cliCompletionNoValue), help}),

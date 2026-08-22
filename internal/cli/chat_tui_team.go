@@ -62,6 +62,7 @@ const (
 	teamInputDelete                     // confirming deletion of the focused team
 	teamInputAddMember                  // typing a new member id
 	teamInputDeleteMember               // confirming deletion of the focused member
+	teamInputBind                       // cycling candidate pool entries to bind
 )
 
 // teamPicker is the team management overlay opened by the TEAM button. It owns
@@ -72,12 +73,20 @@ const (
 // instead of placeholder data. store is the storage seam — every mutation goes
 // through team.TeamStore, so a legacy teams.json migrates on first write.
 type teamPicker struct {
-	model  *tui.Model
-	errMsg string          // unreadable registry; "" when healthy
-	store  *team.TeamStore // storage seam; nil when the project root is unusable
-	doc    team.TeamDoc    // registry as last loaded, for lifecycle lookups
-	kind   teamInputKind   // transient write state; teamInputNone when idle
-	buf    string          // team or member name being typed
+	model      *tui.Model
+	errMsg     string                 // unreadable registry; "" when healthy
+	store      *team.TeamStore        // storage seam; nil when the project root is unusable
+	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
+	kind       teamInputKind          // transient write state; teamInputNone when idle
+	buf        string                 // team, member, or field value being typed
+	pool       poolState              // agent-user pool screen; active replaces the team list
+	binds      []string               // bind candidates (pool user ids), for teamInputBind
+	bind       int                    // candidate cursor for teamInputBind
+	leader     bool                   // leader mode; gates member and pool create/delete
+	memberEdit memberEditState        // member property editor; owns the detail screen
+	session    sessionState           // team session window; active replaces the roster
+	reset      leaderResetState       // k step-down confirmation; owns every key while active
 }
 
 // onTeamButtonClick opens the team management view in its own overlay. The
@@ -87,17 +96,74 @@ func (m *chatTUI) onTeamButtonClick() {
 	cwd, err := os.Getwd()
 	if err == nil {
 		var store *team.TeamStore
+		var sessions *team.TeamSessionStore
 		store, err = team.NewTeamStore(cwd)
 		if err == nil {
-			p := &teamPicker{model: tui.New(nil), store: store}
+			sessions, err = team.NewTeamSessionStore(cwd)
+		}
+		if err == nil {
+			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
 			m.teamPick = p
 			if err := p.reload(""); err != nil {
 				p.errMsg = pickerErrMsg(err)
+			} else {
+				p.restoreSession()
 			}
 			return
 		}
 	}
 	m.teamPick = &teamPicker{model: tui.New(nil), errMsg: "Team data unavailable: " + err.Error()}
+}
+
+// restoreSession resumes the team's persisted session-window selection (§4.2):
+// reopening the overlay with a valid selection reopens the session on that
+// member; a member that vanished falls back to the leader; a team with no
+// leader stays on the management page. Absent or unreadable selections are
+// quiet — the team list is the default entry screen.
+func (p *teamPicker) restoreSession() {
+	if p.sessions == nil {
+		return
+	}
+	teamName := p.model.Name()
+	if teamName == "" {
+		return
+	}
+	sel, err := p.sessions.ReadSelection(teamName)
+	if err != nil || sel.MemberID == "" {
+		return
+	}
+	current := sel.MemberID
+	if _, ok := p.slotOf(current); !ok {
+		current = p.firstLeader()
+		if current == "" {
+			p.errMsg = "No leader to resume the session on — select a member to lead"
+			return
+		}
+	}
+	session := sessionState{active: true, teamName: teamName, current: current}
+	for i, m := range p.model.Members() {
+		session.members = append(session.members, m.ID)
+		if m.ID == current {
+			session.focus = i
+		}
+	}
+	p.session = session
+}
+
+// firstLeader returns the focused team's first leader slot id, or "".
+func (p *teamPicker) firstLeader() string {
+	name := p.model.Name()
+	for _, t := range p.doc.Teams {
+		if t.Name != name {
+			continue
+		}
+		for _, slot := range t.Template {
+			if slot.IsLeader() {
+				return slot.MemberID
+			}
+		}
+	}
+	return ""
 }
 
 // pickerErrMsg maps a load or mutation error onto the overlay message, keeping
@@ -111,6 +177,16 @@ func pickerErrMsg(err error) string {
 		return "A team with that name already exists"
 	case errors.Is(err, team.ErrMemberExists):
 		return "A member with that id already exists"
+	case errors.Is(err, team.ErrAgentUserNotFound):
+		return "No such agent user"
+	case errors.Is(err, team.ErrInvalidAgent):
+		return "Invalid agent type — claude, codex, or a plain command word"
+	case errors.Is(err, team.ErrInvalidRole):
+		return "Invalid role — free text, at most 128 bytes, no control characters"
+	case errors.Is(err, team.ErrInvalidProxy):
+		return "Invalid proxy configuration"
+	case errors.Is(err, team.ErrLeaderOnly):
+		return "Leader-only operation — press l to enable leader mode"
 	default:
 		return "Team data unavailable: " + err.Error()
 	}
@@ -154,6 +230,7 @@ func slotsToMembers(slots []team.MemberSlot) []team.Member {
 			ID:           slot.MemberID,
 			AgentUserRef: slot.AgentUserRef,
 			Role:         slot.Role,
+			Leader:       slot.IsLeader(), // both the explicit flag and the legacy role encoding
 			State:        team.MemberStateIdle,
 		})
 	}
@@ -201,23 +278,6 @@ func (p *teamPicker) deleteMember() error {
 	return p.reload("")
 }
 
-// cycleStatus advances the focused member's lifecycle status. The member stays
-// on screen throughout, so the cycle is reversible and needs no confirmation.
-func (p *teamPicker) cycleStatus() error {
-	member, ok := p.model.Focused()
-	if !ok {
-		return nil
-	}
-	slot, ok := p.slotOf(member.ID)
-	if !ok {
-		return nil
-	}
-	if err := p.store.SetMemberStatus(p.model.Name(), member.ID, nextStatus(slot.Status)); err != nil {
-		return err
-	}
-	return p.reload("")
-}
-
 // slotOf returns the focused team's template slot for a member id, the source
 // of the lifecycle status the roster and context view display.
 func (p *teamPicker) slotOf(id string) (team.MemberSlot, bool) {
@@ -235,68 +295,154 @@ func (p *teamPicker) slotOf(id string) (team.MemberSlot, bool) {
 	return team.MemberSlot{}, false
 }
 
-// nextStatus advances the lifecycle status: active → disabled → archived →
-// active. The overlay renders the new status on the member row.
-func nextStatus(st team.MemberStatus) team.MemberStatus {
-	switch st {
-	case team.MemberStatusActive:
-		return team.MemberStatusDisabled
-	case team.MemberStatusDisabled:
-		return team.MemberStatusArchived
-	default:
-		return team.MemberStatusActive
-	}
-}
-
-// handleTeamPickerKey maps keypresses onto tui events and the cli write states.
-// Esc closes the overlay from the team list and steps back one screen from a
-// roster or context view; q (or ctrl+c, which the modal chain already
-// intercepts) enters the quit confirmation, and a second q, Enter, or
-// Esc-cancelled confirmation closes. a/d act on the screen's own subject —
-// teams on the team list, members inside a roster — and s cycles the focused
-// member's lifecycle status. In the add/delete states every key feeds the write
-// flow first: printable keys type into the new name, Enter confirms, Esc
-// cancels, and q cancels a delete (never accelerates it).
+// handleTeamPickerKey maps keypresses onto tui events and the cli write
+// states. Esc closes from the team list and steps back from a roster or the
+// member editor; q enters the quit confirmation; a/d act on the screen's own
+// subject; s saves the member editor's draft; t opens the team session from
+// the roster (leader only); k arms the leader step-down. Write states feed
+// every key first, so Enter confirms and q cancels a delete, never
+// accelerates it.
 func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	p := m.teamPick
 	if p == nil {
 		return m, nil
 	}
+	if teamPasteKey(p, msg) {
+		return m, pasteClipboardText()
+	}
+	// The pool screen, the session window, and an armed step-down confirmation
+	// each own every key while active (§5, §6) — their keys never reach the
+	// team-list handler.
+	if p.pool.active && handlePoolKey(p, msg) {
+		return m, nil
+	}
+	if p.session.active && handleSessionKey(p, msg) {
+		return m, nil
+	}
+	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
+		return m, nil
+	}
 	view := p.model
+	// An open member field owns every key while it is being edited (§5): "s"
+	// and "t" are letters there. The field-list screen owns its own keys —
+	// cursor, open, save, session, step-down.
+	if view.Mode() == tui.ModeContext && p.memberEdit.kind == memberEditFieldEdit &&
+		handleMemberFieldKey(p, msg) {
+		return m, nil
+	}
+	if handleMemberEditNavKey(p, view, msg) {
+		return m, nil
+	}
+	// The bind cycle owns its keys (up/down candidates, enter bind, esc
+	// unbind-or-cancel); the field editor owns provider/baseURL/model/effort.
+	if bindKey(p, msg) {
+		return m, nil
+	}
 	if (p.kind == teamInputAdd || p.kind == teamInputAddMember) && typeIntoTeamBuffer(p, msg) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "up", "k":
+	case "up":
 		view.Handle(tui.EventUp)
 	case "down", "j":
 		view.Handle(tui.EventDown)
-	case "enter":
-		if enterTeamKey(p, view) {
-			m.teamPick = nil
-		}
-	case "esc":
-		if escTeamKey(p, view) {
-			m.teamPick = nil
-		}
-	case "q":
-		if quitTeamKey(p, view) {
-			m.teamPick = nil
-		}
-	case "ctrl+c":
-		ctrlCTeamKey(p, view)
 	case "space":
-		view.Handle(tui.EventSelect)
-	case "a", "d", "s":
+		spaceTeamKey(p, view)
+	case "a", "d":
 		startTeamKey(p, view, msg.String())
-	case "backspace":
-		backspaceTeamKey(p)
+	case "t":
+		if memberListKeyAllowed(view, p) {
+			p.enterTeamSession()
+		}
+	case "k":
+		if memberListKeyAllowed(view, p) {
+			p.startLeaderReset()
+		}
 	default:
-		if (p.kind == teamInputAdd || p.kind == teamInputAddMember) && printableKey(msg.String()) {
-			p.buf += msg.String()
+		if configTeamKey(p, view, msg.String()) {
+			return m, nil
 		}
 	}
+	if closed := handleTeamSharedKey(p, view, msg); closed {
+		m.teamPick = nil
+	}
 	return m, nil
+}
+
+// teamPasteKey reports whether the keypress pastes into the overlay's active
+// text buffer — the composer's Ctrl+V / shift+insert binding, for terminals
+// that forward the key instead of bracketed-pasting. Inert elsewhere.
+func teamPasteKey(p *teamPicker, msg tea.KeyPressMsg) bool {
+	return teamPasteTarget(p) != nil && (msg.String() == "ctrl+v" || msg.String() == "shift+insert")
+}
+
+// spaceTeamKey selects on the team list and roster, seeding the member editor
+// when the roster descends into the detail screen.
+func spaceTeamKey(p *teamPicker, view *tui.Model) {
+	if view.Mode() == tui.ModeList {
+		p.armMemberEdit()
+	}
+	view.Handle(tui.EventSelect)
+}
+
+// handleTeamSharedKey routes the screen-agnostic keys — enter confirms a
+// write state or descends, esc cancels or steps back, q and ctrl+c manage the
+// quit confirmation, backspace edits the name buffer — and reports whether
+// the overlay closed.
+func handleTeamSharedKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg) (closed bool) {
+	switch msg.String() {
+	case "enter":
+		return enterTeamKey(p, view)
+	case "esc":
+		return escTeamKey(p, view)
+	case "q":
+		return quitTeamKey(p, view)
+	case "ctrl+c":
+		ctrlCTeamKey(p, view)
+	case "backspace":
+		backspaceTeamKey(p)
+	}
+	return false
+}
+
+// configTeamKey routes the member-config keys to their editors and reports
+// whether the key was consumed: u opens the agent-user pool from the team
+// list, e descends from the compact roster into the member editor, b arms the
+// bind cycle, p cycles the proxy override on the roster (the member editor
+// owns the proxy field), and l assigns/clears the focused member's leader on
+// the roster or toggles leader mode on the detail screen.
+func configTeamKey(p *teamPicker, view *tui.Model, key string) bool {
+	switch key {
+	case "u":
+		if view.Mode() == tui.ModeTeams {
+			p.enterTeamPool()
+		}
+	case "e":
+		if view.Mode() == tui.ModeList {
+			p.armMemberEdit()
+			view.Handle(tui.EventSelect) // the compact roster descends into the member editor
+		}
+	case "b":
+		if view.Mode() == tui.ModeContext {
+			startBindKey(p, view)
+		}
+	case "p":
+		if view.Mode() == tui.ModeList {
+			if err := p.cycleProxy(); err != nil {
+				p.errMsg = pickerErrMsg(err)
+			}
+		}
+	case "l":
+		switch view.Mode() {
+		case tui.ModeList: // the roster's leader shortcut
+			p.toggleRosterLeader()
+		case tui.ModeContext:
+			p.toggleLeader()
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // typeIntoTeamBuffer feeds a printable key into the active name buffer, where
@@ -318,6 +464,27 @@ func typeIntoTeamBuffer(p *teamPicker, msg tea.KeyPressMsg) bool {
 	return false
 }
 
+// teamPasteTarget returns the overlay's active text buffer: the add-team
+// buffers, the pool field editor's non-provider row, the member editor's role
+// row, the step-down's exact-id stage. nil = no text input (picker rows).
+func teamPasteTarget(p *teamPicker) *string {
+	switch p.kind {
+	case teamInputAdd, teamInputAddMember:
+		return &p.buf
+	}
+	if p.pool.active && p.pool.kind == poolInputEditField &&
+		poolEditFields[p.pool.edit] != team.AgentUserFieldProvider {
+		return &p.pool.buf
+	}
+	if p.memberEdit.kind == memberEditFieldEdit && memberEditFields[p.memberEdit.edit] == "role" {
+		return &p.memberEdit.buf
+	}
+	if p.reset.kind == leaderResetID {
+		return &p.reset.buf
+	}
+	return nil
+}
+
 // enterTeamKey confirms an active write state, closes from the quit
 // confirmation, or descends one screen.
 func enterTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
@@ -335,6 +502,9 @@ func enterTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 	case teamInputDeleteMember:
 		p.confirm(p.deleteMember)
 	default:
+		if view.Mode() == tui.ModeList {
+			p.armMemberEdit() // enter descends into the member editor
+		}
 		if view.Mode() == tui.ModeQuit {
 			return true
 		}
@@ -343,19 +513,31 @@ func enterTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 	return false
 }
 
-// escTeamKey cancels a write state, closes the overlay from the team list, or
-// steps back one screen.
+// escTeamKey cancels a write state, discards an open member field's edit,
+// closes the overlay from the team list, or steps back one screen.
 func escTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 	if p.kind != teamInputNone {
 		p.kind = teamInputNone
 		p.buf = ""
 		return false
 	}
+	if view.Mode() == tui.ModeContext && p.memberEdit.kind == memberEditFieldEdit {
+		p.memberEdit.kind = memberEditFieldList
+		p.memberEdit.buf, p.memberEdit.opts, p.memberEdit.errMsg = "", nil, ""
+		return false
+	}
 	if view.Mode() == tui.ModeTeams {
 		return true
 	}
 	view.Handle(tui.EventBack)
+	p.memberEdit = memberEditState{} // leaving the detail discards the editor draft
 	return false
+}
+
+// memberListKeyAllowed gates the session and step-down keys to the roster's
+// idle state — neither acts inside a write state.
+func memberListKeyAllowed(view *tui.Model, p *teamPicker) bool {
+	return view.Mode() == tui.ModeList && p.kind == teamInputNone
 }
 
 // quitTeamKey cancels a delete (q never accelerates one), closes from the quit
@@ -412,7 +594,8 @@ func startTeamLevelKey(p *teamPicker, view *tui.Model, key string) {
 }
 
 // startMemberLevelKey arms member lifecycle inside a roster: a adds, d deletes
-// the focused member, and s cycles its status.
+// the focused member. The detail screen's remaining member keys are the
+// property editor's own (field nav, s save, t session, l leader-mode).
 func startMemberLevelKey(p *teamPicker, view *tui.Model, key string) {
 	switch key {
 	case "a":
@@ -420,10 +603,6 @@ func startMemberLevelKey(p *teamPicker, view *tui.Model, key string) {
 	case "d":
 		if _, ok := view.Focused(); ok {
 			p.kind = teamInputDeleteMember
-		}
-	case "s":
-		if err := p.cycleStatus(); err != nil {
-			p.errMsg = pickerErrMsg(err)
 		}
 	}
 }

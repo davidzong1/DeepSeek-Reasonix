@@ -95,13 +95,7 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	if shouldMigrateLegacyConfigForCLI(cmd) && !doctorRepair {
 		migrateLegacyConfigForCLI()
 	}
-	if !doctorRepair {
-		if cfg, err := config.Load(); err == nil {
-			if cfg.Language != "" {
-				i18n.DetectLanguage(cfg.Language)
-			}
-		}
-	}
+	applyConfigLanguage(doctorRepair)
 
 	if len(args) == 0 && cliIsInteractive() {
 		return runInteractiveSession(nil, version)
@@ -168,6 +162,9 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	case "task":
 		configureCLIThemeFromConfig()
 		return taskCommand(rest)
+	case "team":
+		configureCLIThemeFromConfig()
+		return teamCommand(rest)
 	case "review":
 		configureCLIThemeFromConfig()
 		return reviewCommand(rest)

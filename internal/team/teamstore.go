@@ -21,11 +21,24 @@ var (
 	ErrLastTeam       = errors.New("team: refusing to delete the last team")
 	ErrInvalidStatus  = errors.New("team: invalid member status")
 	ErrMigrateRefused = errors.New("team: migration refused")
+	ErrLeaderOnly     = errors.New("team: member create/delete restricted to the leader")
+	ErrInvalidPolicy  = errors.New("team: invalid member write policy")
 )
 
 var (
 	primaryPath = filepath.Join(".reasonix", "team", TeamFile)
 	legacyPath  = filepath.Join(".reasonix", "team", TeamsLegacyFile)
+)
+
+// MemberWritePolicy gates who may add or delete member slots (§11-A). Open
+// lets any caller through the CAS loop; LeaderOnly reserves creation and
+// deletion for the leader. The policy is a store-level switch, defaulting to
+// open; membership edits other than create/delete are never gated.
+type MemberWritePolicy int
+
+const (
+	MemberWriteOpen       MemberWritePolicy = iota // default: any caller
+	MemberWriteLeaderOnly                          // only the leader may create/delete members
 )
 
 // TeamStore is the domain-level registry store (§2.5, §3.4): the primary
@@ -34,7 +47,9 @@ var (
 // mutation runs load-modify-CompareAndSwap, so a concurrent writer surfaces
 // as ErrCASConflict instead of being clobbered.
 type TeamStore struct {
-	store *FileStore
+	store        *FileStore
+	agentUsers   *AgentUsersStore // pool store for binding validation (§5)
+	memberPolicy MemberWritePolicy
 }
 
 // NewTeamStore returns a TeamStore rooted at projectRoot.
@@ -46,7 +61,44 @@ func NewTeamStore(projectRoot string) (*TeamStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &TeamStore{store: store}, nil
+	ts := &TeamStore{store: store, agentUsers: &AgentUsersStore{store: store}}
+	ts.agentUsers.inUse = ts.agentUserInUse
+	return ts, nil
+}
+
+// agentUserInUse reports whether any team references the pool entry, as a
+// member override or the team default; an absent registry references nothing.
+func (s *TeamStore) agentUserInUse(id string) (bool, error) {
+	doc, _, err := s.Load()
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	for i := range doc.Teams {
+		if doc.Teams[i].DefaultAgentUserRef == id {
+			return true, nil
+		}
+		for j := range doc.Teams[i].Template {
+			if doc.Teams[i].Template[j].AgentUserRef == id {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// SetMemberWritePolicy switches the member create/delete gate; an unknown
+// policy value is refused.
+func (s *TeamStore) SetMemberWritePolicy(p MemberWritePolicy) error {
+	switch p {
+	case MemberWriteOpen, MemberWriteLeaderOnly:
+		s.memberPolicy = p
+		return nil
+	default:
+		return ErrInvalidPolicy
+	}
 }
 
 // Load reads the registry from the primary file, falling back to the legacy
@@ -107,10 +159,17 @@ func (s *TeamStore) DeleteTeam(name string) error {
 }
 
 // AddMember appends a member slot to the named team; duplicate and empty
-// member ids are refused.
+// member ids are refused, as is an invalid role. Under MemberWriteLeaderOnly
+// the add is refused before any read or write.
 func (s *TeamStore) AddMember(teamName string, slot MemberSlot) error {
+	if s.memberPolicy == MemberWriteLeaderOnly {
+		return ErrLeaderOnly
+	}
 	if strings.TrimSpace(slot.MemberID) == "" {
 		return ErrInvalidMember
+	}
+	if err := ValidateRole(string(slot.Role)); err != nil {
+		return err
 	}
 	return s.update(func(doc *TeamDoc) error {
 		i := teamIndex(doc, teamName)
@@ -127,8 +186,12 @@ func (s *TeamStore) AddMember(teamName string, slot MemberSlot) error {
 	})
 }
 
-// DeleteMember removes a member slot from the named team.
+// DeleteMember removes a member slot from the named team. Under
+// MemberWriteLeaderOnly the delete is refused before any read or write.
 func (s *TeamStore) DeleteMember(teamName, memberID string) error {
+	if s.memberPolicy == MemberWriteLeaderOnly {
+		return ErrLeaderOnly
+	}
 	return s.update(func(doc *TeamDoc) error {
 		i := teamIndex(doc, teamName)
 		if i < 0 {
@@ -240,12 +303,24 @@ func teamIndex(doc *TeamDoc, name string) int {
 
 // cloneDoc deep-copies the registry: a mutator appends through shared slice
 // backing arrays, so the CAS expected version must not alias the working doc.
+// The Proxy and ProxyEnabled pointers are copied too, so a mutator writing
+// through them can never reach the expected version.
 func cloneDoc(doc TeamDoc) TeamDoc {
 	cp := doc
 	cp.Teams = make([]Team, len(doc.Teams))
 	for i := range doc.Teams {
 		cp.Teams[i] = doc.Teams[i]
 		cp.Teams[i].Template = append([]MemberSlot(nil), doc.Teams[i].Template...)
+		for j := range doc.Teams[i].Template {
+			if enabled := doc.Teams[i].Template[j].ProxyEnabled; enabled != nil {
+				v := *enabled
+				cp.Teams[i].Template[j].ProxyEnabled = &v
+			}
+		}
+		if proxy := doc.Teams[i].Proxy; proxy != nil {
+			p := *proxy
+			cp.Teams[i].Proxy = &p
+		}
 	}
 	return cp
 }

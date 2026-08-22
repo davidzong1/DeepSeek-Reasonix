@@ -61,3 +61,24 @@ func TestTaskStatusCycle(t *testing.T) {
 		}
 	}
 }
+
+// TestMemberSlotIsLeader pins the leader property's dual encoding: the
+// explicit flag and the legacy role value both resolve as the leader, so a
+// document written before the split stays authoritative.
+func TestMemberSlotIsLeader(t *testing.T) {
+	cases := []struct {
+		name string
+		slot MemberSlot
+		want bool
+	}{
+		{"explicit flag", MemberSlot{MemberID: "m1", Leader: true}, true},
+		{"legacy role encoding", MemberSlot{MemberID: "m1", Role: RoleLeader}, true},
+		{"regular member", MemberSlot{MemberID: "m1", Role: RoleCoder}, false},
+		{"default", MemberSlot{MemberID: "m1"}, false},
+	}
+	for _, c := range cases {
+		if got := c.slot.IsLeader(); got != c.want {
+			t.Errorf("%s: IsLeader() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

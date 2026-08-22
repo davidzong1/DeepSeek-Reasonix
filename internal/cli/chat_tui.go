@@ -2049,6 +2049,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(fmt.Sprintf(i18n.M.ClipboardImagePasteFailedFmt, msg.err))
 			break
 		}
+		if m.teamPick != nil {
+			break // the team overlay is modal: an image result never reaches the hidden composer
+		}
 		imageBefore := m.input.Value()
 		m.insertImageRef(msg.path)
 		if shouldClearWideInputChange(imageBefore, m.input.Value()) {
@@ -3501,10 +3504,10 @@ func (m chatTUI) View() tea.View {
 	}
 	v := tea.NewView(mainArea + "\n" + strings.Join(parts, "\n"))
 	v.AltScreen = true
-	if m.mouseCaptureOff {
-		// Release the mouse to the terminal: native click-drag selection and
-		// right-click context menu work again, at the cost of the in-app
-		// scrollbar, wheel-scroll, and drag-select while it's off.
+	if m.teamPick != nil {
+		v.MouseMode = tea.MouseModeNone // the team overlay is modal: its rows become native-selectable
+	} else if m.mouseCaptureOff {
+		// Native click-drag selection, right-click menu, wheel, and drag-select return to the terminal.
 		v.MouseMode = tea.MouseModeNone
 	} else {
 		v.MouseMode = tea.MouseModeCellMotion // wheel targets the hovered scroll region; text selection is handled in-app

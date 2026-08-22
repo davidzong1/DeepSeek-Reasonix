@@ -51,22 +51,35 @@ func writeLegacyTeamFixture(t *testing.T, teams ...team.Team) {
 	writeTeamDoc(t, team.TeamsLegacyFile, teams...)
 }
 
-// openTeamOverlay builds a sized chat TUI and clicks [ TEAM ] open.
-func openTeamOverlay(t *testing.T) chatTUI {
+// openTeamOverlayW builds a sized chat TUI and clicks [ TEAM ] open.
+func openTeamOverlayW(t *testing.T, width int) chatTUI {
 	t.Helper()
 	ctrl := control.New(control.Options{})
-	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), width)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
 	m = next.(chatTUI)
 	m.onTeamButtonClick()
 	return m
 }
 
+// openTeamOverlay opens the overlay at the default width.
+func openTeamOverlay(t *testing.T) chatTUI {
+	t.Helper()
+	return openTeamOverlayW(t, 80)
+}
+
+// openRosterW opens the overlay at the given width and descends into the
+// first team's roster.
+func openRosterW(t *testing.T, width int) chatTUI {
+	t.Helper()
+	m := openTeamOverlayW(t, width)
+	return teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
 // openRoster opens the overlay and descends into the first team's roster.
 func openRoster(t *testing.T) chatTUI {
 	t.Helper()
-	m := openTeamOverlay(t)
-	return teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	return openRosterW(t, 80)
 }
 
 // teamKey routes one keypress through the team overlay handler.
@@ -280,25 +293,36 @@ func TestTeamPickerRendersRealTeamDocMembers(t *testing.T) {
 	})
 	m := openRoster(t)
 	list := ansi.Strip(m.renderTeamPicker())
-	for _, want := range []string{"Fixture Team", "alpha", "omega", "retired", "(active)", "(archived)", "Role: coder", "Role: tester", "Role: reviewer"} {
+	for _, want := range []string{"Fixture Team", "alpha", "omega", "retired", "(coder · active)", "(tester · active)", "(reviewer · archived)"} {
 		if !strings.Contains(list, want) {
 			t.Fatalf("roster should show %q, got:\n%s", want, list)
 		}
 	}
 	// The roster comes from the document: the old hardcoded example members
-	// must not appear.
-	for _, gone := range []string{"P4-cli-wiring", "internal/cli", "leader"} {
+	// must not appear, and no row may claim the legacy role "leader" — the
+	// marker renders only through the standalone leader property.
+	for _, gone := range []string{"P4-cli-wiring", "internal/cli", "(leader"} {
 		if strings.Contains(list, gone) {
 			t.Fatalf("roster must not show %q, got:\n%s", gone, list)
 		}
 	}
+	// The compact roster shows only id/role/leader/status — never the launch
+	// configuration, which the detail screen owns.
+	if strings.Contains(list, "Agent") || strings.Contains(list, "Proxy") {
+		t.Fatalf("compact roster must not show launch configuration, got:\n%s", list)
+	}
 
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	ctx := ansi.Strip(m.renderTeamPicker())
-	for _, want := range []string{"alpha", "Role: coder", "State: idle", "Status: active", "Agent user: u-alice"} {
+	for _, want := range []string{"alpha", "Role: coder", "Leader: off", "State: idle", "Status: active"} {
 		if !strings.Contains(ctx, want) {
 			t.Fatalf("context view should show %q, got:\n%s", want, ctx)
 		}
+	}
+	// The agent fields stay backend-only: the detail view shows no "Agent user"
+	// label line (the binding still surfaces as an editor field).
+	if strings.Contains(ctx, "Agent user") {
+		t.Fatalf("context view must not show an agent-user label, got:\n%s", ctx)
 	}
 	if strings.Contains(ctx, "Task:") || strings.Contains(ctx, "Context:") {
 		t.Fatalf("context view must not invent task/context pointers, got:\n%s", ctx)
@@ -308,6 +332,58 @@ func TestTeamPickerRendersRealTeamDocMembers(t *testing.T) {
 	quit := ansi.Strip(m.renderTeamPicker())
 	if !strings.Contains(quit, "Leave team view") {
 		t.Fatalf("quit mode should render the confirmation prompt, got:\n%s", quit)
+	}
+}
+
+// TestTeamCompactRosterHelpLine pins the compact roster's help surface: it
+// advertises only its own keys (a/d/l/p/t/e) — Enter/Space and the editor-only
+// keys (s/b) stay off it, and the session hint reads "🌟 t Enter_session"
+// while the member editor line names the full surface.
+func TestTeamCompactRosterHelpLine(t *testing.T) {
+	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
+		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+	}})
+	m := openRoster(t)
+	list := ansi.Strip(m.renderTeamPicker())
+	for _, want := range []string{"a add member", "d delete member", "🌟 t Enter_session", "p proxy", "e edit", "l leader on/off"} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("roster help should show %q, got:\n%s", want, list)
+		}
+	}
+	for _, gone := range []string{"t session", "Enter/Space", "s save", "s status", "b bind", "l leader-mode"} {
+		if strings.Contains(list, gone) {
+			t.Fatalf("roster help must not show %q, got:\n%s", gone, list)
+		}
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	ctx := ansi.Strip(m.renderTeamPicker())
+	for _, want := range []string{"s save", "🌟 t Enter_session", "b bind", "l leader-mode"} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("editor help should show %q, got:\n%s", want, ctx)
+		}
+	}
+	for _, gone := range []string{"t session"} {
+		if strings.Contains(ctx, gone) {
+			t.Fatalf("editor help must not show %q, got:\n%s", gone, ctx)
+		}
+	}
+}
+
+// TestTeamRosterHelpWrapsAtEdge pins the adaptive help block (§5): wide enough
+// the whole block renders on one line, narrow it word-wraps at the panel edge
+// — the same keys either way, no hard-coded line split.
+func TestTeamRosterHelpWrapsAtEdge(t *testing.T) {
+	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
+		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+	}})
+	const help = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · q quit"
+	m := openRosterW(t, 160)
+	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, help) {
+		t.Fatalf("a wide panel should keep the help on one line, got:\n%s", got)
+	}
+	m = openRosterW(t, 40)
+	if got := ansi.Strip(m.renderTeamPicker()); strings.Contains(got, help) {
+		t.Fatalf("a narrow panel should wrap the help at the edge, got:\n%s", got)
 	}
 }
 

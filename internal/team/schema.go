@@ -43,6 +43,14 @@ type AgentUsersDoc struct {
 	AgentUsers []AgentUser `json:"agent_users"`
 }
 
+// canonicalize gives AgentUsersDoc one encoded form: an absent pool encodes as
+// [] rather than null, so CAS compares it identically to an empty pool (§3.4).
+func (d *AgentUsersDoc) canonicalize() {
+	if d.AgentUsers == nil {
+		d.AgentUsers = []AgentUser{}
+	}
+}
+
 // MemoryDoc is the memory.json document (§2.9): layered long-term memory.
 type MemoryDoc struct {
 	Document

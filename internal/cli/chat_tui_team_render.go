@@ -3,6 +3,9 @@ package cli
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/team"
 	"reasonix/internal/team/tui"
@@ -16,6 +19,15 @@ func (m chatTUI) renderTeamPicker() string {
 	p := m.teamPick
 	if p == nil {
 		return ""
+	}
+	if p.pool.active {
+		return p.renderTeamPool(m.width)
+	}
+	if p.session.active {
+		return p.renderTeamSession(m.width)
+	}
+	if p.reset.kind != leaderResetNone {
+		return p.renderLeaderReset(m.width)
 	}
 	view := p.model
 	w := max(m.width, 10)
@@ -33,11 +45,11 @@ func (m chatTUI) renderTeamPicker() string {
 	case tui.ModeTeams:
 		p.renderTeamList(view, &b)
 	case tui.ModeContext:
-		p.renderMemberContext(view, &b)
+		p.renderMemberEdit(view, &b, w)
 	case tui.ModeQuit:
 		b.WriteString(dim("Leave team view? Esc cancels · Enter or q confirms"))
 	default:
-		p.renderRoster(view, &b)
+		p.renderRoster(view, &b, w)
 	}
 	return choicePanelStyle.Width(w).Render(b.String())
 }
@@ -52,6 +64,181 @@ func teamPickerTitle(view *tui.Model) string {
 		return name
 	}
 	return "Teams"
+}
+
+// renderTeamPool renders the agent-user pool screen (§6.2): every entry with
+// its provider and model, the add/delete prompts, or the empty hint. An
+// unreadable pool renders its message instead of a list.
+func (p *teamPicker) renderTeamPool(width int) string {
+	w := max(width, 10)
+	var b strings.Builder
+	b.WriteString(accent("Agent users") + "\n")
+	// The editor renders its own refusals inside the editor; a bare list error
+	// (corrupt pool, failed delete) replaces the list instead.
+	switch p.pool.kind {
+	case poolInputDelete:
+		id := p.pool.users[p.pool.focus].UserID
+		b.WriteString(dim(`  Delete agent user "`) + accent(id) + dim(`"? `))
+		b.WriteString(dim("It is removed from agent_users.json.\n"))
+		b.WriteString(dim("Enter delete · Esc/q cancel"))
+		return choicePanelStyle.Width(w).Render(b.String())
+	case poolInputEdit, poolInputEditField:
+		return p.renderPoolEdit(w)
+	}
+	if p.pool.errMsg != "" {
+		b.WriteString(p.pool.errMsg + "\n")
+		b.WriteString(dim("Esc close"))
+		return choicePanelStyle.Width(w).Render(b.String())
+	}
+	users := p.pool.users
+	if len(users) == 0 {
+		b.WriteString(dim("No agent users yet") + "\n")
+		b.WriteString(dim("a add user · Esc back"))
+		return choicePanelStyle.Width(w).Render(b.String())
+	}
+	if p.pool.detail {
+		return p.renderPoolDetail(w, users[p.pool.focus])
+	}
+	for i, u := range users {
+		label := u.UserID + " " + dim("("+providerModel(u)+")")
+		b.WriteString(rowLine(i == p.pool.focus, i+1, "", label, false) + "\n")
+	}
+	b.WriteString(dim("↑/↓ navigate · Enter detail · a add user · e edit user · d delete user · Esc back"))
+	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// renderPoolDetail renders the focused entry's fields and the members bound
+// to it. API key is intentionally shown in plaintext per the user's request.
+func (p *teamPicker) renderPoolDetail(w int, u team.AgentUser) string {
+	var b strings.Builder
+	b.WriteString("  " + accent(u.UserID) + "\n")
+	b.WriteString(dim("  Provider: ") + u.Provider + "\n")
+	b.WriteString(dim("  Base URL: ") + u.BaseURL + "\n")
+	b.WriteString(dim("  Model: ") + u.Model + "\n")
+	b.WriteString(dim("  Effort: ") + u.Effort + "\n")
+	if u.Identity != "" {
+		b.WriteString(dim("  Identity: ") + u.Identity + "\n")
+	}
+	b.WriteString(dim("  Key: ") + u.APIKey + "\n")
+	if u.SecretRef.StoreID != "" {
+		b.WriteString(dim("  Secret store: ") + u.SecretRef.StoreID + "\n")
+	}
+	b.WriteString(dim("  Bound by:") + "\n")
+	members := p.boundMembers(u.UserID)
+	if len(members) == 0 {
+		b.WriteString(dim("    (no member is bound to this entry)") + "\n")
+	}
+	for _, m := range members {
+		b.WriteString("    " + m + "\n")
+	}
+	b.WriteString(dim("Esc back · e edit fields · d delete"))
+	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// renderPoolEdit renders the entry field editor: the field list with its
+// cursor on the left — the id first, editable only while adding — and a
+// preview column of the same draft on the right. The api key renders in
+// plaintext — the user's chosen contract overrides the default
+// mask-everything policy on this screen — so a key edit is visible while
+// typing. The draft renders, unsaved; only s persists it.
+func (p *teamPicker) renderPoolEdit(w int) string {
+	var b strings.Builder
+	u := p.pool.draft
+	if p.pool.adding {
+		b.WriteString(accent("Adding agent user") + "\n")
+	} else {
+		b.WriteString(dim("  editing ") + accent(u.UserID) + "\n")
+	}
+	if p.pool.errMsg != "" {
+		b.WriteString(p.pool.errMsg + "\n")
+	}
+	col := max((w-8)/2, 12)
+	preview := make([]string, len(poolEditFields))
+	for i, f := range poolEditFields {
+		preview[i] = poolFieldLabel(f) + ": " + poolFieldValue(u, i)
+	}
+	for i, f := range poolEditFields {
+		val := poolFieldValue(u, i)
+		if p.pool.kind == poolInputEditField && i == p.pool.edit {
+			if f == team.AgentUserFieldProvider {
+				val = poolProviderLabel(&p.pool) + " ▏"
+			} else {
+				val = p.pool.buf + "▏"
+			}
+		}
+		mark := "  "
+		if i == p.pool.edit {
+			mark = "> "
+		}
+		left := mark + f + ": " + truncateRunes(val, col-6)
+		pad := max(col-utf8.RuneCountInString(left), 1)
+		if !p.pool.adding && i == 0 {
+			left = dim(left) // a published id is immutable
+		}
+		b.WriteString(left + strings.Repeat(" ", pad) + dim("│ "+truncateRunes(preview[i], col)) + "\n")
+	}
+	if p.pool.kind == poolInputEditField {
+		if poolEditFields[p.pool.edit] == team.AgentUserFieldProvider {
+			b.WriteString(dim("↑/↓ choose · Enter confirm · Esc cancel"))
+		} else {
+			b.WriteString(dim("Enter confirm · Esc cancel"))
+		}
+	} else {
+		b.WriteString(dim("↑/↓ field · Enter edit · s save · Esc cancel"))
+	}
+	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// truncateRunes clips s to at most n runes, ellipsizing the tail so a field
+// value can never widen the column it renders in.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	if n == 1 {
+		return string(r[:1])
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// poolFieldLabel names a pool-form field for the preview column, distinct from
+// the raw field name the editable column shows.
+func poolFieldLabel(field string) string {
+	switch field {
+	case team.AgentUserFieldID:
+		return "Id"
+	case team.AgentUserFieldIdentity:
+		return "Identity"
+	case team.AgentUserFieldProvider:
+		return "Provider"
+	case team.AgentUserFieldBaseURL:
+		return "Base URL"
+	case team.AgentUserFieldModel:
+		return "Model"
+	case team.AgentUserFieldEffort:
+		return "Effort"
+	default:
+		return "API key"
+	}
+}
+
+// providerModel labels a pool row with the entry's provider and model, or
+// "unconfigured" when the entry carries neither.
+func providerModel(u team.AgentUser) string {
+	switch {
+	case u.Provider == "" && u.Model == "":
+		return "unconfigured"
+	case u.Provider == "":
+		return u.Model
+	case u.Model == "":
+		return u.Provider
+	default:
+		return u.Provider + " / " + u.Model
+	}
 }
 
 // renderInputState renders the add/delete prompts and reports whether one was
@@ -76,6 +263,24 @@ func (p *teamPicker) renderInputState(view *tui.Model, b *strings.Builder) (stri
 		b.WriteString(dim(`  Delete member "`) + accent(member.ID) + dim(`"? `))
 		b.WriteString(dim("It is removed from team.json.\n"))
 		b.WriteString(dim("Enter delete · Esc/q cancel"))
+	case teamInputBind:
+		member, ok := view.Focused()
+		if !ok {
+			return b.String(), true
+		}
+		b.WriteString(dim(`  Bind "`) + accent(member.ID) + dim(`" to:`) + "\n")
+		if len(p.binds) == 0 {
+			b.WriteString(dim("    (no agent users yet — a add on the pool screen)"))
+		} else {
+			for i, id := range p.binds {
+				mark := "    "
+				if i == p.bind {
+					mark = "  > "
+				}
+				b.WriteString(dim(mark+id) + "\n")
+			}
+		}
+		b.WriteString(dim("↑/↓ candidate · Enter bind · Esc unbind/cancel"))
 	default:
 		return "", false
 	}
@@ -89,18 +294,28 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 	teams := view.Teams()
 	if len(teams) == 0 {
 		b.WriteString(dim("No team yet") + "\n")
-		b.WriteString(dim("a add team · Esc close"))
+		b.WriteString(dim("a add team · u agent users · Esc close"))
 		return
 	}
 	for i, t := range teams {
 		label := t.Name + " " + dim("("+rosterSize(len(t.Members))+")")
 		b.WriteString(rowLine(i == view.TeamIndex(), i+1, "", label, false) + "\n")
 	}
-	b.WriteString(dim("↑/↓ navigate · Enter/Space open · a add team · d delete team · Esc close · q quit"))
+	b.WriteString(dim("↑/↓ navigate · Enter/Space open · a add team · d delete team · u agent users · Esc close · q quit"))
 }
 
-// renderRoster renders one team's member slots with their lifecycle status.
-func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder) {
+// rosterHelp is the roster's single help block: one line while the panel is
+// wide enough, word-wrapped at the edge when it is not.
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · q quit"
+
+// renderRoster renders the compact member list: one row per slot with the
+// member id and its role, leader marker, and lifecycle status. The agent
+// fields — launch type and agent-user binding — stay readable in the
+// document but the UI never renders them.
+// Every key shown here acts on the member row: a/d add and delete, p cycles
+// the proxy override, l assigns/clears the focused member's leader, t opens
+// the team session (leader only), e opens the member editor.
+func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 	members := view.Members()
 	if len(members) == 0 {
 		b.WriteString(dim("No team members yet") + "\n")
@@ -108,36 +323,221 @@ func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder) {
 		return
 	}
 	for i, member := range members {
-		label := member.ID + " " + dim("("+p.statusOf(member.ID)+")")
+		label := member.ID + " " + dim("("+compactMemberSummary(member, p.statusOf(member.ID))+")")
 		b.WriteString(rowLine(i == view.FocusIndex(), i+1, "", label, member.State == team.MemberStateWorking) + "\n")
-		b.WriteString(dim("  Role: "+string(member.Role)) + "\n")
 	}
-	b.WriteString(dim("↑/↓ navigate · Enter/Space view · a add member · d delete member · s status · Esc back · q quit"))
+	b.WriteString(dim(ansi.Wrap(rosterHelp, w-1, "")))
 }
 
-// renderMemberContext renders the focused member's detail view, showing only
-// the pointers the document actually carries.
-func (p *teamPicker) renderMemberContext(view *tui.Model, b *strings.Builder) {
+// compactMemberSummary joins a member's role, leader marker, and status for
+// the compact roster row: "coder · leader · active" for a leader, "tester ·
+// active" otherwise. A slot with no business role (a legacy leader import)
+// simply omits the role.
+func compactMemberSummary(member team.Member, status string) string {
+	parts := make([]string, 0, 3)
+	if role := string(member.Role); role != "" {
+		parts = append(parts, role)
+	}
+	if member.Leader {
+		parts = append(parts, "leader")
+	}
+	return strings.Join(append(parts, status), " · ")
+}
+
+// renderMemberEdit renders the member property editor (§5): the member id
+// header with its runtime state, the editable field list with its cursor on
+// the left and a preview column of the same draft on the right. Only s
+// persists; esc returns with zero writes. The agent fields stay backend-only
+// — the editor's rows are the persisted template properties, never launch
+// configuration.
+func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int) {
 	member, ok := view.Focused()
 	if !ok {
 		return
 	}
+	me := &p.memberEdit
 	b.WriteString("  " + accent(member.ID) + "\n")
-	b.WriteString(dim("  Role: ") + string(member.Role) + "\n")
 	b.WriteString(dim("  State: ") + string(member.State) + "\n")
-	if slot, ok := p.slotOf(member.ID); ok {
-		b.WriteString(dim("  Status: ") + string(slot.Status) + "\n")
+	if me.errMsg != "" {
+		b.WriteString(me.errMsg + "\n")
 	}
-	if member.TaskRef != "" {
-		b.WriteString(dim("  Task: ") + string(member.TaskRef) + "\n")
+	col := max((w-8)/2, 12)
+	preview := make([]string, len(memberEditFields))
+	for i, f := range memberEditFields {
+		preview[i] = memberFieldLabel(f) + ": " + memberFieldValue(me.draft, i)
 	}
-	if member.ContextRef != "" {
-		b.WriteString(dim("  Context: ") + member.ContextRef + "\n")
+	for i, f := range memberEditFields {
+		val := memberFieldValue(me.draft, i)
+		if me.kind == memberEditFieldEdit && i == me.edit {
+			if f == "role" {
+				val = me.buf + "▏"
+			} else {
+				val = me.opts[me.pick] + " ▏"
+			}
+		}
+		mark := "  "
+		if i == me.edit {
+			mark = "> "
+		}
+		left := mark + memberFieldLabel(f) + ": " + truncateRunes(val, col-6)
+		pad := max(col-utf8.RuneCountInString(left), 1)
+		b.WriteString(left + strings.Repeat(" ", pad) + dim("│ "+truncateRunes(preview[i], col)) + "\n")
 	}
-	if member.AgentUserRef != "" {
-		b.WriteString(dim("  Agent user: ") + member.AgentUserRef + "\n")
+	if me.kind == memberEditFieldEdit {
+		if memberEditFields[me.edit] == "role" {
+			b.WriteString(dim("Enter confirm · Esc cancel"))
+		} else {
+			b.WriteString(dim("↑/↓ choose · Enter confirm · Esc cancel"))
+		}
+	} else {
+		b.WriteString(dim("↑/↓ field · Enter/Space edit · s save · 🌟 t Enter_session · a/d member") + "\n")
+		b.WriteString(dim("b bind · l leader-mode · Esc back · q quit"))
 	}
-	b.WriteString(dim("↑/↓ switch member · a add · d delete · s status · Esc back · q quit"))
+}
+
+// memberFieldLabel names a member property for the editor rows.
+func memberFieldLabel(f string) string {
+	switch f {
+	case "role":
+		return "Role"
+	case "leader":
+		return "Leader"
+	case "status":
+		return "Status"
+	case "proxy":
+		return "Proxy"
+	default:
+		return "Agent"
+	}
+}
+
+// memberFieldValue reads a member property from the editor draft by field id.
+func memberFieldValue(slot team.MemberSlot, i int) string {
+	switch memberEditFields[i] {
+	case "role":
+		if slot.Role == "" {
+			return "-"
+		}
+		return string(slot.Role)
+	case "leader":
+		if slot.IsLeader() {
+			return "on"
+		}
+		return "off"
+	case "status":
+		return string(slot.Status)
+	case "proxy":
+		return memberProxyLabel(slot.ProxyEnabled)
+	default:
+		if slot.AgentUserRef == "" {
+			return "team default"
+		}
+		return slot.AgentUserRef
+	}
+}
+
+// memberProxyLabel names a member's proxy override state.
+func memberProxyLabel(e *bool) string {
+	if e == nil {
+		return "inherit"
+	}
+	if *e {
+		return "on"
+	}
+	return "off"
+}
+
+// renderTeamSession renders the session window (§5): the team name, the
+// current member's agent window with its recent history, and the full roster
+// beside it for switching. Histories stream from the TeamContextStore; an
+// unreadable member history renders the persisted slot only.
+func (p *teamPicker) renderTeamSession(w int) string {
+	var b strings.Builder
+	b.WriteString(accent(p.session.teamName+" · session") + "\n")
+	col := max((w-8)/2, 16)
+	var left, right strings.Builder
+	slot, ok := p.sessionSlot()
+	left.WriteString("  " + accent(p.session.current) + "\n")
+	if ok {
+		left.WriteString(dim("  Role: ") + memberFieldValue(slot, 0) + "\n")
+		left.WriteString(dim("  Leader: ") + memberFieldValue(slot, 1) + "\n")
+		left.WriteString(dim("  Status: ") + memberFieldValue(slot, 2) + "\n")
+	}
+	if p.sessions != nil {
+		if msgs, err := p.sessions.Messages(p.session.teamName, p.session.current); err == nil {
+			from := max(len(msgs)-sessionHistoryLines, 0)
+			for _, msg := range msgs[from:] {
+				line := msg.Text
+				if len(line) > col-4 {
+					line = truncateRunes(line, col-7) + "…"
+				}
+				left.WriteString(dim("  "+msg.Kind+": ") + line + "\n")
+			}
+		}
+	}
+	for i, id := range p.session.members {
+		mark := "    "
+		if i == p.session.focus {
+			mark = "  > "
+		}
+		right.WriteString(dim(mark+id) + "\n")
+	}
+	ll := strings.Split(strings.TrimSuffix(left.String(), "\n"), "\n")
+	rl := strings.Split(strings.TrimSuffix(right.String(), "\n"), "\n")
+	n := max(len(ll), len(rl))
+	for i := 0; i < n; i++ {
+		var l, r string
+		if i < len(ll) {
+			l = ll[i]
+		}
+		if i < len(rl) {
+			r = rl[i]
+		}
+		pad := max(col-utf8.RuneCountInString(l), 1)
+		b.WriteString(l + strings.Repeat(" ", pad) + dim("│ ") + r + "\n")
+	}
+	b.WriteString(dim("↑/↓ switch member · Esc back"))
+	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// sessionHistoryLines is how many recent history lines the session window
+// shows per member.
+const sessionHistoryLines = 5
+
+// renderLeaderReset renders the k step-down confirmation (§6): the warning,
+// the exact-id stage, the directory-list stage, or the finished result. The
+// target team and member come from the registry, never from the buffer.
+func (p *teamPicker) renderLeaderReset(w int) string {
+	var b strings.Builder
+	r := &p.reset
+	teamName := p.model.Name()
+	b.WriteString(accent(teamName+" · step down") + "\n")
+	switch r.kind {
+	case leaderResetWarn:
+		b.WriteString(dim("  This removes the leader marker and clears every member's") + "\n")
+		b.WriteString(dim("  context in this team. Other teams and normal chat history") + "\n")
+		b.WriteString(dim("  are untouched.") + "\n")
+	case leaderResetID:
+		b.WriteString(dim(`  Type the exact leader id to confirm: `) + accent(p.resetTargetID()) + "\n")
+		b.WriteString("  " + r.buf + "▏" + "\n")
+	case leaderResetList:
+		b.WriteString(dim("  Clearing ") + accent(teamName) + dim(" member contexts:") + "\n")
+		b.WriteString("  " + dim(strconv.Itoa(p.resetDirCount(teamName))+" directories under .reasonix/team/context/") + "\n")
+	case leaderResetDone:
+		b.WriteString(dim("  Leader stepped down; team contexts cleared.") + "\n")
+	}
+	if r.errMsg != "" {
+		b.WriteString(r.errMsg + "\n")
+	}
+	switch r.kind {
+	case leaderResetWarn, leaderResetList:
+		b.WriteString(dim("Enter continue · Esc cancel"))
+	case leaderResetID:
+		b.WriteString(dim("Enter confirm · Esc cancel"))
+	case leaderResetDone:
+		b.WriteString(dim("Enter/Esc close"))
+	}
+	return choicePanelStyle.Width(w).Render(b.String())
 }
 
 // statusOf is the member's persisted lifecycle status, defaulting to active for

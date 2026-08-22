@@ -322,6 +322,15 @@ func (m chatTUI) applyComposerPasteCount(msg tea.PasteMsg, terminal bool, count 
 	if terminal {
 		m.terminalPasteSeq++
 	}
+	// The team overlay is modal: a paste appends to its active buffer and is
+	// dropped otherwise — never the hidden composer, or it would surface in
+	// the chat once TEAM closes. Covers bracketed and async clipboard pastes.
+	if m.teamPick != nil {
+		if target := teamPasteTarget(m.teamPick); target != nil {
+			*target += msg.Content
+		}
+		return m, nil
+	}
 	var cmds []tea.Cmd
 	for range count {
 		cmds = append(cmds, m.applyComposerPasteOnce(msg)...)
