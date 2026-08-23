@@ -1260,6 +1260,7 @@ func chatREPL(args []string, version string) int {
 	// buildController so the replacement matches this session's launch wiring;
 	// the CLI holds no SharedHost, so each rebuild owns its plugin host.
 	m.bindRuntimeRebuilder(*maxSteps, sink, *yolo, overrides, cliProfileBuildOptions)
+	m.bindTeamBackendSeam(*maxSteps, overrides)
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
 	}

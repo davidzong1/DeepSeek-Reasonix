@@ -310,6 +310,18 @@ func (m *chatTUI) clearSubmittedPastes() {
 	m.pendingPastes = nil
 }
 
+// mousePasteAllowed gates the mouse paste paths (middle-click, right-click):
+// the composer is visible, or the team overlay has an active text input whose
+// buffer the async result will route into (teamPasteTarget). Every other modal
+// state keeps the gate closed, so a stray click never touches the hidden
+// composer (§11.7).
+func (m chatTUI) mousePasteAllowed() bool {
+	if !m.hideComposer() {
+		return true
+	}
+	return m.teamPick != nil && teamPasteTarget(m.teamPick) != nil
+}
+
 // applyComposerPaste owns both terminal bracketed pastes and text read from the
 // native clipboard. Only terminal events advance terminalPasteSeq: replaying an
 // internal clipboard result must not make another in-flight Ctrl+V look as if

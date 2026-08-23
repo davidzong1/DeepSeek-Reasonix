@@ -158,6 +158,11 @@ func (p *teamPicker) executeLeaderReset() {
 		return
 	}
 	teamName := p.model.Name()
+	if !p.stopTeamBeforeClear(teamName) {
+		r.errMsg = p.errMsg
+		p.errMsg = ""
+		return
+	}
 	if p.sessions != nil {
 		if err := p.sessions.ClearTeamTrash(teamName); err != nil {
 			r.errMsg = "Failed to clear team contexts: " + err.Error()

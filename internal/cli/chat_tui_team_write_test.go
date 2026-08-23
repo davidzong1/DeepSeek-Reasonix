@@ -327,6 +327,9 @@ func TestTeamMemberEditStatusPersists(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // active → disabled
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
 	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save the draft
+	if got := m.teamPick.memberEdit.kind; got != memberEditFieldList {
+		t.Fatalf("s should return to the field list, kind = %v", got)
+	}
 	doc := readStoredTeamDoc(t)
 	if st := doc.Teams[0].Template[0].Status; st != team.MemberStatusDisabled {
 		t.Fatalf("s should persist the edited status, got %q", st)

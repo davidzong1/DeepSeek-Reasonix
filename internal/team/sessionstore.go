@@ -49,11 +49,15 @@ type SessionMessage struct {
 // SessionCursor is a member's recovery position (§4.1): how many history
 // lines the runtime has consumed, the resume counter, and the context-view
 // pointer. Every member owns one; sharing an AgentUserRef never shares it.
+// Sequence is the member's persisted runtime-event counter (route §11.3):
+// it keeps event numbering monotonic across restarts, so a TUI subscription
+// opened after a restart never collides with a stale event sequence.
 type SessionCursor struct {
 	Document
 	Cursor      int    `json:"cursor"` // consumed message lines; 0 = nothing consumed
 	ResumeCount int    `json:"resume_count"`
 	ContextRef  string `json:"context_ref,omitempty"`
+	Sequence    int64  `json:"sequence,omitempty"` // last runtime event sequence (route §11.3)
 }
 
 // SessionState is the persisted runtime state of one member (§4.1).
@@ -80,12 +84,16 @@ type TeamSessionStore struct {
 	store *FileStore
 }
 
-// NewTeamSessionStore returns a session store rooted at projectRoot.
+// NewTeamSessionStore returns a session store rooted at the project's team
+// root. Every path this store builds is relative to that root, so the context
+// and session trees stay inside .reasonix/team instead of the project root
+// itself — TestSessionPathsStayUnderTeamRoot pins the physical location.
 func NewTeamSessionStore(projectRoot string) (*TeamSessionStore, error) {
-	if _, err := TeamRoot(projectRoot); err != nil {
+	root, err := TeamRoot(projectRoot)
+	if err != nil {
 		return nil, err
 	}
-	store, err := NewFileStore(projectRoot)
+	store, err := NewFileStore(root)
 	if err != nil {
 		return nil, err
 	}

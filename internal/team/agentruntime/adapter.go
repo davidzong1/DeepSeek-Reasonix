@@ -16,6 +16,9 @@ var (
 	// ErrInstanceNotFound reports an operation on an instance key that was
 	// never started.
 	ErrInstanceNotFound = errors.New("agentruntime: no such member instance")
+	// ErrNotAssembled reports a runtime-only operation (subscribe) on an
+	// instance whose provider assembly was not configured.
+	ErrNotAssembled = errors.New("agentruntime: member instance has no runtime")
 )
 
 // Snapshot is the read-only observation of one member instance (route §3:
@@ -30,13 +33,15 @@ type Snapshot struct {
 }
 
 // Instance is one member's runtime instance (route §2.1): its own assembly
-// snapshot, lifecycle state, and recovery cursor. Instances sharing an
-// AgentUserRef share nothing mutable — each owns this struct.
+// snapshot, lifecycle state, recovery cursor, and — when a ProviderFactory is
+// wired — the assembled member runtime. Instances sharing an AgentUserRef
+// share nothing mutable — each owns this struct.
 type Instance struct {
 	key    InstanceKey
 	spec   Spec
 	state  RuntimeState
 	cursor team.SessionCursor
+	rt     MemberRuntime
 }
 
 // Key returns the instance's composite key.
@@ -45,19 +50,27 @@ func (i *Instance) Key() InstanceKey { return i.key }
 // Registry is the member-level runtime adapter (route §3 TeamRuntimeRegistry):
 // it maps the (team, memberID) key to an independent instance, restores and
 // persists per-member state through the session store, and exposes the
-// lifecycle and observation surface the CLI window drives. The agent loop
-// itself remains deferred (§3.7); this layer owns assembly, isolation, and
-// the durable side of the instance lifecycle.
+// lifecycle and observation surface the CLI window drives. The provider
+// assembly is injected through the factory (route §11.2: provider calls stay
+// inside the runtime adapter); without a factory the registry runs in
+// state-only mode — Send records history without executing a loop.
 type Registry struct {
 	mu      sync.Mutex
 	store   *team.TeamSessionStore
+	factory ProviderFactory
 	active  map[InstanceKey]*Instance
 	current InstanceKey // CLI session-window target; zero value = none
 }
 
-// NewRegistry returns an empty registry backed by store.
-func NewRegistry(store *team.TeamSessionStore) *Registry {
-	return &Registry{store: store, active: make(map[InstanceKey]*Instance)}
+// NewRegistry returns an empty registry backed by store. An optional factory
+// assembles each instance's member runtime from its spec (credential
+// resolution happens in the wired factory, never inside this package).
+func NewRegistry(store *team.TeamSessionStore, factory ...ProviderFactory) *Registry {
+	r := &Registry{store: store, active: make(map[InstanceKey]*Instance)}
+	if len(factory) > 0 {
+		r.factory = factory[0]
+	}
+	return r
 }
 
 // Start assembles and starts the member instance for key. An existing
@@ -65,6 +78,9 @@ func NewRegistry(store *team.TeamSessionStore) *Registry {
 // assembly snapshot — reconfiguring an AgentUserRef never resets history or
 // the recovery cursor (route §2.1). A fresh instance restores its cursor and
 // state from the session store; an absent member directory is empty history.
+// When a factory is wired, a fresh instance assembles its member runtime
+// (provider resolution); assembly failure surfaces as an error so the caller
+// can stay in the session window and offer the retry entry (route §11.6).
 // ctx is the future agent-loop context; this layer returns immediately.
 func (r *Registry) Start(ctx context.Context, spec Spec) (*Instance, error) {
 	_ = ctx
@@ -75,13 +91,30 @@ func (r *Registry) Start(ctx context.Context, spec Spec) (*Instance, error) {
 	}
 	if inst, ok := r.active[spec.Key]; ok {
 		inst.spec = spec
+		// restart (§11.6): a stopped instance comes back running on the next
+		// Start, persisting it so recovery never finds a live window on a
+		// stopped member; the reused runtime starts on the next Send.
+		if inst.state == RuntimeStateStopped {
+			inst.state = RuntimeStateRunning
+			if err := r.store.WriteState(spec.Key.Team, spec.Key.MemberID, string(RuntimeStateRunning)); err != nil {
+				return nil, err
+			}
+		}
 		return inst, nil
 	}
 	cursor, err := r.store.ReadCursor(spec.Key.Team, spec.Key.MemberID)
 	if err != nil {
 		return nil, err
 	}
-	inst := &Instance{key: spec.Key, spec: spec, state: RuntimeStateRunning, cursor: cursor}
+	var rt MemberRuntime
+	if r.factory != nil {
+		prov, err := r.factory(spec)
+		if err != nil {
+			return nil, fmt.Errorf("agentruntime: assemble %s/%s: %w", spec.Key.Team, spec.Key.MemberID, err)
+		}
+		rt = NewMemberAgent(spec.Key, spec, r.store, prov, cursor.Sequence)
+	}
+	inst := &Instance{key: spec.Key, spec: spec, state: RuntimeStateRunning, cursor: cursor, rt: rt}
 	r.active[spec.Key] = inst
 	if err := r.store.WriteState(spec.Key.Team, spec.Key.MemberID, string(RuntimeStateRunning)); err != nil {
 		delete(r.active, spec.Key)
@@ -93,20 +126,55 @@ func (r *Registry) Start(ctx context.Context, spec Spec) (*Instance, error) {
 	return inst, nil
 }
 
-// Stop stops the instance and persists its stopped state. An unknown key is
-// refused; stopping an already-stopped instance is a no-op.
+// Stop stops the instance, persists its stopped state, and cancels any
+// in-flight completion (outside the registry lock, so one member's long
+// loop never blocks another's lifecycle). An unknown key is refused;
+// stopping an already-stopped instance is a no-op.
 func (r *Registry) Stop(key InstanceKey) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	inst, err := r.instanceLocked(key)
 	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
 	if inst.state == RuntimeStateStopped {
+		r.mu.Unlock()
 		return nil
 	}
 	inst.state = RuntimeStateStopped
-	return r.store.WriteState(key.Team, key.MemberID, string(RuntimeStateStopped))
+	err = r.store.WriteState(key.Team, key.MemberID, string(RuntimeStateStopped))
+	rt := inst.rt
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if rt != nil {
+		return rt.Stop()
+	}
+	return nil
+}
+
+// StopTeam stops every running instance of one team — the pre-clear gate for
+// k/delete/team-cleanup (route §11.6): no member runtime may keep writing
+// context while its team's contexts are being cleared. Instances stop through
+// Registry.Stop, so state persistence and loop cancellation stay in one path;
+// unknown teams are a no-op.
+func (r *Registry) StopTeam(teamName string) error {
+	r.mu.Lock()
+	var keys []InstanceKey
+	for key, inst := range r.active {
+		if key.Team == teamName && inst.state != RuntimeStateStopped {
+			keys = append(keys, key)
+		}
+	}
+	r.mu.Unlock()
+	var firstErr error
+	for _, key := range keys {
+		if err := r.Stop(key); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Switch moves the session window to key and returns its observation; an
@@ -169,23 +237,50 @@ func (r *Registry) observeLocked(inst *Instance) Snapshot {
 	}
 }
 
-// Send enqueues one interaction message from the CLI window into the
-// member's history (route §3: the CLI is an interaction window). The message
-// is recorded even when the instance is stopped — it becomes part of the
-// history the next assembly resumes from. The cursor is not advanced;
-// MarkConsumed records consumption.
+// Send submits one interaction message from the CLI window into the member's
+// history and, when the instance has an assembled runtime, starts the
+// completion loop (route §11.3: the user message is persisted first; a
+// failure keeps it as retryable history). Without a runtime — state-only
+// mode, or an instance stopped before assembly — the message is recorded for
+// the next assembly without executing anything. The cursor is not advanced
+// here; the loop advances it together with its persisted assistant message.
 func (r *Registry) Send(key InstanceKey, text string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, err := r.instanceLocked(key); err != nil {
+	inst, err := r.instanceLocked(key)
+	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
-	return r.store.AppendMessage(key.Team, key.MemberID, team.SessionMessage{
+	rt := inst.rt
+	r.mu.Unlock()
+	if err := r.store.AppendMessage(key.Team, key.MemberID, team.SessionMessage{
 		Kind: "user",
 		From: "cli",
 		Text: text,
 		TS:   time.Now().UTC().Format(time.RFC3339),
-	})
+	}); err != nil {
+		return err
+	}
+	if rt == nil {
+		return nil
+	}
+	return rt.Send(text)
+}
+
+// Subscribe returns the member's bounded runtime event stream; an instance
+// without an assembled runtime is refused. The subscription's Cancel
+// unsubscribes it.
+func (r *Registry) Subscribe(key InstanceKey) (Subscription, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, err := r.instanceLocked(key)
+	if err != nil {
+		return Subscription{}, err
+	}
+	if inst.rt == nil {
+		return Subscription{}, fmt.Errorf("%w: (%s, %s)", ErrNotAssembled, key.Team, key.MemberID)
+	}
+	return inst.rt.Subscribe(), nil
 }
 
 // MarkConsumed advances the instance's recovery cursor to the current
@@ -224,11 +319,12 @@ func (r *Registry) Instances() []InstanceKey {
 	return keys
 }
 
-// Close stops every instance, persisting each one's stopped state.
+// Close stops every instance — persisting each one's stopped state, then
+// cancelling loops and closing event sources outside the registry lock.
 func (r *Registry) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	var firstErr error
+	var runtimes []MemberRuntime
 	for key, inst := range r.active {
 		if inst.state == RuntimeStateStopped {
 			continue
@@ -237,6 +333,13 @@ func (r *Registry) Close() error {
 		if err := r.store.WriteState(key.Team, key.MemberID, string(RuntimeStateStopped)); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		if inst.rt != nil {
+			runtimes = append(runtimes, inst.rt)
+		}
+	}
+	r.mu.Unlock()
+	for _, rt := range runtimes {
+		rt.Close()
 	}
 	return firstErr
 }

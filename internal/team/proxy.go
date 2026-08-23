@@ -108,7 +108,7 @@ func validateProxy(p ProxyConfig) error {
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidProxy, err)
+		return fmt.Errorf("%w: %w", ErrInvalidProxy, err)
 	}
 	if net.ParseIP(host) == nil {
 		return fmt.Errorf("%w: host %q is not a literal IP", ErrInvalidProxy, host)

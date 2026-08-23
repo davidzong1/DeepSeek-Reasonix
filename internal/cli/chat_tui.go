@@ -324,7 +324,18 @@ type chatTUI struct {
 	// teamPick is the team roster overlay opened by the TEAM button (nil when
 	// closed). While set, keys navigate it and it renders as a card.
 	teamPick *teamPicker
-	lastEsc  time.Time
+	// teamBackends holds one assembled Agent backend per team member; binding a
+	// member swaps m.ctrl to its backend. memberEvents is the one tagged channel
+	// every member backend emits into. Both nil until the team seam is wired.
+	teamBackends *teamBackends
+	memberEvents chan memberEvent
+	// memberBackendBase yields the boot options a member backend inherits from
+	// this session's launch wiring; the member builder overrides model and sink.
+	memberBackendBase func() boot.Options
+	// ambient is the chat's own backend, saved when the window first binds a team
+	// member so leaving the team session hands the window back to it.
+	ambient control.SessionAPI
+	lastEsc time.Time
 
 	// mcp is the interactive "/mcp" manager overlay. mcpDisabled tracks servers
 	// turned off only for this chat session, matching the desktop connector
@@ -1118,34 +1129,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft && m.teamButtonHit(msg.X, msg.Y) {
-			m.onTeamButtonClick()
-			return m, nil
+			return m, m.onTeamButtonClick()
 		}
-		// Match the complete terminal right-click convention while Reasonix owns
-		// the mouse: copy an active selection, otherwise paste clipboard text into
-		// the visible composer. Left-press begins a selection unless it lands on
-		// the transcript scrollbar or a shell-output hint line.
-		// Middle-click pastes tmux's current buffer when tmux owns the pane;
-		// otherwise it follows the X11/Wayland PRIMARY-selection convention.
-		if msg.Button == tea.MouseMiddle {
-			if m.hideComposer() {
+		if c, consumed := m.mouseCopyOrPaste(msg); consumed {
+			if c == nil {
 				return m, nil
 			}
-			cmds = append(cmds, pasteMiddleClick())
-			return m, finalize(m, cmds)
-		}
-		if msg.Button == tea.MouseRight && m.validComposerSelection() && !m.composerSel.empty() {
-			cmds = append(cmds, m.copySelectionWithNotice(m.selectedComposerText()))
-			return m, finalize(m, cmds)
-		}
-		if msg.Button == tea.MouseRight && m.sel.active && !m.sel.empty() {
-			text := m.selectedText()
-			m.sel = selection{}
-			cmds = append(cmds, m.copySelectionWithNotice(text))
-			return m, finalize(m, cmds)
-		}
-		if msg.Button == tea.MouseRight && !m.hideComposer() {
-			cmds = append(cmds, pasteClipboardText())
+			cmds = append(cmds, c)
 			return m, finalize(m, cmds)
 		}
 		if msg.Button == tea.MouseLeft {
@@ -2078,6 +2068,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.applyComposerPasteCount(tea.PasteMsg{Content: msg.text}, false, count)
+
+	case teamRuntimeEventMsg:
+		return m, m.handleTeamRuntimeEvent(msg) // §11.5 session refresh/unread; stale drops
+
+	case memberEventMsg:
+		return m, m.handleMemberEvent(msg) // team member backend; §D3 tagged channel
 
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {

@@ -69,10 +69,15 @@ func openTeamOverlay(t *testing.T) chatTUI {
 }
 
 // openRosterW opens the overlay at the given width and descends into the
-// first team's roster.
+// first team's roster. Since the [TEAM] click lands on the leader's session
+// window (§11.4), a leader-backed fixture first escs the session back to the
+// team list, then enters the roster.
 func openRosterW(t *testing.T, width int) chatTUI {
 	t.Helper()
 	m := openTeamOverlayW(t, width)
+	if m.teamPick.session.active {
+		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // close the session back to the team list
+	}
 	return teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 

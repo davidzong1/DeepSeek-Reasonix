@@ -245,6 +245,9 @@ func TestLeaderResetClearsOnlyTargetTeam(t *testing.T) {
 	m = typeTeamName(m, "alpha")
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := m.teamPick.reset.kind; got != leaderResetDone {
+		t.Fatalf("the final confirmation should finish the flow, kind = %v", got)
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {

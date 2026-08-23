@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/team"
+	"reasonix/internal/team/agentruntime"
 	"reasonix/internal/team/tui"
 )
 
@@ -77,6 +78,7 @@ type teamPicker struct {
 	errMsg     string                 // unreadable registry; "" when healthy
 	store      *team.TeamStore        // storage seam; nil when the project root is unusable
 	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	runtime    *agentruntime.Registry // member runtime seam (§11.3); nil when the seam is unavailable
 	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
 	kind       teamInputKind          // transient write state; teamInputNone when idle
 	buf        string                 // team, member, or field value being typed
@@ -89,10 +91,12 @@ type teamPicker struct {
 	reset      leaderResetState       // k step-down confirmation; owns every key while active
 }
 
-// onTeamButtonClick opens the team management view in its own overlay. The
-// registry is loaded from disk on open, so a stale document surfaces as a
-// message, never as fabricated members.
-func (m *chatTUI) onTeamButtonClick() {
+// onTeamButtonClick opens the team overlay on the focused team's leader
+// session — the [TEAM] click target state (§11.4). The registry is loaded
+// from disk on open, so a stale document surfaces as a message, never as
+// fabricated members. The session start returns the subscription command that
+// arms its runtime event stream (§11.5).
+func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	cwd, err := os.Getwd()
 	if err == nil {
 		var store *team.TeamStore
@@ -102,45 +106,43 @@ func (m *chatTUI) onTeamButtonClick() {
 			sessions, err = team.NewTeamSessionStore(cwd)
 		}
 		if err == nil {
-			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
+			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions,
+				runtime: agentruntime.NewRegistry(sessions)}
 			m.teamPick = p
+			m.bindTeamBackends(store)
 			if err := p.reload(""); err != nil {
 				p.errMsg = pickerErrMsg(err)
-			} else {
-				p.restoreSession()
+				return nil
 			}
-			return
+			if leader := p.openLeaderSession(); leader != "" {
+				return m.switchTeamMember(leader)
+			}
+			return nil
 		}
 	}
 	m.teamPick = &teamPicker{model: tui.New(nil), errMsg: "Team data unavailable: " + err.Error()}
+	return nil
 }
 
-// restoreSession resumes the team's persisted session-window selection (§4.2):
-// reopening the overlay with a valid selection reopens the session on that
-// member; a member that vanished falls back to the leader; a team with no
-// leader stays on the management page. Absent or unreadable selections are
-// quiet — the team list is the default entry screen.
-func (p *teamPicker) restoreSession() {
+// openLeaderSession puts the overlay on the focused team's leader window and
+// reports the leader to bind — session active, leader current, the chat composer
+// hidden, the roster beside it for switching (§11.4). A team with no leader
+// returns "" and stays on the management page: the leader marker is the gate,
+// mirroring the t key.
+func (p *teamPicker) openLeaderSession() string {
 	if p.sessions == nil {
-		return
+		return ""
 	}
 	teamName := p.model.Name()
 	if teamName == "" {
-		return
+		return ""
 	}
-	sel, err := p.sessions.ReadSelection(teamName)
-	if err != nil || sel.MemberID == "" {
-		return
+	current := p.firstLeader()
+	if current == "" {
+		return ""
 	}
-	current := sel.MemberID
-	if _, ok := p.slotOf(current); !ok {
-		current = p.firstLeader()
-		if current == "" {
-			p.errMsg = "No leader to resume the session on — select a member to lead"
-			return
-		}
-	}
-	session := sessionState{active: true, teamName: teamName, current: current}
+	session := sessionState{active: true, teamName: teamName, current: current,
+		unread: map[string]int{}}
 	for i, m := range p.model.Members() {
 		session.members = append(session.members, m.ID)
 		if m.ID == current {
@@ -148,6 +150,7 @@ func (p *teamPicker) restoreSession() {
 		}
 	}
 	p.session = session
+	return current
 }
 
 // firstLeader returns the focused team's first leader slot id, or "".
@@ -247,9 +250,15 @@ func (p *teamPicker) addTeam(name string) error {
 }
 
 // deleteTeam removes the focused team. Deleting the last team is refused by the
-// store (ErrLastTeam), which the overlay renders as a readable message.
+// store (ErrLastTeam), which the overlay renders as a readable message. Member
+// runtimes stop before the destructive op (§11.6), so none can keep writing
+// context while the team's contexts disappear.
 func (p *teamPicker) deleteTeam() error {
-	if err := p.store.DeleteTeam(p.model.Name()); err != nil {
+	name := p.model.Name()
+	if !p.stopTeamBeforeClear(name) {
+		return nil
+	}
+	if err := p.store.DeleteTeam(name); err != nil {
 		return err
 	}
 	return p.reload("")
@@ -266,16 +275,37 @@ func (p *teamPicker) addMember(id string) error {
 	return p.reload("")
 }
 
-// deleteMember removes the focused member slot from the focused team.
+// deleteMember removes the focused member slot from the focused team. The
+// team's member runtimes stop before the removal (§11.6), so no loop can keep
+// writing the member's context while the slot disappears.
 func (p *teamPicker) deleteMember() error {
 	member, ok := p.model.Focused()
 	if !ok {
+		return nil
+	}
+	if !p.stopTeamBeforeClear(p.model.Name()) {
 		return nil
 	}
 	if err := p.store.DeleteMember(p.model.Name(), member.ID); err != nil {
 		return err
 	}
 	return p.reload("")
+}
+
+// stopTeamBeforeClear stops every member runtime of the team before a
+// destructive operation — k step-down, member deletion, team cleanup (§11.6):
+// no loop may keep writing context while the team's contexts are being
+// cleared. A stop failure refuses the operation with a message; half-cleanup
+// is worse than a refusal.
+func (p *teamPicker) stopTeamBeforeClear(teamName string) bool {
+	if p.runtime == nil {
+		return true
+	}
+	if err := p.runtime.StopTeam(teamName); err != nil {
+		p.errMsg = "Cannot clear — member runtimes still active: " + err.Error()
+		return false
+	}
+	return true
 }
 
 // slotOf returns the focused team's template slot for a member id, the source
@@ -316,8 +346,10 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if p.pool.active && handlePoolKey(p, msg) {
 		return m, nil
 	}
-	if p.session.active && handleSessionKey(p, msg) {
-		return m, nil
+	if p.session.active {
+		if handled, cmd := m.handleSessionKey(msg); handled {
+			return m, cmd
+		}
 	}
 	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
 		return m, nil
@@ -341,6 +373,7 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if (p.kind == teamInputAdd || p.kind == teamInputAddMember) && typeIntoTeamBuffer(p, msg) {
 		return m, nil
 	}
+	var cmd tea.Cmd
 	switch msg.String() {
 	case "up":
 		view.Handle(tui.EventUp)
@@ -352,7 +385,7 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		startTeamKey(p, view, msg.String())
 	case "t":
 		if memberListKeyAllowed(view, p) {
-			p.enterTeamSession()
+			cmd = p.enterTeamSession()
 		}
 	case "k":
 		if memberListKeyAllowed(view, p) {
@@ -364,9 +397,21 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if closed := handleTeamSharedKey(p, view, msg); closed {
+		p.closeTeamOverlay()
 		m.teamPick = nil
 	}
-	return m, nil
+	return m, cmd
+}
+
+// closeTeamOverlay tears the registry down when the overlay closes: every
+// remaining member instance — sessions of other teams included — stops and
+// its event source closes, so no loop or subscriber outlives the window
+// (§11.6). Session Esc already stopped the current team; this is the last
+// line for anything else the overlay started.
+func (p *teamPicker) closeTeamOverlay() {
+	if p.runtime != nil {
+		_ = p.runtime.Close()
+	}
 }
 
 // teamPasteKey reports whether the keypress pastes into the overlay's active
@@ -471,6 +516,9 @@ func teamPasteTarget(p *teamPicker) *string {
 	switch p.kind {
 	case teamInputAdd, teamInputAddMember:
 		return &p.buf
+	}
+	if p.session.active && p.session.input {
+		return &p.session.buf
 	}
 	if p.pool.active && p.pool.kind == poolInputEditField &&
 		poolEditFields[p.pool.edit] != team.AgentUserFieldProvider {

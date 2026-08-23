@@ -139,6 +139,10 @@ type Options struct {
 	// standard; unknown values keep the standard default.
 	AgentPreset string
 	TokenMode   string
+	// SystemPromptIdentity folds a session's durable identity (a team member's
+	// team/member/role) into the cache-stable prefix once at assembly; it must
+	// stay constant for the session. Empty inserts nothing.
+	SystemPromptIdentity string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -595,6 +599,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// false) still keeps those. Applied once, into the cache-stable prefix.
 	if st, ok := outputstyle.Resolve(cfg.Agent.OutputStyle, outputstyle.Dirs()); ok {
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
+	}
+	// Session identity folds in after the output style, so a "replace" style
+	// cannot drop it, and before the policy/environment/memory sections, which
+	// still apply to it. Once, into the cache-stable prefix.
+	if identity := strings.TrimSpace(opts.SystemPromptIdentity); identity != "" {
+		sysPrompt += "\n\n" + identity
 	}
 	sysPrompt = appendCorePolicies(sysPrompt)
 	if workspaceLine := currentWorkspacePromptLine(root); workspaceLine != "" {

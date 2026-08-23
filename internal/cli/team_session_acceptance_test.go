@@ -34,10 +34,11 @@ func TestTeamEnterSessionRefusedWithoutLeader(t *testing.T) {
 	}
 }
 
-// TestSessionSelectionFallsBackToLeaderAfterMemberRemoved pins the A7
-// fallback (§4.2): a persisted selection naming a member that was deleted
-// resumes the session on the first leader instead.
-func TestSessionSelectionFallsBackToLeaderAfterMemberRemoved(t *testing.T) {
+// TestTeamButtonOpensOnLeaderAfterMemberRemoved pins the [TEAM] entry
+// (§11.4): the click opens the session on the first leader even when the
+// roster shrank since the last visit — the entry state is leader-first, never
+// the last selected member, so a deleted member cannot strand the session.
+func TestTeamButtonOpensOnLeaderAfterMemberRemoved(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "coder-1", Role: team.RoleCoder, Status: team.MemberStatusActive},
 		{MemberID: "leader-1", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
@@ -45,7 +46,7 @@ func TestSessionSelectionFallsBackToLeaderAfterMemberRemoved(t *testing.T) {
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus leader-1
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'})         // enter the session
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // select coder-1, persisting it
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // switch to coder-1, persisting it
 	sel, err := m.teamPick.sessions.ReadSelection("Fixture Team")
 	if err != nil || sel.MemberID != "coder-1" {
 		t.Fatalf("selection = %+v, %v; want coder-1", sel, err)
@@ -69,38 +70,28 @@ func TestSessionSelectionFallsBackToLeaderAfterMemberRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.onTeamButtonClick() // simulate a restart after the deletion
+	m.onTeamButtonClick() // simulate a fresh [TEAM] click
 	if !m.teamPick.session.active || m.teamPick.session.current != "leader-1" {
-		t.Fatalf("vanished selection must fall back to the leader, got active=%v current=%q",
+		t.Fatalf("the click must open on the leader, got active=%v current=%q",
 			m.teamPick.session.active, m.teamPick.session.current)
 	}
 }
 
-// TestSessionSelectionNoLeaderStaysOnRosterWithReason pins the A7 dead-end
-// (§4.2): a selection naming a vanished member in a leaderless team must not
-// reopen the session — the management page stays up and explains why.
-func TestSessionSelectionNoLeaderStaysOnRosterWithReason(t *testing.T) {
+// TestTeamButtonNoLeaderStaysOnManagementPage pins the [TEAM] entry dead-end
+// (§11.4): a leaderless team does not open the session — the management page
+// stays up, quiet, since the leader marker is the gate and the roster screen
+// still offers l to assign one.
+func TestTeamButtonNoLeaderStaysOnManagementPage(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "coder-1", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ss, err := team.NewTeamSessionStore(cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ss.WriteSelection("Fixture Team", team.SessionSelection{MemberID: "ghost-1"}); err != nil {
-		t.Fatal(err)
-	}
 
 	m := openTeamOverlay(t)
 	if m.teamPick.session.active {
-		t.Fatal("a selection with no resolvable leader must not reopen the session")
+		t.Fatal("a leaderless team must not open the session window")
 	}
 	got := ansi.Strip(m.renderTeamPicker())
-	if !strings.Contains(got, "No leader to resume the session on") {
-		t.Fatalf("the roster should explain the blocked resume, got:\n%s", got)
+	if !strings.Contains(got, "1 member") {
+		t.Fatalf("the team list should stay up, got:\n%s", got)
 	}
 }

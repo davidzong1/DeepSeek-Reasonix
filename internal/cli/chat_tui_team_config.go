@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
@@ -161,9 +159,4 @@ func (p *teamPicker) toggleLeader() {
 	}
 	_ = p.store.SetMemberWritePolicy(policy)
 	p.errMsg = "" // a mode switch is an explicit retry intent; clear the refusal
-}
-
-// trimBuf trims the typed value, so a whitespace-only edit reads as empty.
-func trimBuf(s string) string {
-	return strings.TrimSpace(s)
 }

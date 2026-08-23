@@ -3,7 +3,6 @@ package cli
 import (
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -170,12 +169,11 @@ func (p *teamPicker) renderPoolEdit(w int) string {
 		if i == p.pool.edit {
 			mark = "> "
 		}
-		left := mark + f + ": " + truncateRunes(val, col-6)
-		pad := max(col-utf8.RuneCountInString(left), 1)
+		left := mark + f + ": " + truncateCells(val, col-6)
 		if !p.pool.adding && i == 0 {
 			left = dim(left) // a published id is immutable
 		}
-		b.WriteString(left + strings.Repeat(" ", pad) + dim("│ "+truncateRunes(preview[i], col)) + "\n")
+		b.WriteString(padColumn(left, col) + dim("│ "+truncateCells(preview[i], col)) + "\n")
 	}
 	if p.pool.kind == poolInputEditField {
 		if poolEditFields[p.pool.edit] == team.AgentUserFieldProvider {
@@ -189,20 +187,22 @@ func (p *teamPicker) renderPoolEdit(w int) string {
 	return choicePanelStyle.Width(w).Render(b.String())
 }
 
-// truncateRunes clips s to at most n runes, ellipsizing the tail so a field
-// value can never widen the column it renders in.
-func truncateRunes(s string, n int) string {
+// truncateCells clips s to at most n terminal cells, ellipsizing the tail so a
+// field value can never widen the column it renders in. Cells, not runes: CJK
+// and emoji occupy two columns each, and ANSI SGR codes occupy none.
+func truncateCells(s string, n int) string {
 	if n <= 0 {
 		return ""
 	}
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	r := []rune(s)
-	if n == 1 {
-		return string(r[:1])
-	}
-	return string(r[:n-1]) + "…"
+	return ansi.Truncate(s, n, "…")
+}
+
+// padColumn pads s to col terminal cells, always leaving at least one space
+// before the divider so a full-width value never abuts it. Measuring in cells
+// keeps the divider in one column: counting runes instead let ANSI SGR codes
+// and wide characters shift it per row.
+func padColumn(s string, col int) string {
+	return s + strings.Repeat(" ", max(col-visibleWidth(s), 1))
 }
 
 // poolFieldLabel names a pool-form field for the preview column, distinct from
@@ -379,9 +379,8 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int
 		if i == me.edit {
 			mark = "> "
 		}
-		left := mark + memberFieldLabel(f) + ": " + truncateRunes(val, col-6)
-		pad := max(col-utf8.RuneCountInString(left), 1)
-		b.WriteString(left + strings.Repeat(" ", pad) + dim("│ "+truncateRunes(preview[i], col)) + "\n")
+		left := mark + memberFieldLabel(f) + ": " + truncateCells(val, col-6)
+		b.WriteString(padColumn(left, col) + dim("│ "+truncateCells(preview[i], col)) + "\n")
 	}
 	if me.kind == memberEditFieldEdit {
 		if memberEditFields[me.edit] == "role" {
@@ -447,13 +446,18 @@ func memberProxyLabel(e *bool) string {
 	return "off"
 }
 
-// renderTeamSession renders the session window (§5): the team name, the
-// current member's agent window with its recent history, and the full roster
-// beside it for switching. Histories stream from the TeamContextStore; an
-// unreadable member history renders the persisted slot only.
+// renderTeamSession renders the session window (§5/§11.4): the team name, the
+// current member's agent window with its recent history, the full roster
+// beside it for switching (unread terminal-event counts on non-current
+// members), the composer when focused, and session-scoped errors. Histories
+// stream from the TeamContextStore; an unreadable member history renders the
+// persisted slot only.
 func (p *teamPicker) renderTeamSession(w int) string {
 	var b strings.Builder
 	b.WriteString(accent(p.session.teamName+" · session") + "\n")
+	if p.session.errMsg != "" {
+		b.WriteString(p.session.errMsg + "\n")
+	}
 	col := max((w-8)/2, 16)
 	var left, right strings.Builder
 	slot, ok := p.sessionSlot()
@@ -467,11 +471,7 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		if msgs, err := p.sessions.Messages(p.session.teamName, p.session.current); err == nil {
 			from := max(len(msgs)-sessionHistoryLines, 0)
 			for _, msg := range msgs[from:] {
-				line := msg.Text
-				if len(line) > col-4 {
-					line = truncateRunes(line, col-7) + "…"
-				}
-				left.WriteString(dim("  "+msg.Kind+": ") + line + "\n")
+				left.WriteString(dim("  "+msg.Kind+": ") + truncateCells(msg.Text, col-4) + "\n")
 			}
 		}
 	}
@@ -480,12 +480,16 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		if i == p.session.focus {
 			mark = "  > "
 		}
-		right.WriteString(dim(mark+id) + "\n")
+		label := mark + id
+		if n := p.session.unread[id]; n > 0 && id != p.session.current {
+			label += " " + accent(strconv.Itoa(n))
+		}
+		right.WriteString(dim(label) + "\n")
 	}
 	ll := strings.Split(strings.TrimSuffix(left.String(), "\n"), "\n")
 	rl := strings.Split(strings.TrimSuffix(right.String(), "\n"), "\n")
 	n := max(len(ll), len(rl))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var l, r string
 		if i < len(ll) {
 			l = ll[i]
@@ -493,10 +497,14 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		if i < len(rl) {
 			r = rl[i]
 		}
-		pad := max(col-utf8.RuneCountInString(l), 1)
-		b.WriteString(l + strings.Repeat(" ", pad) + dim("│ ") + r + "\n")
+		b.WriteString(padColumn(l, col) + dim("│ ") + r + "\n")
 	}
-	b.WriteString(dim("↑/↓ switch member · Esc back"))
+	if p.session.input {
+		b.WriteString("  " + p.session.buf + "▏" + "\n")
+		b.WriteString(dim("Enter send · Shift+Enter newline · Ctrl+Up/Down/Tab switch · Esc back"))
+	} else {
+		b.WriteString(dim("Enter compose · ↑/↓ switch · r restart · Esc back"))
+	}
 	return choicePanelStyle.Width(w).Render(b.String())
 }
 

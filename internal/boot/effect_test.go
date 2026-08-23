@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -223,5 +224,82 @@ model = "x"
 	}
 	if rec.roundCount() == 0 {
 		t.Fatal("no round reached the provider; the run never started")
+	}
+}
+
+// effectRunWithIdentity is effectRun with a SystemPromptIdentity, running two
+// turns so the prefix can be compared across them.
+func effectRunWithIdentity(t *testing.T, kind, identity string) []provider.Request {
+	t.Helper()
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	rec := &effectRecordingProvider{}
+	provider.Register(kind, func(provider.Config) (provider.Provider, error) {
+		return rec, nil
+	})
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "`+kind+`"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, SystemPromptIdentity: identity})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	for _, prompt := range []string{"first", "second"} {
+		if err := ctrl.Run(context.Background(), prompt); err != nil {
+			t.Fatalf("Run(%s): %v", prompt, err)
+		}
+	}
+	reqs := rec.requests()
+	if len(reqs) < 2 {
+		t.Fatalf("want two turns at the provider boundary, got %d", len(reqs))
+	}
+	return reqs
+}
+
+func effectSystemPrompt(t *testing.T, req provider.Request) string {
+	t.Helper()
+	if len(req.Messages) == 0 || req.Messages[0].Role != provider.RoleSystem {
+		t.Fatal("first provider message must be the system prompt")
+	}
+	return req.Messages[0].Content
+}
+
+// TestEffectSystemPromptIdentityReachesProviderAndStaysStable pins the field a
+// team member's (team, member, role) rides in on: the text must actually reach
+// the provider's system message at a fixed insertion point, and it must not
+// move the cache-stable prefix between turns. An empty identity must insert
+// nothing at all, so the field costs nothing when unused.
+func TestEffectSystemPromptIdentityReachesProviderAndStaysStable(t *testing.T) {
+	const identity = "You are member lead of team alpha.\nYour team role is: coder."
+	reqs := effectRunWithIdentity(t, "boot-effect-identity", identity)
+
+	first := effectSystemPrompt(t, reqs[0])
+	// The identity sits between the configured base prompt and the core
+	// policies: after any output style (a "replace" style cannot drop it) and
+	// before the policy/environment/memory sections, which still apply to it.
+	if want := "BASE\n\n" + identity + "\n\nUser-owned choices:"; !strings.HasPrefix(first, want) {
+		t.Fatalf("identity is not at the expected insertion point:\n%q", first[:min(len(first), 400)])
+	}
+	if second := effectSystemPrompt(t, reqs[1]); second != first {
+		t.Fatal("the system prefix must stay byte-identical across turns")
+	}
+
+	// An empty identity inserts nothing: the base prompt runs straight into the
+	// core policies, exactly as in a build that never set the field.
+	bare := effectSystemPrompt(t, effectRunWithIdentity(t, "boot-effect-identity-empty", "")[0])
+	if !strings.HasPrefix(bare, "BASE\n\nUser-owned choices:") {
+		t.Fatalf("an empty identity must insert nothing:\n%q", bare[:min(len(bare), 200)])
 	}
 }

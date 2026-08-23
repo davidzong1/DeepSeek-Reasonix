@@ -363,3 +363,99 @@ func TestTeamPasteRestoresComposerAfterClose(t *testing.T) {
 		t.Fatalf("composer after TEAM close = %q, want the pasted text", got)
 	}
 }
+
+// TestTeamClipboardImageResultWhileOverlayOpen pins the one async clipboard
+// path that bypasses applyComposerPasteCount: an image paste result (armed in
+// the composer before TEAM opened) must not attach to the hidden composer —
+// the modal intercept covers image results too, not just text.
+func TestTeamClipboardImageResultWhileOverlayOpen(t *testing.T) {
+	t.Chdir(t.TempDir())
+	m := openTeamOverlay(t)
+	m.input.SetValue("draft before")
+
+	next, _ := m.Update(clipboardImageMsg{path: "shots/one.png"})
+	m = next.(chatTUI)
+	if got := m.input.Value(); got != "draft before" {
+		t.Fatalf("image paste leaked into the hidden composer: %q", got)
+	}
+	if len(m.pastedBlocks) != 0 {
+		t.Fatalf("image paste created a block: %+v", m.pastedBlocks)
+	}
+	if m.clipboardImagePending {
+		t.Fatal("image paste state must reset even when the result is dropped")
+	}
+}
+
+// TestTeamMouseRightPasteIntoSessionInput pins the §11.7 mouse seam on the
+// right-click path: while the session composer is focused, a right-click arms
+// the text-clipboard read and the result lands in the session draft — never
+// the hidden composer. The overlay's browsing state has no text target, so the
+// same click stays inert there. (The overlay requests MouseModeNone, so this
+// is the belt-and-braces seam for terminals that deliver clicks anyway.)
+func TestTeamMouseRightPasteIntoSessionInput(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	setLocalClipboardSession(t)
+	prev := readNativeClipboardText
+	readNativeClipboardText = func() (string, error) { return "clip session", nil }
+	t.Cleanup(func() { readNativeClipboardText = prev })
+
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})          // open the session window
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // focus the composer
+
+	next, cmd := m.Update(tea.MouseClickMsg{Button: tea.MouseRight})
+	m = next.(chatTUI)
+	if cmd == nil {
+		t.Fatal("right-click in a focused session input must arm a clipboard read")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(chatTUI)
+	if got := m.teamPick.session.buf; got != "clip session" {
+		t.Fatalf("session draft = %q, want %q", got, "clip session")
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("right-click paste leaked into the composer: %q", got)
+	}
+
+	// Browsing state: the window is open but no text target — the click is inert.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // back to browsing
+	next, cmd = m.Update(tea.MouseClickMsg{Button: tea.MouseRight})
+	m = next.(chatTUI)
+	if cmd != nil {
+		t.Fatal("right-click without an active text target must stay inert")
+	}
+	if got := m.teamPick.session.buf; got != "clip session" {
+		t.Fatalf("inert click must not touch the draft: %q", got)
+	}
+}
+
+// TestTeamMouseMiddlePasteIntoSessionInput pins the middle-click half of the
+// same seam: with the session composer focused, a middle click reads the
+// selection owner and the resulting paste lands in the session draft.
+func TestTeamMouseMiddlePasteIntoSessionInput(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	t.Setenv("TMUX", "") // force the primary-selection path, tmux or not
+	prev := readPrimaryPasteSelection
+	readPrimaryPasteSelection = func() (string, error) { return "primary session", nil }
+	t.Cleanup(func() { readPrimaryPasteSelection = prev })
+
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})          // open the session window
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // focus the composer
+
+	next, cmd := m.Update(tea.MouseClickMsg{Button: tea.MouseMiddle})
+	m = next.(chatTUI)
+	if cmd == nil {
+		t.Fatal("middle-click in a focused session input must arm a selection read")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(chatTUI)
+	if got := m.teamPick.session.buf; got != "primary session" {
+		t.Fatalf("session draft = %q, want %q", got, "primary session")
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("middle-click paste leaked into the composer: %q", got)
+	}
+}

@@ -95,7 +95,7 @@ func TestSessionStoreCursorRoundTrip(t *testing.T) {
 	if c.Cursor != 0 || c.ResumeCount != 0 {
 		t.Fatalf("fresh cursor = %+v, want zeros", c)
 	}
-	want := SessionCursor{Document: Document{SchemaVersion: SchemaVersion}, Cursor: 7, ResumeCount: 2, ContextRef: "ctx/rev-3"}
+	want := SessionCursor{Document: Document{SchemaVersion: SchemaVersion}, Cursor: 7, ResumeCount: 2, ContextRef: "ctx/rev-3", Sequence: 41}
 	if err := s.WriteCursor("t", "m", want); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +105,36 @@ func TestSessionStoreCursorRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cursor round-trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestSessionStoreCursorLegacyFileReadsSequenceZero pins §7 compatibility: a
+// cursor.json written before the Sequence field existed (route §11.3) decodes
+// with Sequence zero — a stale event counter must never resurrect.
+func TestSessionStoreCursorLegacyFileReadsSequenceZero(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewTeamSessionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := s.MemberDir("t", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs := filepath.Join(s.store.root, dir)
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"schema_version":1,"cursor":3,"resume_count":1,"context_ref":"ctx/rev-1"}`)
+	if err := os.WriteFile(filepath.Join(abs, MemberCursorFile), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadCursor("t", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cursor != 3 || got.ResumeCount != 1 || got.Sequence != 0 {
+		t.Fatalf("legacy cursor = %+v, want cursor=3 resume=1 sequence=0", got)
 	}
 }
 
@@ -241,5 +271,43 @@ func TestClearTeamIdempotent(t *testing.T) {
 	}
 	if msgs, _ := s.Messages("t1", "a"); len(msgs) != 0 {
 		t.Fatalf("cleared team still holds %d messages", len(msgs))
+	}
+}
+
+// TestSessionPathsStayUnderTeamRoot pins where the store physically writes.
+// The context and session trees belong under .reasonix/team; rooting the file
+// store at the project root instead put member histories and the session
+// selection in the repository itself, where git then tracked them.
+func TestSessionPathsStayUnderTeamRoot(t *testing.T) {
+	project := t.TempDir()
+	s, err := NewTeamSessionStore(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendMessage("t", "m", SessionMessage{Kind: "user", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteSelection("t", SessionSelection{
+		Document: Document{SchemaVersion: SchemaVersion}, Team: "t", MemberID: "m",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	teamRoot := filepath.Join(project, ".reasonix", "team")
+	for _, want := range []string{
+		filepath.Join(teamRoot, contextRootDir, "t", "m", MemberMessagesFile),
+		filepath.Join(teamRoot, sessionDir, "t.json"),
+	} {
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("expected %s under the team root: %v", want, err)
+		}
+	}
+	for _, leaked := range []string{
+		filepath.Join(project, contextRootDir),
+		filepath.Join(project, sessionDir),
+	} {
+		if _, err := os.Stat(leaked); !os.IsNotExist(err) {
+			t.Errorf("%s must not exist in the project root (err = %v)", leaked, err)
+		}
 	}
 }

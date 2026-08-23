@@ -70,21 +70,21 @@ func TestTeamSessionSwitchPersistsAndEsc(t *testing.T) {
 	}
 }
 
-// TestTeamSessionRestoresSelection pins the restart resume (§4.2): reopening
-// the overlay resumes the session on the persisted member; a vanished member
-// falls back to the leader.
-func TestTeamSessionRestoresSelection(t *testing.T) {
+// TestTeamSessionReopenLandsOnLeader pins the [TEAM] entry (§11.4): clicking
+// the button again after a switch reopens the session on the team's leader —
+// the entry state is leader-first, never the last selected member.
+func TestTeamSessionReopenLandsOnLeader(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus lead
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // select alice
-	m.onTeamButtonClick()                              // simulate a restart
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // switch to alice
+	m.onTeamButtonClick()                              // simulate a fresh [TEAM] click
 	if !m.teamPick.session.active {
-		t.Fatal("a persisted selection should reopen the session window")
+		t.Fatal("the click must reopen the session window")
 	}
-	if got := m.teamPick.session.current; got != "alice" {
-		t.Fatalf("restart should resume on the persisted member, got %q", got)
+	if got := m.teamPick.session.current; got != "lead" {
+		t.Fatalf("the click must reopen on the leader, got %q", got)
 	}
 }
 
@@ -235,6 +235,9 @@ func TestTeamMemberEditRolePersistsAndClears(t *testing.T) {
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+	if got := m.teamPick.memberEdit.kind; got != memberEditFieldList {
+		t.Fatalf("s should return to the field list, kind = %v", got)
+	}
 	doc = readStoredTeamDoc(t)
 	if got := doc.Teams[0].Template[1].Role; got != "" {
 		t.Fatalf("an empty role should clear, got %q", got)
