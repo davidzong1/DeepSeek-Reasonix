@@ -8,7 +8,7 @@ import type {
 import type { SizeFunction, VirtuosoHandle } from "react-virtuoso";
 import { isEditableTarget } from "./keyboardShortcuts";
 import { findVerticalScrollTarget, normalizeWheelDelta } from "./nestedScrollHandoff";
-import { isNativeVerticalScrollbarPointer, measureTranscriptVirtuosoItem } from "./transcriptNativeScrollbar";
+import { hasPendingTranscriptGeometry, isNativeVerticalScrollbarPointer, measureTranscriptVirtuosoItem } from "./transcriptNativeScrollbar";
 import {
   INITIAL_TRANSCRIPT_SCROLL_STATE,
   isSubstantialTranscriptDisplacement,
@@ -34,11 +34,13 @@ import type {
   TranscriptRecoveryTerminal,
 } from "./transcriptScrollRecovery";
 import {
+  MIN_REVERSE_JUMP_PX,
   transcriptScrollEventCancelsReaderExtentGuard,
   transcriptKeyboardScrollDelta,
 } from "./transcriptReaderExtentStability";
 import { hasTranscriptScrollableRange, nativeTranscriptBottomTop, nativeTranscriptDistanceFromBottom, pinTranscriptTailAfterViewportShrink, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, type TranscriptFollowGeometry } from "./transcriptScrollGeometry";
 import type { TranscriptRow } from "./transcriptRows";
+import { isTranscriptRowLayoutVariant, type TranscriptEstimateSource, type TranscriptRowLayoutVariant } from "./transcriptRowGeometry";
 import { captureTranscriptVirtuosoState } from "./transcriptStateSnapshot";
 import { captureTranscriptLayoutAnchor, type TranscriptLayoutAnchor } from "./transcriptVirtuosoRecovery";
 import { createTranscriptAnchorCompensation, type TranscriptAnchorCompensation } from "./transcriptAnchorCompensation";
@@ -68,7 +70,16 @@ export function useTranscriptScrollArbiter({
    *  cancelled / expired); wired into session diagnostics by the caller. */
   onRecoveryTerminal?: (terminal: TranscriptRecoveryTerminal) => void;
   /** Receives real, unfrozen itemSize measurements; data-known-size is ignored. */
-  onItemMeasured?: (rowKey: string, kind: TranscriptRow["kind"], height: number, width: number, measurementVersion?: string) => void;
+  onItemMeasured?: (
+    rowKey: string,
+    kind: TranscriptRow["kind"],
+    layoutVariant: TranscriptRowLayoutVariant,
+    height: number,
+    width: number,
+    measurementVersion: string | undefined,
+    estimateSource: TranscriptEstimateSource | undefined,
+    staticEstimate: number | undefined,
+  ) => void;
 } = {}) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -81,6 +92,9 @@ export function useTranscriptScrollArbiter({
   const deliverScrollRef = useRef<((element?: HTMLDivElement) => void) | null>(null);
   const generationRef = useRef(0);
   const followFrameRef = useRef<number | null>(null);
+  // Virtuoso reuses physical row elements. A known size from the previous
+  // logical row must not be treated as the current row's geometry contract.
+  const measuredRowKeyRef = useRef(new WeakMap<HTMLElement, string>());
   const layoutTransientRef = useRef(false);
   const resizeSettleFrameRef = useRef<number | null>(null);
   const readerIntentTimerRef = useRef<number | null>(null);
@@ -154,7 +168,10 @@ export function useTranscriptScrollArbiter({
     pinnedRef.current = state.mode === "tail-follow";
     // Keep jump-bottom manual-only while tail-follow repairs footer resize gaps.
     setIsAtBottom(state.atBottom || state.mode === "tail-follow");
-    if (scrollRef.current) scrollRef.current.dataset.scrollMode = state.mode;
+    if (scrollRef.current) {
+      scrollRef.current.dataset.scrollMode = state.mode;
+      scrollRef.current.dataset.transcriptReaderIntent = state.readerIntent ? "true" : "false";
+    }
   }, []);
 
   const runCommand = useCallback((command: TranscriptScrollCommand, source?: TranscriptScrollDiagnosticSource) => {
@@ -397,7 +414,9 @@ export function useTranscriptScrollArbiter({
   const setMode = useCallback((mode: TranscriptScrollMode, _reason?: string) => {
     switch (mode) {
       case "tail-follow": reset(); break;
-      case "manual": dispatch({ type: "MANUAL_READING" }); break;
+      case "manual":
+        dispatch({ type: "MANUAL_READING" });
+        break;
       case "user-resize": dispatch({ type: "USER_RESIZE_BEGIN" }); break;
       case "selection": dispatch({ type: "SELECTION_BEGIN" }); break;
       case "restoring": dispatch({ type: "PROGRAMMATIC_BEGIN" }); break;
@@ -457,15 +476,65 @@ export function useTranscriptScrollArbiter({
   }, [tailSettle]);
 
   const itemSize = useCallback<SizeFunction>((element, field) => {
+    // Native scrollbar dragging may keep the current Virtuoso size tree. Wheel
+    // and touch reading measure the current logical row normally; anchor
+    // compensation handles the settled layout delta instead of freezing a
+    // recycled DOM node to an estimate.
     const frozen = nativeScrollbarDragRef.current || nativeScrollbarDragging;
+    if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS && field === "offsetHeight" && stateRef.current.readerIntent) {
+      element.dataset.transcriptReaderFreeze = "true";
+    }
     const measured = measureTranscriptVirtuosoItem(element, field, frozen);
+    const pendingGeometry = field === "offsetHeight" && hasPendingTranscriptGeometry(element);
+    if (field === "offsetHeight" && frozen) {
+      const estimate = Number.parseFloat(element.dataset.transcriptEstimate ?? element.dataset.knownSize ?? element.dataset.staticEstimate ?? "");
+      if (Number.isFinite(estimate) && estimate > 0) {
+        // Native thumb dragging owns the physical track. Keep the currently
+        // measured row box stable for that drag only; wheel/touch reading does
+        // not enter this branch and never freezes a recycled row.
+        element.style.height = `${estimate}px`;
+        element.dataset.transcriptGeometryFrozen = "true";
+      }
+    } else if (field === "offsetHeight" && element.dataset.transcriptGeometryFrozen === "true") {
+      element.style.removeProperty("height");
+      delete element.dataset.transcriptGeometryFrozen;
+    }
+    if (field === "offsetHeight") {
+      const currentRowKey = element.dataset.rowKey;
+      if (currentRowKey) {
+        const previousRowKey = measuredRowKeyRef.current.get(element);
+        if (previousRowKey !== undefined && previousRowKey !== currentRowKey) element.dataset.transcriptRecycled = "true";
+        else delete element.dataset.transcriptRecycled;
+        measuredRowKeyRef.current.set(element, currentRowKey);
+      }
+    }
     if (CAPTURE_TRANSCRIPT_SCROLL_DIAGNOSTICS) noteTranscriptRowMeasurement(element, field, measured);
-    if (!frozen && field === "offsetHeight") {
+    if (!frozen && !pendingGeometry && field === "offsetHeight") {
       const rowKey = element.dataset.rowKey;
       const kind = element.dataset.rowKind as TranscriptRow["kind"] | undefined;
-      const width = Math.round(element.getBoundingClientRect().width);
-      if (rowKey && kind && measured > 0 && width > 0) {
-        onItemMeasuredRef.current?.(rowKey, kind, measured, width, element.dataset.layoutVersion);
+      const stateElement = element.querySelector<HTMLElement>("[data-transcript-layout-variant]");
+      const rawVariant = stateElement?.dataset.transcriptLayoutVariant ?? element.dataset.transcriptLayoutVariant;
+      const width = Number.parseFloat(element.dataset.transcriptContentWidth ?? "") || element.getBoundingClientRect().width;
+      const rawSource = element.dataset.estimateSource;
+      const estimateSource = rawSource === "exact" || rawSource === "calibrated" || rawSource === "static"
+        ? rawSource
+        : undefined;
+      const staticEstimate = Number.parseFloat(element.dataset.staticEstimate ?? "");
+      const staticEstimateMatchesState = rawVariant === element.dataset.transcriptLayoutVariant;
+      if (rowKey && kind && isTranscriptRowLayoutVariant(rawVariant) && measured > 0 && width > 0) {
+        const recycled = element.dataset.transcriptRecycled === "true";
+        if (!recycled) {
+          onItemMeasuredRef.current?.(
+            rowKey,
+            kind,
+            rawVariant,
+            measured,
+            width,
+            element.dataset.layoutVersion,
+            estimateSource,
+            staticEstimateMatchesState && Number.isFinite(staticEstimate) ? staticEstimate : undefined,
+          );
+        }
       }
     }
     return measured;
@@ -500,14 +569,21 @@ export function useTranscriptScrollArbiter({
     ) {
       deliverScroll(element);
     }
-    if (readerDeltaY !== undefined) readerExtent.arm(readerDeltaY);
+    if (readerDeltaY !== undefined) {
+      // A downward reader gesture at (or close to) the physical bottom has no
+      // extent above it to reverse onto. Arming the guard here would let a
+      // later extent rebound snap the viewport back up and fight the wheel.
+      const nearBottom = element
+        && nativeTranscriptDistanceFromBottom(element) < MIN_REVERSE_JUMP_PX;
+      if (readerDeltaY <= 0 || !nearBottom) readerExtent.arm(readerDeltaY);
+    }
     armReaderIntentIdle();
   }, [armReaderIntentIdle, deliverScroll, dispatch, readerExtent]);
   const followGrowingTail = useCallback(() => {
     tailSettle.noteLayoutTransient();
     readerExtent.observe();
     const pinnedTop = scrollRef.current && pinTranscriptTailAfterViewportShrink(scrollRef.current, followGeometryRef.current, pinnedRef.current);
-    if (pinnedTop !== null) noteTranscriptScrollWrite({ owner: "tail-follow", kind: "scrollTo", top: pinnedTop });
+    if (pinnedTop !== null) tailSettle.scrollToTail("auto");
     if (followFrameRef.current !== null) return;
     const generation = generationRef.current;
     const scrollElement = scrollRef.current;

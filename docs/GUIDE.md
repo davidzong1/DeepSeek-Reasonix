@@ -409,7 +409,16 @@ usually needs only the provider API key: the key value is stored in Reasonix hom
 environment-variable name, context window, vision model metadata, proxy bypass
 for China-only endpoints, MiniMax `reasoning_split`, GLM/MiniMax thinking
 heuristics, Anthropic-compatible Bearer auth where needed, Ollama Cloud
-max-effort support, and OpenCode Go per-model reasoning overrides. The dedicated
+max-effort support, and OpenCode Go per-model reasoning overrides. Official DeepSeek Anthropic, Responses, and Chat Completions catalogs also
+include `deepseek-v4-flash-vision-exp`. In Settings, mark that SKU for image
+input with the same checkbox used by other providers, then select it. Composer
+and `@` user images are sent as official visual input using the three documented
+shapes: inline base64 `data:` URLs for local files, `http(s)` image URLs as-is,
+and Files API `file-api-` ids (local images over 32 MiB on official DeepSeek are
+uploaded automatically). Chat Completions uses `image_url` or `file`, Anthropic
+uses `image`+`source.base64|url|file`, and Responses uses `input_image`.
+Flash and Pro stay text-only on the wire even if checked, and tool screenshots
+are not forwarded as image parts. The vision SKU uses the Flash rate card. The dedicated
 OpenCode Go DeepSeek Anthropic and DeepSeek Responses presets expose the verified
 Flash routes and enable provider-side `web_search` by default; the Responses
 variant uses stateless context replay. The existing mixed OpenCode Go Anthropic
@@ -589,7 +598,7 @@ Composer shortcuts:
 | `Cmd+Z` on macOS, `Ctrl+Z` on Windows/Linux | Undoes the latest composer edit | Native typing stays in the WebView history; Reasonix-managed paste, cut, folded blocks, and structured tokens are restored as complete transactions. |
 | `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | On Windows/Linux, `Ctrl+Y` is also accepted after the YOLO shortcut has been rebound. |
 | `Cmd+Y` / `Ctrl+Y` (default) | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. The current binding is shown in **Settings → Shortcuts**. |
-| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. |
+| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. Official DeepSeek Flash/Pro stay text-only; switch to `deepseek-v4-flash-vision-exp` to send those images. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
 | `Esc` while a turn is running | Cancels the running turn | If the turn has not produced a response yet, the draft is restored. |
 
@@ -1403,19 +1412,14 @@ Reasonix uses **fact-driven execution**. Ordinary requests always enter the
 executor. There is no automatic task mode. The one session role is the quality floor: standard (default) or delivery; facts can still raise it. Planner,
 Goal, permission, sandbox, and the task contract are independent states.
 
-For an explicit write request, Standard gives the executor up to 12 bounded
-follow-up turns when no successful mutation has been observed, when a
-`todo_write` created during the current task still has unfinished items after a
-mutation, or when the assistant explicitly promises another implementation
-action after a mutation without creating a task todo. New host-observed progress
-resets the stall counter; two consecutive follow-ups without new progress pause
-the task. Repeating the same read, command, result, or prose does not qualify as
-progress. Historical canonical todos remain visible but do not block a new
-ordinary task, and a completed or cleared current-task todo remains authoritative.
-Standard still treats verification, review, and sign-off gaps as completion
-attention rather than Delivery-strength automatic closure. If the bounded
-follow-ups are exhausted, Reasonix pauses with a recoverable "Task is not
-complete" result and preserves the current evidence for `/continue-checks`.
+Standard and Delivery stop after the visible model turn. Readiness gaps are
+reported as a recoverable result and never trigger a hidden follow-up request.
+Delivery exposes the existing `Continue checks` action; the user must activate
+it before another recovery turn starts. Standard keeps verification, review and
+sign-off gaps as completion attention, while Goal and approved Plan retain their
+own state-machine continuation. Historical canonical todos remain visible, and
+provider-level stream/truncation recovery remains independent of final-readiness
+recovery.
 
 Every task shares the same provider-visible core tool surface: direct
 read/bash/edit/write, background-shell lifecycle tools, `ask`/`compress` when
