@@ -311,7 +311,8 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 
 // rosterHelp is the roster's single help block: one line while the panel is
 // wide enough, word-wrapped at the edge when it is not.
-const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · q quit"
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · " +
+	teamExitHint + " · q quit"
 
 // renderRoster renders the compact member list: one row per slot with the
 // member id and its role, leader marker, and lifecycle status. The agent
@@ -395,7 +396,7 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int
 		}
 	} else {
 		b.WriteString(dim("↑/↓ field · Enter/Space edit · s save · 🌟 t Enter_session · a/d member") + "\n")
-		b.WriteString(dim("b bind · l leader-mode · Esc back · q quit"))
+		b.WriteString(dim("b bind · l leader-mode · Esc back · " + teamExitHint + " · q quit"))
 	}
 }
 
@@ -495,7 +496,7 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		}
 		b.WriteString(padColumn(l, col) + dim("│ ") + r + "\n")
 	}
-	b.WriteString(dim("Type below to message this member · Ctrl+Up/Down switch member · Esc hide panel"))
+	b.WriteString(dim("Type below to message this member · Ctrl+Up/Down switch member · Esc hide panel · " + teamExitHint))
 	return choicePanelStyle.Width(w).Render(b.String())
 }
 

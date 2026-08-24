@@ -387,13 +387,14 @@ func TestTeamRosterHelpWrapsAtEdge(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
-	const help = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · q quit"
+	// The production string, never a copy of it: a copy drifts and then pins
+	// nothing but itself.
 	m := openRosterW(t, 160)
-	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, help) {
+	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, rosterHelp) {
 		t.Fatalf("a wide panel should keep the help on one line, got:\n%s", got)
 	}
 	m = openRosterW(t, 40)
-	if got := ansi.Strip(m.renderTeamPicker()); strings.Contains(got, help) {
+	if got := ansi.Strip(m.renderTeamPicker()); strings.Contains(got, rosterHelp) {
 		t.Fatalf("a narrow panel should wrap the help at the edge, got:\n%s", got)
 	}
 }

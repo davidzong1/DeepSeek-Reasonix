@@ -200,7 +200,19 @@ func (m *chatTUI) teamSessionBound() bool {
 // everything. A bound member session consumes only the reserved keys — member
 // switch and esc — so every other key falls through to the composer, which is
 // the whole point: one composer, one transcript, whichever backend is bound.
+// teamExitKey is reserved on every screen: it leaves the team outright. With no
+// overlay open nothing is consumed, so the keyboard is never claimed by a team UI
+// that is not there.
 func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if m.teamPick == nil {
+		return m, nil, false
+	}
+	// Checked before every state owner, so no depth — an open field, an armed
+	// confirmation — can swallow the one key that leaves.
+	if msg.String() == teamExitKey {
+		m.exitTeam()
+		return m, nil, true
+	}
 	if !m.teamSessionBound() {
 		next, cmd := m.handleTeamPickerKey(msg)
 		return next, cmd, true
@@ -257,6 +269,9 @@ func (m *chatTUI) runMemberModelSubcommand(input string) bool {
 // reassembles it. The old backend is retired first: its provider, credential and
 // role prompt were baked in at assembly, so only a rebuild picks up the change.
 func (m *chatTUI) rebindMemberAgentUser(ref string) {
+	if !m.teamSessionBound() {
+		return // the session closed under an open picker: no member left to rebind
+	}
 	p := m.teamPick
 	member := p.session.current
 	if m.runtimeSwitchBusy() {

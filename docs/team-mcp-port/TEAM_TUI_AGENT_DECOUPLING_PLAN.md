@@ -1,6 +1,6 @@
 # 改造方案 —— TUI 与成员 Agent 解耦
 
-> 状态：**已拍板；R0-R5 全部节点完成（R4.4 部分、R3.2 两项降级见 §7）；R7 会话面板默认隐藏已完成，2026-08-23**。本文档只描述改造方向、落点与节点，不描述任何未实施的东西为已实现。
+> 状态：**已拍板；R0-R5 全部节点完成（R4.4 部分、R3.2 两项降级见 §7）；R7 会话面板默认隐藏已完成，2026-08-23；R8 一键退出团队已完成，2026-08-24**。本文档只描述改造方向、落点与节点，不描述任何未实施的东西为已实现。
 > 权威优先级：用户拍板 > `docs/team-mcp-port/TASK.md` > 本文档 > 实现代码注释。
 > 关联：`TEAM_SESSION_TECHNICAL_ROUTE.md`（现行实现的路线，其 §11 P4 部分被本方案取代）、
 > `TEAM_MEMBER_POOL_AGENT_CONFIG_ROUTE.md`（成员池/凭据，本方案的输入，不改）。
@@ -236,6 +236,22 @@ make lint
 | R7.1 | `sessionState.panel` + `[ TEAM ]` 绑定态切换 + `esc` 分层退出 |
 | R7.2 | 绑定态归还鼠标捕获（否则按钮点不到）与图片粘贴 |
 
+### R8 —— 一键退出团队（用户优化任务 2026-08-24）
+
+诉求：在团队成员管理界面加一个退出 TEAM 的接口，用快捷键直接退出团队、回到初始会话。
+现状是 `esc` 逐层回退：绑定态要 面板 → 会话 → roster → 团队列表 四次 `esc` 才回到普通聊天，
+而**退出团队** 与 **回退一层** 是两个不同意图，不该共用一个键。
+
+落法：新增保留键 `ctrl+t`（`teamExitKey`），在 `handleTeamKey` 里**先于所有状态归属者**判定，
+因此任何深度——打开的字段、已武装的删除确认、池屏、三级 step-down——都不会把它吞掉。
+`exitTeam()` 是唯一拆卸路径：解绑成员（归还 `m.ambient`）→ 收掉成员 model picker → 落 overlay →
+重钉 tail。`esc` 的分层语义完全不动。
+
+| 节点 | 内容 |
+|---|---|
+| R8.1 | `teamExitKey`/`exitTeam` + 三处帮助行提示（roster / 成员编辑器 / 会话面板脚注） |
+| R8.2 | 顺带闭合的三个缺陷：overlay 关闭不解绑、悬空成员 picker 的 nil deref、`handleTeamKey` 无 overlay 谎报 consumed |
+
 ---
 
 ## 6. 缺陷 → 节点映射
@@ -298,6 +314,8 @@ make lint
 | R6 | 六项工程门禁 + `-race` + `make lint` 全过 | 全部 | 部分（R0 范围内已过） | R0 收尾实跑：`gofmt -l` clean · `go vet ./...` exit 0 · `CGO_ENABLED=0 go build ./...` OK · `go test ./...` **全量 exit 0 零失败** · `go test ./internal/team/... ./internal/cli/ -race` 全绿 · `make lint` **0 issues** · repolint clean(1275)。R1 起每节点重跑 |
 | R7.1 | 会话面板默认隐藏，`[ TEAM ]` 切换 | R3.2 | **已完成** | `sessionState.panel`（默认 false，`closeSession` 归零即自动复位）+ `setSessionPanel`（切换时置 `forceGotoBottom`，否则面板收起后 viewport 保留旧 offset，最新输出被顶出屏外）+ `sessionPanelHidden`；`renderTeamPicker` 在 `session.active && !panel` 时返回 `""`，行数核算（`bottomRows`）与布局因此自动跟随。`[ TEAM ]` 在绑定态改为原地切换面板而非重进团队（`handleTeamStatusClick` 新增一条 case，返回 nil cmd）；`esc` 分层退出（有面板先收面板，无面板才关会话——离开团队是再一次 esc）。面板脚注 `Esc back` → `Esc hide panel`。实测 110×20：隐藏时 `bottomRows=4 / viewport=16`，显示时 `12 / 8`，两态帧高恒为 20 行 |
 | R7.2 | 绑定态归还鼠标捕获与图片粘贴 | R7.1 | **已完成** | `View()` 的 `MouseMode` 与图片粘贴守卫从 `m.teamPick != nil` 改为 `m.teamOverlayModal()`。前者是**阻断 R3 的真缺陷**：overlay 一开就 `MouseModeNone`，进团队后状态栏成员按钮与 `[ TEAM ]` 在真实终端里根本收不到点击（R3 的测试直调 `handleTeamStatusClick`，结构上测不到）。后者与 R2.3 修的粘贴守卫同族：绑定态 composer 是成员输入，图片路径必须落进去。已用真实 `Update(tea.MouseClickMsg{...})` 双击验证整链 |
+| R8.1 | `ctrl+t` 一键退出团队 + 帮助行提示 | R7.1 | **已完成** | `teamExitKey = "ctrl+t"` 与 `teamExitHint = "Ctrl+T exit team"` 同处声明（键与文案不会各改一半）；`exitTeam()` 收口拆卸：`closeSession()`（解绑归还 `m.ambient`）→ 清成员 model picker → `closeTeamOverlay()` + `teamPick = nil` → 置 `forceGotoBottom`（overlay 的行回到 transcript，不重钉则最新输出被顶出屏外）。判定放在 `handleTeamKey` **最前**，故任何深度都能退。提示落 roster 帮助行、成员编辑器第二行、会话面板脚注三处，均由 `teamExitHint` 常量拼接。`ctrl+t` 在 `internal/` 零占用；它只在 overlay 打开时遮蔽 textarea 的 transpose 绑定。实测 110×20：绑定态隐藏 `bottomRows=4/viewport=16`、显示面板 `12/8`、roster `8/12`，`ctrl+t` 后一律回到 `4/16` 且状态行只剩 `[ TEAM ]`，帧高恒 20。测试 4 个（9 个屏幕子用例逐一退出含三种已武装写状态、绑定态解绑+后端存活+成员 transcript 不残留、picker 随团队关闭且悬空确认不 panic、提示可见 + 无 overlay 时不消费）。**变异探针**：把 `teamExitKey` 改成未绑定值 → 11 处失败；保留 overlay 不落 → 12 处失败 |
+| R8.2 | 三个顺带闭合的缺陷 | R8.1 | **已完成** | ① overlay 关闭路径（`esc`/`q` 从团队列表）此前只 `teamPick = nil` 而不解绑，改为共用 `exitTeam()`——原先仅因"到团队列表必然已 `closeSession`"而侥幸安全，一键退出会直接踩中，后果是 `m.ctrl` 停在成员后端且再无 overlay 可退；② `rebindMemberAgentUser` 加 `teamSessionBound()` 门禁：成员 model picker 打开时会话若已关闭，确认将 `p.session.current` 取空乃至 `p == nil` **nil deref**（今日经 esc-esc-enter 即可复现），且 `exitTeam` 一并收掉该 picker；③ `handleTeamKey` 在 `teamPick == nil` 时返回 `consumed = false`——原先无条件 `true`，只靠调用点 `chat_tui.go:1385` 的 nil 守卫才没吞键，是留给下一个调用方的陷阱 |
 
 ---
 
@@ -326,7 +344,10 @@ make lint
 | 20 | 成员后端 `Close()` 在 `Update` 内同步执行 | `teamBackends` 的退役路径（超限淘汰、`release`、`releaseTeam`）在 Update 处理器里同步调 `Close()`，而 `/model` 切换那条路径**故意**把 `oldCtrl.Close()` 延后成一个 `tea.Cmd`（`model.go:70-100` 注释：Close 会跑 SessionEnd hook 与杀插件子进程，从 goroutine 里做会破坏 bubbletea 的 raw mode）。目前未观察到问题，但若淘汰/清理时出现终端残留，应照 `modelSwitchMsg` 的形状把 Close 延后 |
 | 18 | R2.3 换掉的按键（旧测试据此更新） | 成员切换 `up`/`down`/`j` → **`ctrl+up`/`ctrl+down`**（绑定态方向键归 transcript、字母归 composer）；`r` 重启入口随 `restartSessionTarget` 一并删除。`chat_tui_team_session_composer_test.go`（9 个迷你 composer 测试）与 `chat_tui_team_session_events_test.go`（8 个 legacy 事件/订阅测试）已删除——覆盖点由 `chat_tui_team_switch_test.go` 与 `chat_tui_team_keyboard_test.go` 的新路径测试承接 |
 | 21 | 「overlay 是否在」不等于「overlay 是否模态」 | 绑定态下 overlay 存在但**不模态**（composer 是成员输入）。凡按 `m.teamPick != nil` 分流的地方都会在绑定态误判：R2.3 的粘贴守卫、R7.2 的 `MouseMode` 与图片粘贴，三处同族。**判据一律用 `m.teamOverlayModal()`**；新增任何 overlay 分流点时同理。`MouseMode` 那处尤其隐蔽——它不报错，只是让整个鼠标层静默失效 |
-| 22 | 假通过的测试比没有测试更坏 | `TestTeamButtonSessionKeepsKeysFromChatComposer` 断言"会话键绝不到达 composer"，与 R2.3 的设计**正好相反**，却一直绿：`tea.KeyPressMsg{Code: 'x'}` 不带 `Text` 字段，textarea 收到也不插入任何字符——它测的是构造函数的空缺，不是产品行为。已改写为 `TestTeamButtonSessionRoutesTypingToTheComposer`（带 `Text` 且经 `m.Update` 全链）。**写 TUI 键盘测试必须填 `Text`**，否则断言恒真 |
+| 22 | 假通过的测试比没有测试更坏 | `TestTeamButtonSessionKeepsKeysFromChatComposer` 断言"会话键绝不到达 composer"，与 R2.3 的设计**正好相反**，却一直绿：`tea.KeyPressMsg{Code: 'x'}` 不带 `Text` 字段，textarea 收到也不插入任何字符——它测的是构造函数的空缺，不是产品行为。已改写为 `TestTeamButtonSessionRoutesTypingToTheComposer`（带 `Text` 且经 `m.Update` 全链）。**写 TUI 键盘测试必须填 `Text`**，否则断言恒真。反向陷阱同样存在：`{Code:'t', Mod:ModCtrl, Text:"t"}` 的 `String()` 是 `"t"` 而非 `"ctrl+t"`，和弦测试**不能**填 `Text` |
+| 23 | **repolint 门禁在 HEAD 已红，非本轮引入** | `make lint` 的 repolint 段当前失败：`boot.go`（complexity 265/264、file-size 2088/2078、function-size 1732/1726）、`chat_tui.go`（file-size 4701/4684、function-size 1301/1299）、`shell_completion.go`（118/117）、`chat_tui_test.go`（3598/3592）、repo test-file-size 总量 69387/69381。**四个文件本轮一处未动**；已用 `git stash` 前后两次实跑对比，findings 数字逐字相同 → 本轮增量为 0。成因：合并 `fa0621c71` 使 `boot.go` +40 行而 baseline 未随之刷新（`baseline.json` 最后一次刷新在 `3ebf6126f`）。按 REASONIX.md「不得加宽 baseline 以落地改动」，**本轮不执行 `-update`**；该刷新应由造成漂移的合并单独承担并在其 PR 说明 |
+| 24 | 一键退出必须先于所有状态归属者判定 | 团队 overlay 里有五类"占住整个键盘"的状态（写状态、池屏、step-down、打开的字段、绑定态 composer）。退出键若排在它们之后，**恰好在用户最需要它的深度失效**——被吞掉且无任何提示。`exitTeam` 的判定因此放在 `handleTeamKey` 第一行，代价是 `ctrl+t` 在 overlay 打开期间遮蔽 textarea 的 transpose 绑定（overlay 之外不受影响）。新增任何"全局逃逸键"时同理 |
+| 25 | 面板隐藏态没有任何提示面 | R7 之后绑定态默认不渲染面板，于是会话里唯一的帮助文本（面板脚注）也默认不可见——`ctrl+t` 在该状态下不可发现，发现路径是 `[ TEAM ]` → 面板 → 脚注。未做：把提示上状态行（那一行宽度已被成员按钮条占用，封顶 6 个）或写进 composer placeholder（涉 i18n）。若用户反馈找不到，优先做状态行 |
 
 ---
 

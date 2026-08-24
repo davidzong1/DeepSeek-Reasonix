@@ -119,6 +119,34 @@ func (m *chatTUI) closeSession() {
 	m.unbindTeamMember()
 }
 
+// teamExitKey leaves the team from any overlay screen; teamExitHint names it in
+// the help lines, so key and label cannot drift apart. Ctrl+T shadows the
+// composer's transpose binding, but only while the overlay is up — a one-key way
+// out of the team is worth more there.
+const (
+	teamExitKey  = "ctrl+t"
+	teamExitHint = "Ctrl+T exit team"
+)
+
+// exitTeam leaves the whole team UI in one step, from any depth: the bound member
+// is unbound too, so the window is back on the chat's own backend and its
+// history. Esc still unwinds one layer at a time; this is the way straight out.
+// Member backends survive, as they do across any overlay close.
+func (m *chatTUI) exitTeam() {
+	if m.teamPick == nil {
+		return
+	}
+	m.closeSession()
+	if m.quickPick != nil && m.quickPick.kind == quickPickerMemberAgentUser {
+		m.quickPick = nil // it lists the bound member's models: it leaves with the team
+	}
+	m.teamPick.closeTeamOverlay()
+	m.teamPick = nil
+	// The overlay's rows go back to the transcript, so the tail is re-pinned:
+	// keeping the old offset would leave the newest output off-screen.
+	m.forceGotoBottom = true
+}
+
 // sessionSlot returns the current member's persisted slot for the session
 // window's info lines.
 func (p *teamPicker) sessionSlot() (team.MemberSlot, bool) {

@@ -440,8 +440,7 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if closed := handleTeamSharedKey(p, view, msg); closed {
-		p.closeTeamOverlay()
-		m.teamPick = nil
+		m.exitTeam()
 	}
 	return m, cmd
 }
