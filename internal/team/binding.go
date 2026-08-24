@@ -124,17 +124,34 @@ func memberSlot(doc *TeamDoc, teamIdx int, memberID string) (*MemberSlot, error)
 	return nil, ErrMemberNotFound
 }
 
-// validateAgentType refuses empty-after-trim and control characters; the
-// claude/codex whitelist itself is enforced by the caller (§7.5).
+// AgentTypeClaude and AgentTypeCodex are the two launch types that pass without
+// review. Anything else must be a plain command word (§7.5).
+const (
+	AgentTypeClaude = "claude"
+	AgentTypeCodex  = "codex"
+)
+
+// agentTypeMaxLen bounds a custom launch type so a pasted command line cannot
+// become one.
+const agentTypeMaxLen = 32
+
+// validateAgentType enforces the §7.5 whitelist: empty inherits, claude and
+// codex pass, and anything else must be one plain command word — no whitespace,
+// path separators, or shell metacharacters, so a launch type can never carry an
+// argument list or a redirection into whatever eventually spawns it.
 func validateAgentType(t string) error {
-	if t == "" {
+	switch t {
+	case "", AgentTypeClaude, AgentTypeCodex:
 		return nil
 	}
-	if strings.TrimSpace(t) != t {
+	if len(t) > agentTypeMaxLen || !utf8.ValidString(t) {
 		return ErrInvalidAgent
 	}
 	for _, r := range t {
-		if r < utf8.RuneSelf && r < 0x20 {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
 			return ErrInvalidAgent
 		}
 	}

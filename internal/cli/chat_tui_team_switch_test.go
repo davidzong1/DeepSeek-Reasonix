@@ -30,6 +30,7 @@ type stubBackend struct {
 	control.SessionAPI
 	label   string
 	history []provider.Message
+	closed  *int // nil when the test does not care about teardown
 }
 
 func (s stubBackend) Label() string               { return s.label }
@@ -39,6 +40,14 @@ func (s stubBackend) Commands() []command.Command { return nil }
 func (s stubBackend) SlashSkills() []skill.Skill  { return nil }
 func (s stubBackend) Host() *plugin.Host          { return nil }
 func (s stubBackend) SessionPath() string         { return "" }
+
+// Close is what retiring a backend calls: it releases the member's session lease
+// in production, so a test that retires one must be able to observe it.
+func (s stubBackend) Close() {
+	if s.closed != nil {
+		*s.closed++
+	}
+}
 
 // RuntimeStatus is read by runtimeSwitchBusy on the bound backend, so a switch
 // away from a member consults the member it is leaving. Idle: nothing in flight.
@@ -250,5 +259,65 @@ func TestClosingSessionHandsWindowBackToChat(t *testing.T) {
 	m.switchTeamMember("lead")
 	if got := m.ctrl.Label(); got != "lead" {
 		t.Errorf("re-entering must rebind the member, got %q", got)
+	}
+}
+
+// TestDestructiveOpsRetireMemberBackends pins the §11.6 gate on its new owner:
+// before a team's contexts are cleared — member deletion, leader step-down, team
+// deletion — every assembled member backend of that team is retired, so nothing
+// keeps writing history into a tree that is being removed. Other teams' backends
+// are untouched.
+func TestDestructiveOpsRetireMemberBackends(t *testing.T) {
+	closed := 0
+	writeTeamFixture(t, twoMemberTeam())
+	m := openTeamOverlay(t)
+	m.memberEvents = make(chan memberEvent, 8)
+	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		return stubBackend{label: b.MemberID, closed: &closed}, nil
+	}, 8)
+	m.teamPick.backends = m.teamBackends
+	for _, b := range []team.MemberBinding{
+		{Team: "alpha", MemberID: "lead"},
+		{Team: "alpha", MemberID: "alice"},
+		{Team: "other", MemberID: "lead"},
+	} {
+		if _, err := m.teamBackends.bind(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !m.teamPick.stopTeamBeforeClear("alpha") {
+		t.Fatal("the clear gate must allow the operation once backends are retired")
+	}
+	if closed != 2 {
+		t.Errorf("retiring alpha must close both its backends, closed = %d", closed)
+	}
+	for _, id := range []string{"lead", "alice"} {
+		if _, ok := m.teamBackends.bound("alpha", id); ok {
+			t.Errorf("alpha/%s must be retired before a destructive op", id)
+		}
+	}
+	if _, ok := m.teamBackends.bound("other", "lead"); !ok {
+		t.Error("another team's backend must survive")
+	}
+	// A team with nothing assembled is simply allowed through.
+	if !m.teamPick.stopTeamBeforeClear("nobody") {
+		t.Error("an unknown team must not block the operation")
+	}
+}
+
+// TestClosingOverlayKeepsMemberBackends pins the deliberate asymmetry: closing
+// the overlay does NOT retire backends. They hold each member's session lease and
+// any in-flight turn, so reopening [ TEAM ] resumes them instead of rebuilding —
+// only the cap or a destructive op retires one.
+func TestClosingOverlayKeepsMemberBackends(t *testing.T) {
+	m := overlayWithBackends(t, nil)
+	m.teamPick.backends = m.teamBackends
+	if _, err := m.teamBackends.bind(team.MemberBinding{Team: "alpha", MemberID: "lead"}); err != nil {
+		t.Fatal(err)
+	}
+	m.teamPick.closeTeamOverlay()
+	if _, ok := m.teamBackends.bound("alpha", "lead"); !ok {
+		t.Error("closing the overlay must not retire member backends")
 	}
 }

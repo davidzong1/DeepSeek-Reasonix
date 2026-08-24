@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/team"
-	"reasonix/internal/team/agentruntime"
 	"reasonix/internal/team/tui"
 )
 
@@ -19,37 +18,86 @@ import (
 // across fonts and locales. Styling is added only when the button is rendered.
 const teamButtonText = "[ TEAM ]"
 
-// appendTeamButton adds the team entry point to the interaction status line.
-// A terminal TUI has no native button widget, so the visible label and mouse
-// hit-testing are implemented explicitly.
+// appendTeamButton adds the team entry point to the interaction status line,
+// followed by one button per member of the open team so a click binds that
+// member's Agent. The bound member is highlighted; the rest are dim. A terminal
+// TUI has no native button widget, so labels and hit-testing are explicit.
 func (m chatTUI) appendTeamButton(status string) string {
-	button := accent(teamButtonText)
-	if strings.TrimSpace(status) == "" {
-		return button
+	var row strings.Builder
+	row.WriteString(accent(teamButtonText))
+	for _, id := range m.statusMemberIDs() {
+		label := memberButtonText(id)
+		if id == m.boundMember() {
+			label = accent(label)
+		} else {
+			label = dim(label)
+		}
+		row.WriteString(" " + label)
 	}
-	return status + " · " + button
+	if strings.TrimSpace(status) == "" {
+		return row.String()
+	}
+	return status + " · " + row.String()
 }
 
-// teamButtonHit reports whether a terminal mouse coordinate falls inside the
-// rendered team button. It inspects the final frame because the responsive
-// status layout may move the button onto another row on narrow terminals.
-func (m chatTUI) teamButtonHit(x, y int) bool {
-	if x < 0 || y < 0 || m.width <= 0 || m.height <= 0 {
-		return false
-	}
+// memberButtonText brackets a member id so its status-line hit box is
+// unambiguous, matching the [ TEAM ] entry's shape.
+func memberButtonText(id string) string { return "[ " + id + " ]" }
 
+// statusMemberIDs is the member row the status line offers: the open team's
+// roster, empty when no team overlay is up. Bounded by statusMemberButtonLimit
+// so a large team cannot push the rest of the status line off a narrow terminal.
+func (m chatTUI) statusMemberIDs() []string {
+	if m.teamPick == nil {
+		return nil
+	}
+	ids := m.teamPick.session.members
+	if len(ids) == 0 {
+		for _, member := range m.teamPick.model.Members() {
+			ids = append(ids, member.ID)
+		}
+	}
+	if len(ids) > statusMemberButtonLimit {
+		ids = ids[:statusMemberButtonLimit]
+	}
+	return ids
+}
+
+// statusMemberButtonLimit caps the member button row. Beyond it the session's own
+// roster column is the way to reach a member, so the status line stays readable.
+const statusMemberButtonLimit = 6
+
+// teamStatusButtonHit reports which status-line button a click landed on: a
+// member id, or the team entry itself. It inspects the final frame because the
+// responsive status layout may move the row onto another line on narrow
+// terminals.
+func (m chatTUI) teamStatusButtonHit(x, y int) (member string, teamEntry bool) {
+	if x < 0 || y < 0 || m.width <= 0 || m.height <= 0 {
+		return "", false
+	}
 	lines := strings.Split(m.View().Content, "\n")
 	if y >= len(lines) {
-		return false
+		return "", false
 	}
-
 	line := ansi.Strip(lines[y])
-	before, _, found := strings.Cut(line, teamButtonText)
+	for _, id := range m.statusMemberIDs() {
+		if labelHit(line, memberButtonText(id), x) {
+			return id, false
+		}
+	}
+	return "", labelHit(line, teamButtonText, x)
+}
+
+// labelHit reports whether column x falls inside label's first occurrence on a
+// stripped status line. Width is measured in terminal cells, so CJK member ids
+// and styled neighbours do not shift the hit box.
+func labelHit(line, label string, x int) bool {
+	before, _, found := strings.Cut(line, label)
 	if !found {
 		return false
 	}
 	start := visibleWidth(before)
-	return x >= start && x < start+visibleWidth(teamButtonText)
+	return x >= start && x < start+visibleWidth(label)
 }
 
 // teamInputKind is the cli-owned write state of the team overlay (§3.4). The
@@ -78,7 +126,8 @@ type teamPicker struct {
 	errMsg     string                 // unreadable registry; "" when healthy
 	store      *team.TeamStore        // storage seam; nil when the project root is unusable
 	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
-	runtime    *agentruntime.Registry // member runtime seam (§11.3); nil when the seam is unavailable
+	backends   *teamBackends          // member Agent backends; nil when the seam is unavailable
+	sessionDir string                 // where member session files live; "" when unknown
 	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
 	kind       teamInputKind          // transient write state; teamInputNone when idle
 	buf        string                 // team, member, or field value being typed
@@ -106,10 +155,13 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			sessions, err = team.NewTeamSessionStore(cwd)
 		}
 		if err == nil {
-			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions,
-				runtime: agentruntime.NewRegistry(sessions)}
+			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
 			m.teamPick = p
 			m.bindTeamBackends(store)
+			p.backends = m.teamBackends
+			if m.ctrl != nil {
+				p.sessionDir = m.ctrl.SessionDir()
+			}
 			if err := p.reload(""); err != nil {
 				p.errMsg = pickerErrMsg(err)
 				return nil
@@ -292,18 +344,14 @@ func (p *teamPicker) deleteMember() error {
 	return p.reload("")
 }
 
-// stopTeamBeforeClear stops every member runtime of the team before a
-// destructive operation — k step-down, member deletion, team cleanup (§11.6):
-// no loop may keep writing context while the team's contexts are being
-// cleared. A stop failure refuses the operation with a message; half-cleanup
-// is worse than a refusal.
+// stopTeamBeforeClear retires every assembled member backend of the team before
+// a destructive operation — k step-down, member deletion, team cleanup (§11.6):
+// no member may keep writing history while the team's contexts are being
+// cleared. Retiring closes each backend, which releases its session lease, so
+// there is no failure mode left to refuse on.
 func (p *teamPicker) stopTeamBeforeClear(teamName string) bool {
-	if p.runtime == nil {
-		return true
-	}
-	if err := p.runtime.StopTeam(teamName); err != nil {
-		p.errMsg = "Cannot clear — member runtimes still active: " + err.Error()
-		return false
+	if p.backends != nil {
+		p.backends.releaseTeam(teamName)
 	}
 	return true
 }
@@ -346,11 +394,6 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if p.pool.active && handlePoolKey(p, msg) {
 		return m, nil
 	}
-	if p.session.active {
-		if handled, cmd := m.handleSessionKey(msg); handled {
-			return m, cmd
-		}
-	}
 	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
 		return m, nil
 	}
@@ -385,7 +428,7 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		startTeamKey(p, view, msg.String())
 	case "t":
 		if memberListKeyAllowed(view, p) {
-			cmd = p.enterTeamSession()
+			cmd = m.enterTeamSession()
 		}
 	case "k":
 		if memberListKeyAllowed(view, p) {
@@ -403,16 +446,11 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// closeTeamOverlay tears the registry down when the overlay closes: every
-// remaining member instance — sessions of other teams included — stops and
-// its event source closes, so no loop or subscriber outlives the window
-// (§11.6). Session Esc already stopped the current team; this is the last
-// line for anything else the overlay started.
-func (p *teamPicker) closeTeamOverlay() {
-	if p.runtime != nil {
-		_ = p.runtime.Close()
-	}
-}
+// closeTeamOverlay is the overlay's teardown hook. Member backends deliberately
+// survive it: they hold each member's session lease and any in-flight turn, and
+// reopening [ TEAM ] resumes them instead of rebuilding. They are retired by the
+// cap (least recently bound) or by a destructive operation.
+func (p *teamPicker) closeTeamOverlay() {}
 
 // teamPasteKey reports whether the keypress pastes into the overlay's active
 // text buffer — the composer's Ctrl+V / shift+insert binding, for terminals
@@ -516,9 +554,6 @@ func teamPasteTarget(p *teamPicker) *string {
 	switch p.kind {
 	case teamInputAdd, teamInputAddMember:
 		return &p.buf
-	}
-	if p.session.active && p.session.input {
-		return &p.session.buf
 	}
 	if p.pool.active && p.pool.kind == poolInputEditField &&
 		poolEditFields[p.pool.edit] != team.AgentUserFieldProvider {
@@ -687,4 +722,23 @@ func (p *teamPicker) confirm(fn func() error) {
 	if err := fn(); err != nil {
 		p.errMsg = pickerErrMsg(err)
 	}
+}
+
+// handleTeamStatusClick routes a left click on the status-line button row: a
+// member button binds that member's Agent (opening the overlay first if the
+// click arrived from the plain chat), and the team entry opens the overlay, or
+// toggles the detail panel when a member is already bound — there the button is
+// the panel's own switch. It reports whether the click was on the row at all.
+func (m *chatTUI) handleTeamStatusClick(x, y int) (tea.Cmd, bool) {
+	member, teamEntry := m.teamStatusButtonHit(x, y)
+	switch {
+	case member != "":
+		return m.switchTeamMember(member), true
+	case teamEntry && m.teamSessionBound():
+		m.setSessionPanel(!m.teamPick.session.panel)
+		return nil, true
+	case teamEntry:
+		return m.onTeamButtonClick(), true
+	}
+	return nil, false
 }

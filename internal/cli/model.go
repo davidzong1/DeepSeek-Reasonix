@@ -17,6 +17,11 @@ import (
 // session to that model in place, carrying the conversation across. The actual
 // controller build runs asynchronously so it cannot block the TUI event loop.
 func (m *chatTUI) runModelSubcommand(input string) {
+	// While a team member is bound, /model changes that member's agent user
+	// rather than the chat's own model (§8-5 拍板).
+	if m.runMemberModelSubcommand(input) {
+		return
+	}
 	args := tokenizeArgs(input) // args[0] == "/model"
 	if len(args) < 2 {
 		m.openModelPicker()

@@ -49,6 +49,7 @@ func TestSessionPanelDividerStaysInOneColumn(t *testing.T) {
 	if !m.teamPick.session.active {
 		t.Fatal("the click must open the session window")
 	}
+	m.setSessionPanel(true) // the panel is opt-in; this test is about its layout
 	for _, text := range []string{"你好，这是一条中文消息", "plain ascii reply", "混合 mixed 内容"} {
 		if err := m.teamPick.sessions.AppendMessage("alpha", "lead", team.SessionMessage{
 			Kind: "agent", Text: text, TS: "2026-08-22T00:00:00Z",

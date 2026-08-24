@@ -12,8 +12,10 @@ import (
 
 // renderTeamPicker renders the team overlay: the team list, a team's member
 // roster with lifecycle status, the focused member's context view, or one of the
-// transient input/confirmation states. An unreadable registry renders its
-// message instead of a list, and an empty one the create hint.
+// transient input/confirmation states. A bound member session renders nothing
+// until [ TEAM ] reveals its panel, so the member's own history owns the frame.
+// An unreadable registry renders its message instead of a list, and an empty one
+// the create hint.
 func (m chatTUI) renderTeamPicker() string {
 	p := m.teamPick
 	if p == nil {
@@ -23,6 +25,9 @@ func (m chatTUI) renderTeamPicker() string {
 		return p.renderTeamPool(m.width)
 	}
 	if p.session.active {
+		if p.sessionPanelHidden() {
+			return ""
+		}
 		return p.renderTeamSession(m.width)
 	}
 	if p.reset.kind != leaderResetNone {
@@ -446,12 +451,11 @@ func memberProxyLabel(e *bool) string {
 	return "off"
 }
 
-// renderTeamSession renders the session window (§5/§11.4): the team name, the
-// current member's agent window with its recent history, the full roster
-// beside it for switching (unread terminal-event counts on non-current
-// members), the composer when focused, and session-scoped errors. Histories
-// stream from the TeamContextStore; an unreadable member history renders the
-// persisted slot only.
+// renderTeamSession renders the session detail panel (§5/§11.4): the team name,
+// the bound member's persisted properties, the full roster beside it for
+// switching (unread terminal-event counts on non-current members), and
+// session-scoped errors. It is opt-in — [ TEAM ] reveals it — because the bound
+// member's history is the main transcript, which this panel only shortens.
 func (p *teamPicker) renderTeamSession(w int) string {
 	var b strings.Builder
 	b.WriteString(accent(p.session.teamName+" · session") + "\n")
@@ -466,14 +470,6 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		left.WriteString(dim("  Role: ") + memberFieldValue(slot, 0) + "\n")
 		left.WriteString(dim("  Leader: ") + memberFieldValue(slot, 1) + "\n")
 		left.WriteString(dim("  Status: ") + memberFieldValue(slot, 2) + "\n")
-	}
-	if p.sessions != nil {
-		if msgs, err := p.sessions.Messages(p.session.teamName, p.session.current); err == nil {
-			from := max(len(msgs)-sessionHistoryLines, 0)
-			for _, msg := range msgs[from:] {
-				left.WriteString(dim("  "+msg.Kind+": ") + truncateCells(msg.Text, col-4) + "\n")
-			}
-		}
 	}
 	for i, id := range p.session.members {
 		mark := "    "
@@ -499,18 +495,9 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		}
 		b.WriteString(padColumn(l, col) + dim("│ ") + r + "\n")
 	}
-	if p.session.input {
-		b.WriteString("  " + p.session.buf + "▏" + "\n")
-		b.WriteString(dim("Enter send · Shift+Enter newline · Ctrl+Up/Down/Tab switch · Esc back"))
-	} else {
-		b.WriteString(dim("Enter compose · ↑/↓ switch · r restart · Esc back"))
-	}
+	b.WriteString(dim("Type below to message this member · Ctrl+Up/Down switch member · Esc hide panel"))
 	return choicePanelStyle.Width(w).Render(b.String())
 }
-
-// sessionHistoryLines is how many recent history lines the session window
-// shows per member.
-const sessionHistoryLines = 5
 
 // renderLeaderReset renders the k step-down confirmation (§6): the warning,
 // the exact-id stage, the directory-list stage, or the finished result. The

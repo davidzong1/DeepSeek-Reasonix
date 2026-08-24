@@ -88,9 +88,15 @@ func openRoster(t *testing.T) chatTUI {
 }
 
 // teamKey routes one keypress through the team overlay handler.
+// teamKey feeds one keypress through the overlay's real key router. A bound
+// member session only consumes its reserved keys, so anything it declines is
+// forwarded to the composer exactly as production does.
 func teamKey(m chatTUI, msg tea.KeyPressMsg) chatTUI {
-	next, _ := m.handleTeamPickerKey(msg)
-	return next.(chatTUI)
+	if next, _, consumed := m.handleTeamKey(msg); consumed {
+		return next.(chatTUI)
+	}
+	after, _ := m.Update(msg)
+	return after.(chatTUI)
 }
 
 // typeTeamName feeds one keypress per rune of s into the add-team or
@@ -156,13 +162,13 @@ func TestTeamButtonRendersAndHasMouseHitBox(t *testing.T) {
 	if buttonX < 0 || buttonY < 0 {
 		t.Fatalf("team button %q is missing from the TUI frame", teamButtonText)
 	}
-	if !m.teamButtonHit(buttonX, buttonY) {
+	if _, hit := m.teamStatusButtonHit(buttonX, buttonY); !hit {
 		t.Fatal("left edge of the rendered team button should be clickable")
 	}
-	if m.teamButtonHit(buttonX-1, buttonY) {
+	if _, hit := m.teamStatusButtonHit(buttonX-1, buttonY); hit {
 		t.Fatal("cell before the rendered team button should not be clickable")
 	}
-	if m.teamButtonHit(buttonX+visibleWidth(teamButtonText), buttonY) {
+	if _, hit := m.teamStatusButtonHit(buttonX+visibleWidth(teamButtonText), buttonY); hit {
 		t.Fatal("cell after the rendered team button should not be clickable")
 	}
 

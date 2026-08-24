@@ -334,10 +334,10 @@ func (m chatTUI) applyComposerPasteCount(msg tea.PasteMsg, terminal bool, count 
 	if terminal {
 		m.terminalPasteSeq++
 	}
-	// The team overlay is modal: a paste appends to its active buffer and is
-	// dropped otherwise — never the hidden composer, or it would surface in
-	// the chat once TEAM closes. Covers bracketed and async clipboard pastes.
-	if m.teamPick != nil {
+	// The overlay intercepts pastes only while modal (composer hidden): they
+	// land in its active buffer or are dropped. A bound member session is not
+	// modal — the composer is that member's input, so pastes fall through.
+	if m.teamOverlayModal() {
 		if target := teamPasteTarget(m.teamPick); target != nil {
 			*target += msg.Content
 		}

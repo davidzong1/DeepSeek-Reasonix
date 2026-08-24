@@ -287,8 +287,10 @@ func TestTeamPasteInertInSessionWindow(t *testing.T) {
 	if !m.teamPick.session.active {
 		t.Fatal("paste must not close the session window")
 	}
-	if got := m.input.Value(); got != "" {
-		t.Fatalf("paste leaked into the composer: %q", got)
+	// The composer is the bound member's input, so a paste lands there — the
+	// session no longer owns a draft of its own.
+	if got := m.input.Value(); got != "session paste" {
+		t.Fatalf("composer = %q, want the pasted text", got)
 	}
 	if len(m.pastedBlocks) != 0 {
 		t.Fatalf("paste created a block in the session window: %+v", m.pastedBlocks)
@@ -400,33 +402,28 @@ func TestTeamMouseRightPasteIntoSessionInput(t *testing.T) {
 	t.Cleanup(func() { readNativeClipboardText = prev })
 
 	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})          // open the session window
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // focus the composer
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})         // open the session window
 
 	next, cmd := m.Update(tea.MouseClickMsg{Button: tea.MouseRight})
 	m = next.(chatTUI)
 	if cmd == nil {
-		t.Fatal("right-click in a focused session input must arm a clipboard read")
+		t.Fatal("right-click in a bound member session must arm a clipboard read")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(chatTUI)
-	if got := m.teamPick.session.buf; got != "clip session" {
-		t.Fatalf("session draft = %q, want %q", got, "clip session")
-	}
-	if got := m.input.Value(); got != "" {
-		t.Fatalf("right-click paste leaked into the composer: %q", got)
+	if got := m.input.Value(); got != "clip session" {
+		t.Fatalf("composer = %q, want %q — the composer is the bound member's input", got, "clip session")
 	}
 
 	// Browsing state: the window is open but no text target — the click is inert.
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // back to browsing
+	// Esc leaves the session for the management page, where the composer is
+	// hidden again: a right-click there has no text target and stays inert.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	next, cmd = m.Update(tea.MouseClickMsg{Button: tea.MouseRight})
 	m = next.(chatTUI)
 	if cmd != nil {
 		t.Fatal("right-click without an active text target must stay inert")
-	}
-	if got := m.teamPick.session.buf; got != "clip session" {
-		t.Fatalf("inert click must not touch the draft: %q", got)
 	}
 }
 
@@ -441,21 +438,17 @@ func TestTeamMouseMiddlePasteIntoSessionInput(t *testing.T) {
 	t.Cleanup(func() { readPrimaryPasteSelection = prev })
 
 	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})          // open the session window
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // focus the composer
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})         // open the session window
 
 	next, cmd := m.Update(tea.MouseClickMsg{Button: tea.MouseMiddle})
 	m = next.(chatTUI)
 	if cmd == nil {
-		t.Fatal("middle-click in a focused session input must arm a selection read")
+		t.Fatal("middle-click in a bound member session must arm a selection read")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(chatTUI)
-	if got := m.teamPick.session.buf; got != "primary session" {
-		t.Fatalf("session draft = %q, want %q", got, "primary session")
-	}
-	if got := m.input.Value(); got != "" {
-		t.Fatalf("middle-click paste leaked into the composer: %q", got)
+	if got := m.input.Value(); got != "primary session" {
+		t.Fatalf("composer = %q, want %q — the composer is the bound member's input", got, "primary session")
 	}
 }

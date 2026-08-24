@@ -147,6 +147,8 @@ func (m chatTUI) handleQuickPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.pendingModelSwitch != nil {
 			return m, m.pendingModelSwitch
 		}
+	case quickPickerMemberAgentUser:
+		m.rebindMemberAgentUser(choice.ID)
 	case quickPickerProvider:
 		m.switchToProvider(choice.ID)
 		if m.pendingModelSwitch != nil {

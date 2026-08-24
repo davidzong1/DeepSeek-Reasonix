@@ -129,6 +129,9 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 	m.followSessionLease()
 	m.refreshEffortStatus()
 
+	// A composer draft was addressed to the outgoing backend; carrying it over
+	// would silently submit it to a different member.
+	m.input.SetValue("")
 	m.finalizeStreamed()
 	m.pending.Reset()
 	m.reasoning.Reset()
@@ -182,4 +185,129 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberBackendDeps{
 		ctx: context.Background(), users: users, events: m.memberEvents, base: m.memberBackendBase,
 	}), 0)
+}
+
+// teamSessionBound reports whether the window is showing a team member's Agent.
+// While bound, the main composer is visible and owns typing: submitting reaches
+// that member because m.ctrl IS its backend. The roster and its transient states
+// stay modal — only this one state shares the keyboard.
+func (m *chatTUI) teamSessionBound() bool {
+	return m.teamPick != nil && m.teamPick.session.active
+}
+
+// handleTeamKey routes a keypress while the team overlay is open and reports
+// whether the overlay consumed it. The roster and its transient states consume
+// everything. A bound member session consumes only the reserved keys — member
+// switch and esc — so every other key falls through to the composer, which is
+// the whole point: one composer, one transcript, whichever backend is bound.
+func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if !m.teamSessionBound() {
+		next, cmd := m.handleTeamPickerKey(msg)
+		return next, cmd, true
+	}
+	switch msg.String() {
+	case "ctrl+up":
+		return m, m.stepSession(-1), true
+	case "ctrl+down":
+		return m, m.stepSession(+1), true
+	case "esc":
+		// The panel is a layer over the session, so esc dismisses it before the
+		// session itself: leaving the team is one esc further out.
+		if m.teamPick.session.panel {
+			m.setSessionPanel(false)
+			return m, nil, true
+		}
+		m.closeSession()
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+// teamOverlayModal reports whether the team overlay is hiding the composer: the
+// roster and its transient states do, a bound member session does not — there
+// the composer is the session's input.
+func (m chatTUI) teamOverlayModal() bool {
+	return m.teamPick != nil && !m.teamPick.session.active
+}
+
+// runMemberModelSubcommand is /model while a team member is bound: a member's
+// model is whatever its pool entry configures, so choosing here rebinds the
+// member to another agent-user entry and reassembles its backend from it —
+// never the chat's own model (§8-5 拍板). It reports whether it handled the
+// command; an unbound window falls through to the ordinary /model path.
+func (m *chatTUI) runMemberModelSubcommand(input string) bool {
+	if !m.teamSessionBound() {
+		return false
+	}
+	p := m.teamPick
+	if p.store == nil {
+		p.session.errMsg = "member model unavailable: no team store"
+		return true
+	}
+	args := tokenizeArgs(input) // args[0] == "/model"
+	if len(args) < 2 {
+		m.openMemberModelPicker()
+		return true
+	}
+	m.rebindMemberAgentUser(args[1])
+	return true
+}
+
+// rebindMemberAgentUser points the bound member at another pool entry and
+// reassembles it. The old backend is retired first: its provider, credential and
+// role prompt were baked in at assembly, so only a rebuild picks up the change.
+func (m *chatTUI) rebindMemberAgentUser(ref string) {
+	p := m.teamPick
+	member := p.session.current
+	if m.runtimeSwitchBusy() {
+		p.session.errMsg = "Finish or stop the current turn before changing the member's model"
+		return
+	}
+	if err := p.store.BindAgentUser(p.model.Name(), member, ref); err != nil {
+		p.session.errMsg = pickerErrMsg(err)
+		return
+	}
+	if err := p.reload(member); err != nil {
+		p.session.errMsg = pickerErrMsg(err)
+		return
+	}
+	if m.teamBackends != nil {
+		m.teamBackends.release(p.session.teamName, member)
+	}
+	p.session.errMsg = ""
+	m.notice("member " + member + " now uses agent user " + ref)
+}
+
+// openMemberModelPicker lists the agent-user pool as the bound member's model
+// choices: one entry is one provider/model/credential set, so the pool is the
+// member's model catalog.
+func (m *chatTUI) openMemberModelPicker() {
+	p := m.teamPick
+	users, err := p.store.ListAgentUsers()
+	if err != nil {
+		p.session.errMsg = pickerErrMsg(err)
+		return
+	}
+	if len(users) == 0 {
+		p.session.errMsg = "No agent users yet — Esc to the roster, then u to add one"
+		return
+	}
+	slot, _ := p.slotOf(p.session.current)
+	items := make([]quickPickerItem, 0, len(users))
+	selected := 0
+	for _, u := range users {
+		status := ""
+		if u.UserID == slot.AgentUserRef {
+			status = "active"
+			selected = len(items)
+		}
+		items = append(items, quickPickerItem{
+			ID: u.UserID, Label: u.UserID,
+			Description: providerModel(u), Status: status,
+		})
+	}
+	m.quickPick = &quickPicker{
+		kind: quickPickerMemberAgentUser, title: "Agent user for member " + p.session.current,
+		items: items, selected: selected,
+	}
 }

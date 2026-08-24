@@ -44,9 +44,9 @@ func TestTeamButtonOpensOnLeaderAfterMemberRemoved(t *testing.T) {
 		{MemberID: "leader-1", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus leader-1
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})         // enter the session
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // switch to coder-1, persisting it
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})                   // focus leader-1
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})                           // enter the session
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl}) // switch to coder-1, persisting it
 	sel, err := m.teamPick.sessions.ReadSelection("Fixture Team")
 	if err != nil || sel.MemberID != "coder-1" {
 		t.Fatalf("selection = %+v, %v; want coder-1", sel, err)

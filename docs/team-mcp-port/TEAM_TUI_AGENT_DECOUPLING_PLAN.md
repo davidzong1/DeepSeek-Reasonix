@@ -1,6 +1,6 @@
 # 改造方案 —— TUI 与成员 Agent 解耦
 
-> 状态：**已拍板；R0、R1、R2.1、R2.2 完成，下一节点 R2.3（主 composer 接管）（2026-08-23）**。本文档只描述改造方向、落点与节点，不描述任何未实施的东西为已实现。
+> 状态：**已拍板；R0-R5 全部节点完成（R4.4 部分、R3.2 两项降级见 §7）；R7 会话面板默认隐藏已完成，2026-08-23**。本文档只描述改造方向、落点与节点，不描述任何未实施的东西为已实现。
 > 权威优先级：用户拍板 > `docs/team-mcp-port/TASK.md` > 本文档 > 实现代码注释。
 > 关联：`TEAM_SESSION_TECHNICAL_ROUTE.md`（现行实现的路线，其 §11 P4 部分被本方案取代）、
 > `TEAM_MEMBER_POOL_AGENT_CONFIG_ROUTE.md`（成员池/凭据，本方案的输入，不改）。
@@ -224,31 +224,43 @@ make lint
 **铁律**：任何门禁受环境限制必须记录真实阻塞，不得改写为通过；不得以他人复验代替本终端执行
 （本轮 `TEAM_SESSION_TECHNICAL_ROUTE.md` §12 P4.6 "C5 授权阻塞…采用成员独立复验证据" 是反面样本）。
 
+### R7 —— 会话面板默认隐藏（用户优化任务 2026-08-23）
+
+诉求：进入团队会话后，那块 `团队 · session` 面板（成员属性 + roster 列 + 一行提示）占掉 8 行
+终端高度，而它要展示的历史上下文本来就在主 transcript 里。**面板改为按需**：进入会话默认不渲染，
+点 `[ TEAM ]` 才显示，再点收起。这是 R2.3/R4.3 的自然终点——面板已退化为选择器，而选择器的职责
+在 R3 已由状态栏成员按钮承担，面板剩下的价值不值 8 行。
+
+| 节点 | 内容 |
+|---|---|
+| R7.1 | `sessionState.panel` + `[ TEAM ]` 绑定态切换 + `esc` 分层退出 |
+| R7.2 | 绑定态归还鼠标捕获（否则按钮点不到）与图片粘贴 |
+
 ---
 
 ## 6. 缺陷 → 节点映射
 
-> R0 只闭合了落盘位置、门禁与渲染三类；`agentruntime` 的四个并发/生命周期 P0/P1
-> **仍然存在**，它们随 R4.1 删除平行栈一并消失。表内逐条标注了实际状态，不得据本表
-> 推断"已修"。
+> **2026-08-23 更新**：R4.1 删除整个 `agentruntime` 包后，表内曾标"未修"的四个并发/
+> 生命周期 P0/P1 全部随之消失（符号零残留）。逐条状态见下；本表仍是判断"是否已修"的
+> 唯一依据，不要据节点状态推断。
 
 | 缺陷 | 严重度 | 闭合节点 | 闭合方式 |
 |---|---|---|---|
-| 生产路径无 ProviderFactory，会话发消息无任何反应 | P0 | R1.3 + R2.1 | 走 `boot.Build`，装配即完整 Agent。**未修** |
+| 生产路径无 ProviderFactory，会话发消息无任何反应 | P0 | R1.3 + R2.1 | **已闭合**：`newMemberBackendBuilder` 走 `boot.Build` 装出完整 Agent，R2.2 进入即绑、R2.3 主 composer 提交经 `m.ctrl.SendWithRaw` 直达该成员 |
 | `context/`、`session/` 落仓库根，`session/` 已进 git | P0 | R0.1 | **已闭合**：store 改根 `.reasonix/team` + 撤出版本库 + 双向物理位置测试 |
-| `event.go:162` DATA RACE（`nextSeq` 锁外自增，`-race` 实测） | P0 | R4.1 | 删除自研广播器，回归 `eventCh`。**R0 未修**：现有 `-race` 全绿只因无测试并发 `Publish`，缺陷仍在 |
-| `Subscribe` after `Close` panic（nil map，探针实测） | P0 | R4.1 | 同上。**R0 未修** |
-| 终态事件对已有订阅者永久丢失（`flushLocked` 只在 `Subscribe` 调用，探针实测） | P1 | R4.1 | 同上。**R0 未修** |
-| `Registry.Close` 跳过 stopped 实例 → 事件源永不关闭（探针实测） | P1 | R4.1/R4.4 | 同上。**R0 未修** |
-| `evictDelta` 持锁阻塞风险 + 终态事件重排 | P1 | R4.1 | **阻塞风险已在 R0.2 lint 收尾时闭合**（接收改非阻塞 `select`+`default`，不再可能持源锁等待）；**重排仍在**，随 R4.1 消失 |
-| **`EventDone` 先于最终持久化**（`run()` 的 defer 在 publish done 之后才 `persistSeq`）：消费者以 done 为结束信号即与 runtime 的收尾写入竞争 | P1 | R4.1 | R0 期间由 `t.TempDir()` 清理失败暴露（`unlinkat …/context/t/m: directory not empty`）。R0 只让测试自己 `defer r.Close()` 收尾（`Stop` 会 `<-done` 等待）；**新设计必须保持"不得以 done 作为可拆除信号"**，见 D3 |
+| `event.go:162` DATA RACE（`nextSeq` 锁外自增，`-race` 实测） | P0 | R4.1 | **已闭合（删除）**：整包 `agentruntime` 移除，符号零残留 |
+| `Subscribe` after `Close` panic（nil map，探针实测） | P0 | R4.1 | **已闭合（删除）** |
+| 终态事件对已有订阅者永久丢失（`flushLocked` 只在 `Subscribe` 调用，探针实测） | P1 | R4.1 | **已闭合（删除）** |
+| `Registry.Close` 跳过 stopped 实例 → 事件源永不关闭（探针实测） | P1 | R4.1/R4.4 | **已闭合（删除）**；新 `teamBackends` 的退役路径由测试断言每个后端恰好关闭一次 |
+| `evictDelta` 持锁阻塞风险 + 终态事件重排 | P1 | R4.1 | **已闭合（删除）** |
+| **`EventDone` 先于最终持久化** | P1 | R4.1 | **已闭合（删除）**。新设计里终态语义由 `control.Controller` 的 `TurnDone` + 自身快照顺序保证，不再由 TUI 侧的事件顺序推断 |
 | 面板宽度按 rune 计（截图竖线错位） | P1 | R0.3 | **已闭合**：`padColumn`/`truncateCells` 按终端格计，2 个回归测试 |
 | 成员"Agent"无工具/memory/skill/hook/trajectory | P0 | R1.3 | **已闭合（装配侧）**：`newMemberBackendBuilder` 走 `boot.Build`，成员即完整 Agent；resolver catalog 声明 `Tools`。端到端可见性待 R2.1 接进 TUI |
-| `[ TEAM ]` 旁无成员按钮 | P1 | R3 | 按钮条。**未修** |
-| 会话窗口不是会话（属性列表 + 5 行截断） | P1 | R2.1/R4.3 | 历史交回主 transcript。**未修** |
+| `[ TEAM ]` 旁无成员按钮 | P1 | R3 | **已闭合**：状态栏按钮条 + 点击绑定 |
+| 会话窗口不是会话（属性列表 + 5 行截断） | P1 | R2.1/R4.3 | **已闭合**：历史回到主 transcript，输入回到主 composer；会话面板降级为成员选择器 |
 | repolint 红（HEAD 1314、工作区 1316；`240d89d86` 为 clean 1276） | P1 | R0.2 | **已闭合**：clean(1275)，baseline 未加宽 |
-| AgentType 白名单未实现 | P2 | R5.1 | 落地白名单。**未修** |
-| 陈旧 `state.json` / `Snapshot()` 持锁 I/O / `ctrl+c` 空实现 | P2 | R5.2-R5.4 | 随拆除消失或回归既有路径。**未修** |
+| AgentType 白名单未实现 | P2 | R5.1 | **已闭合**：纯命令词白名单，store 边界拒绝 |
+| 陈旧 `state.json` / `Snapshot()` 持锁 I/O / `ctrl+c` 空实现 | P2 | R5.2-R5.4 | **已闭合**：前两条随 `agentruntime` 删除消失，`ctrl+c` 随 R2.3 回归主 composer 取消路径 |
 | `make lint` 15 项（含外部团队存量 14 项 + 本轮新增 1 项） | P1 | R0.2 收尾 | **已闭合**：全部修掉而非放行，`make lint` 0 issues。详见 §10 v0.2 |
 
 ---
@@ -270,20 +282,22 @@ make lint
 | R2.1a | `switchTeamMember` 热插 + transcript 重建 + 事件归属 | R1.3 | **已完成** | `internal/cli/chat_tui_team_switch.go`：`switchTeamMember`（`runtimeSwitchBusy()` 门禁 → `store.Binding` → `teamBackends.bind` → `bindBackend`，拒绝路径写 session errMsg 且保持原绑定）；`bindBackend` 镜像 `modelSwitchMsg` 分支的收尾（label/modelRef/commands/skills/host/lease/effort 同步 + 清 transcript + 按 `transcriptSourceReplayBundle` 重放该成员 `History()`，形状照 `branch.go:123 replayActiveBranch`）；`waitForMemberEvent`/`memberEventMsg`/`handleMemberEvent`（**单 goroutine 单通道**：绑定成员 → `ingestEvent`，非绑定成员仅终态计 unread，delta 不计）。`chatTUI` 新增 `teamBackends`/`memberEvents` 两个字段。测试 3 个（切换重绑+重放+旧成员历史不残留、未知成员拒绝且保持原绑定、事件归属三态含 delta 不计与绑定即消 badge） |
 | R2.1b | 生产接线：`cli.go` 建 registry + `update` 分支 | R2.1a | **已完成** | `bindTeamBackendSeam(maxSteps, overrides)`（`cli.go:1263`，紧跟 `bindRuntimeRebuilder`）装通道（缓冲 `memberEventBuffer = 1024`，与主 `eventCh` 一致）+ 选项模板（`cliProfileBuildOptions` 继承权限/目录/工作区，model 与 sink 由成员 builder 逐成员覆盖）；`bindTeamBackends(store)` 在 `onTeamButtonClick` 里用 overlay 自己的 store 建注册表，seam 未装时为惰性 no-op（非交互宿主/测试）；`update` 新增 3 行 `case memberEventMsg` 分支（repolint function-size 仍 clean，未动 baseline）。测试 2 个（seam 装通道容量+选项继承 maxSteps+无 seam 惰性、`Update` 真的路由到 member handler） |
 | R2.2 | 进团队默认 leader；无 leader 停管理页 | R2.1 | **已完成** | `restoreSession` → `openLeaderSession()`（只建会话状态并返回要绑的 leader；无 leader 返 `""` 安静停管理页），`onTeamButtonClick` 据此调 `m.switchTeamMember(leader)`——**进入即绑 leader 的完整 Agent 后端**。`handleSessionKey`/`sessionInputKey`/`stepSession` 由 `*teamPicker` 函数改为 `*chatTUI` 方法，`stepSession` 现在**导航即绑定**（roster 高亮与 `m.ctrl` 不可能不一致）。新增 `chatTUI.ambient` + `unbindTeamMember`：首次绑成员时保存聊天自身后端，`closeSession` 归还——否则绑过成员后普通会话再也回不去。`bindTeamBackends` 改为幂等（重开 overlay 保留已装配后端，不再孤立其 lease）。测试 2 个（进入即绑 leader、transcript 显示其历史、重开保留注册表；关闭归还聊天后端、成员后端仍在、再进复用） |
-| R2.3 | 主 composer 接管，删迷你 composer，粘贴回归 | R2.1 | 未开始 | |
-| R2.4 | `/model` 写回当前成员 `AgentUserRef` 并重建后端 | R2.1 | 未开始 | |
-| R3.1 | 状态栏成员按钮条（含 leader，当前高亮） | R2.1 | 未开始 | |
-| R3.2 | 命中测试 + 窄屏折行 + unread 徽标 | R3.1 | 未开始 | |
-| R4.1 | 删 `agentruntime` 自研事件/成员 loop 及其测试 | R2 R3 验收 | 未开始 | |
-| R4.2 | 删 `chat_tui_team_events.go` | R2 R3 验收 | 未开始 | |
-| R4.3 | `renderTeamSession` 退化为成员选择 | R2.1 | 未开始 | |
-| R4.4 | `sessionstore` 收敛 / `Registry` 降级 | R4.1 | 未开始 | |
-| R5.1 | AgentType 白名单 + 脏数据清理 | — | 未开始 | |
-| R5.2 | 陈旧 `state.json` 处置 | R4.4 | 未开始 | |
-| R5.3 | `Snapshot()` 持锁 I/O | R4.1 | 未开始 | |
-| R5.4 | 会话内 `ctrl+c` 停 in-flight | R2.3 | 未开始 | |
+| R2.3 | 主 composer 接管，删迷你 composer，粘贴回归 | R2.1 | **已完成** | 键盘所有权反转：新增 `teamSessionBound()`/`teamOverlayModal()`，`hideComposer` 与 `update` 的 team 分支改为**只有非绑定态才模态**；`handleTeamKey` 在绑定态只消费保留键（`ctrl+up`/`ctrl+down` 换成员、`esc` 退出），其余全部落到主 composer。提交因此自动走 `m.ctrl.SendWithRaw` 到该成员后端——**没有第二条发送路径**。删除 `session.buf`/`session.input`/`sessionSend`/`sessionInputKey`/`handleSessionKey`/`restartSessionTarget`；`teamPasteTarget` 去掉 session 分支；`applyComposerPasteCount` 的模态守卫改为 `teamOverlayModal()`（否则绑定态粘贴被丢弃——这是本节点我引入并修掉的真缺陷）。`bindBackend` 换后端时清空 composer 草稿（草稿属于它被写给的那个后端，不能悄悄投给别的成员）。会话面板降级为成员选择器 + 一行提示 |
+| R2.4 | `/model` 写回当前成员 `AgentUserRef` 并重建后端 | R2.1 | **已完成** | `runModelSubcommand` 开头先走 `runMemberModelSubcommand`：绑定态下 `/model <ref>` 走 `BindAgentUser` 写回该成员并 `teamBackends.release`（旧后端的 provider/凭据/role prompt 在装配期已烘死，只有重建才会生效），`/model` 无参开成员池 picker（新 `quickPickerMemberAgentUser` kind，当前条目预选）。聊天自身模型不动。测试 2 个（写回+退役+持久化+聊天模型不动、picker 列池并预选） |
+| R3.1 | 状态栏成员按钮条（含 leader，当前高亮） | R2.1 | **已完成** | `appendTeamButton` 在 `[ TEAM ]` 后按 roster 追加 `[ <id> ]` 按钮，绑定成员 `accent`、其余 `dim`；`statusMemberIDs` 取会话 roster（无会话时取 model members），`statusMemberButtonLimit = 6` 封顶避免挤掉状态行 |
+| R3.2 | 命中测试 + 窄屏折行 + unread 徽标 | R3.1 | **已完成（折行/徽标见备注）** | `teamButtonHit` 泛化为 `teamStatusButtonHit(x,y) (member, teamEntry)` + `labelHit` 按终端格量宽（CJK 成员 id 与相邻样式不移动命中框）；`handleTeamStatusClick` 路由：成员按钮 → `switchTeamMember`，`[ TEAM ]` → 开 overlay。`update` 的鼠标分支 +2 行，repolint 仍 clean。**未做**：窄屏折行沿用状态行既有响应式布局（按钮条按 6 个封顶而非折行）；unread 徽标仍只在会话右栏，未上状态栏。测试 2 个（渲染+命中+点击绑定+高亮/dim、无团队时不显示且封顶生效） |
+| R4.1 | 删 `agentruntime` 自研事件/成员 loop 及其测试 | R2 R3 验收 | **已完成** | **整包删除** `internal/team/agentruntime/`（15 文件 / 2364 行）——它是平行栈本体，只被 CLI 引用。`grep -rn "EventSource\|MemberAgent\|agentruntime\|evictDelta"` 在 `internal/`/`cmd/`/`desktop/` 零命中（残留命中都在无关的 `providerext`/`serve`/`taskcatalog`） |
+| R4.2 | 删 `chat_tui_team_events.go` | R2 R3 验收 | **已完成** | 文件删除；`update` 的 `teamRuntimeEventMsg` 分支移除；`sessionState.sub`、`sessionSpec`、`startSessionTarget`、`bindSessionSubscription`/`cancelSessionSubscription` 一并删除 |
+| R4.3 | `renderTeamSession` 退化为成员选择 | R2.1 | **已完成** | R2.3 已去迷你 composer；本轮再去掉读 legacy `messages.jsonl` 的历史块（成员历史已在主 transcript，读那里只会显示空或过期的 pre-D5 数据）与随之无用的 `sessionHistoryLines` |
+| R4.4 | `sessionstore` 收敛 / `Registry` 降级 | R4.1 | **部分完成** | `Registry` 随整包删除。`sessionstore` 的存活消费者只剩 `WriteSelection`/`ReadSelection`（会话选择）与 `MemberDirs`/`ClearTeamTrash`（清理）；`Messages`/`AppendMessage`/`ReadCursor`/`WriteCursor`/`ReadState`/`WriteState` 已无生产调用方但**仍保留为导出 API**（`unused` 不拦导出符号）。**未做**：物理删除这些方法——留待与 D5 的成员会话文件语义一并收口，见 §8-19 |
+| R5.1 | AgentType 白名单 + 脏数据清理 | — | **已完成** | `validateAgentType` 落地 §7.5 白名单：空=继承，`claude`/`codex` 直通，其余必须是**一个纯命令词**（仅字母数字与 `-_.`，长度 ≤32），因此启动类型再也带不进参数列表、路径或 shell 元字符。与既有错误消息 "claude, codex, or a plain command word" 一致。脏数据 `"agent_type":"c"` 已随 team.json 重写消失。测试 2 个（白名单正反例含 `claude;rm -rf /`、`$(id)`、超长；两个 setter 在 store 边界拒绝且不落盘） |
+| R5.2 | 陈旧 `state.json` 处置 | R4.4 | **已完成** | 唯一写者 `Registry.WriteState` 随 R4.1 删除，`state.json` 不再被写；残留文件不再被任何路径读取。**并顺带修掉一个 R4 引入的真缺陷**：leader 解除承诺"清空整个团队所有成员的历史上下文"，但 D5 之后真实历史在会话文件里，原代码只清空了（已无人写的）legacy context 树 —— 三级确认还逐项告知用户要清什么，这是个空承诺。新增 `clearTeamHistories`：退役后端 + 删除每个成员的会话文件 + 仍清 legacy 树（pre-D5 残留），幂等、不碰其他团队。picker 新增 `sessionDir` 字段（开窗时取 `m.ctrl.SessionDir()`）。测试 1 个 |
+| R5.3 | `Snapshot()` 持锁 I/O | R4.1 | **已完成** | 随 `MemberAgent` 删除消失 |
+| R5.4 | 会话内 `ctrl+c` 停 in-flight | R2.3 | **随 R2.3 闭合** | `ctrl+c` 不在 `handleTeamKey` 的保留键内，因此绑定态直接落到主 composer 既有的取消路径——原先那个"待 P4.2 接线"的空实现连同 `sessionInputKey` 一起删除了 |
 | R5.5 | `AGENTS.md` 处置 | 用户拍板 | **已完成** | 拍板抛弃，改用共享指令形式；`git rm AGENTS.md`（`43ddaa112` 里可取回）。`internal/instruction` 不再加载它，`REASONIX.md`+`CLAUDE.md` 不受影响 |
 | R6 | 六项工程门禁 + `-race` + `make lint` 全过 | 全部 | 部分（R0 范围内已过） | R0 收尾实跑：`gofmt -l` clean · `go vet ./...` exit 0 · `CGO_ENABLED=0 go build ./...` OK · `go test ./...` **全量 exit 0 零失败** · `go test ./internal/team/... ./internal/cli/ -race` 全绿 · `make lint` **0 issues** · repolint clean(1275)。R1 起每节点重跑 |
+| R7.1 | 会话面板默认隐藏，`[ TEAM ]` 切换 | R3.2 | **已完成** | `sessionState.panel`（默认 false，`closeSession` 归零即自动复位）+ `setSessionPanel`（切换时置 `forceGotoBottom`，否则面板收起后 viewport 保留旧 offset，最新输出被顶出屏外）+ `sessionPanelHidden`；`renderTeamPicker` 在 `session.active && !panel` 时返回 `""`，行数核算（`bottomRows`）与布局因此自动跟随。`[ TEAM ]` 在绑定态改为原地切换面板而非重进团队（`handleTeamStatusClick` 新增一条 case，返回 nil cmd）；`esc` 分层退出（有面板先收面板，无面板才关会话——离开团队是再一次 esc）。面板脚注 `Esc back` → `Esc hide panel`。实测 110×20：隐藏时 `bottomRows=4 / viewport=16`，显示时 `12 / 8`，两态帧高恒为 20 行 |
+| R7.2 | 绑定态归还鼠标捕获与图片粘贴 | R7.1 | **已完成** | `View()` 的 `MouseMode` 与图片粘贴守卫从 `m.teamPick != nil` 改为 `m.teamOverlayModal()`。前者是**阻断 R3 的真缺陷**：overlay 一开就 `MouseModeNone`，进团队后状态栏成员按钮与 `[ TEAM ]` 在真实终端里根本收不到点击（R3 的测试直调 `handleTeamStatusClick`，结构上测不到）。后者与 R2.3 修的粘贴守卫同族：绑定态 composer 是成员输入，图片路径必须落进去。已用真实 `Update(tea.MouseClickMsg{...})` 双击验证整链 |
 
 ---
 
@@ -306,6 +320,13 @@ make lint
 | 13 | `switchTeamMember` 尚未有 UI 触发点 | ~~R2.1a/b 只交付机制~~ **R2.2 已接通**：`[ TEAM ]` 点击与会话内 ↑/↓/Tab 都走 `switchTeamMember`。旧 `agentruntime` 路径**并行保留**（`startSessionTarget`/`bindSessionSubscription`/`StopTeam`），生产中因无 factory 而惰性，但仍被旧测试观测，R4 一并删除 |
 | 14 | 半替换导航路径会挂测试 | R2.2 初版只把 `stepSession` 改到新路径、不再取消旧订阅，`TestTeamSessionSubscribeRebindOnSwitch` 在 `<-old.C` 上**永久阻塞**（整个 cli 包超时）。**教训**：一条导航路径要么整条换、要么两条并存，不能只换一半。当前采用并存，`stepSession` 两条都驱动 |
 | 15 | "无 seam" 不等于"切换被拒" | `stepSession` 曾把 `switchTeamMember` 返回 nil 一律当拒绝，于是没装注册表的环境（测试、非交互宿主）里导航完全不动。现按 `m.teamBackends != nil` 区分：只有已接线的注册表返回 nil 才是真拒绝 |
+| 16 | 测试助手绕过键盘路由会掩盖反转 | `teamKey` 原本直调 `handleTeamPickerKey`，绕过了 R2.3 新增的 `handleTeamKey`。修为先走 `handleTeamKey`，未被消费则转发给 `m.Update`——与生产完全同形。**写 TUI 测试助手时必须走真实入口**，否则键盘所有权的改动测不出来 |
+| 17 | 换成员/退出会话必须清 composer 草稿 | 草稿属于它被写给的那个后端。不清的话，为成员 A 写的一句会在切到 B 后被提交给 B。`bindBackend` 里 `m.input.SetValue("")`。代价是丢一次草稿，比投错对象轻 |
+| 19 | `sessionstore` 残留的导出 API（R4.4 未做的一半） | `Messages`/`AppendMessage`/`ReadCursor`/`WriteCursor`/`ReadState`/`WriteState` 已无生产调用方，但作为导出符号 `unused` 不会拦。**留着的风险**是有人再次把成员历史写进 `.reasonix/team/context/`，绕开 D5 的会话文件语义。收口时应连同 `contextRootDir` 常量一并删除，只留 `WriteSelection`/`ReadSelection` 与 `MemberDirs`/`ClearTeamTrash`（后两者仍被 leader 解除用于清理 pre-D5 残留树） |
+| 20 | 成员后端 `Close()` 在 `Update` 内同步执行 | `teamBackends` 的退役路径（超限淘汰、`release`、`releaseTeam`）在 Update 处理器里同步调 `Close()`，而 `/model` 切换那条路径**故意**把 `oldCtrl.Close()` 延后成一个 `tea.Cmd`（`model.go:70-100` 注释：Close 会跑 SessionEnd hook 与杀插件子进程，从 goroutine 里做会破坏 bubbletea 的 raw mode）。目前未观察到问题，但若淘汰/清理时出现终端残留，应照 `modelSwitchMsg` 的形状把 Close 延后 |
+| 18 | R2.3 换掉的按键（旧测试据此更新） | 成员切换 `up`/`down`/`j` → **`ctrl+up`/`ctrl+down`**（绑定态方向键归 transcript、字母归 composer）；`r` 重启入口随 `restartSessionTarget` 一并删除。`chat_tui_team_session_composer_test.go`（9 个迷你 composer 测试）与 `chat_tui_team_session_events_test.go`（8 个 legacy 事件/订阅测试）已删除——覆盖点由 `chat_tui_team_switch_test.go` 与 `chat_tui_team_keyboard_test.go` 的新路径测试承接 |
+| 21 | 「overlay 是否在」不等于「overlay 是否模态」 | 绑定态下 overlay 存在但**不模态**（composer 是成员输入）。凡按 `m.teamPick != nil` 分流的地方都会在绑定态误判：R2.3 的粘贴守卫、R7.2 的 `MouseMode` 与图片粘贴，三处同族。**判据一律用 `m.teamOverlayModal()`**；新增任何 overlay 分流点时同理。`MouseMode` 那处尤其隐蔽——它不报错，只是让整个鼠标层静默失效 |
+| 22 | 假通过的测试比没有测试更坏 | `TestTeamButtonSessionKeepsKeysFromChatComposer` 断言"会话键绝不到达 composer"，与 R2.3 的设计**正好相反**，却一直绿：`tea.KeyPressMsg{Code: 'x'}` 不带 `Text` 字段，textarea 收到也不插入任何字符——它测的是构造函数的空缺，不是产品行为。已改写为 `TestTeamButtonSessionRoutesTypingToTheComposer`（带 `Text` 且经 `m.Update` 全链）。**写 TUI 键盘测试必须填 `Text`**，否则断言恒真 |
 
 ---
 
@@ -334,6 +355,8 @@ make lint
 | v0.5 | 2026-08-23 | R2.1a 完成（切换机制），R2.1b 登记为剩余接线项。`AGENTS.md` 与 `session/agent_designed_team.json` 已提交删除（`0306f11a9`），两者不再在 HEAD 内。§7 R2.1 拆为 a/b。实施中的两个发现记入 §8-10/§8-11。门禁：gofmt/vet/build/`go test ./...` 全量 exit 0/`make lint` 0 issues/repolint clean(1275) | — |
 | v0.6 | 2026-08-23 | **R2.1b 完成**（生产接线）：`bindTeamBackendSeam` + `bindTeamBackends` + `update` 的 `memberEventMsg` 分支。新增 §8-12（部分替身撑不过 `Update` 渲染路径）与 §8-13（`switchTeamMember` 的 UI 触发点在 R2.2/R3，旧 `agentruntime` 路径并存到 R4）。门禁：gofmt/vet/`CGO_ENABLED=0 build`/`go test ./...` 全量 exit 0/`-race`（cli+team）绿/`make lint` 0 issues/repolint clean(1275) baseline 未动 | — |
 | v0.7 | 2026-08-23 | **R2.2 完成，第一个端到端可见节点**：进 `[ TEAM ]` 即绑 leader 的完整 Agent 后端，主 transcript 显示其历史；会话内导航即绑定；`ambient` 保存/归还让普通会话可回。§8-13 更新为"已接通"，新增 §8-14（半替换导航路径导致 cli 包超时的教训）与 §8-15（"无 seam" 不等于"切换被拒"）。门禁：gofmt/vet/build/`go test ./...` 全量 exit 0/`-race`(cli) 绿/`make lint` 0 issues/repolint clean(1275) | — |
+| v0.9 | 2026-08-23 | **R2.4 / R3 / R4 / R5.1-5.3 完成，方案节点全部走完**（R4.4 部分、R3.2 折行与状态栏徽标降级，见 §7 与 §8-19）。R4.1 整包删除 `internal/team/agentruntime`（15 文件 / 2364 行），§6 里那四个并发 P0/P1 随之闭合。R2.4 `/model` 在绑定态改成员池条目并退役旧后端。R3 状态栏成员按钮条 + 命中测试 + 点击绑定。R5.1 AgentType 纯命令词白名单。**并修掉一个 R4 引入的空承诺**：leader 解除原本只清空已无人写的 legacy context 树，真实历史（会话文件）会存活——新增 `clearTeamHistories`。新增 §8-19（sessionstore 残留导出 API）。门禁：gofmt/vet/`CGO_ENABLED=0 build`/`go test ./...` 全量 exit 0/`-race`(cli+team) 绿/`make lint` 0 issues/repolint clean(1275) baseline 未动 | — |
+| v0.8 | 2026-08-23 | **R2.3 完成，R5.4 随之闭合**：键盘所有权反转（绑定态只保留 `ctrl+up`/`ctrl+down`/`esc`，其余归主 composer），迷你 composer 与 legacy 发送/订阅入口删除，提交经 `m.ctrl.SendWithRaw` 直达成员——无第二条发送路径。修掉本节点自引入的粘贴丢弃缺陷（模态守卫改 `teamOverlayModal()`）；换后端清 composer 草稿。§6 三条 P0/P1 标为已闭合。新增 §8-16（测试助手必须走真实键盘入口）、§8-17（草稿归属）、§8-18（换掉的按键与删除的 17 个旧测试及其覆盖承接）。门禁：gofmt/vet/`CGO_ENABLED=0 build`/`go test ./...` 全量 exit 0/`-race`(cli 33.4s) 绿/`make lint` 0 issues/repolint clean(1275) baseline 未动 | — |
 
 ### 10.1 R0 收尾说明
 
@@ -344,3 +367,69 @@ make lint
 - **`mouseCopyOrPaste` 落在新文件而非 `chat_tui_paste.go`**：后者已 781 行，加进去撞
   800 行文件上限。鼠标复制/粘贴约定是独立职责，`chat_tui_mouse.go` 单独承载。
 - **`git rm --cached` 的删除已进暂存区**，尚未提交——提交时机留给用户。
+
+---
+
+## 11. 交接（2026-08-23）
+
+> 接手者先读 §7 进度表（唯一进度来源），再读 §8 的 18 条实施记录——每条都是一个卡点的
+> 根因与教训，不必重新推导。§6 缺陷表逐条标注了"已闭合 / 未修"，**不要据节点状态推断缺陷已修**。
+
+### 11.1 已提交 vs 未提交
+
+- **已提交**：`0306f11a9`（删 `AGENTS.md` + 泄漏的 session 文件）、`1c0bb50dd` 及其之前
+  —— 覆盖 R0、R1、R2.1、R2.2、R5.5。
+- **未提交（工作区，全绿）**：R2.3 那一批，即键盘所有权反转：
+
+  ```text
+   M internal/cli/chat_tui.go                        # hideComposer 与 update 的 team 分支
+   M internal/cli/chat_tui_paste.go                  # 模态粘贴守卫改 teamOverlayModal()
+   M internal/cli/chat_tui_team.go                   # t 键改走 chatTUI；teamPasteTarget 去 session 分支
+   M internal/cli/chat_tui_team_member.go            # 同上
+   M internal/cli/chat_tui_team_render.go            # 面板降级为成员选择器
+   M internal/cli/chat_tui_team_session.go           # 删迷你 composer / sessionSend / restartSessionTarget
+   M internal/cli/chat_tui_team_switch.go            # teamSessionBound / teamOverlayModal / handleTeamKey
+  ?? internal/cli/chat_tui_team_keyboard_test.go     # 新：键盘所有权 3 测
+   D internal/cli/chat_tui_team_session_composer_test.go   # 迷你 composer 9 测，已被取代
+   D internal/cli/chat_tui_team_session_events_test.go     # legacy 事件/订阅 8 测，已被取代
+   M internal/cli/chat_tui_team_{entry_state,lifecycle,paste,session,test}_test.go
+   M internal/cli/team_session_acceptance_test.go    # 按键 down→ctrl+down 等契约更新
+   M docs/team-mcp-port/TEAM_TUI_AGENT_DECOUPLING_PLAN.md
+  ```
+
+  删除的 17 个旧测试的覆盖承接见 §8-18。
+
+### 11.2 复现门禁（提交前必跑）
+
+```bash
+export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH   # go 与 golangci-lint 不在默认 PATH
+gofmt -l . | grep -v '^cache/'
+go vet ./...
+CGO_ENABLED=0 go build ./...
+go test ./... -count=1
+go test ./internal/cli/ -race -count=1
+make lint                    # 必须 0 issues
+go run ./tools/repolint      # 必须 clean，且 tools/repolint/baseline.json 零改动
+```
+
+最后一次实跑结果：全部通过，repolint `clean (1275 baselined findings)`。
+
+### 11.3 下一步（按建议顺序）
+
+1. **R2.4** —— `/model` 写回当前成员 `AgentUserRef`（§8-5 已拍板）。
+2. **R3** —— `[ TEAM ]` 旁成员按钮条，用户原始诉求的最后一块；命中测试复用
+   `teamButtonHit` 的 `ansi.Strip` + `visibleWidth` 形状。
+3. **R4** —— 拆除并存的旧 agentruntime 栈。**这一步同时闭合 §6 里仍标"未修"的四条
+   并发缺陷**（`nextSeq` 数据竞争、`Subscribe` after `Close` panic、终态事件对已有
+   订阅者永久丢失、`Registry.Close` 跳过 stopped 实例致事件源泄漏）。
+4. **R5.1/5.2/5.3** —— AgentType 白名单等遗留。
+
+### 11.4 提 PR 时的元数据
+
+`internal/boot/` 被改过（`Options.SystemPromptIdentity`），两道 CI 守卫会读 PR body：
+
+```text
+Cache-impact: none - 空值零插入，前缀逐轮字节稳定，effect 测试守卫
+Cache-guard: TestEffectSystemPromptIdentityReachesProviderAndStaysStable
+System-prompt-review: <必须点名评审人，该字段拒收 none/n/a>
+```

@@ -2,6 +2,7 @@ package team
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -191,5 +192,61 @@ func TestTeamStoreMemberWritePolicy(t *testing.T) {
 	}
 	if err := ts.AddMember("alpha", MemberSlot{MemberID: "m3", Status: MemberStatusActive}); err != nil {
 		t.Fatalf("re-opened policy must allow AddMember: %v", err)
+	}
+}
+
+// TestValidateAgentTypeWhitelist pins §7.5: the two known launch types pass,
+// empty inherits, and anything else must be one plain command word — a launch
+// type must never be able to carry arguments, a path, or shell metacharacters
+// into whatever eventually spawns it.
+func TestValidateAgentTypeWhitelist(t *testing.T) {
+	for _, ok := range []string{"", AgentTypeClaude, AgentTypeCodex, "my-agent", "agent_2", "run.sh"} {
+		if err := validateAgentType(ok); err != nil {
+			t.Errorf("validateAgentType(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"claude --dangerously-skip-permissions", // an argument list
+		"claude;rm -rf /",                       // a command chain
+		"/usr/bin/claude",                       // a path
+		`claude|tee x`, "claude&", "claude`id`", "claude$(id)", "claude>out",
+		" claude", "claude\n", "claude\x00",
+		"agent name", // whitespace
+		strings.Repeat("a", agentTypeMaxLen+1),
+	} {
+		if err := validateAgentType(bad); !errors.Is(err, ErrInvalidAgent) {
+			t.Errorf("validateAgentType(%q) = %v, want ErrInvalidAgent", bad, err)
+		}
+	}
+}
+
+// TestSetAgentTypeRefusesUnsafeValues pins the whitelist at the store boundary:
+// both setters go through it, so a dangerous value never reaches team.json.
+func TestSetAgentTypeRefusesUnsafeValues(t *testing.T) {
+	s, _ := newTeamStore(t)
+	if err := s.AddTeam(Team{Name: "alpha", Template: []MemberSlot{
+		{MemberID: "lead", Status: MemberStatusActive},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	const bad = "claude; rm -rf /"
+	if err := s.SetTeamAgentType("alpha", bad); !errors.Is(err, ErrInvalidAgent) {
+		t.Errorf("SetTeamAgentType = %v, want ErrInvalidAgent", err)
+	}
+	if err := s.SetMemberAgentType("alpha", "lead", bad); !errors.Is(err, ErrInvalidAgent) {
+		t.Errorf("SetMemberAgentType = %v, want ErrInvalidAgent", err)
+	}
+	doc, _, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Teams[0].AgentType; got != "" {
+		t.Errorf("a refused team launch type must not persist, got %q", got)
+	}
+	if got := doc.Teams[0].Template[0].AgentType; got != "" {
+		t.Errorf("a refused member launch type must not persist, got %q", got)
+	}
+	if err := s.SetMemberAgentType("alpha", "lead", AgentTypeCodex); err != nil {
+		t.Fatalf("a whitelisted type must persist: %v", err)
 	}
 }

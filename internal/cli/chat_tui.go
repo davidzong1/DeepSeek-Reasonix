@@ -1128,8 +1128,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && m.teamButtonHit(msg.X, msg.Y) {
-			return m, m.onTeamButtonClick()
+		if msg.Button == tea.MouseLeft {
+			if cmd, hit := m.handleTeamStatusClick(msg.X, msg.Y); hit {
+				return m, cmd
+			}
 		}
 		if c, consumed := m.mouseCopyOrPaste(msg); consumed {
 			if c == nil {
@@ -1378,9 +1380,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copyPick != nil {
 			return m.handleCopyPickerKey(msg)
 		}
-		// The team roster is modal while open: keys navigate it.
+		// The team overlay is modal while open — except a bound member session,
+		// where the composer owns typing and only reserved keys are consumed.
 		if m.teamPick != nil {
-			return m.handleTeamPickerKey(msg)
+			if next, cmd, consumed := m.handleTeamKey(msg); consumed {
+				return next, cmd
+			}
 		}
 		// The resume picker is modal while open: keys navigate it.
 		if m.resumePick != nil {
@@ -2039,8 +2044,8 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(fmt.Sprintf(i18n.M.ClipboardImagePasteFailedFmt, msg.err))
 			break
 		}
-		if m.teamPick != nil {
-			break // the team overlay is modal: an image result never reaches the hidden composer
+		if m.teamOverlayModal() {
+			break // the roster is modal: an image result never reaches the hidden composer
 		}
 		imageBefore := m.input.Value()
 		m.insertImageRef(msg.path)
@@ -2068,9 +2073,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.applyComposerPasteCount(tea.PasteMsg{Content: msg.text}, false, count)
-
-	case teamRuntimeEventMsg:
-		return m, m.handleTeamRuntimeEvent(msg) // §11.5 session refresh/unread; stale drops
 
 	case memberEventMsg:
 		return m, m.handleMemberEvent(msg) // team member backend; §D3 tagged channel
@@ -2320,7 +2322,7 @@ func (m chatTUI) bottomRows() int {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
-	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.copyPick != nil || m.teamPick != nil || m.rewind != nil || m.pendingApproval != nil {
+	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.copyPick != nil || m.teamOverlayModal() || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
 	return m.chooser != nil && !m.chooser.typing
@@ -3500,8 +3502,8 @@ func (m chatTUI) View() tea.View {
 	}
 	v := tea.NewView(mainArea + "\n" + strings.Join(parts, "\n"))
 	v.AltScreen = true
-	if m.teamPick != nil {
-		v.MouseMode = tea.MouseModeNone // the team overlay is modal: its rows become native-selectable
+	if m.teamOverlayModal() {
+		v.MouseMode = tea.MouseModeNone // the roster is modal: its rows become native-selectable
 	} else if m.mouseCaptureOff {
 		// Native click-drag selection, right-click menu, wheel, and drag-select return to the terminal.
 		v.MouseMode = tea.MouseModeNone

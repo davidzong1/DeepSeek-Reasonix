@@ -36,6 +36,10 @@ func TestTeamSessionLeaderGate(t *testing.T) {
 	if !m.teamPick.session.active {
 		t.Fatal("t from the leader should open the session")
 	}
+	if got := m.renderTeamPicker(); got != "" {
+		t.Fatalf("a freshly opened session renders no panel, got:\n%s", got)
+	}
+	m.setSessionPanel(true)
 	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "lead") || !strings.Contains(got, "session") {
 		t.Fatalf("the session window should show the leader and the session title, got:\n%s", got)
 	}
@@ -49,17 +53,19 @@ func TestTeamSessionSwitchPersistsAndEsc(t *testing.T) {
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus lead
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'})         // open on the leader
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
 	if got := m.teamPick.session.current; got != "alice" {
-		t.Fatalf("down should switch to alice, got %q", got)
+		t.Fatalf("ctrl+down should switch to alice, got %q", got)
 	}
 	sel, err := m.teamPick.sessions.ReadSelection("alpha")
 	if err != nil || sel.MemberID != "alice" {
 		t.Fatalf("down should persist the selection, got %+v, %v", sel, err)
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: 'j'}) // wraps back to the leader
+	// j is a printable character now — the composer owns letters. Wrapping uses
+	// the reserved switch key.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
 	if got := m.teamPick.session.current; got != "lead" {
-		t.Fatalf("j should wrap to the leader, got %q", got)
+		t.Fatalf("ctrl+down should wrap to the leader, got %q", got)
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.teamPick.session.active {

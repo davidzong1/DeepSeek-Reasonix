@@ -59,7 +59,7 @@ func handleMemberEditNavKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg)
 	case "s":
 		p.saveMemberEdit()
 	case "t":
-		p.enterTeamSession()
+		return true // handled by the chatTUI-level key router (enterTeamSession)
 	case "k":
 		p.startLeaderReset()
 	default:

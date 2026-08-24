@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -163,11 +167,9 @@ func (p *teamPicker) executeLeaderReset() {
 		p.errMsg = ""
 		return
 	}
-	if p.sessions != nil {
-		if err := p.sessions.ClearTeamTrash(teamName); err != nil {
-			r.errMsg = "Failed to clear team contexts: " + err.Error()
-			return
-		}
+	if err := p.clearTeamHistories(teamName); err != nil {
+		r.errMsg = "Failed to clear team contexts: " + err.Error()
+		return
 	}
 	if err := p.store.SetMemberLeader(teamName, member.ID, false); err != nil {
 		r.errMsg = pickerErrMsg(err)
@@ -181,4 +183,30 @@ func (p *teamPicker) executeLeaderReset() {
 		return
 	}
 	r.kind, r.buf, r.errMsg = leaderResetDone, "", ""
+}
+
+// clearTeamHistories removes every member's conversation history for the team.
+// A member's history is its own Reasonix session file (D5), so that file is what
+// step-down deletes; the legacy context tree is cleared too so a pre-D5 tree left
+// on disk does not survive a step-down that promised to remove it.
+func (p *teamPicker) clearTeamHistories(teamName string) error {
+	if p.sessions != nil {
+		if err := p.sessions.ClearTeamTrash(teamName); err != nil {
+			return err
+		}
+	}
+	if p.sessionDir == "" || p.store == nil {
+		return nil
+	}
+	bindings, err := p.store.Bindings(teamName)
+	if err != nil {
+		return err
+	}
+	for _, b := range bindings {
+		path := filepath.Join(p.sessionDir, b.SessionFile)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
