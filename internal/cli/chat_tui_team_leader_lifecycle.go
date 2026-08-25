@@ -53,7 +53,7 @@ func (p *teamPicker) stepDownLeader(teamName, memberID string) error {
 		return err
 	}
 	if p.sessions != nil {
-		_ = p.sessions.WriteSelection(teamName, team.SessionSelection{Team: teamName})
+		p.clearSelectedMember(teamName)
 	}
 	if err := p.reload(""); err != nil {
 		return err

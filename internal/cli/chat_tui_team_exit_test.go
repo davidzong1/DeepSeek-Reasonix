@@ -167,8 +167,8 @@ func TestTeamExitKeyIsAdvertisedAndInert(t *testing.T) {
 }
 
 // TestTeamExitDropsSelectionAndParksNextClick pins the exit's persistence
-// half: Ctrl+T drops the persisted selection and arms the suppression flag, so
-// the next [TEAM] click lands on the management page instead of a member's
+// half: Ctrl+T drops the persisted selection and records the suspension on disk,
+// so the next [TEAM] click lands on the management page instead of a member's
 // window (§11.4) — a deliberate t restores the auto-session. x and Ctrl+T
 // share the semantics; they differ only in that x parks on the management page
 // while Ctrl+T closes the overlay outright.
@@ -191,8 +191,8 @@ func TestTeamExitDropsSelectionAndParksNextClick(t *testing.T) {
 	if err != nil || sel.MemberID != "" {
 		t.Fatalf("the exit must clear the persisted selection, got %+v err=%v", sel, err)
 	}
-	if !m.teamSuppressAutoSession {
-		t.Fatal("the exit must arm the auto-session suppression")
+	if !sel.Suspended {
+		t.Fatal("the exit must record the suspension on disk, not in a field a restart forgets")
 	}
 	// The suppressed click lands on the management page.
 	m.onTeamButtonClick()
@@ -209,7 +209,72 @@ func TestTeamExitDropsSelectionAndParksNextClick(t *testing.T) {
 	if !m.teamPick.session.active {
 		t.Fatal("t must open the session from the suppressed management page")
 	}
-	if m.teamSuppressAutoSession {
-		t.Fatal("a deliberate t must clear the suppression flag")
+	if sel, err := sessions.ReadSelection("alpha"); err != nil || sel.Suspended {
+		t.Fatalf("a deliberate t must clear the persisted suspension, got %+v err=%v", sel, err)
+	}
+}
+
+// TestTeamExitSurvivesRestart pins the half a field could never hold: after
+// Ctrl+T, a relaunched process — fresh chatTUI, same project directory — must
+// still park on the management page. An exit a restart undoes is not an exit.
+func TestTeamExitSurvivesRestart(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	m := openTeamOverlay(t)
+	if !m.teamPick.session.active {
+		t.Fatal("the first click must open the leader session")
+	}
+	m = teamKey(m, exitKey)
+
+	restarted := openTeamOverlay(t) // a new process over the same .reasonix/team
+	if restarted.teamPick == nil {
+		t.Fatal("the overlay must still open after a restart")
+	}
+	if restarted.teamPick.session.active {
+		t.Fatalf("a restart must not resurrect the exited session, got member %q",
+			restarted.teamPick.session.current)
+	}
+	if restarted.hideComposer() != true {
+		t.Error("parked on the management page, the overlay is modal")
+	}
+	// Still recoverable after the restart: t opens the session again, and that
+	// choice is what a further restart must honour.
+	restarted = teamKey(restarted, tea.KeyPressMsg{Code: tea.KeyEnter})
+	restarted = teamKey(restarted, tea.KeyPressMsg{Code: tea.KeyDown})
+	restarted = teamKey(restarted, tea.KeyPressMsg{Code: 't'})
+	if !restarted.teamPick.session.active {
+		t.Fatal("t must still open the session after a restart")
+	}
+	again := openTeamOverlay(t)
+	if !again.teamPick.session.active {
+		t.Fatal("after a deliberate t, a restart must auto-open the session again")
+	}
+}
+
+// TestPlainOverlayCloseKeepsAutoSession pins the boundary Ctrl+T must not cross:
+// esc and q navigate out of the overlay, they do not express "keep me out of the
+// team". Arming the suspension on the shared teardown made an ordinary look-and-
+// leave permanently downgrade the [ TEAM ] button.
+func TestPlainOverlayCloseKeepsAutoSession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []tea.KeyPressMsg
+	}{
+		{"esc out of the team list", []tea.KeyPressMsg{{Code: tea.KeyEsc}, {Code: tea.KeyEsc}}},
+		{"q then confirm", []tea.KeyPressMsg{{Code: tea.KeyEsc}, {Code: 'q'}, {Code: tea.KeyEnter}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeTeamFixture(t, leaderTeam())
+			m := openTeamOverlay(t)
+			for _, k := range tc.keys {
+				m = teamKey(m, k)
+			}
+			if m.teamPick != nil {
+				t.Fatal("the keys must close the overlay")
+			}
+			reopened := openTeamOverlay(t)
+			if !reopened.teamPick.session.active {
+				t.Fatal("a plain close must leave the leader auto-session intact")
+			}
+		})
 	}
 }

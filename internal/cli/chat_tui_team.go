@@ -44,19 +44,17 @@ func (m chatTUI) appendTeamButton(status string) string {
 // unambiguous, matching the [ TEAM ] entry's shape.
 func memberButtonText(id string) string { return "[ " + id + " ]" }
 
-// statusMemberIDs is the member row the status line offers: the open team's
-// roster, empty when no team overlay is up. Bounded by statusMemberButtonLimit
-// so a large team cannot push the rest of the status line off a narrow terminal.
+// statusMemberIDs is the member row the status line offers: the bound session's
+// roster, empty otherwise. Only a bound session can act on a click — the
+// management page is modal and hands the mouse back to the terminal — so
+// rendering the buttons there would show a row that cannot respond. Bounded by
+// statusMemberButtonLimit so a large team cannot push the rest of the status line
+// off a narrow terminal.
 func (m chatTUI) statusMemberIDs() []string {
-	if m.teamPick == nil {
+	if !m.teamSessionBound() {
 		return nil
 	}
 	ids := m.teamPick.session.members
-	if len(ids) == 0 {
-		for _, member := range m.teamPick.model.Members() {
-			ids = append(ids, member.ID)
-		}
-	}
 	if len(ids) > statusMemberButtonLimit {
 		ids = ids[:statusMemberButtonLimit]
 	}
@@ -166,10 +164,8 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 				p.errMsg = pickerErrMsg(err)
 				return nil
 			}
-			if !m.teamSuppressAutoSession {
-				if member := p.restoreSession(); member != "" {
-					return m.switchTeamMember(member)
-				}
+			if member := p.restoreSession(); member != "" {
+				return m.switchTeamMember(member)
 			}
 			return nil
 		}
@@ -402,15 +398,16 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		startTeamKey(p, view, msg.String())
 	case "t":
 		if memberListKeyAllowed(view, p) {
-			m.teamSuppressAutoSession = false // deliberate entry restores the auto-session
 			cmd = m.enterTeamSession()
 		}
 	case "k":
 		if memberListKeyAllowed(view, p) {
 			p.startLeaderReset()
 		}
-	case "x":
-		m.exitAllTeamSessions()
+	case teamExitAllKey:
+		if memberListKeyAllowed(view, p) {
+			m.exitAllTeamSessions()
+		}
 	default:
 		if configTeamKey(p, view, msg.String()) {
 			return m, nil
@@ -437,22 +434,21 @@ const (
 	teamExitAllHint = "x exit all"
 )
 
-// exitAllTeamSessions is the x key: the session window closes, the persisted
-// selection drops, and the suppression flag arms so the next [TEAM] click
-// lands on the management page instead of the leader's window (§11.4
-// auto-session suspends until a deliberate t). Members' backends stay
-// assembled — histories are not retired — and the leader property is
-// untouched: this exits sessions, it does not step anyone down.
+// exitAllTeamSessions is the x key: the session window closes and the
+// auto-session is suspended, so the next entry parks on the management page
+// until a deliberate t (§11.4). Members' backends stay assembled — histories are
+// not retired — and the leader property is untouched: this exits sessions, it
+// does not step anyone down. Unlike Ctrl+T it keeps the overlay open, which is
+// its only reason to exist; it says so in the transcript, because on the
+// management page there is no session left on screen for the change to show in.
 func (m *chatTUI) exitAllTeamSessions() {
 	p := m.teamPick
 	if p == nil {
 		return
 	}
+	p.suspendAutoSession()
 	m.closeSession()
-	if p.sessions != nil {
-		_ = p.sessions.WriteSelection(p.model.Name(), team.SessionSelection{Team: p.model.Name()})
-	}
-	m.teamSuppressAutoSession = true
+	m.notice("team " + p.model.Name() + ": auto-session off — [ TEAM ] parks here until t")
 	m.forceGotoBottom = true
 }
 

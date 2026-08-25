@@ -229,8 +229,10 @@ func TestStatusMemberButtonsRenderAndBind(t *testing.T) {
 }
 
 // TestStatusMemberButtonsAbsentWithoutTeam pins the scope: the plain chat shows
-// only [ TEAM ], and the row is bounded so a large team cannot crowd out the rest
-// of the status line.
+// only [ TEAM ], the management page shows no member row either — it is modal, so
+// the mouse belongs to the terminal there and the buttons could not respond — and
+// a bound session's row is bounded so a large team cannot crowd out the rest of
+// the status line.
 func TestStatusMemberButtonsAbsentWithoutTeam(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -242,13 +244,18 @@ func TestStatusMemberButtonsAbsentWithoutTeam(t *testing.T) {
 	}
 
 	big := make([]team.MemberSlot, 0, statusMemberButtonLimit+3)
-	for _, id := range []string{"m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"} {
-		big = append(big, team.MemberSlot{MemberID: id, Status: team.MemberStatusActive})
+	for i, id := range []string{"m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"} {
+		big = append(big, team.MemberSlot{MemberID: id, Leader: i == 0, Status: team.MemberStatusActive})
 	}
 	writeTeamFixture(t, team.Team{Name: "big", Template: big})
-	withTeam := openTeamOverlay(t)
+	withTeam := openTeamOverlay(t) // the leader's session opens, so the row renders
 	if got := len(withTeam.statusMemberIDs()); got != statusMemberButtonLimit {
 		t.Errorf("member row = %d buttons, want the %d cap", got, statusMemberButtonLimit)
+	}
+	// Back on the management page the row goes away with the session.
+	parked := teamKey(withTeam, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if got := parked.statusMemberIDs(); got != nil {
+		t.Errorf("the modal management page must offer no member buttons, got %v", got)
 	}
 }
 

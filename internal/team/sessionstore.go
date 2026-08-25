@@ -66,12 +66,17 @@ type SessionState struct {
 	State string `json:"state"` // runtime lifecycle state; see agentruntime
 }
 
-// SessionSelection is the team's persisted session-window selection (§4.2):
-// the currently selected member id, empty when no member is usable.
+// SessionSelection is the team's persisted session-window selection (§4.2): the
+// currently selected member id, empty when no member is usable, plus whether the
+// user deliberately left the team. Suspended is persisted rather than held in the
+// UI because an exit a relaunch undoes is not an exit; its zero value keeps a
+// fresh project — and every file written before the field existed — on the
+// auto-session default.
 type SessionSelection struct {
 	Document
-	Team     string `json:"team"`
-	MemberID string `json:"member_id,omitempty"` // empty = no selection (e.g. no leader)
+	Team      string `json:"team"`
+	MemberID  string `json:"member_id,omitempty"` // empty = no selection (e.g. no leader)
+	Suspended bool   `json:"suspended,omitempty"` // deliberate exit: the next entry parks on the management page
 }
 
 // TeamSessionStore is the member-context and session-selection store (route

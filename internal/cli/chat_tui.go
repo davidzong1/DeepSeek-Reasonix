@@ -322,8 +322,7 @@ type chatTUI struct {
 	quickPick *quickPicker
 	copyPick  *copyPicker
 	// teamPick is the team roster overlay opened by the TEAM button (nil when closed).
-	teamPick                *teamPicker
-	teamSuppressAutoSession bool // exit-all key: next [TEAM] click lands on the management page
+	teamPick *teamPicker
 	// teamBackends holds one assembled Agent backend per team member; binding a
 	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
 	teamBackends *teamBackends

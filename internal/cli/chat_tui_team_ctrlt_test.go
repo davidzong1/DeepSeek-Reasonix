@@ -33,8 +33,8 @@ func TestCtrlTExitsSessionClearsSelectionAndSuppresses(t *testing.T) {
 	if err != nil || sel.MemberID != "" {
 		t.Fatalf("Ctrl+T must clear the persisted selection, got %+v, %v", sel, err)
 	}
-	if !m.teamSuppressAutoSession {
-		t.Fatal("Ctrl+T must arm the auto-session suppression")
+	if !sel.Suspended {
+		t.Fatal("Ctrl+T must record the suspension on disk, so a restart honours it")
 	}
 }
 

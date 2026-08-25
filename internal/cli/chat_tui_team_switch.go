@@ -210,7 +210,7 @@ func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// Checked before every state owner, so no depth — an open field, an armed
 	// confirmation — can swallow the one key that leaves.
 	if msg.String() == teamExitKey {
-		m.exitTeam()
+		m.leaveTeamDeliberately()
 		return m, nil, true
 	}
 	if !m.teamSessionBound() {

@@ -566,12 +566,12 @@ func TestTeamExitAllParksNextTeamClickOnManagement(t *testing.T) {
 	if m.teamPick.session.active {
 		t.Fatal("x must exit the session window")
 	}
-	if !m.teamSuppressAutoSession {
-		t.Fatal("x must arm the auto-session suppression")
-	}
 	sel, err := m.teamPick.sessions.ReadSelection("alpha")
 	if err != nil || sel.MemberID != "" {
 		t.Fatalf("x must clear the persisted selection, got %+v err=%v", sel, err)
+	}
+	if !sel.Suspended {
+		t.Fatal("x must record the suspension on disk, so a restart honours it")
 	}
 	doc := readStoredTeamDoc(t)
 	if !doc.Teams[0].Template[0].Leader {
@@ -588,7 +588,7 @@ func TestTeamExitAllParksNextTeamClickOnManagement(t *testing.T) {
 	if !m.teamPick.session.active {
 		t.Fatal("t must open the session from the suppressed management page")
 	}
-	if m.teamSuppressAutoSession {
-		t.Fatal("a deliberate t must clear the suppression flag")
+	if sel, err := m.teamPick.sessions.ReadSelection("alpha"); err != nil || sel.Suspended {
+		t.Fatalf("a deliberate t must clear the persisted suspension, got %+v err=%v", sel, err)
 	}
 }

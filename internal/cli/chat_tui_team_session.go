@@ -81,7 +81,10 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 func (p *teamPicker) restoreSession() string {
 	if p.sessions != nil {
 		if teamName := p.model.Name(); teamName != "" {
-			if sel, err := p.sessions.ReadSelection(teamName); err == nil && sel.MemberID != "" {
+			if sel, err := p.sessions.ReadSelection(teamName); err == nil {
+				if sel.Suspended {
+					return "" // left deliberately: park on the management page
+				}
 				if slot, ok := p.slotOf(sel.MemberID); ok && slot.IsLeader() {
 					return p.openSession(sel.MemberID)
 				}
@@ -178,15 +181,14 @@ const (
 	teamExitHint = "Ctrl+T exit team"
 )
 
-// exitTeam leaves the whole team UI in one step, from any depth: the bound member
-// is unbound too, so the window is back on the chat's own backend and its
+// exitTeam tears the whole team UI down in one step, from any depth: the bound
+// member is unbound too, so the window is back on the chat's own backend and its
 // history. Esc still unwinds one layer at a time; this is the way straight out.
 // Member backends survive, as they do across any overlay close.
 //
-// Like the x key, Ctrl+T drops the persisted selection and arms the suppression
-// flag: the next [TEAM] click lands on the management page, and a deliberate t
-// restores the auto-session (§11.4). The two exits differ only in that x parks
-// on the management page while Ctrl+T closes the overlay outright.
+// Teardown only. Whether the next entry reopens a session is a separate
+// decision, persisted by suspendAutoSession — this function runs on every close,
+// including a plain esc out of the team list, which must not change it.
 func (m *chatTUI) exitTeam() {
 	if m.teamPick == nil {
 		return
@@ -196,14 +198,63 @@ func (m *chatTUI) exitTeam() {
 		m.quickPick = nil // it lists the bound member's models: it leaves with the team
 	}
 	m.teamPick.closeTeamOverlay()
-	if m.teamPick.sessions != nil {
-		_ = m.teamPick.sessions.WriteSelection(m.teamPick.model.Name(), team.SessionSelection{Team: m.teamPick.model.Name()})
-	}
-	m.teamSuppressAutoSession = true
 	m.teamPick = nil
 	// The overlay's rows go back to the transcript, so the tail is re-pinned:
 	// keeping the old offset would leave the newest output off-screen.
 	m.forceGotoBottom = true
+}
+
+// leaveTeamDeliberately is the Ctrl+T contract: the user said "get me out of the
+// team", which is both a teardown and a preference — the next [ TEAM ] click
+// parks on the management page, across restarts, until a deliberate t.
+func (m *chatTUI) leaveTeamDeliberately() {
+	if m.teamPick == nil {
+		return
+	}
+	m.teamPick.suspendAutoSession()
+	m.exitTeam()
+}
+
+// suspendAutoSession persists "do not reopen a session here" for the team being
+// left. Disk, not a field: the flag has to outlive the process, or relaunching
+// silently re-enters the session the user just left. A deliberate entry clears it
+// by writing its own selection.
+func (p *teamPicker) suspendAutoSession() {
+	if p.sessions == nil {
+		return
+	}
+	teamName := p.exitingTeamName()
+	if teamName == "" {
+		return
+	}
+	_ = p.sessions.WriteSelection(teamName, team.SessionSelection{Team: teamName, Suspended: true})
+}
+
+// exitingTeamName is the team a leave applies to: the bound session's team, else
+// the focused one. The selection is keyed by team name, so writing the preference
+// under the wrong key would suspend a team the user never left. Read it before
+// closeSession — that zeroes the session, teamName included.
+func (p *teamPicker) exitingTeamName() string {
+	if p.session.teamName != "" {
+		return p.session.teamName
+	}
+	return p.model.Name()
+}
+
+// clearSelectedMember drops the persisted member while leaving the auto-session
+// preference alone: k removes a leader, it does not decide whether the next entry
+// opens a session.
+func (p *teamPicker) clearSelectedMember(teamName string) {
+	if p.sessions == nil {
+		return
+	}
+	sel, err := p.sessions.ReadSelection(teamName)
+	if err != nil {
+		return // unreadable: leave the file alone rather than reset the preference
+	}
+	_ = p.sessions.WriteSelection(teamName, team.SessionSelection{
+		Team: teamName, Suspended: sel.Suspended,
+	})
 }
 
 // sessionSlot returns the current member's persisted slot for the session
