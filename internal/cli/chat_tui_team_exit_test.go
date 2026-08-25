@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/provider"
 	"reasonix/internal/team"
+	"reasonix/internal/team/tui"
 )
 
 // exitKey is the chord as a terminal sends it: no Text, since ctrl+t carries no
@@ -162,5 +163,53 @@ func TestTeamExitKeyIsAdvertisedAndInert(t *testing.T) {
 	// Outside the overlay the chord belongs to the composer again.
 	if _, _, consumed := m.handleTeamKey(exitKey); consumed {
 		t.Error("with no overlay open the exit key must not be consumed")
+	}
+}
+
+// TestTeamExitDropsSelectionAndParksNextClick pins the exit's persistence
+// half: Ctrl+T drops the persisted selection and arms the suppression flag, so
+// the next [TEAM] click lands on the management page instead of a member's
+// window (§11.4) — a deliberate t restores the auto-session. x and Ctrl+T
+// share the semantics; they differ only in that x parks on the management page
+// while Ctrl+T closes the overlay outright.
+func TestTeamExitDropsSelectionAndParksNextClick(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	m := openTeamOverlay(t) // auto-lands on the leader's session window
+	if !m.teamPick.session.active {
+		t.Fatal("the [TEAM] click must open the leader's session window")
+	}
+	if err := m.teamPick.sessions.WriteSelection("alpha", team.SessionSelection{Team: "alpha", MemberID: "lead"}); err != nil {
+		t.Fatal(err)
+	}
+	sessions := m.teamPick.sessions // outlives the overlay for the read-back
+
+	m = teamKey(m, exitKey)
+	if m.teamPick != nil {
+		t.Fatal("the exit key must close the whole overlay")
+	}
+	sel, err := sessions.ReadSelection("alpha")
+	if err != nil || sel.MemberID != "" {
+		t.Fatalf("the exit must clear the persisted selection, got %+v err=%v", sel, err)
+	}
+	if !m.teamSuppressAutoSession {
+		t.Fatal("the exit must arm the auto-session suppression")
+	}
+	// The suppressed click lands on the management page.
+	m.onTeamButtonClick()
+	if m.teamPick.session.active {
+		t.Fatal("the suppressed click must land on the management page, not the session")
+	}
+	if got := m.teamPick.model.Mode(); got != tui.ModeTeams {
+		t.Fatalf("the suppressed click must land on the team list, got mode %q", got)
+	}
+	// A deliberate t restores the auto-session.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // into the roster
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatal("t must open the session from the suppressed management page")
+	}
+	if m.teamSuppressAutoSession {
+		t.Fatal("a deliberate t must clear the suppression flag")
 	}
 }

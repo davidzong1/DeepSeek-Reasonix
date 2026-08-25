@@ -136,6 +136,19 @@ func (r *teamBackends) releaseTeam(teamName string) {
 	}
 }
 
+// liveTeamCount counts the team's assembled backends; the leader step-down
+// uses it to prove the stop completed before clearing anything.
+func (r *teamBackends) liveTeamCount(teamName string) int {
+	prefix := teamName + "\x00"
+	n := 0
+	for key := range r.live {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			n++
+		}
+	}
+	return n
+}
+
 // closeAll retires every backend; the registry is reusable afterwards.
 func (r *teamBackends) closeAll() {
 	for _, key := range slices.Clone(r.order) {

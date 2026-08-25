@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
@@ -21,22 +19,22 @@ const (
 	memberEditFieldEdit                // editing one field; enter confirms back to the list
 )
 
-// memberEditFields is the member property editor's field list. Each row maps
-// to one TeamStore setter; the picker fields (leader/status/proxy/agent) are
-// closed choice sets, role is free text validated at save (§6).
-var memberEditFields = []string{"role", "leader", "status", "proxy", "agent"}
+// memberEditFields is the member property editor's editable field list. Role
+// and Leader are read-only rows — assignment flows through l on the roster and
+// the store's redefine API stays untouched — so only the closed choice sets
+// status/proxy/agent are editable here; role is free text validated at save
+// (§6).
+var memberEditFields = []string{"status", "proxy", "agent"}
 
 // memberEditState is the member property editor: the draft slot seeded from
-// the focused member, the field cursor, the open field's edit buffer and
-// picker options, and the refusal message. The draft publishes field by field
-// on s, so an untouched row never writes.
+// the focused member, the field cursor, the open field's option list, and the
+// refusal message. The draft publishes field by field on s, so an untouched
+// row never writes.
 type memberEditState struct {
 	kind   memberEditKind
 	draft  team.MemberSlot
-	edit   int      // field cursor into memberEditFields
-	buf    string   // role text buffer
-	opts   []string // picker options of the open picker field
-	pick   int      // picker cursor into opts
+	edit   int // field cursor into memberEditFields
+	list   optionList
 	errMsg string
 }
 
@@ -91,59 +89,29 @@ func moveMemberEditCursor(p *teamPicker, d int) {
 	p.memberEdit.edit = min(max(p.memberEdit.edit+d, 0), len(memberEditFields)-1)
 }
 
-// openMemberEditField opens the focused field: the role row arms its text
-// buffer, every other row a picker preselected on the current value. Nothing
-// is written until s.
+// openMemberEditField opens the focused field into its option list, preselected
+// on the current value. Nothing is written until s.
 func (p *teamPicker) openMemberEditField() {
 	me := &p.memberEdit
 	field := memberEditFields[me.edit]
 	me.kind = memberEditFieldEdit
-	if field == "role" {
-		me.buf = string(me.draft.Role)
-		return
-	}
-	me.opts = p.memberPickerOptions(field)
-	me.pick = memberPickerInitial(field, me.draft, me.opts)
+	me.list.setOptions(optionSingle, p.memberPickerOptions(field), memberPickerInitialID(field, me.draft))
 }
 
-// handleMemberFieldKey routes a keypress inside one open field: pickers cycle
-// with up/down and confirm with enter, the role field types freely, esc
-// discards this field's edit with zero writes. The field owns every key while
-// it is open, so "s"/"t" are ordinary letters here.
+// handleMemberFieldKey routes a keypress inside one open field: the option list
+// moves with up/down, confirms with enter and discards with esc — zero writes.
+// The field owns every key while it is open, so "s"/"t" are ordinary letters
+// here and nothing typed ever reaches a buffer.
 func handleMemberFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	me := &p.memberEdit
-	field := memberEditFields[me.edit]
-	if field != "role" {
-		n := len(me.opts)
-		switch msg.String() {
-		case "up", "left":
-			me.pick = (me.pick + n - 1) % n
-		case "down", "j", "right":
-			me.pick = (me.pick + 1) % n
-		case "enter":
-			p.commitMemberField()
-		case "esc", "ctrl+c":
-			me.kind = memberEditFieldList
-			me.opts, me.errMsg = nil, ""
-		}
-		return true
-	}
-	switch msg.String() {
-	case "enter":
+	_, action := me.list.handleKey(msg)
+	switch action {
+	case optionListCommit:
 		p.commitMemberField()
-	case "esc", "ctrl+c":
+	case optionListCancel:
 		me.kind = memberEditFieldList
-		me.buf, me.errMsg = "", ""
-	case "backspace":
-		if me.buf != "" {
-			me.buf = strings.TrimSuffix(me.buf, lastRune(me.buf))
-		}
-	default:
-		if msg.String() == "space" {
-			me.buf += " "
-		} else if printableKey(msg.String()) {
-			me.buf += msg.String()
-		}
+		me.list = optionList{}
+		me.errMsg = ""
 	}
 	return true
 }
@@ -151,79 +119,59 @@ func handleMemberFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 // memberPickerOptions returns the closed choice set of a picker field. The
 // agent field's options are the pool entries as loaded plus "team default"
 // for unbind; the rest are fixed.
-func (p *teamPicker) memberPickerOptions(field string) []string {
+func (p *teamPicker) memberPickerOptions(field string) []option {
 	switch field {
-	case "leader":
-		return []string{"on", "off"}
 	case "status":
-		return []string{string(team.MemberStatusActive), string(team.MemberStatusDisabled), string(team.MemberStatusArchived)}
+		return []option{
+			{id: string(team.MemberStatusActive)},
+			{id: string(team.MemberStatusDisabled)},
+			{id: string(team.MemberStatusArchived)},
+		}
 	case "proxy":
-		return []string{"inherit", "on", "off"}
+		return []option{{id: "inherit"}, {id: "on"}, {id: "off"}}
 	default: // agent
-		opts := []string{"team default"}
+		opts := []option{{id: "", label: "team default"}}
 		users, err := p.store.ListAgentUsers()
 		if err == nil {
 			for _, u := range users {
-				opts = append(opts, u.UserID)
+				opts = append(opts, option{id: u.UserID})
 			}
 		}
 		return opts
 	}
 }
 
-// memberPickerInitial maps the slot's current value onto the picker cursor.
-func memberPickerInitial(field string, slot team.MemberSlot, opts []string) int {
+// memberPickerInitialID maps the slot's current value onto the option id the
+// picker opens with: the persisted value, or "team default" when a referenced
+// pool entry no longer exists (the picker then lands on the unbind row).
+func memberPickerInitialID(field string, slot team.MemberSlot) string {
 	switch field {
-	case "leader":
-		if slot.IsLeader() {
-			return 0
-		}
-		return 1
 	case "status":
-		for i, o := range opts {
-			if o == string(slot.Status) {
-				return i
-			}
-		}
+		return string(slot.Status)
 	case "proxy":
 		if slot.ProxyEnabled == nil {
-			return 0
+			return "inherit"
 		}
 		if *slot.ProxyEnabled {
-			return 1
+			return "on"
 		}
-		return 2
+		return "off"
 	default: // agent
-		for i, o := range opts {
-			if o == slot.AgentUserRef {
-				return i
-			}
-		}
+		return slot.AgentUserRef
 	}
-	return 0
 }
 
 // commitMemberField validates and merges the open field into the draft, then
-// returns to the field list. The pickers merge their highlighted option; the
-// role field validates free text here so the refusal lands on the row, not
-// at save time.
+// returns to the field list. The option list merges its committed id.
 func (p *teamPicker) commitMemberField() {
 	me := &p.memberEdit
 	field := memberEditFields[me.edit]
+	id, _ := me.list.choice()
 	switch field {
-	case "role":
-		role := team.RoleID(strings.TrimSpace(me.buf))
-		if err := team.ValidateRole(string(role)); err != nil {
-			me.errMsg = pickerErrMsg(err)
-			return
-		}
-		me.draft.Role = role
-	case "leader":
-		me.draft.Leader = me.opts[me.pick] == "on"
 	case "status":
-		me.draft.Status = team.MemberStatus(me.opts[me.pick])
+		me.draft.Status = team.MemberStatus(id)
 	case "proxy":
-		switch me.opts[me.pick] {
+		switch id {
 		case "on":
 			on := true
 			me.draft.ProxyEnabled = &on
@@ -234,14 +182,11 @@ func (p *teamPicker) commitMemberField() {
 			me.draft.ProxyEnabled = nil
 		}
 	default: // agent
-		if me.opts[me.pick] == "team default" {
-			me.draft.AgentUserRef = ""
-		} else {
-			me.draft.AgentUserRef = me.opts[me.pick]
-		}
+		me.draft.AgentUserRef = id
 	}
 	me.kind = memberEditFieldList
-	me.buf, me.opts, me.errMsg = "", nil, ""
+	me.list = optionList{}
+	me.errMsg = ""
 }
 
 // saveMemberEdit is the s key: every changed property publishes through its
@@ -273,7 +218,8 @@ func (p *teamPicker) saveMemberEdit() {
 		return
 	}
 	me.kind = memberEditFieldList
-	me.buf, me.opts, me.errMsg = "", nil, ""
+	me.list = optionList{}
+	me.errMsg = ""
 	if fresh, ok := p.slotOf(member.ID); ok {
 		me.draft = fresh
 	}

@@ -319,10 +319,7 @@ func TestTeamMemberEditStatusPersists(t *testing.T) {
 		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: 'e'}) // compact roster → member editor
-	// role → leader → status
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: 'e'})          // compact roster → member editor
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the status picker
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // active → disabled
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
@@ -394,34 +391,6 @@ func TestTeamPickerFirstWriteMigratesLegacyTeamsJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(".reasonix", "team", team.TeamsLegacyFile)); err != nil {
 		t.Fatalf("legacy teams.json should remain as fallback: %v", err)
-	}
-}
-
-// TestTeamMemberEditLeaderPersists pins the member editor's leader field: e
-// opens the editor, the leader picker flips off → on, s publishes the draft to
-// team.json. t no longer toggles the marker — it opens the session (leader
-// only), and the leader property is an editor field now.
-func TestTeamMemberEditLeaderPersists(t *testing.T) {
-	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
-		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
-	}})
-	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: 'e'}) // compact roster → member editor
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the leader picker (off)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // off → on
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
-	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Leader: on") {
-		t.Fatalf("the draft should render the new leader value, got:\n%s", got)
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'}) // save the draft
-	doc := readStoredTeamDoc(t)
-	if !doc.Teams[0].Template[0].Leader {
-		t.Fatal("s should persist the leader flag in team.json")
-	}
-	// The roster row shows the leader marker after the save.
-	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Leader: on") {
-		t.Fatalf("the editor should keep showing the persisted value, got:\n%s", got)
 	}
 }
 

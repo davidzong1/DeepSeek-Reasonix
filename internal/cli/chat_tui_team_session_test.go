@@ -7,6 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"reasonix/internal/control"
+	"reasonix/internal/event"
 	"reasonix/internal/team"
 )
 
@@ -94,37 +96,52 @@ func TestTeamSessionReopenLandsOnLeader(t *testing.T) {
 	}
 }
 
-// TestTeamRosterLeaderToggleAndSessionGate pins the roster's leader shortcut
-// (§5): l flips the focused member's standalone leader through the store's CAS
-// setter, and the t gate reads the same registry field — a just-assigned
-// leader opens the session, a just-cleared one is refused.
-func TestTeamRosterLeaderToggleAndSessionGate(t *testing.T) {
+// TestTeamRosterLeaderAssignAndSessionGate pins the roster's leader
+// shortcut (§5): l assigns the focused member only when the team has no
+// leader — with one present it refuses with the holder's id — and the t
+// gate reads the same registry field, so a just-assigned leader opens the
+// session and a non-leader is refused.
+func TestTeamRosterLeaderAssignAndSessionGate(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t)                         // id-sorted: alice first, lead second
-	m = teamKey(m, tea.KeyPressMsg{Code: 'l'}) // assign alice as leader
+	m := openRoster(t) // id-sorted: alice first, lead second
+	m = teamKey(m, tea.KeyPressMsg{Code: 'l'})
+	if m.teamPick.errMsg == "" {
+		t.Fatal("l with a leader present must refuse")
+	}
 	doc := readStoredTeamDoc(t)
-	if !doc.Teams[0].Template[1].Leader {
-		t.Fatal("l should assign the focused member as leader")
-	}
 	if !doc.Teams[0].Template[0].Leader {
-		t.Fatal("l must not touch other members")
+		t.Fatal("l must not touch the existing leader")
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'}) // a leader can open the session
-	if !m.teamPick.session.active {
-		t.Fatal("t from a just-assigned leader should open the session")
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = teamKey(m, tea.KeyPressMsg{Code: 'l'}) // clear it again
-	doc = readStoredTeamDoc(t)
-	if doc.Teams[0].Template[1].Leader {
-		t.Fatal("l should clear the leader marker")
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'}) // alice is not the leader
 	if m.teamPick.session.active {
-		t.Fatal("t from a cleared member must not open the session")
+		t.Fatal("t from a non-leader must not open the session")
 	}
 	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Only the leader can start a team session") {
-		t.Fatalf("cleared leader t should render the refusal, got:\n%s", got)
+		t.Fatalf("non-leader t should render the refusal, got:\n%s", got)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus lead
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatal("t from the leader should open the session")
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // back to the team list
+
+	// A leaderless team accepts the assignment, and the t gate opens for it.
+	writeTeamFixture(t, team.Team{Name: "alpha", Template: []team.MemberSlot{
+		{MemberID: "alice", Role: team.RoleTester, Status: team.MemberStatusActive},
+	}})
+	m = openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: 'l'})
+	if m.teamPick.errMsg != "" {
+		t.Fatalf("l on a leaderless roster must assign, got %q", m.teamPick.errMsg)
+	}
+	doc = readStoredTeamDoc(t)
+	if !doc.Teams[0].Template[0].Leader {
+		t.Fatal("l should assign the focused member as leader")
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatal("t from a just-assigned leader should open the session")
 	}
 }
 
@@ -214,42 +231,6 @@ func TestTeamLeaderResetNonLeaderRefused(t *testing.T) {
 	}
 }
 
-// TestTeamMemberEditRolePersistsAndClears pins the role field: free text
-// types into the role row, s persists it, and an empty role clears back to
-// unconfigured.
-func TestTeamMemberEditRolePersistsAndClears(t *testing.T) {
-	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the editor on alice
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the role field (prefilled "coder")
-	for range "coder" {
-		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	}
-	for _, r := range "architect" {
-		m = teamKey(m, tea.KeyPressMsg{Code: r})
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the list
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save
-	doc := readStoredTeamDoc(t)
-	if got := doc.Teams[0].Template[1].Role; got != "architect" {
-		t.Fatalf("s should persist the edited role, got %q", got)
-	}
-	// Clear it: open the role field, empty the prefilled value, save.
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	for range "architect" {
-		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
-	if got := m.teamPick.memberEdit.kind; got != memberEditFieldList {
-		t.Fatalf("s should return to the field list, kind = %v", got)
-	}
-	doc = readStoredTeamDoc(t)
-	if got := doc.Teams[0].Template[1].Role; got != "" {
-		t.Fatalf("an empty role should clear, got %q", got)
-	}
-}
-
 // TestTeamMemberEditEscZeroWrite pins the cancel path: esc from the editor
 // discards the draft and team.json stays byte-identical.
 func TestTeamMemberEditEscZeroWrite(t *testing.T) {
@@ -257,7 +238,7 @@ func TestTeamMemberEditEscZeroWrite(t *testing.T) {
 	before := storedTeamBytes(t)
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the editor
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the role field
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the first field
 	m = typeTeamName(m, "architect")
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // discard the field edit
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // leave the editor
@@ -266,5 +247,48 @@ func TestTeamMemberEditEscZeroWrite(t *testing.T) {
 	}
 	if data := storedTeamBytes(t); string(data) != string(before) {
 		t.Fatal("cancelled member edit must not write team.json")
+	}
+}
+
+// TestTeamRestoreResumesPersistedLeaderSelection pins the [TEAM] click's
+// restore: a persisted selection whose member is still the leader resumes that
+// member's window, while an absent, non-leader, or stale selection falls back
+// to the focused team's first leader — the session gate is the leader property,
+// mirroring the t key.
+func TestTeamRestoreResumesPersistedLeaderSelection(t *testing.T) {
+	writeTeamFixture(t, team.Team{Name: "alpha", Template: []team.MemberSlot{
+		{MemberID: "lead1", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
+		{MemberID: "lead2", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
+		{MemberID: "alice", Role: team.RoleCoder, Status: team.MemberStatusActive},
+	}})
+	for _, tc := range []struct {
+		name      string
+		selection team.SessionSelection // empty MemberID = leave the file absent
+		want      string
+	}{
+		{"absent selection opens the first leader", team.SessionSelection{}, "lead1"},
+		{"persisted leader resumes its window", team.SessionSelection{Team: "alpha", MemberID: "lead2"}, "lead2"},
+		{"persisted non-leader falls back to the first leader", team.SessionSelection{Team: "alpha", MemberID: "alice"}, "lead1"},
+		{"persisted stale member falls back to the first leader", team.SessionSelection{Team: "alpha", MemberID: "ghost"}, "lead1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := control.New(control.Options{})
+			m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			m = next.(chatTUI)
+			m.onTeamButtonClick() // open once: the sessions seam is created here
+			if tc.selection.MemberID != "" {
+				if err := m.teamPick.sessions.WriteSelection("alpha", tc.selection); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m.onTeamButtonClick() // reopen: restoreSession decides the window
+			if !m.teamPick.session.active {
+				t.Fatal("the [TEAM] click must open a session window")
+			}
+			if got := m.teamPick.session.current; got != tc.want {
+				t.Fatalf("restored window is %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -72,8 +72,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 	model := completionFlag("--model", cliCompletionModelValue)
 	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
 	effort := completionFlag("--effort", cliCompletionStaticValue, "auto", "low", "medium", "high", "max")
-	permissionMode := completionFlag("--permission-mode", cliCompletionStaticValue,
-		"manual", "ask", "auto", "acceptEdits", "dontAsk", "plan", "bypassPermissions")
+	permissionMode := completionFlag("--permission-mode", cliCompletionStaticValue, "manual", "ask", "auto", "acceptEdits", "dontAsk", "plan", "bypassPermissions")
 	help := completionFlag("--help -h", cliCompletionNoValue)
 
 	interactiveFlags := []cliCompletionFlag{

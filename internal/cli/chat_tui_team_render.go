@@ -8,6 +8,8 @@ import (
 
 	"reasonix/internal/team"
 	"reasonix/internal/team/tui"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // renderTeamPicker renders the team overlay: the team list, a team's member
@@ -22,7 +24,7 @@ func (m chatTUI) renderTeamPicker() string {
 		return ""
 	}
 	if p.pool.active {
-		return p.renderTeamPool(m.width)
+		return p.renderTeamPool(m.width, optionListHeight(m.height))
 	}
 	if p.session.active {
 		if p.sessionPanelHidden() {
@@ -49,7 +51,7 @@ func (m chatTUI) renderTeamPicker() string {
 	case tui.ModeTeams:
 		p.renderTeamList(view, &b)
 	case tui.ModeContext:
-		p.renderMemberEdit(view, &b, w)
+		p.renderMemberEdit(view, &b, w, optionListHeight(m.height))
 	case tui.ModeQuit:
 		b.WriteString(dim("Leave team view? Esc cancels · Enter or q confirms"))
 	default:
@@ -73,7 +75,7 @@ func teamPickerTitle(view *tui.Model) string {
 // renderTeamPool renders the agent-user pool screen (§6.2): every entry with
 // its provider and model, the add/delete prompts, or the empty hint. An
 // unreadable pool renders its message instead of a list.
-func (p *teamPicker) renderTeamPool(width int) string {
+func (p *teamPicker) renderTeamPool(width, listH int) string {
 	w := max(width, 10)
 	var b strings.Builder
 	b.WriteString(accent("Agent users") + "\n")
@@ -87,7 +89,7 @@ func (p *teamPicker) renderTeamPool(width int) string {
 		b.WriteString(dim("Enter delete · Esc/q cancel"))
 		return choicePanelStyle.Width(w).Render(b.String())
 	case poolInputEdit, poolInputEditField:
-		return p.renderPoolEdit(w)
+		return p.renderPoolEdit(w, listH)
 	}
 	if p.pool.errMsg != "" {
 		b.WriteString(p.pool.errMsg + "\n")
@@ -145,7 +147,7 @@ func (p *teamPicker) renderPoolDetail(w int, u team.AgentUser) string {
 // plaintext — the user's chosen contract overrides the default
 // mask-everything policy on this screen — so a key edit is visible while
 // typing. The draft renders, unsaved; only s persists it.
-func (p *teamPicker) renderPoolEdit(w int) string {
+func (p *teamPicker) renderPoolEdit(w, listH int) string {
 	var b strings.Builder
 	u := p.pool.draft
 	if p.pool.adding {
@@ -165,7 +167,7 @@ func (p *teamPicker) renderPoolEdit(w int) string {
 		val := poolFieldValue(u, i)
 		if p.pool.kind == poolInputEditField && i == p.pool.edit {
 			if f == team.AgentUserFieldProvider {
-				val = poolProviderLabel(&p.pool) + " ▏"
+				val = p.pool.list.currentLabel() + " ▏"
 			} else {
 				val = p.pool.buf + "▏"
 			}
@@ -182,7 +184,8 @@ func (p *teamPicker) renderPoolEdit(w int) string {
 	}
 	if p.pool.kind == poolInputEditField {
 		if poolEditFields[p.pool.edit] == team.AgentUserFieldProvider {
-			b.WriteString(dim("↑/↓ choose · Enter confirm · Esc cancel"))
+			p.pool.list.resize(listH - 3)
+			b.WriteString(p.pool.list.view(w, listH))
 		} else {
 			b.WriteString(dim("Enter confirm · Esc cancel"))
 		}
@@ -311,7 +314,7 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 
 // rosterHelp is the roster's single help block: one line while the panel is
 // wide enough, word-wrapped at the edge when it is not.
-const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l leader on/off · Esc back · " +
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
 	teamExitHint + " · q quit"
 
 // renderRoster renders the compact member list: one row per slot with the
@@ -351,12 +354,12 @@ func compactMemberSummary(member team.Member, status string) string {
 }
 
 // renderMemberEdit renders the member property editor (§5): the member id
-// header with its runtime state, the editable field list with its cursor on
-// the left and a preview column of the same draft on the right. Only s
-// persists; esc returns with zero writes. The agent fields stay backend-only
-// — the editor's rows are the persisted template properties, never launch
-// configuration.
-func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int) {
+// header with its runtime state, the read-only Role/Leader rows, and the
+// editable field list with its cursor on the left and a preview column of the
+// same draft on the right. Only s persists; esc returns with zero writes. The
+// agent fields stay backend-only — the editor's rows are the persisted
+// template properties, never launch configuration.
+func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, listH int) {
 	member, ok := view.Focused()
 	if !ok {
 		return
@@ -364,6 +367,17 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int
 	me := &p.memberEdit
 	b.WriteString("  " + accent(member.ID) + "\n")
 	b.WriteString(dim("  State: ") + string(member.State) + "\n")
+	// Role and Leader are read-only here — assignment flows through l on the
+	// roster, step-down through k — so they render above the editable rows.
+	role := "-"
+	if me.draft.Role != "" {
+		role = string(me.draft.Role)
+	}
+	leader := "off"
+	if me.draft.IsLeader() {
+		leader = "on"
+	}
+	b.WriteString(dim("  Role: ") + role + dim("   Leader: ") + leader + "\n")
 	if me.errMsg != "" {
 		b.WriteString(me.errMsg + "\n")
 	}
@@ -375,11 +389,7 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int
 	for i, f := range memberEditFields {
 		val := memberFieldValue(me.draft, i)
 		if me.kind == memberEditFieldEdit && i == me.edit {
-			if f == "role" {
-				val = me.buf + "▏"
-			} else {
-				val = me.opts[me.pick] + " ▏"
-			}
+			val = me.list.currentLabel() + " ▏"
 		}
 		mark := "  "
 		if i == me.edit {
@@ -389,11 +399,8 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w int
 		b.WriteString(padColumn(left, col) + dim("│ "+truncateCells(preview[i], col)) + "\n")
 	}
 	if me.kind == memberEditFieldEdit {
-		if memberEditFields[me.edit] == "role" {
-			b.WriteString(dim("Enter confirm · Esc cancel"))
-		} else {
-			b.WriteString(dim("↑/↓ choose · Enter confirm · Esc cancel"))
-		}
+		me.list.resize(listH - 3)
+		b.WriteString(me.list.view(w, listH))
 	} else {
 		b.WriteString(dim("↑/↓ field · Enter/Space edit · s save · 🌟 t Enter_session · a/d member") + "\n")
 		b.WriteString(dim("b bind · l leader-mode · Esc back · " + teamExitHint + " · q quit"))
@@ -551,4 +558,13 @@ func rosterSize(n int) string {
 		return "1 member"
 	}
 	return strconv.Itoa(n) + " members"
+}
+
+// overlayMouseMode keeps the team roster mouse-captured only while open,
+// falling back to the chat's native scrollback selection otherwise.
+func (m chatTUI) overlayMouseMode() tea.MouseMode {
+	if m.teamOverlayModal() || m.mouseCaptureOff {
+		return tea.MouseModeNone
+	}
+	return tea.MouseModeCellMotion
 }

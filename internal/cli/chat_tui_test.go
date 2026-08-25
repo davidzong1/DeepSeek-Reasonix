@@ -157,10 +157,8 @@ func saveTestImageAttachment(t *testing.T, root string) string {
 	return path
 }
 
-// TestEscCancelsRunningTurnWithCompletionOpen reproduces the report that Esc
-// (unlike Ctrl+C) did not stop a running turn: an active completion menu
-// captured Esc to close itself and returned before reaching the running-turn
-// cancel branch, while Ctrl+C — not in the completion switch — fell through.
+// TestEscCancelsRunningTurnWithCompletionOpen: an open completion menu must
+// not swallow Esc before the running-turn cancel branch, as it once did.
 func TestEscCancelsRunningTurnWithCompletionOpen(t *testing.T) {
 	r := &blockingTurnRunner{started: make(chan struct{})}
 	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
@@ -268,10 +266,8 @@ func TestCompletionMenuFixedWidth(t *testing.T) {
 	}
 }
 
-// TestCompletionMenuPadsWithNonBreakingSpaces verifies the fixed-width padding
-// is not ordinary ASCII space. Ultraviolet treats trailing ASCII spaces as
-// clearable cells and may emit EL/ECH erase sequences; mintty can leave stale
-// halves of CJK glyphs when those sequences clear Chinese skill descriptions.
+// TestCompletionMenuPadsWithNonBreakingSpaces: padding is U+00A0, not ASCII
+// space — trailing ASCII spaces trip Ultraviolet's clear-cell handling.
 func TestCompletionMenuPadsWithNonBreakingSpaces(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -298,10 +294,8 @@ func TestCompletionMenuPadsWithNonBreakingSpaces(t *testing.T) {
 	}
 }
 
-// TestTranscriptViewportSizing proves the viewport tracks the terminal size and
-// gets the rows left over after the pinned bottom region (input box + the one
-// available information row = 4 with an empty 1-line composer and no Git or
-// telemetry), and is fed the committed transcript.
+// TestTranscriptViewportSizing: the viewport fills the rows left over after
+// the pinned bottom region and is fed the committed transcript.
 func TestTranscriptViewportSizing(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -323,11 +317,8 @@ func TestTranscriptViewportSizing(t *testing.T) {
 	}
 }
 
-// TestStatusLineWrapAccounting proves that computeStatusLineCount correctly
-// predicts the rendered row count of the status block (working + mode/state line
-// + data line) when wrapping is triggered on a narrow terminal, and that
-// bottomRows reserves the right height so the viewport fills the screen without
-// overlap.
+// TestStatusLineWrapAccounting: computeStatusLineCount must match the
+// rendered status-block rows when wrapping on a narrow terminal.
 func TestStatusLineWrapAccounting(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 30)
@@ -380,10 +371,8 @@ func TestStatusLineWrapAccounting(t *testing.T) {
 	}
 }
 
-// TestStatusLineRenderedHeightMatchesBudget proves that the actual rendered
-// line count of View()'s bottom area matches what bottomRows() predicts,
-// specifically at the CJK 2-char-overflow boundary where an off-by-one would
-// hide the bottom row of the viewport.
+// TestStatusLineRenderedHeightMatchesBudget: View()'s bottom area matches
+// bottomRows(), including the CJK 2-char-overflow boundary.
 func TestStatusLineRenderedHeightMatchesBudget(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 46)
@@ -946,10 +935,8 @@ func TestModalPanelsHideComposerBox(t *testing.T) {
 	}
 }
 
-// TestRewindPickerWindowsLongSession verifies the Esc-Esc turn list windows
-// long sessions (one row per turn) so the overlay cannot outgrow the terminal:
-// at most quickPickerMaxVisible rows render, with ↑/↓ more markers pointing at
-// the hidden turns and the window following the selection.
+// TestRewindPickerWindowsLongSession: the Esc-Esc turn list caps at
+// quickPickerMaxVisible rows on long sessions, with ↑/↓ markers for the rest.
 func TestRewindPickerWindowsLongSession(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -1293,10 +1280,8 @@ func TestInputOwnedOverlaysKeepComposerBox(t *testing.T) {
 	}
 }
 
-// TestIngestEventRoutesByKind proves each event Kind lands in the right place:
-// reasoning shows a live marker with streaming text, while tool dispatch, blocked
-// results, usage, notices, and coordinator phases each commit as their own
-// scrollback line. Routing is by Kind, not by sniffing line prefixes.
+// TestIngestEventRoutesByKind: routing is by Kind — reasoning streams live,
+// everything else commits its own scrollback line.
 func TestIngestEventRoutesByKind(t *testing.T) {
 	// Reasoning shows a marker plus the live thinking text streamed below it.
 	m := newTestChatTUI()
@@ -1352,10 +1337,8 @@ func TestIngestEventShowsReasoningInVerboseMode(t *testing.T) {
 	}
 }
 
-// TestUserBubbleEchoedImmediately proves the user bubble is committed to scrollback
-// the moment the turn starts, not deferred to the server's first packet. The first
-// real packet only confirms the send (closing the un-send window); a local
-// TurnStarted must not, so Esc can still un-send until the server actually replies.
+// TestUserBubbleEchoedImmediately: the user bubble commits at turn start, so
+// Esc can un-send until the server's first packet confirms the send.
 func TestUserBubbleEchoedImmediately(t *testing.T) {
 	m := newTestChatTUI()
 	// Stand in for startTurn's immediate echo (no controller in the unit harness).
@@ -1472,11 +1455,8 @@ func TestRecoveryPauseTurnDoneIsInformational(t *testing.T) {
 	}
 }
 
-// TestAnswerTextStartingWithBracketStaysInAnswer locks in the win of the typed
-// event stream: model answer text starting with "[" — a markdown link, a slice
-// literal, even a quoted "[… · planning]" — is a Text event, so it can never be
-// mistaken for a coordinator phase marker the way prefix-sniffing a flattened
-// byte stream once could. It stays in the answer buffer and renders as markdown.
+// TestAnswerTextStartingWithBracketStaysInAnswer: "["-prefixed answers are
+// Text events, never mistaken for coordinator phase markers.
 func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	for _, txt := range []string{
 		"[link](https://example.com)",

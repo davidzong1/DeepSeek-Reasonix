@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
+	"reasonix/internal/team/tui"
 )
 
 // poolInputKind is the cli-owned write state of the agent-user pool screen
@@ -46,17 +47,17 @@ var poolEditFields = []string{
 // cursor of the field-list editor, whose draft is the entry under edit —
 // empty while adding (adding), seeded from the focused entry while editing.
 type poolState struct {
-	active  bool
-	users   []team.AgentUser
-	focus   int
-	kind    poolInputKind
-	buf     string
-	errMsg  string
-	draft   team.AgentUser // editor draft: the new entry, or the entry under field edit
-	detail  bool           // entry detail view; esc steps back before closing
-	edit    int            // field cursor into poolEditFields
-	adding  bool           // the editor creates a new entry (a); s calls AddAgentUser
-	provSel int            // provider picker cursor into poolProviderOptions; -1 = legacy value
+	active bool
+	users  []team.AgentUser
+	focus  int
+	kind   poolInputKind
+	buf    string
+	errMsg string
+	draft  team.AgentUser // editor draft: the new entry, or the entry under field edit
+	detail bool           // entry detail view; esc steps back before closing
+	edit   int            // field cursor into poolEditFields
+	adding bool           // the editor creates a new entry (a); s calls AddAgentUser
+	list   optionList     // the provider picker's option list
 }
 
 // enterTeamPool opens the pool screen from the team list, reading the entries
@@ -167,35 +168,32 @@ func handlePoolKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	return true
 }
 
-// poolProviderOptions is the provider picker's choice list: the blank
-// "unconfigured" state first, then the three canonical values in store order.
-func poolProviderOptions() []team.ProviderOption {
-	return append([]team.ProviderOption{{Value: "", Label: "Unconfigured"}}, team.ProviderOptions()...)
+// poolProviderOptions is the provider picker's choice list: a legacy value an
+// older version wrote leads the list — marked in place, so confirming it
+// rewrites the same string and the pick survives until a legal option is
+// chosen — then the blank "unconfigured" state and the canonical values in
+// store order.
+func poolProviderOptions(current string) []option {
+	opts := []option{}
+	if current != "" && !providerIsCanonical(current) {
+		opts = append(opts, option{id: current, label: "legacy: " + current})
+	}
+	opts = append(opts, option{id: "", label: "Unconfigured"})
+	for _, o := range team.ProviderOptions() {
+		opts = append(opts, option{id: o.Value, label: o.Label})
+	}
+	return opts
 }
 
-// providerInitialSelection maps the entry's current provider onto the picker:
-// a canonical value lands on its option, blank on "unconfigured", and anything
-// else — a value an older version wrote — on -1, the legacy state, which the
-// picker shows but never rewrites.
-func providerInitialSelection(v string) int {
-	if v == "" {
-		return 0
-	}
-	for i, o := range poolProviderOptions() {
+// providerIsCanonical reports whether v is one of the store's current provider
+// values, as opposed to a legacy string that predates the canonical set.
+func providerIsCanonical(v string) bool {
+	for _, o := range team.ProviderOptions() {
 		if o.Value == v {
-			return i
+			return true
 		}
 	}
-	return -1
-}
-
-// poolProviderLabel names the picker's current choice for the renderer: the
-// selected option's label, or the legacy value under an explicit marker.
-func poolProviderLabel(p *poolState) string {
-	if p.provSel < 0 {
-		return "legacy: " + p.buf
-	}
-	return poolProviderOptions()[p.provSel].Label
+	return false
 }
 
 // armPoolEditor opens the field-list editor: on an empty draft for a (adding,
@@ -253,13 +251,16 @@ func handlePoolEditKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 			pool.edit = 1 // the id row of an existing entry is immutable
 		} else {
 			pool.kind = poolInputEditField
-			pool.buf = poolFieldValue(pool.draft, pool.edit)
-			pool.provSel = providerInitialSelection(pool.buf)
+			if poolEditFields[pool.edit] == team.AgentUserFieldProvider {
+				pool.list.setOptions(optionSingle, poolProviderOptions(pool.draft.Provider), pool.draft.Provider)
+			} else {
+				pool.buf = poolFieldValue(pool.draft, pool.edit)
+			}
 		}
 	case "s":
 		p.savePoolEdit()
 	case "esc", "ctrl+c":
-		pool.kind, pool.buf, pool.draft, pool.errMsg, pool.adding, pool.provSel = poolInputNone, "", team.AgentUser{}, "", false, 0
+		pool.kind, pool.buf, pool.draft, pool.errMsg, pool.adding = poolInputNone, "", team.AgentUser{}, "", false
 	}
 	return true
 }
@@ -293,31 +294,21 @@ func handlePoolEditFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	return true
 }
 
-// handlePoolProviderKey routes a keypress inside the provider picker:
-// up/down/j/k/left/right cycle the choices, enter confirms the highlighted
-// option, esc cancels the field edit untouched, and every printable key is
-// inert — a provider is chosen, never typed. A legacy value enters the picker
-// on -1: it renders marked but stays in the draft until the user highlights a
-// legal option, and confirm with nothing highlighted keeps it.
+// handlePoolProviderKey routes a keypress inside the provider picker: the
+// option list moves with up/down, enter confirms the highlighted option, esc
+// cancels the field edit untouched, and every printable key is inert — a
+// provider is chosen, never typed. A legacy value opens as a marked option,
+// so confirming it rewrites the same string until the user highlights a legal
+// one.
 func handlePoolProviderKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	pool := &p.pool
-	switch msg.String() {
-	case "enter":
+	_, action := pool.list.handleKey(msg)
+	switch action {
+	case optionListCommit:
 		p.commitPoolField()
-	case "esc", "ctrl+c":
-		pool.kind, pool.buf, pool.errMsg, pool.provSel = poolInputEdit, "", "", 0
-	case "up", "k", "left":
-		if pool.provSel < 0 {
-			pool.provSel = len(poolProviderOptions()) - 1
-		} else {
-			pool.provSel = (pool.provSel + len(poolProviderOptions()) - 1) % len(poolProviderOptions())
-		}
-	case "down", "j", "right":
-		if pool.provSel < 0 {
-			pool.provSel = 0
-		} else {
-			pool.provSel = (pool.provSel + 1) % len(poolProviderOptions())
-		}
+	case optionListCancel:
+		pool.kind, pool.errMsg = poolInputEdit, ""
+		pool.list = optionList{}
 	}
 	return true
 }
@@ -345,7 +336,7 @@ func poolFieldValue(u team.AgentUser, i int) string {
 }
 
 // commitPoolField validates and merges the typed value into the editor draft,
-// then returns to the field list. The provider picker merges its highlighted
+// then returns to the field list. The provider picker merges its committed
 // option instead — its choice set is closed (blank plus the three canonical
 // values), and the whole-entry validation at s still guards the draft. The api
 // key is stored raw: trimming would alter a secret the user deliberately
@@ -355,11 +346,11 @@ func (p *teamPicker) commitPoolField() {
 	pool := &p.pool
 	field := poolEditFields[pool.edit]
 	if field == team.AgentUserFieldProvider {
-		if pool.provSel >= 0 {
-			pool.buf = poolProviderOptions()[pool.provSel].Value
-		} // a legacy value stays in the draft, unchanged, until a legal option is chosen
+		if id, ok := pool.list.choice(); ok {
+			pool.buf = id
+		}
 		applyPoolEditField(pool, field)
-		pool.errMsg, pool.buf, pool.kind, pool.provSel = "", "", poolInputEdit, 0
+		pool.errMsg, pool.buf, pool.kind = "", "", poolInputEdit
 		return
 	}
 	if err := team.ValidateAgentUserField(field, pool.buf); err != nil {
@@ -425,7 +416,7 @@ func (p *teamPicker) savePoolEdit() {
 		pool.errMsg = poolErrMsg(err)
 		return
 	}
-	pool.kind, pool.buf, pool.edit, pool.draft, pool.adding, pool.provSel = poolInputNone, "", 0, team.AgentUser{}, false, 0
+	pool.kind, pool.buf, pool.edit, pool.draft, pool.adding = poolInputNone, "", 0, team.AgentUser{}, false
 	if err := p.reloadPool(); err != nil {
 		pool.errMsg = poolErrMsg(err)
 	}
@@ -488,4 +479,22 @@ func (p *teamPicker) confirmPoolDelete() {
 	if err := p.reloadPool(); err != nil {
 		p.pool.errMsg = poolErrMsg(err)
 	}
+}
+
+// handleWheel routes a wheel event into the active option list — the member
+// field picker or the pool's provider picker — and reports whether it consumed
+// it. Everywhere else the wheel keeps scrolling the transcript.
+func (p *teamPicker) handleWheel(b tea.MouseButton) bool {
+	if b != tea.MouseWheelUp && b != tea.MouseWheelDown {
+		return false
+	}
+	if p.pool.active && p.pool.kind == poolInputEditField &&
+		poolEditFields[p.pool.edit] == team.AgentUserFieldProvider {
+		return p.pool.list.wheel(b == tea.MouseWheelUp)
+	}
+	if !p.pool.active && p.model.Mode() == tui.ModeContext &&
+		p.memberEdit.kind == memberEditFieldEdit {
+		return p.memberEdit.list.wheel(b == tea.MouseWheelUp)
+	}
+	return false
 }

@@ -9,8 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-
-	"reasonix/internal/team"
 )
 
 // leaderResetKind is the k key's step-down confirmation stage (§6): warn →
@@ -139,12 +137,12 @@ func (p *teamPicker) resetDirCount(teamName string) int {
 }
 
 // executeLeaderReset runs the final confirm: it re-reads the registry to
-// verify the member is still the leader, clears the team's member contexts
-// through the session store's trash staging (§6.6 — the root is renamed into
-// a timestamped .trash dir before deletion, so a failed clear preserves it
-// and repeats idempotently), publishes the leader flag off, and drops the
-// persisted session selection. A failure keeps the confirmation on the error
-// message; the .trash/atomic semantics live in the domain store, never here.
+// verify the member is still the leader, then delegates the destructive half
+// to stepDownLeader — stop, clear, publish off — and shows the finished
+// result. The step-down semantics live in one place, so the k key and any
+// other caller cannot drift from each other; a failure keeps the confirmation
+// on the error message, and the .trash/atomic semantics live in the domain
+// store, never here.
 func (p *teamPicker) executeLeaderReset() {
 	r := &p.reset
 	member, ok := p.model.Focused()
@@ -152,34 +150,9 @@ func (p *teamPicker) executeLeaderReset() {
 		r.kind = leaderResetNone
 		return
 	}
-	slot, ok := p.slotOf(member.ID)
-	if !ok {
-		r.kind = leaderResetNone
-		return
-	}
-	if !slot.IsLeader() { // verify: the leader property may have changed mid-confirm
-		r.errMsg = "The member is no longer the leader — Esc to cancel"
-		return
-	}
 	teamName := p.model.Name()
-	if !p.stopTeamBeforeClear(teamName) {
-		r.errMsg = p.errMsg
-		p.errMsg = ""
-		return
-	}
-	if err := p.clearTeamHistories(teamName); err != nil {
-		r.errMsg = "Failed to clear team contexts: " + err.Error()
-		return
-	}
-	if err := p.store.SetMemberLeader(teamName, member.ID, false); err != nil {
-		r.errMsg = pickerErrMsg(err)
-		return
-	}
-	if p.sessions != nil {
-		_ = p.sessions.WriteSelection(teamName, team.SessionSelection{Team: teamName})
-	}
-	if err := p.reload(""); err != nil {
-		r.errMsg = pickerErrMsg(err)
+	if err := p.stepDownLeader(teamName, member.ID); err != nil {
+		r.errMsg = err.Error()
 		return
 	}
 	r.kind, r.buf, r.errMsg = leaderResetDone, "", ""

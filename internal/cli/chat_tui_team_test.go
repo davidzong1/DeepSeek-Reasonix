@@ -347,16 +347,16 @@ func TestTeamPickerRendersRealTeamDocMembers(t *testing.T) {
 }
 
 // TestTeamCompactRosterHelpLine pins the compact roster's help surface: it
-// advertises only its own keys (a/d/l/p/t/e) — Enter/Space and the editor-only
-// keys (s/b) stay off it, and the session hint reads "🌟 t Enter_session"
-// while the member editor line names the full surface.
+// advertises only its own keys (a/d/l/p/t/x/e) — Enter/Space and the
+// editor-only keys (s/b) stay off it, and the session hint reads "🌟 t
+// Enter_session" while the member editor line names the full surface.
 func TestTeamCompactRosterHelpLine(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
 	list := ansi.Strip(m.renderTeamPicker())
-	for _, want := range []string{"a add member", "d delete member", "🌟 t Enter_session", "p proxy", "e edit", "l leader on/off"} {
+	for _, want := range []string{"a add member", "d delete member", "🌟 t Enter_session", "p proxy", "e edit", "l assign leader", teamExitAllHint} {
 		if !strings.Contains(list, want) {
 			t.Fatalf("roster help should show %q, got:\n%s", want, list)
 		}
@@ -513,5 +513,82 @@ func TestTeamPickerSpaceEntersRosterThenContext(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeySpace})
 	if got := m.teamPick.model.Mode(); got != tui.ModeContext {
 		t.Fatalf("space should open the focused member's context view, got %q", got)
+	}
+}
+
+// TestTeamMemberEditRoleLeaderReadOnly pins the read-only editor rows: Role
+// and Leader render above the editable fields, enter opens the first editable
+// field (status) instead of a role text buffer, and s never publishes them —
+// assignment flows through l on the roster, step-down through k.
+func TestTeamMemberEditRoleLeaderReadOnly(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	m := openRoster(t) // alice focused first (id-sorted)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	rendered := ansi.Strip(m.renderTeamPicker())
+	if !strings.Contains(rendered, "Role: coder") || !strings.Contains(rendered, "Leader: off") {
+		t.Fatalf("the editor must render Role/Leader read-only, got:\n%s", rendered)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // the first editable field is status
+	if m.teamPick.memberEdit.kind != memberEditFieldEdit {
+		t.Fatal("enter must open an editable field, not a read-only row")
+	}
+	if got, ok := m.teamPick.memberEdit.list.choice(); ok {
+		t.Fatalf("opening the picker must not commit a value, got %q", got)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // cancel the open picker
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'})        // save: untouched rows never write
+	doc := readStoredTeamDoc(t)
+	if got := doc.Teams[0].Template[1].Role; got != team.RoleCoder {
+		t.Fatalf("s must not change the read-only role, got %q", got)
+	}
+	if doc.Teams[0].Template[1].Leader {
+		t.Fatal("s must not publish the read-only leader row")
+	}
+}
+
+// TestTeamExitAllParksNextTeamClickOnManagement pins the x key: it exits the
+// session window, drops the persisted selection, and arms the suppression
+// flag so the next [TEAM] click lands on the management page instead of the
+// leader's window (§11.4) — a deliberate t restores the auto-session. The
+// leader marker survives: x exits sessions, only k steps a leader down.
+func TestTeamExitAllParksNextTeamClickOnManagement(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	m := openTeamOverlay(t) // auto-lands on the leader's session window
+	if !m.teamPick.session.active {
+		t.Fatal("the [TEAM] click must open the leader's session window")
+	}
+	if err := m.teamPick.sessions.WriteSelection("alpha", team.SessionSelection{Team: "alpha", MemberID: "lead"}); err != nil {
+		t.Fatal(err)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})   // back to the team list
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // the roster
+	m = teamKey(m, tea.KeyPressMsg{Code: 'x'})
+	if m.teamPick.session.active {
+		t.Fatal("x must exit the session window")
+	}
+	if !m.teamSuppressAutoSession {
+		t.Fatal("x must arm the auto-session suppression")
+	}
+	sel, err := m.teamPick.sessions.ReadSelection("alpha")
+	if err != nil || sel.MemberID != "" {
+		t.Fatalf("x must clear the persisted selection, got %+v err=%v", sel, err)
+	}
+	doc := readStoredTeamDoc(t)
+	if !doc.Teams[0].Template[0].Leader {
+		t.Fatal("x must not clear the leader marker — only k steps a leader down")
+	}
+	m.onTeamButtonClick() // the next [TEAM] click
+	if m.teamPick.session.active {
+		t.Fatal("the suppressed click must land on the management page, not the session")
+	}
+	// A deliberate t restores the auto-session.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // into the roster
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatal("t must open the session from the suppressed management page")
+	}
+	if m.teamSuppressAutoSession {
+		t.Fatal("a deliberate t must clear the suppression flag")
 	}
 }

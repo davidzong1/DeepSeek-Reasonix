@@ -190,82 +190,27 @@ func TestTeamPasteKeyShiftInsertInPoolField(t *testing.T) {
 	}
 }
 
-// TestTeamPasteIntoMemberRoleField pins the bracketed-paste path on the member
-// editor's role row — the one free-text field of the member property editor
-// (§5). Pasting appends to the role buffer, never to the hidden composer, and
-// enter + s publish the pasted role into the registry.
-func TestTeamPasteIntoMemberRoleField(t *testing.T) {
-	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
-		{MemberID: "alpha", Status: team.MemberStatusActive},
-	}})
-	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: 'e'})          // compact roster → member editor
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the role row (field 0)
-
-	next, _ := m.Update(tea.PasteMsg{Content: "prompt engineer"})
-	m = next.(chatTUI)
-	if got := m.teamPick.memberEdit.buf; got != "prompt engineer" {
-		t.Fatalf("pasted role = %q, want %q", got, "prompt engineer")
-	}
-	if got := m.input.Value(); got != "" {
-		t.Fatalf("paste leaked into the composer: %q", got)
-	}
-
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm back to the field list
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save the draft
-	doc := readStoredTeamDoc(t)
-	if role := doc.Teams[0].Template[0].Role; role != "prompt engineer" {
-		t.Fatalf("pasted role did not publish, got %q", role)
-	}
-}
-
-// TestTeamPasteKeyCtrlVIntoMemberRoleField pins the key path on the member
-// editor's role row: while the role field is open, ctrl+v reads the native
-// clipboard and the result lands in the role buffer — not the composer.
-func TestTeamPasteKeyCtrlVIntoMemberRoleField(t *testing.T) {
-	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
-		{MemberID: "alpha", Status: team.MemberStatusActive},
-	}})
-	setLocalClipboardSession(t)
-	prev := readNativeClipboardText
-	readNativeClipboardText = func() (string, error) { return "clip role", nil }
-	t.Cleanup(func() { readNativeClipboardText = prev })
-
-	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: 'e'})          // member editor
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the role row
-	_, cmd := m.handleTeamPickerKey(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("ctrl+v in the role field must arm a clipboard read")
-	}
-	next, _ := m.Update(cmd())
-	m = next.(chatTUI)
-	if got := m.teamPick.memberEdit.buf; got != "clip role" {
-		t.Fatalf("role buffer = %q, want %q", got, "clip role")
-	}
-	if got := m.input.Value(); got != "" {
-		t.Fatalf("clipboard text leaked into the composer: %q", got)
-	}
-}
-
-// TestTeamPasteInertOnMemberPickerRows pins that the member editor's picker
-// rows — leader/status/proxy/agent, choice controls like the provider picker —
-// ignore pastes: nothing enters the draft, the field buffer, or the composer.
+// TestTeamPasteInertOnMemberPickerRows pins that the member editor's open
+// option list — a choice control like the provider picker — ignores pastes:
+// nothing enters the pick, the draft, or the composer.
 func TestTeamPasteInertOnMemberPickerRows(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
 		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: 'e'})          // member editor
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // role → leader picker
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the leader picker
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // status → proxy
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the proxy picker
 	before := m.teamPick.memberEdit
 
 	next, _ := m.Update(tea.PasteMsg{Content: "on"})
 	m = next.(chatTUI)
 	got := m.teamPick.memberEdit
-	if got.kind != before.kind || got.edit != before.edit || got.pick != before.pick ||
-		got.buf != before.buf || got.errMsg != before.errMsg || got.draft != before.draft {
+	if got.kind != before.kind || got.edit != before.edit || got.errMsg != before.errMsg ||
+		got.draft != before.draft || got.list.kind != before.list.kind ||
+		got.list.cursor != before.list.cursor || got.list.offset != before.list.offset ||
+		len(got.list.options) != len(before.list.options) ||
+		len(got.list.selected) != len(before.list.selected) {
 		t.Fatalf("paste moved the member editor: %+v -> %+v", before, got)
 	}
 	if got := m.input.Value(); got != "" {

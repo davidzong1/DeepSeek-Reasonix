@@ -126,28 +126,6 @@ func (p *teamPicker) cycleProxy() error {
 	return p.reload("")
 }
 
-// toggleRosterLeader flips the focused member's standalone leader property
-// from the compact roster, publishing through the store's CAS setter (§5). The
-// t gate reads the same registry field, so a just-assigned leader can open the
-// team session; the editor's Leader row stays the full-edit path.
-func (p *teamPicker) toggleRosterLeader() {
-	member, ok := p.model.Focused()
-	if !ok {
-		return
-	}
-	slot, ok := p.slotOf(member.ID)
-	if !ok {
-		return
-	}
-	if err := p.store.SetMemberLeader(p.model.Name(), member.ID, !slot.IsLeader()); err != nil {
-		p.errMsg = pickerErrMsg(err)
-		return
-	}
-	if err := p.reload(""); err != nil {
-		p.errMsg = pickerErrMsg(err)
-	}
-}
-
 // toggleLeader switches leader mode, which gates member and pool create and
 // delete through the store's MemberWritePolicy: Open is the default, LeaderOnly
 // refuses those operations until l presses it on again.

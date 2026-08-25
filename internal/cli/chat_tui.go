@@ -321,12 +321,11 @@ type chatTUI struct {
 	// /provider. It never invokes a raw-mode prompt inside Bubble Tea.
 	quickPick *quickPicker
 	copyPick  *copyPicker
-	// teamPick is the team roster overlay opened by the TEAM button (nil when
-	// closed). While set, keys navigate it and it renders as a card.
-	teamPick *teamPicker
+	// teamPick is the team roster overlay opened by the TEAM button (nil when closed).
+	teamPick                *teamPicker
+	teamSuppressAutoSession bool // exit-all key: next [TEAM] click lands on the management page
 	// teamBackends holds one assembled Agent backend per team member; binding a
-	// member swaps m.ctrl to its backend. memberEvents is the one tagged channel
-	// every member backend emits into. Both nil until the team seam is wired.
+	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
 	teamBackends *teamBackends
 	memberEvents chan memberEvent
 	// memberBackendBase yields the boot options a member backend inherits from
@@ -1098,12 +1097,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.FocusMsg:
-		// Terminal regained focus — ConPTY may have dropped mouse tracking
-		// while the pane was unfocused (#7583). Re-enable is issued from Update.
+		// Terminal regained focus — ConPTY may have dropped mouse tracking (#7583); re-enable in Update.
 		return m, nil
 
 	case tea.MouseWheelMsg:
-		if m.mouseOverComposer(msg.X, msg.Y) {
+		if m.teamPick != nil && m.teamPick.handleWheel(msg.Button) {
+			return m, nil
+		} else if m.mouseOverComposer(msg.X, msg.Y) {
 			delta := 0
 			switch msg.Button {
 			case tea.MouseWheelUp:
@@ -1115,9 +1115,8 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		// Outside the composer, or once its internal viewport has reached the
-		// requested edge, continue the gesture in the transcript. This mirrors
-		// ordinary nested-scroll behavior and avoids a dead wheel at boundaries.
+		// Outside the composer — or once its viewport has reached the requested
+		// edge — continue the gesture in the transcript: ordinary nested scroll.
 		switch msg.Button {
 		case tea.MouseWheelUp:
 			m.viewport.ScrollUp(3)
@@ -1128,10 +1127,8 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft {
-			if cmd, hit := m.handleTeamStatusClick(msg.X, msg.Y); hit {
-				return m, cmd
-			}
+		if cmd, hit := m.teamStatusClick(msg); hit {
+			return m, cmd
 		}
 		if c, consumed := m.mouseCopyOrPaste(msg); consumed {
 			if c == nil {
@@ -1380,12 +1377,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copyPick != nil {
 			return m.handleCopyPickerKey(msg)
 		}
-		// The team overlay is modal while open — except a bound member session,
-		// where the composer owns typing and only reserved keys are consumed.
-		if m.teamPick != nil {
-			if next, cmd, consumed := m.handleTeamKey(msg); consumed {
-				return next, cmd
-			}
+		// The team overlay is modal; a bound session's composer owns typing.
+		if next, cmd, consumed := m.handleTeamKey(msg); consumed {
+			return next, cmd
 		}
 		// The resume picker is modal while open: keys navigate it.
 		if m.resumePick != nil {
@@ -2045,7 +2039,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if m.teamOverlayModal() {
-			break // the roster is modal: an image result never reaches the hidden composer
+			break
 		}
 		imageBefore := m.input.Value()
 		m.insertImageRef(msg.path)
@@ -2075,7 +2069,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerPasteCount(tea.PasteMsg{Content: msg.text}, false, count)
 
 	case memberEventMsg:
-		return m, m.handleMemberEvent(msg) // team member backend; §D3 tagged channel
+		return m, m.handleMemberEvent(msg)
 
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {
@@ -3363,11 +3357,7 @@ func (m chatTUI) View() tea.View {
 		v := tea.NewView(m.themeSweep.render())
 		if !m.nativeScrollback {
 			v.AltScreen = true
-			if m.mouseCaptureOff {
-				v.MouseMode = tea.MouseModeNone
-			} else {
-				v.MouseMode = tea.MouseModeCellMotion
-			}
+			v.MouseMode = m.overlayMouseMode()
 		}
 		return v
 	}
@@ -3502,14 +3492,7 @@ func (m chatTUI) View() tea.View {
 	}
 	v := tea.NewView(mainArea + "\n" + strings.Join(parts, "\n"))
 	v.AltScreen = true
-	if m.teamOverlayModal() {
-		v.MouseMode = tea.MouseModeNone // the roster is modal: its rows become native-selectable
-	} else if m.mouseCaptureOff {
-		// Native click-drag selection, right-click menu, wheel, and drag-select return to the terminal.
-		v.MouseMode = tea.MouseModeNone
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion // wheel targets the hovered scroll region; text selection is handled in-app
-	}
+	v.MouseMode = m.overlayMouseMode()
 	// Anchor the real terminal cursor at the textarea's insertion point only when
 	// the composer is visible. input.Cursor() is relative to the textarea; offset
 	// by the viewport height + rows above + the box's top border row (+1 column
