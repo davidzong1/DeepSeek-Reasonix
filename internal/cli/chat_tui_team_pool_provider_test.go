@@ -35,10 +35,10 @@ func poolEditOpenProvider(m chatTUI, u team.AgentUser) chatTUI {
 // persists.
 func TestTeamPoolProviderPickerPreselectsAndCycles(t *testing.T) {
 	writeAgentUsersFixture(t, team.AgentUser{
-		UserID: "au-1", Identity: "alice", Provider: "openai", Model: "gpt-5",
+		UserID: "au-1", Identity: "alice", Provider: "openai", Model: "claude-opus-5",
 	})
 	m := openPool(t)
-	m = poolEditOpenProvider(m, team.AgentUser{UserID: "au-1", Identity: "alice", Provider: "openai", Model: "gpt-5"})
+	m = poolEditOpenProvider(m, team.AgentUser{UserID: "au-1", Identity: "alice", Provider: "openai", Model: "claude-opus-5"})
 	got := ansi.Strip(m.renderTeamPicker())
 	if !strings.Contains(got, "GPT (OpenAI)") {
 		t.Fatalf("the picker should preselect the stored provider, got:\n%s", got)

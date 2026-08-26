@@ -42,24 +42,30 @@ func (p *teamPicker) sessionPanelHidden() bool {
 }
 
 // enterTeamSession opens the session window on the focused member and binds its
-// Agent backend, gated on the leader property read from the registry (control
-// layer, §5 — never a UI marker): a non-leader is refused with a message. The
-// window opens on the leader, the only member t can enter from.
+// Agent backend. A non-leader entry auto-corrects to the team's leader — the
+// session belongs to the leader (§11.4); only a team with no leader at all
+// refuses. The leader property is read from the registry (control layer, §5 —
+// never a UI marker).
 func (m *chatTUI) enterTeamSession() tea.Cmd {
 	p := m.teamPick
 	member, ok := p.model.Focused()
 	if !ok {
 		return nil
 	}
-	slot, ok := p.slotOf(member.ID)
-	if !ok {
-		return nil
-	}
-	if !slot.IsLeader() {
-		p.errMsg = "Only the leader can start a team session"
-		return nil
+	if slot, ok := p.slotOf(member.ID); !ok || !slot.IsLeader() {
+		leader := p.firstLeader()
+		if leader == "" {
+			p.refusal = "Only the leader can start a team session"
+			return nil
+		}
+		p.model.FocusMember(leader) // the roster highlights the session's member
+		member, ok = p.model.Focused()
+		if !ok {
+			return nil
+		}
 	}
 	p.errMsg = ""
+	p.refusal = ""
 	session := sessionState{active: true, teamName: p.model.Name(), current: member.ID,
 		unread: map[string]int{}}
 	for i, sm := range p.model.Members() {
@@ -75,23 +81,25 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 
 // restoreSession resumes the persisted member window when its member is still
 // the roster's leader — the session gate is the leader property, mirroring the
-// t key — and falls back to the focused team's leader session otherwise. An
-// absent, unreadable, or stale selection is a fallback, never an error: the
-// [TEAM] click opens the management page's leader window as it always has.
-func (p *teamPicker) restoreSession() string {
+// t key — and falls back to the focused team's leader session otherwise. The
+// second result reports a deliberate leave: suspended selections park on the
+// management page, never a refusal. An absent, unreadable, or stale selection
+// is a fallback, never an error: the [TEAM] click opens the management page's
+// leader window as it always has.
+func (p *teamPicker) restoreSession() (string, bool) {
 	if p.sessions != nil {
 		if teamName := p.model.Name(); teamName != "" {
 			if sel, err := p.sessions.ReadSelection(teamName); err == nil {
 				if sel.Suspended {
-					return "" // left deliberately: park on the management page
+					return "", true
 				}
 				if slot, ok := p.slotOf(sel.MemberID); ok && slot.IsLeader() {
-					return p.openSession(sel.MemberID)
+					return p.openSession(sel.MemberID), false
 				}
 			}
 		}
 	}
-	return p.openSession("")
+	return p.openSession(""), false
 }
 
 // openSession puts the overlay on the focused team's given member's window and
@@ -198,6 +206,7 @@ func (m *chatTUI) exitTeam() {
 		m.quickPick = nil // it lists the bound member's models: it leaves with the team
 	}
 	m.teamPick.closeTeamOverlay()
+	m.teamPick.board.close() // the durable command chain lives with the overlay
 	m.teamPick = nil
 	// The overlay's rows go back to the transcript, so the tail is re-pinned:
 	// keeping the old offset would leave the newest output off-screen.

@@ -4258,7 +4258,7 @@ func (m *chatTUI) startTurn(sent, displayed, restore string) tea.Cmd {
 // keeps reference-expanded model input separate from the text shown/restored by
 // the frontend.
 func (m *chatTUI) startTurnWithRaw(sent, displayed, restore, raw string) tea.Cmd {
-	return m.startControllerTurn(displayed, restore, func() { m.ctrl.SendWithRaw(sent, raw) })
+	return m.startControllerTurn(displayed, restore, func() { m.ctrl.SendWithRaw(m.injectTeamTurn(sent), raw) })
 }
 
 // startControllerTurn owns the TUI-side turn setup for controller entry points.
@@ -4850,7 +4850,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		if control.IsBuiltinDocsSlash(typedCmd, m.commands, m.skills) {
 			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
 			if query != "" {
-				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
+				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, m.injectTeamTurn(input)) })
 			}
 			m.echoLocalCommand(input)
 			text, err := control.DocsCommandOverviewFor(typedCmd)

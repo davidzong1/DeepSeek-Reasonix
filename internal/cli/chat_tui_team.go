@@ -122,8 +122,10 @@ const (
 type teamPicker struct {
 	model      *tui.Model
 	errMsg     string                 // unreadable registry; "" when healthy
+	refusal    string                 // transient operation refusal; the page stays up
 	store      *team.TeamStore        // storage seam; nil when the project root is unusable
 	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	board      *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
 	backends   *teamBackends          // member Agent backends; nil when the seam is unavailable
 	sessionDir string                 // where member session files live; "" when unknown
 	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
@@ -153,7 +155,11 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			sessions, err = team.NewTeamSessionStore(cwd)
 		}
 		if err == nil {
-			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
+			if m.teamPick != nil && m.teamPick.board != nil {
+				m.teamPick.board.close()
+			}
+			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions,
+				board: openTeamInbox(cwd)}
 			m.teamPick = p
 			m.bindTeamBackends(store)
 			p.backends = m.teamBackends
@@ -164,8 +170,20 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 				p.errMsg = pickerErrMsg(err)
 				return nil
 			}
-			if member := p.restoreSession(); member != "" {
+			// Leader wakeups land as notices; a leader without a cursor yet is
+			// quiet — history before the first open does not replay (§5.1).
+			for _, reason := range p.board.consumeWakeups(p.firstLeader()) {
+				m.notice("wakeup: " + reason)
+			}
+			member, suspended := p.restoreSession()
+			if member != "" {
 				return m.switchTeamMember(member)
+			}
+			if !suspended && p.firstLeader() == "" {
+				// A session needs a leader; a leaderless team parks on the
+				// management page with a refusal the page stays usable past —
+				// l appoints one, and the reload clears it (§11.4).
+				p.refusal = "Only the leader can start a team session"
 			}
 			return nil
 		}
@@ -240,6 +258,7 @@ func (p *teamPicker) reload(focus string) error {
 		p.model.SelectTeam(focus)
 	}
 	p.errMsg = ""
+	p.refusal = ""
 	return nil
 }
 

@@ -5,6 +5,7 @@ package main
 // the team store primitives — business logic never lives here.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,9 @@ type request struct {
 	AfterSeq int64  `json:"after_seq,omitempty"`
 	MemberID string `json:"member_id,omitempty"` // read-after filter
 	Limit    int    `json:"limit,omitempty"`
+
+	// export
+	IncludeArchived bool `json:"include_archived,omitempty"`
 
 	// bind / cursor
 	Action     string       `json:"action,omitempty"` // bind|unbind|get|all | advance|get
@@ -73,14 +77,24 @@ type wireHandoff struct {
 }
 
 type response struct {
-	OK      bool         `json:"ok"`
-	Event   *wireEvent   `json:"event,omitempty"`
-	Page    *wirePage    `json:"page,omitempty"`
-	View    *wireView    `json:"view,omitempty"`
-	Record  *wireRecord  `json:"record,omitempty"`
-	Records []wireRecord `json:"records,omitempty"`
-	Cursor  *wireCursor  `json:"cursor,omitempty"`
-	Error   *wireError   `json:"error,omitempty"`
+	OK       bool          `json:"ok"`
+	Event    *wireEvent    `json:"event,omitempty"`
+	Page     *wirePage     `json:"page,omitempty"`
+	View     *wireView     `json:"view,omitempty"`
+	Record   *wireRecord   `json:"record,omitempty"`
+	Records  []wireRecord  `json:"records,omitempty"`
+	Cursor   *wireCursor   `json:"cursor,omitempty"`
+	Snapshot *wireSnapshot `json:"snapshot,omitempty"`
+	Jsonl    string        `json:"jsonl,omitempty"`
+	Error    *wireError    `json:"error,omitempty"`
+}
+
+// wireSnapshot summarizes one export run; Jsonl carries the whole
+// checkpoint-consistent snapshot so the caller reconciles against Digest.
+type wireSnapshot struct {
+	Lines    int    `json:"lines"`
+	Digest   string `json:"digest"`
+	Archived int    `json:"archived"`
 }
 
 type wireError struct {
@@ -167,6 +181,8 @@ func Handle(ctx context.Context, store *team.SQLiteStore, registry *team.Binding
 		return handleBind(registry, req)
 	case "cursor":
 		return handleCursor(ctx, store, req)
+	case "export":
+		return handleExport(ctx, store, req)
 	}
 	return nil, fmt.Errorf("unknown op %q", req.Op)
 }
@@ -434,4 +450,23 @@ func wireOfRecord(rec team.BindRecord) *wireRecord {
 		TaskID:     string(rec.TaskID),
 		BoundAt:    rec.BoundAt.Format(time.RFC3339Nano),
 	}
+}
+
+// handleExport dumps the checkpoint-consistent JSONL snapshot (route
+// §1.4). It is a management read: the snapshot is derived from the only
+// source of truth, never a second write path, so no identity gate applies.
+func handleExport(ctx context.Context, store *team.SQLiteStore, req request) ([]byte, error) {
+	var buf bytes.Buffer
+	rep, err := store.ExportSnapshot(ctx, &buf, team.ExportOptions{
+		SinceSeq:        req.AfterSeq,
+		IncludeArchived: req.IncludeArchived,
+	})
+	if err != nil {
+		return encodeStoreError(err), nil
+	}
+	return json.Marshal(response{
+		OK:       true,
+		Snapshot: &wireSnapshot{Lines: rep.Lines, Digest: rep.Digest, Archived: rep.Archived},
+		Jsonl:    buf.String(),
+	})
 }

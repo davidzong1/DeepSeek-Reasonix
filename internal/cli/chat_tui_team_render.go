@@ -39,6 +39,11 @@ func (m chatTUI) renderTeamPicker() string {
 	w := max(m.width, 10)
 	var b strings.Builder
 	b.WriteString(accent(teamPickerTitle(view)) + "\n")
+	// A refusal is a banner over a live page — the leader gate's message
+	// without the data-unavailable dead end errMsg renders instead.
+	if p.refusal != "" {
+		b.WriteString(p.refusal + "\n")
+	}
 	if p.errMsg != "" {
 		b.WriteString(p.errMsg + "\n")
 		b.WriteString(dim("Esc close"))

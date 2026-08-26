@@ -1,5 +1,10 @@
 package team
 
+import (
+	"errors"
+	"fmt"
+)
+
 // AgentUser is a standalone credential-and-config registry entry (§2.1): a
 // stable identity plus one provider/model quadruple, optionally with key
 // material. A plaintext APIKey is safe only because every .reasonix/team write
@@ -155,9 +160,50 @@ type TaskStatus string
 const (
 	TaskStatusCreated  TaskStatus = "created"
 	TaskStatusAssigned TaskStatus = "assigned"
+	TaskStatusRunning  TaskStatus = "running"
 	TaskStatusReported TaskStatus = "reported"
+	TaskStatusFailed   TaskStatus = "failed"
+	TaskStatusCanceled TaskStatus = "canceled"
 	TaskStatusArchived TaskStatus = "archived"
 )
+
+// TransitionTask moves a task between lifecycle states (§2.6). The edges are
+// the single migration map every runtime path — scheduler assign, agent
+// start/cancel/resume, report — must pass through, so no path can invent a
+// transition the others do not recognize.
+func TransitionTask(from, to TaskStatus) error {
+	if from == to {
+		return nil // resume keeps running; report keeps reported
+	}
+	switch from {
+	case TaskStatusCreated:
+		if to != TaskStatusAssigned {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+		}
+	case TaskStatusAssigned:
+		if to != TaskStatusRunning && to != TaskStatusCanceled {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+		}
+	case TaskStatusRunning:
+		if to != TaskStatusReported && to != TaskStatusFailed && to != TaskStatusCanceled {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+		}
+	case TaskStatusReported:
+		if to != TaskStatusArchived {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+		}
+	case TaskStatusFailed:
+		if to != TaskStatusAssigned {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+		}
+	default: // archived, canceled: terminal
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidTaskTransition, from, to)
+	}
+	return nil
+}
+
+// ErrInvalidTaskTransition rejects a state move no runtime path recognizes.
+var ErrInvalidTaskTransition = errors.New("team: invalid task transition")
 
 // Task is one dispatch unit (§2.6) with references into the context, report,
 // and checkpoint spaces; the scheduler assigns it to a member.

@@ -118,10 +118,10 @@ func TestMemberPickerCommitPersistsArchived(t *testing.T) {
 // committed provider replaces the stored one on s.
 func TestPoolProviderWheelMovesCursorAndCommits(t *testing.T) {
 	writeAgentUsersFixture(t, team.AgentUser{
-		UserID: "au-1", Identity: "alice", Provider: "openai", Model: "gpt-5",
+		UserID: "au-1", Identity: "alice", Provider: "openai", Model: "claude-opus-5",
 	})
 	m := openPool(t)
-	m = poolEditOpenProvider(m, team.AgentUser{UserID: "au-1", Identity: "alice", Provider: "openai", Model: "gpt-5"})
+	m = poolEditOpenProvider(m, team.AgentUser{UserID: "au-1", Identity: "alice", Provider: "openai", Model: "claude-opus-5"})
 
 	next, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	m = next.(chatTUI)

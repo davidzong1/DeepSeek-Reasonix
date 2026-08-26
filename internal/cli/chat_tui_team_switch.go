@@ -64,21 +64,37 @@ func (m *chatTUI) markMemberUnread(member string) {
 	m.teamPick.session.unread[member]++
 }
 
+// memberSwitchBusy is the narrow gate for switching members (§4.5): only an
+// unanswered prompt (approval/ask) blocks the window move — its run goroutine
+// waits on a decision only the window can surface. A running turn or background
+// job does NOT block: the backend survives the swap, its events keep flowing on
+// the shared pump, and switching back replays the transcript from history.
+// PendingPrompt is kept as a race guard: between the backend registering the
+// prompt and the TUI ingesting its event, the user's keypress can arrive while
+// m.pendingApproval is still nil. The shared runtimeSwitchBusy stays full —
+// model/effort/skill/web switches rebuild or tear down the backend, so Running
+// still refuses those.
+func (m *chatTUI) memberSwitchBusy() bool {
+	if m == nil || m.ctrl == nil {
+		return false
+	}
+	status := m.ctrl.RuntimeStatus()
+	return status.PendingPrompt || m.pendingApproval != nil || m.chooser != nil
+}
+
 // switchTeamMember binds the window to one member's Agent backend: the same
 // hot-swap the model switch performs, but pointed at another member instead of
 // another model. The transcript is rebuilt from the incoming backend's own
 // history, so the window shows that member's context and nothing of the
-// previous one.
-//
-// A turn in flight refuses the switch: swapping m.ctrl under a running turn
-// would leave its events arriving for a backend the window no longer shows.
+// previous one. The switch never interrupts a turn (§4.5); only an unanswered
+// prompt refuses it, and pending prompts replay on re-entry.
 func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	p := m.teamPick
 	if p == nil || p.store == nil || m.teamBackends == nil {
 		return nil
 	}
-	if m.runtimeSwitchBusy() {
-		p.session.errMsg = "Finish or stop the current turn before switching member"
+	if m.memberSwitchBusy() {
+		p.session.errMsg = "Answer the pending approval before switching member"
 		return nil
 	}
 	binding, err := p.store.Binding(p.model.Name(), memberID)
@@ -99,6 +115,10 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 		m.ambient = m.ctrl // first member bind: remember the chat's own backend
 	}
 	m.bindBackend(backend)
+	// Replay the member's pending approval/ask card: the window was elsewhere
+	// when the prompt registered. The event flows through the member's own sink
+	// onto the shared pump, ingested once the member is bound. No prompt, none.
+	backend.ReplayPendingPrompts()
 	return waitForMemberEvent(m.memberEvents)
 }
 
@@ -182,9 +202,14 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	if m.memberBackendBase == nil || m.memberEvents == nil || users == nil {
 		return // seam not installed (tests, non-interactive hosts): no member backends
 	}
-	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberBackendDeps{
+	memberDeps := memberBackendDeps{
 		ctx: context.Background(), users: users, events: m.memberEvents, base: m.memberBackendBase,
-	}), 0)
+	}
+	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberDeps), 0)
+	// Invalidate a member's assembled backend when its pool entry (ref,
+	// provider, model, base url or API key) changed, so a rebind never keeps
+	// serving the previous provider/credential.
+	m.teamBackends.setFingerprint(newMemberBackendFingerprint(memberDeps))
 }
 
 // teamSessionBound reports whether the window is showing a team member's Agent.
@@ -268,6 +293,10 @@ func (m *chatTUI) runMemberModelSubcommand(input string) bool {
 // rebindMemberAgentUser points the bound member at another pool entry and
 // reassembles it. The old backend is retired first: its provider, credential and
 // role prompt were baked in at assembly, so only a rebuild picks up the change.
+// The rebuild happens immediately, so the window keeps serving a live backend
+// bound to the new pool entry instead of a retired one. The full shared gate
+// applies — retire kills a running turn, so Running still refuses a rebind even
+// though switching members now allows it (§4.5).
 func (m *chatTUI) rebindMemberAgentUser(ref string) {
 	if !m.teamSessionBound() {
 		return // the session closed under an open picker: no member left to rebind
@@ -287,10 +316,33 @@ func (m *chatTUI) rebindMemberAgentUser(ref string) {
 		return
 	}
 	if m.teamBackends != nil {
-		m.teamBackends.release(p.session.teamName, member)
+		if err := m.rebindTeamBackend(p, member); err != nil {
+			p.session.errMsg = pickerErrMsg(err)
+			return
+		}
 	}
 	p.session.errMsg = ""
 	m.notice("member " + member + " now uses agent user " + ref)
+}
+
+// rebindTeamBackend reassembles the member's backend onto the window. The
+// registry's fingerprint invalidation rebuilds it — the binding's agent-user
+// ref changed, so the fingerprint differs from assembly — and a failed rebuild
+// leaves the previous backend serving, so the window never strands on a closed
+// controller.
+func (m *chatTUI) rebindTeamBackend(p *teamPicker, member string) error {
+	binding, err := p.store.Binding(p.model.Name(), member)
+	if err != nil {
+		return err
+	}
+	backend, err := m.teamBackends.bind(binding)
+	if err != nil {
+		// bind keeps the previous backend assembled and serving on failure.
+		return err
+	}
+	m.bindBackend(backend)
+	backend.ReplayPendingPrompts()
+	return nil
 }
 
 // openMemberModelPicker lists the agent-user pool as the bound member's model

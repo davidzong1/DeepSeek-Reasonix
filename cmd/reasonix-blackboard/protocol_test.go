@@ -282,3 +282,40 @@ func TestCLIRunEndToEnd(t *testing.T) {
 		t.Fatalf("unopenable db want exit 1, got %d", code)
 	}
 }
+
+// TestCLIExportSnapshot: the export op returns the whole snapshot as
+// parseable JSONL with the legacy aliases, and repeats are byte-identical.
+func TestCLIExportSnapshot(t *testing.T) {
+	db := newCLIBoard(t)
+	for i := 0; i < 3; i++ {
+		if _, resp := contractRun(t, db, appendReq(string(rune('a'+i))+"1", "s")); !resp.OK {
+			t.Fatalf("append %d rejected", i)
+		}
+	}
+	_, resp := contractRun(t, db, `{"op":"export"}`)
+	if !resp.OK || resp.Snapshot == nil {
+		t.Fatalf("export rejected: %+v", resp)
+	}
+	if resp.Snapshot.Lines != 3 || resp.Snapshot.Digest == "" {
+		t.Fatalf("snapshot wrong: %+v", resp.Snapshot)
+	}
+	lines := strings.Split(strings.TrimRight(resp.Jsonl, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("jsonl must have 3 lines, got %d", len(lines))
+	}
+	var row map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &row); err != nil {
+		t.Fatalf("torn line: %v", err)
+	}
+	if row["timestamp"] == nil || row["member"] != "m1" || row["result"] == nil {
+		t.Fatalf("legacy aliases missing: %v", row)
+	}
+	if row["board_id"] != "shared" || row["seq"] == nil {
+		t.Fatalf("event fields missing: %v", row)
+	}
+	// idempotent across calls
+	_, resp2 := contractRun(t, db, `{"op":"export"}`)
+	if resp2.Jsonl != resp.Jsonl || resp2.Snapshot.Digest != resp.Snapshot.Digest {
+		t.Fatal("repeat export must be identical")
+	}
+}

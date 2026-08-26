@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -108,6 +110,19 @@ func (r *memberProviderResolver) Resolve(sel provider.Selection) (provider.Provi
 	})
 }
 
+// memberCredentialError refuses assembly for a pool entry with no credential
+// source at all. The member's credential is the pool entry's own — the
+// resolver dials it directly and never falls back to the ambient config — so
+// a missing key is that entry's fault, named here with the member and the
+// entry, never the chat's own DeepSeek-default notice. A secret-store ref
+// counts as a declared credential source.
+func memberCredentialError(b team.MemberBinding, user team.AgentUser) error {
+	if strings.TrimSpace(user.APIKey) == "" && user.SecretRef.StoreID == "" {
+		return fmt.Errorf("member %q: agent user %q has no API key configured — set one in the pool before this member can send requests", b.MemberID, b.AgentUserRef)
+	}
+	return nil
+}
+
 // memberSystemPromptIdentity is the durable identity one member's Agent carries
 // for its whole session (route §2.2): the team, the member instance, and the
 // free-text role. It is folded into the cache-stable prefix once at assembly
@@ -151,6 +166,52 @@ type memberPoolLookup interface {
 	AgentUser(id string) (team.AgentUser, bool, error)
 }
 
+// memberAgentUserFingerprint hashes the pool-entry identity a member backend
+// bakes in at assembly: ref, provider, base url, model, effort and API key. Any
+// change must invalidate the cached backend — the old one keeps serving the
+// previous provider otherwise. The key is hashed, never stored or logged.
+func memberAgentUserFingerprint(user team.AgentUser) string {
+	h := sha256.New()
+	for _, part := range []string{user.UserID, user.Provider, user.BaseURL, user.Model, user.Effort, user.APIKey} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// newMemberBackendFingerprint returns the fingerprint function the backend
+// registry uses to invalidate a member's assembled backend when its pool entry
+// changed. An unresolvable ref returns an error so the registry conservatively
+// rebuilds (and surfaces the failure) instead of reusing a stale backend.
+func newMemberBackendFingerprint(deps memberBackendDeps) func(team.MemberBinding) (string, error) {
+	return func(b team.MemberBinding) (string, error) {
+		ref := strings.TrimSpace(b.AgentUserRef)
+		if ref == "" {
+			return "", nil
+		}
+		user, ok, err := deps.users.AgentUser(ref)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("%w: %q (bound by member %q)", team.ErrAgentUserNotFound, ref, b.MemberID)
+		}
+		// The member's role and proxy are baked into its system-prompt identity
+		// and transport at assembly too, so either change must invalidate.
+		return memberAgentUserFingerprint(user) + "\x00" +
+			string(b.Role) + "\x00" + proxyFingerprint(b.Proxy), nil
+	}
+}
+
+// proxyFingerprint is the stable encoding of one member's resolved proxy for
+// fingerprinting: only what memberProxySpec reads is significant.
+func proxyFingerprint(p team.ProxyConfig) string {
+	if !p.Enabled {
+		return "off"
+	}
+	return "on\x00" + p.Address
+}
+
 // newMemberBackendBuilder returns the assembly function teamBackends binds
 // with: one member's pool entry becomes a full Agent backend — tools, memory,
 // skills, hooks and trajectory included — pointed at that member's own session
@@ -168,6 +229,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		}
 		if !ok {
 			return nil, fmt.Errorf("%w: %q (bound by member %q)", team.ErrAgentUserNotFound, ref, b.MemberID)
+		}
+		if err := memberCredentialError(b, user); err != nil {
+			return nil, err
 		}
 		resolver, err := newMemberProviderResolver(user, memberProxySpec(b.Proxy))
 		if err != nil {

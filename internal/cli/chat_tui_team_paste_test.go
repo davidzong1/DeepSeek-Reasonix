@@ -272,8 +272,7 @@ func TestTeamPasteInertInDeleteConfirm(t *testing.T) {
 // before the list stage arms.
 func TestTeamPasteIntoLeaderResetID(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // focus the leader
+	m := openRoster(t)                                  // leaders first: the roster opens on the pinned leader
 	m = teamKey(m, tea.KeyPressMsg{Code: 'k'})          // warn stage
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // exact-id stage
 

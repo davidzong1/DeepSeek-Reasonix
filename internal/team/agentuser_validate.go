@@ -172,10 +172,11 @@ func validateAgentUserAllowLegacy(u AgentUser, legacyProvider string) error {
 }
 
 // validateAgentUserFields runs the whole-entry checks below the provider
-// gate: the id is required and every non-empty field is legal. The provider
-// is length-checked here but its legality is decided by the caller's gate
-// (ValidateAgentUser or validateAgentUserAllowLegacy) — a legacy value must
-// not be refused again after the gate let it through.
+// gate: the id is required, every non-empty field is legal, and the
+// provider/model pair must be one the resolved endpoint can serve. The
+// provider is length-checked here but its legality is decided by the caller's
+// gate (ValidateAgentUser or validateAgentUserAllowLegacy) — a legacy value
+// must not be refused again after the gate let it through.
 func validateAgentUserFields(u AgentUser) error {
 	if strings.TrimSpace(u.UserID) == "" {
 		return ErrInvalidAgentUser
@@ -200,5 +201,29 @@ func validateAgentUserFields(u AgentUser) error {
 			return err
 		}
 	}
-	return nil
+	return validateProviderModel(u)
+}
+
+// validateProviderModel refuses a model the entry's resolved endpoint cannot
+// serve. DeepSeek's official route and Anthropic both dial the anthropic
+// protocol, which serves no "gpt-*" model — a gpt model there fails on the
+// first request with an authentication-shaped error that reads like a
+// credential problem. The OpenAI route (openai provider, or a deepseek entry
+// with an OpenAI-compatible base url) stays open-ended, so custom OpenAI
+// models remain legal. Empty provider or model is an in-progress form state,
+// not an error; a legacy provider the allow-legacy gate preserved is judged
+// at consumption, never refused twice here.
+func validateProviderModel(u AgentUser) error {
+	model := strings.TrimSpace(u.Model)
+	if u.Provider == "" || model == "" {
+		return nil
+	}
+	if !strings.HasPrefix(strings.ToLower(model), "gpt") {
+		return nil
+	}
+	kind, _, err := ResolveProvider(u.Provider, u.BaseURL)
+	if err != nil || kind != "anthropic" {
+		return nil
+	}
+	return &AgentUserFieldError{Field: AgentUserFieldModel, Reason: "gpt-prefixed models are not served by the anthropic endpoint this provider dials; use provider \"openai\" for custom gpt models, or a deepseek/anthropic model"}
 }

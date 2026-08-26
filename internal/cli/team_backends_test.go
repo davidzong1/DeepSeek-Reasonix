@@ -15,13 +15,17 @@ import (
 )
 
 // fakeBackend is a control.SessionAPI stand-in that only records teardown, so
-// registry lifetime can be asserted without assembling a real controller.
+// registry lifetime can be asserted without assembling a real controller. id
+// distinguishes one assembled instance from another by identity, not value.
 type fakeBackend struct {
 	control.SessionAPI
 	closed *int
+	id     int
+	status control.RuntimeStatus // injected busy state; zero = idle
 }
 
-func (f fakeBackend) Close() { *f.closed++ }
+func (f fakeBackend) Close()                               { *f.closed++ }
+func (f fakeBackend) RuntimeStatus() control.RuntimeStatus { return f.status }
 
 func binding(teamName, memberID string) team.MemberBinding {
 	return team.MemberBinding{Team: teamName, MemberID: memberID}
@@ -147,6 +151,152 @@ func TestTeamBackendsReleasePaths(t *testing.T) {
 	}
 	if closed != 3 {
 		t.Errorf("closed = %d, want 3 (each backend exactly once)", closed)
+	}
+}
+
+// TestTeamBackendsFingerprintKeepsReuse pins the fingerprint contract's
+// steady state: with a stable fingerprint an assembled backend is still reused,
+// exactly as without a fingerprint installed.
+func TestTeamBackendsFingerprintKeepsReuse(t *testing.T) {
+	builds := 0
+	closed := 0
+	r := newTeamBackends(func(team.MemberBinding) (control.SessionAPI, error) {
+		builds++
+		return fakeBackend{closed: &closed}, nil
+	}, 4)
+	r.setFingerprint(func(team.MemberBinding) (string, error) { return "stable", nil })
+
+	if _, err := r.bind(binding("alpha", "lead")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.bind(binding("alpha", "lead")); err != nil {
+		t.Fatal(err)
+	}
+	if builds != 1 {
+		t.Errorf("builds = %d, want 1 (stable fingerprint must reuse)", builds)
+	}
+}
+
+// TestTeamBackendsRebuildsOnFingerprintChange pins the invalidation contract:
+// once a fingerprint is installed, a changed identity (agent-user ref,
+// provider, model, base url or API key) must retire the stale backend and
+// assemble a fresh one — never reuse the old provider/credential.
+func TestTeamBackendsRebuildsOnFingerprintChange(t *testing.T) {
+	builds := 0
+	closed := 0
+	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		builds++
+		return fakeBackend{closed: &closed, id: builds}, nil
+	}, 4)
+	fp := "gpt-5.6"
+	r.setFingerprint(func(team.MemberBinding) (string, error) { return fp, nil })
+
+	first, err := r.bind(binding("alpha", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp = "deepseek-v4-flash"
+	second, err := r.bind(binding("alpha", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 {
+		t.Errorf("builds = %d, want 2 (changed fingerprint must rebuild)", builds)
+	}
+	if first.(fakeBackend).id == second.(fakeBackend).id {
+		t.Error("a changed fingerprint must not return the stale backend")
+	}
+	if closed != 1 {
+		t.Errorf("closed = %d, want 1 (the stale backend must be retired)", closed)
+	}
+}
+
+// TestTeamBackendsFingerprintErrorKeepsServing pins the conservative path: a
+// fingerprint that cannot be evaluated (dangling agent-user ref, pool read
+// failure) must not interrupt the window — the assembled backend keeps serving
+// until a resolvable fingerprint change rebuilds it.
+func TestTeamBackendsFingerprintErrorKeepsServing(t *testing.T) {
+	builds := 0
+	closed := 0
+	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		builds++
+		return fakeBackend{closed: &closed, id: builds}, nil
+	}, 4)
+	r.setFingerprint(func(team.MemberBinding) (string, error) { return "ok", nil })
+
+	first, err := r.bind(binding("alpha", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fpErr := errors.New("pool unreadable")
+	r.setFingerprint(func(team.MemberBinding) (string, error) { return "", fpErr })
+	second, err := r.bind(binding("alpha", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 1 {
+		t.Errorf("builds = %d, want 1 (a fingerprint error must keep serving)", builds)
+	}
+	if first.(fakeBackend).id != second.(fakeBackend).id {
+		t.Error("a fingerprint error must keep the assembled backend, not rebuild")
+	}
+	if closed != 0 {
+		t.Errorf("closed = %d, want 0", closed)
+	}
+
+	// A resolvable fingerprint change afterwards still rebuilds.
+	fp := "gpt-5.6"
+	r.setFingerprint(func(team.MemberBinding) (string, error) { return fp, nil })
+	fp = "deepseek-v4-flash"
+	third, err := r.bind(binding("alpha", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 || second.(fakeBackend).id == third.(fakeBackend).id {
+		t.Errorf("a resolvable change must rebuild: builds = %d", builds)
+	}
+}
+
+// TestMemberAgentUserFingerprintSensitiveToIdentity pins what the fingerprint
+// covers: every field a member backend bakes in at assembly — ref, provider,
+// base url, model, API key — and that the key never appears in the digest.
+func TestMemberAgentUserFingerprintSensitiveToIdentity(t *testing.T) {
+	base := team.AgentUser{UserID: "u1", Provider: "openai", BaseURL: "https://x/v1", Model: "gpt-5.6", APIKey: "sk-one"}
+	fp := memberAgentUserFingerprint(base)
+	if strings.Contains(fp, "sk-one") {
+		t.Fatal("the API key must never appear in the fingerprint")
+	}
+	for name, mutate := range map[string]func(*team.AgentUser){
+		"provider": func(u *team.AgentUser) { u.Provider = "deepseek" },
+		"base_url": func(u *team.AgentUser) { u.BaseURL = "https://y/v1" },
+		"model":    func(u *team.AgentUser) { u.Model = "deepseek-v4-flash" },
+		"api_key":  func(u *team.AgentUser) { u.APIKey = "sk-two" },
+	} {
+		changed := base
+		mutate(&changed)
+		if memberAgentUserFingerprint(changed) == fp {
+			t.Errorf("changing %s must change the fingerprint", name)
+		}
+	}
+}
+
+// TestMemberBackendFingerprintResolvesFromPool pins the wiring fingerprint: it
+// resolves through the same pool lookup the builder uses, so an edited pool
+// entry (rebind, credential rotation) invalidates the cached backend.
+func TestMemberBackendFingerprintResolvesFromPool(t *testing.T) {
+	pool := fakePool{users: map[string]team.AgentUser{
+		"u1": {UserID: "u1", Provider: "openai", Model: "gpt-5.6", BaseURL: "https://x/v1", APIKey: "sk"},
+	}}
+	fp := newMemberBackendFingerprint(memberBackendDeps{users: pool})
+	got, err := fp(team.MemberBinding{Team: "t", MemberID: "m", AgentUserRef: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, memberAgentUserFingerprint(pool.users["u1"])) {
+		t.Error("the fingerprint must hash the pool entry behind the ref")
+	}
+	if _, err := fp(team.MemberBinding{Team: "t", MemberID: "m", AgentUserRef: "missing"}); !errors.Is(err, team.ErrAgentUserNotFound) {
+		t.Errorf("a dangling ref err = %v, want ErrAgentUserNotFound", err)
 	}
 }
 
@@ -315,5 +465,39 @@ func TestMemberBackendBuilderRefusesBadBindings(t *testing.T) {
 	})
 	if _, err := failing(team.MemberBinding{Team: "t", MemberID: "m", AgentUserRef: "good"}); !errors.Is(err, boom) {
 		t.Errorf("a pool read failure must surface, got %v", err)
+	}
+}
+
+// TestBindKeepsOldBackendServingOnRebuildFailure pins the atomic-swap half of
+// the fingerprint path: when the pool entry changed but the rebuild fails, the
+func TestBindKeepsPendingPromptBackendOnFingerprintChange(t *testing.T) {
+	builds := 0
+	closed := 0
+	pool := fakePool{users: map[string]team.AgentUser{
+		"u1": {UserID: "u1", Provider: "openai", Model: "gpt-5.6", BaseURL: "https://x/v1", APIKey: "sk"},
+	}}
+	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		builds++
+		return fakeBackend{closed: &closed, id: builds}, nil
+	}, 4)
+	r.setFingerprint(newMemberBackendFingerprint(memberBackendDeps{users: pool}))
+	b := team.MemberBinding{Team: "alpha", MemberID: "lead", AgentUserRef: "u1"}
+
+	if _, err := r.bind(b); err != nil {
+		t.Fatal(err)
+	}
+	pool.users["u1"] = team.AgentUser{UserID: "u1", Provider: "openai", Model: "gpt-5.7", BaseURL: "https://x/v1", APIKey: "sk"}
+
+	waiting := fakeBackend{closed: &closed, id: 1, status: control.RuntimeStatus{PendingPrompt: true}}
+	r.live[backendKey("alpha", "lead")] = waiting
+	got, err := r.bind(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != waiting {
+		t.Error("a pending-prompt member must keep its backend on a fingerprint change")
+	}
+	if builds != 1 || closed != 0 {
+		t.Errorf("a pending-prompt member must not rebuild: builds = %d, closed = %d", builds, closed)
 	}
 }

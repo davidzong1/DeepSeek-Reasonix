@@ -226,7 +226,8 @@ func TestLAssignAppointsLeaderlessTeam(t *testing.T) {
 // untouched — leaders change through k, never through l.
 func TestLAssignRefusesWhenLeaderExists(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t) // roster is id-sorted: alice first, lead second
+	m := openRoster(t)                                 // leaders first: lead pinned, alice after
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the non-leader
 	err := m.teamPick.assignFocusedLeader()
 	if err == nil {
 		t.Fatal("assigning with a leader present must refuse")

@@ -92,8 +92,9 @@ func TestBoundSessionSubmitReachesTheMemberBackend(t *testing.T) {
 
 // TestMemberModelRebindsAgentUser pins R2.4 (§8-5 拍板): /model inside a bound
 // member session changes THAT MEMBER's agent user — a member's model is whatever
-// its pool entry configures — and retires the stale backend so the next bind
-// reassembles from the new entry. The chat's own model is untouched.
+// its pool entry configures — and retires the stale backend, binding a freshly
+// assembled one immediately so the window never serves the old provider. The
+// chat's own model is untouched.
 func TestMemberModelRebindsAgentUser(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
@@ -107,11 +108,14 @@ func TestMemberModelRebindsAgentUser(t *testing.T) {
 	closed := 0
 	m.memberEvents = make(chan memberEvent, 4)
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
-		return stubBackend{label: b.MemberID, closed: &closed}, nil
+		return stubBackend{label: b.AgentUserRef, closed: &closed}, nil
 	}, 4)
+	m.teamBackends.setFingerprint(func(b team.MemberBinding) (string, error) {
+		return b.AgentUserRef, nil
+	})
 	m.teamPick.backends = m.teamBackends
 	m.switchTeamMember("lead")
-	chatModel := m.modelRef
+	chatModel := m.ambient.ModelRef()
 
 	m.runModelSubcommand("/model pool-b")
 
@@ -123,13 +127,16 @@ func TestMemberModelRebindsAgentUser(t *testing.T) {
 		t.Errorf("member agent user = %q, want pool-b", slot.AgentUserRef)
 	}
 	if closed != 1 {
-		t.Errorf("the stale backend must be retired so the next bind reassembles, closed = %d", closed)
+		t.Errorf("the stale backend must be retired, closed = %d", closed)
 	}
-	if _, still := m.teamBackends.bound("alpha", "lead"); still {
-		t.Error("the member's backend must be retired after a model change")
+	if _, still := m.teamBackends.bound("alpha", "lead"); !still {
+		t.Error("a freshly assembled backend must be bound immediately after a model change")
 	}
-	if m.modelRef != chatModel {
-		t.Errorf("the chat's own model must not move, got %q want %q", m.modelRef, chatModel)
+	if m.modelRef != "pool-b/model" {
+		t.Errorf("the window must show the rebound backend, got %q", m.modelRef)
+	}
+	if m.ambient.ModelRef() != chatModel {
+		t.Errorf("the chat's own backend must not move, got %q want %q", m.ambient.ModelRef(), chatModel)
 	}
 	// The change is persisted, not just in memory.
 	doc := readStoredTeamDoc(t)

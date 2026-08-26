@@ -251,3 +251,50 @@ func TestValidateAgentUserStableOrder(t *testing.T) {
 		t.Fatalf("err = %v, want the base_url refusal first", err)
 	}
 }
+
+// TestValidateAgentUserRefusesGptOnAnthropicRoute pins the provider/model
+// combination gate: a gpt-prefixed model is refused wherever the entry dials
+// the anthropic protocol — DeepSeek's official route (no base url) and
+// Anthropic alike — because the first request would fail with an
+// authentication-shaped error that reads like a credential problem. The
+// OpenAI route stays open-ended, so a custom OpenAI model (gpt-5.6-luna, or a
+// gpt model behind a deepseek entry's OpenAI-compatible base url) remains
+// legal, as do deepseek/anthropic models and in-progress form states.
+func TestValidateAgentUserRefusesGptOnAnthropicRoute(t *testing.T) {
+	refused := []AgentUser{
+		{UserID: "au-1", Provider: ProviderDeepSeek, Model: "gpt-4o"},
+		{UserID: "au-2", Provider: ProviderDeepSeek, Model: "GPT-5.6-luna", BaseURL: DeepSeekDefaultBaseURL},
+		{UserID: "au-3", Provider: ProviderAnthropic, Model: "gpt-5"},
+	}
+	for _, u := range refused {
+		err := ValidateAgentUser(u)
+		var fe *AgentUserFieldError
+		if !errors.As(err, &fe) || fe.Field != AgentUserFieldModel {
+			t.Errorf("provider=%q model=%q: err = %v, want the model-field refusal", u.Provider, u.Model, err)
+		}
+	}
+	legal := []AgentUser{
+		{UserID: "au-4", Provider: ProviderOpenAI, Model: "gpt-5.6-luna"},                                  // custom OpenAI model
+		{UserID: "au-5", Provider: ProviderDeepSeek, Model: "gpt-5", BaseURL: "https://gw.example.com/v1"}, // deepseek dials openai here
+		{UserID: "au-6", Provider: ProviderDeepSeek, Model: "deepseek-chat"},
+		{UserID: "au-7", Provider: ProviderAnthropic, Model: "claude-opus-5"},
+		{UserID: "au-8", Provider: "", Model: "gpt-5"}, // unconfigured provider: in-progress form state
+		{UserID: "au-9", Provider: ProviderDeepSeek},   // unconfigured model
+	}
+	for _, u := range legal {
+		if err := ValidateAgentUser(u); err != nil {
+			t.Errorf("provider=%q model=%q base_url=%q should pass: %v", u.Provider, u.Model, u.BaseURL, err)
+		}
+	}
+}
+
+// TestValidateAgentUserAllowLegacySkipsModelCombo pins the preserve exemption:
+// a legacy provider the allow-legacy gate let through is judged at
+// consumption, never refused again by the combination check — its endpoint is
+// unknown until the runtime tries to dial it.
+func TestValidateAgentUserAllowLegacySkipsModelCombo(t *testing.T) {
+	u := AgentUser{UserID: "au-1", Provider: "legacy-openai", Model: "gpt-4o"}
+	if err := validateAgentUserAllowLegacy(u, "legacy-openai"); err != nil {
+		t.Fatalf("legacy provider must keep its gpt model on the preserve path: %v", err)
+	}
+}

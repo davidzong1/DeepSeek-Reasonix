@@ -46,7 +46,7 @@ type Model struct {
 	resume Mode // screen a quit confirmation was entered from
 }
 
-// New returns a Model on the team list, each team's roster in state-priority
+// New returns a Model on the team list, each team's roster in leaders-first
 // order, focused on the first team.
 func New(teams []TeamView) *Model {
 	m := &Model{mode: ModeTeams, resume: ModeTeams, teams: make([]TeamView, 0, len(teams))}
@@ -106,6 +106,13 @@ func (m *Model) selectMember(id string) bool {
 		}
 	}
 	return false
+}
+
+// FocusMember moves member focus onto the member with id, reporting whether it
+// is present. Focus follows identity, so a re-sorted roster cannot strand it on
+// a stale index.
+func (m *Model) FocusMember(id string) bool {
+	return m.selectMember(id)
 }
 
 // Mode returns the current screen.
@@ -276,11 +283,15 @@ func step(i, d, n int) (int, bool) {
 	return next, next != i
 }
 
-// sortedMembers copies members into state-priority display order, ties broken
-// by member ID.
+// sortedMembers copies members into display order: leaders first — the roster
+// must always open on the team's leader (§11.4) — then state priority, ties
+// broken by member ID.
 func sortedMembers(in []team.Member) []team.Member {
 	out := append([]team.Member(nil), in...)
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Leader != out[j].Leader {
+			return out[i].Leader
+		}
 		ri, rj := stateRank(out[i].State), stateRank(out[j].State)
 		if ri != rj {
 			return ri < rj

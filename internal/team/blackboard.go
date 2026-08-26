@@ -36,6 +36,8 @@ const (
 	EventEvidence   EventKind = "evidence"
 	EventAssignment EventKind = "assignment"
 	EventSupersede  EventKind = "supersede"
+	EventCommand    EventKind = "command" // leader direct command (route §5.1)
+	EventWakeup     EventKind = "wakeup"  // attention signal for the leader
 )
 
 // ArtifactRef points at a large payload stored outside the board; the

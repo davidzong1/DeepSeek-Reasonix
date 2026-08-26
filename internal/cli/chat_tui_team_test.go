@@ -522,7 +522,8 @@ func TestTeamPickerSpaceEntersRosterThenContext(t *testing.T) {
 // assignment flows through l on the roster, step-down through k.
 func TestTeamMemberEditRoleLeaderReadOnly(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t) // alice focused first (id-sorted)
+	m := openRoster(t)                                 // leaders first: lead pinned, alice after
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the non-leader
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	rendered := ansi.Strip(m.renderTeamPicker())
 	if !strings.Contains(rendered, "Role: coder") || !strings.Contains(rendered, "Leader: off") {

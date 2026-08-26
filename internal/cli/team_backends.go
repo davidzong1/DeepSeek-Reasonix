@@ -42,10 +42,12 @@ const defaultMaxTeamBackends = 4
 // those backends — assembly itself is the injected build function, which keeps
 // provider resolution and boot wiring out of this file.
 type teamBackends struct {
-	build func(team.MemberBinding) (control.SessionAPI, error)
-	max   int
-	live  map[string]control.SessionAPI
-	order []string // least recently bound first; the eviction order
+	build       func(team.MemberBinding) (control.SessionAPI, error)
+	fingerprint func(team.MemberBinding) (string, error)
+	max         int
+	live        map[string]control.SessionAPI
+	fps         map[string]string // key → fingerprint at assembly; only when set
+	order       []string          // least recently bound first; the eviction order
 }
 
 // newTeamBackends returns an empty registry. max <= 0 takes the default cap.
@@ -53,29 +55,79 @@ func newTeamBackends(build func(team.MemberBinding) (control.SessionAPI, error),
 	if max <= 0 {
 		max = defaultMaxTeamBackends
 	}
-	return &teamBackends{build: build, max: max, live: map[string]control.SessionAPI{}}
+	return &teamBackends{
+		build: build, max: max,
+		live: map[string]control.SessionAPI{},
+		fps:  map[string]string{},
+	}
 }
 
-// bind returns the member's backend, assembling it on first use. The returned
-// backend becomes the most recently bound, so it is never the eviction victim;
-// a failed assembly leaves the registry untouched so the caller can retry.
+// setFingerprint installs the binding-fingerprint function. Once installed,
+// bind refuses to reuse a member's assembled backend when the fingerprint —
+// agent-user ref, provider, model, base url or API key — changed since
+// assembly, and re-assembles it instead. Without it the registry keeps the
+// historical behavior: same member always reuses its backend.
+func (r *teamBackends) setFingerprint(f func(team.MemberBinding) (string, error)) {
+	r.fingerprint = f
+}
+
+// bind returns the member's backend, assembling it on first use. A cached
+// backend is reused only when its fingerprint is unchanged (or no fingerprint
+// is installed); a changed credential/provider identity assembles a fresh one
+// before retiring the stale, so a rebind never keeps serving the old provider
+// and never kills a running turn to do it. A backend whose fingerprint cannot
+// be evaluated (or that is busy) also keeps serving until an idle, resolvable
+// bind rebuilds it. The returned backend becomes the most recently bound, so
+// it is never the eviction victim; a failed assembly leaves the previous
+// backend serving so the caller can retry.
 func (r *teamBackends) bind(b team.MemberBinding) (control.SessionAPI, error) {
 	key := backendKey(b.Team, b.MemberID)
-	if live, ok := r.live[key]; ok {
+	fp, fpErr := r.currentFingerprint(b)
+	live, ok := r.live[key]
+	if ok && fpErr == nil && r.fps[key] == fp {
 		r.touch(key)
 		return live, nil
+	}
+	// A changed identity must not be reused, but retiring it first kills a
+	// running turn (§4.5) or strands a pending prompt on a failed rebuild —
+	// a busy backend keeps serving until an idle bind rebuilds it.
+	if ok {
+		if st := live.RuntimeStatus(); st.Running || st.PendingPrompt || st.BackgroundJobs > 0 || fpErr != nil {
+			r.touch(key)
+			return live, nil
+		}
 	}
 	if r.build == nil {
 		return nil, team.ErrMemberNotFound
 	}
 	backend, err := r.build(b)
 	if err != nil {
+		if ok {
+			r.touch(key)
+			return live, err
+		}
 		return nil, err
 	}
+	if ok {
+		r.retire(key)
+	}
 	r.live[key] = backend
+	if fpErr == nil {
+		r.fps[key] = fp
+	}
 	r.touch(key)
 	r.evictOverCap(key)
 	return backend, nil
+}
+
+// currentFingerprint evaluates the installed fingerprint for a binding. With
+// no fingerprint installed it returns an empty match so every cached backend
+// is reusable (the legacy contract).
+func (r *teamBackends) currentFingerprint(b team.MemberBinding) (string, error) {
+	if r.fingerprint == nil {
+		return "", nil
+	}
+	return r.fingerprint(b)
 }
 
 // bound reports the member's assembled backend without building one.
@@ -114,6 +166,7 @@ func (r *teamBackends) retire(key string) {
 		live.Close()
 		delete(r.live, key)
 	}
+	delete(r.fps, key)
 	if i := slices.Index(r.order, key); i >= 0 {
 		r.order = slices.Delete(r.order, i, i+1)
 	}

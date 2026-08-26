@@ -30,7 +30,9 @@ type stubBackend struct {
 	control.SessionAPI
 	label   string
 	history []provider.Message
-	closed  *int // nil when the test does not care about teardown
+	closed  *int                  // nil when the test does not care about teardown
+	status  control.RuntimeStatus // injected busy state; zero = idle
+	replays *int                  // nil when the test does not assert prompt replay
 }
 
 func (s stubBackend) Label() string               { return s.label }
@@ -41,6 +43,15 @@ func (s stubBackend) SlashSkills() []skill.Skill  { return nil }
 func (s stubBackend) Host() *plugin.Host          { return nil }
 func (s stubBackend) SessionPath() string         { return "" }
 
+// ReplayPendingPrompts is what switchTeamMember calls after binding to resurface
+// a member's pending approval/ask card (§4.5). Tests count the call; a real
+// controller re-emits the blocked prompt onto its sink here.
+func (s stubBackend) ReplayPendingPrompts() {
+	if s.replays != nil {
+		*s.replays++
+	}
+}
+
 // Close is what retiring a backend calls: it releases the member's session lease
 // in production, so a test that retires one must be able to observe it.
 func (s stubBackend) Close() {
@@ -50,8 +61,10 @@ func (s stubBackend) Close() {
 }
 
 // RuntimeStatus is read by runtimeSwitchBusy on the bound backend, so a switch
-// away from a member consults the member it is leaving. Idle: nothing in flight.
-func (s stubBackend) RuntimeStatus() control.RuntimeStatus { return control.RuntimeStatus{} }
+// away from a member consults the member it is leaving. The zero value is idle:
+// nothing in flight. Tests inject Running/PendingPrompt/BackgroundJobs to pin
+// the switch gate's per-condition behavior.
+func (s stubBackend) RuntimeStatus() control.RuntimeStatus { return s.status }
 
 // overlayWithBackends opens the team overlay and wires a backend registry whose
 // builder hands out a backend carrying that member's own history.

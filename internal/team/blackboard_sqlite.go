@@ -98,6 +98,18 @@ var boardSchema = []string{
 	  bound_at TEXT NOT NULL,
 	  PRIMARY KEY (member_id)
 	)`,
+	`CREATE TABLE IF NOT EXISTS team_tasks (
+	  task_id TEXT PRIMARY KEY,
+	  require_role TEXT NOT NULL DEFAULT '',
+	  description TEXT NOT NULL DEFAULT '',
+	  context_ref TEXT NOT NULL DEFAULT '',
+	  expected TEXT NOT NULL DEFAULT '',
+	  report_ref TEXT NOT NULL DEFAULT '',
+	  checkpoint_ref TEXT NOT NULL DEFAULT '',
+	  status TEXT NOT NULL,
+	  assigned_member TEXT NOT NULL DEFAULT '',
+	  created_at TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {

@@ -20,21 +20,22 @@ func leaderTeam() team.Team {
 	}}
 }
 
-// TestTeamSessionLeaderGate pins the t gate (§5): t from a non-leader member
-// is refused with a message and never opens the session; t from the leader
-// opens the session window on the leader.
+// TestTeamSessionLeaderGate pins the t gate (§11.4): t from a non-leader
+// member auto-corrects to the team's leader and opens the session on it —
+// never a refusal; t from the leader opens the session window on the leader.
 func TestTeamSessionLeaderGate(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t) // the roster is id-sorted: alice first, lead second
+	m := openRoster(t)                                 // leaders first: lead pinned, alice after
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the non-leader
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
-	if m.teamPick.session.active {
-		t.Fatal("t from a non-leader must not open the session")
+	if !m.teamPick.session.active {
+		t.Fatal("t from a non-leader must auto-enter on the leader")
 	}
-	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Only the leader can start a team session") {
-		t.Fatalf("non-leader t should render the refusal, got:\n%s", got)
+	if got := m.teamPick.session.current; got != "lead" {
+		t.Fatalf("the session must bind the leader, got %q", got)
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus lead
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // close back to the roster
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})        // t from the focused leader again
 	if !m.teamPick.session.active {
 		t.Fatal("t from the leader should open the session")
 	}
@@ -100,10 +101,11 @@ func TestTeamSessionReopenLandsOnLeader(t *testing.T) {
 // shortcut (§5): l assigns the focused member only when the team has no
 // leader — with one present it refuses with the holder's id — and the t
 // gate reads the same registry field, so a just-assigned leader opens the
-// session and a non-leader is refused.
+// session and a non-leader entry auto-corrects to the leader.
 func TestTeamRosterLeaderAssignAndSessionGate(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t) // id-sorted: alice first, lead second
+	m := openRoster(t)                                 // leaders first: lead pinned, alice after
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the non-leader
 	m = teamKey(m, tea.KeyPressMsg{Code: 'l'})
 	if m.teamPick.errMsg == "" {
 		t.Fatal("l with a leader present must refuse")
@@ -113,16 +115,11 @@ func TestTeamRosterLeaderAssignAndSessionGate(t *testing.T) {
 		t.Fatal("l must not touch the existing leader")
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'}) // alice is not the leader
-	if m.teamPick.session.active {
-		t.Fatal("t from a non-leader must not open the session")
-	}
-	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Only the leader can start a team session") {
-		t.Fatalf("non-leader t should render the refusal, got:\n%s", got)
-	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus lead
-	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
 	if !m.teamPick.session.active {
-		t.Fatal("t from the leader should open the session")
+		t.Fatal("t from a non-leader must auto-enter on the leader")
+	}
+	if got := m.teamPick.session.current; got != "lead" {
+		t.Fatalf("the session must bind the leader, got %q", got)
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // back to the team list
 
@@ -221,7 +218,8 @@ func TestTeamLeaderResetEscCancelsZeroWrite(t *testing.T) {
 // member is refused and never arms a stage.
 func TestTeamLeaderResetNonLeaderRefused(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
-	m := openRoster(t) // alice, the coder, is focused first (id-sorted)
+	m := openRoster(t)                                 // leaders first: lead pinned, alice after
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the coder
 	m = teamKey(m, tea.KeyPressMsg{Code: 'k'})
 	if m.teamPick.reset.kind != leaderResetNone {
 		t.Fatalf("k from a non-leader must not arm a stage, got %v", m.teamPick.reset.kind)
