@@ -335,6 +335,9 @@ type App struct {
 	remoteWindows          *remoteWindowRegistry
 	remoteWindowLifecycles remoteWindowLifecycleRegistry
 	remoteWindowOpener     func(remoteWindowLaunch) error // test-only injection
+	// credProxy is the lazy app-wide key holder for local-proxy mode.
+	credProxyMu sync.Mutex
+	credProxy   *credentialProxy
 	// remoteWindowTicket/remoteWindowHostKey are set from argv before Wails
 	// starts in a child process. They gate the blank-shell middleware and the
 	// startup branches so the child never initializes local runtimes.
@@ -474,6 +477,9 @@ func (a *App) startup(ctx context.Context) {
 		if err := repairDesktopIconIntegration(); err != nil {
 			slog.Debug("desktop: repair native icon integration", "err", err)
 		}
+	})
+	a.goSafe("applyWindowIconsFromExecutable", func() {
+		applyWindowIconsFromExecutable()
 	})
 
 	if cfg, err := config.Load(); err == nil && cfg.DesktopMetrics() && version != "dev" {
@@ -706,7 +712,6 @@ func (a *App) restoreOrBuildTabs() {
 	if cfgErr != nil || singleSurfaceLayoutStyle(startupCfg.DesktopLayoutStyle()) {
 		f = singleSurfaceTabsFile(f)
 	}
-
 	if len(f.Tabs) > 0 {
 		toBuild := make([]*WorkspaceTab, 0, len(f.Tabs))
 		for _, entry := range f.Tabs {
@@ -7055,6 +7060,10 @@ type ServerView struct {
 	Status                 string         `json:"status"`
 	StartIntent            string         `json:"startIntent,omitempty"` // deprecated: derived from Enabled
 	RuntimeState           string         `json:"runtimeState,omitempty"`
+	ProtocolVersion        string         `json:"protocolVersion,omitempty"`
+	SessionState           string         `json:"sessionState,omitempty"`
+	ReconnectAttempts      int            `json:"reconnectAttempts,omitempty"`
+	ErrorKind              string         `json:"errorKind,omitempty"`
 	Availability           string         `json:"availability,omitempty"`
 	Enabled                bool           `json:"enabled"`
 	Installed              bool           `json:"installed"`
@@ -7709,12 +7718,7 @@ func (a *App) mcpServersView() []ServerView {
 			}
 			seen[s.Name] = true
 			connected[s.Name] = true
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected", RuntimeState: "ready",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools: s.HasTools,
-				ToolList: pluginToolsToView(s.ToolList),
-			}
+			view := pluginServerToView(s)
 			if p, ok := configured[s.Name]; ok {
 				view = withPluginConfigInWorkspace(view, p, workspaceRoot)
 			}
@@ -9173,13 +9177,7 @@ func findMCPServerView(ctrl control.SessionAPI, name string) (ServerView, bool) 
 	}
 	for _, s := range ctrl.Host().Servers() {
 		if s.Name == name {
-			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
-				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
-				HasTools: s.HasTools,
-				ToolList: pluginToolsToView(s.ToolList),
-			}
-			return view, true
+			return pluginServerToView(s), true
 		}
 	}
 	for _, f := range ctrl.Host().Failures() {

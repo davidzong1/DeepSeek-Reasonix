@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/stats"
 	"reasonix/internal/store"
 )
@@ -500,6 +501,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /fork", s.fork)
 	mux.HandleFunc("POST /summarize", s.summarize)
 	mux.HandleFunc("POST /tool-approval-mode", s.toolApprovalMode)
+	mux.HandleFunc("POST /providers/reload", s.providersReload)
 	mux.HandleFunc("POST /auto-approve-tools", s.autoApproveTools)
 	mux.HandleFunc("POST /bypass", s.bypass)
 	mux.HandleFunc("POST /goal", s.goal)
@@ -789,7 +791,19 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	s.ctl().Approve(body.ID, body.Allow, body.Session, body.Persist)
+	scope := sandbox.ApprovalScopeOnce
+	if body.Allow {
+		switch {
+		case body.Persist:
+			scope = sandbox.ApprovalScopeProject
+		case body.Session:
+			scope = sandbox.ApprovalScopeSession
+		}
+	}
+	if err := s.ctl().ResolveApproval(body.ID, body.Allow, scope); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -823,6 +837,10 @@ func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 	if err := s.ctl().NewSession(); err != nil {
+		if control.IsSessionRotationBusy(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1001,6 +1019,10 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	defer s.bindMu.Unlock()
 	path, err := s.ctl().ForkNamed(body.Turn, body.Name)
 	if err != nil {
+		if control.IsSessionRotationBusy(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1369,6 +1391,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
 	}
+	// Runtime reconciliation fields for desktop running-state watchdogs: the
+	// remote tab surface polls /status and maps these onto the same
+	// reconciliation the local tabs get from ListTabs.
+	rs := s.ctl().RuntimeStatus()
+	sess["pendingPrompt"] = rs.PendingPrompt
+	sess["backgroundJobs"] = rs.BackgroundJobs
+	sess["cancelRequested"] = rs.CancelRequested
+	sess["cancellable"] = rs.Cancellable
 	if u := s.ctl().LastUsage(); u != nil {
 		sess["lastUsage"] = u
 	}
@@ -1455,56 +1485,6 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		title = title[1 : len(title)-1]
 	}
 	return strings.TrimSpace(title)
-}
-
-// sessions lists saved session files from the session directory, enriched with
-// LLM-generated titles and turn counts.
-func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
-	dir := s.ctl().SessionDir()
-	if dir == "" {
-		writeJSON(w, []any{})
-		return
-	}
-	type sessionEntry struct {
-		Name    string `json:"name"`
-		Path    string `json:"path"`
-		Title   string `json:"title,omitempty"`
-		Turns   int    `json:"turns,omitempty"`
-		Current bool   `json:"current,omitempty"`
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		writeJSON(w, []any{})
-		return
-	}
-	current := filepath.Clean(s.ctl().SessionPath())
-	var out []sessionEntry
-	for _, e := range entries {
-		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		if agent.IsCleanupPending(path) {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".jsonl")
-		entry := sessionEntry{Name: name, Path: path, Current: filepath.Clean(path) == current}
-		// Event-log aware: reading the .jsonl checkpoint directly would freeze
-		// turn counts and titles at the last checkpoint write.
-		if first, turns := agent.SessionPreview(path); turns > 0 {
-			entry.Turns = turns
-			entry.Title = s.sessionTitle(r.Context(), e.Name(), first, agent.SessionContentModTime(path).UnixNano())
-		}
-		out = append(out, entry)
-	}
-	// reverse so newest first
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	if out == nil {
-		out = []sessionEntry{}
-	}
-	writeJSON(w, out)
 }
 
 // deleteSession removes a saved session by the session name returned from /sessions.
