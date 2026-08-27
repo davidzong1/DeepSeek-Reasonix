@@ -96,7 +96,7 @@
 | P1.2 | leader/member system prompt 协作纪律设计 | 已完成 | prompt 变更提案、顺序/回报行为测试 |
 | P2.1 | 大文件渐进拆分 | 已完成 | task_identity.go 首拆完成，4 项回归全绿；后续模块按独立任务排期 |
 | P2.2 | 受限 loopback/IPv6 测试环境 | 后续任务 | 独立环境修复，不改业务语义 |
-| R-final | 全量门禁、文档收口、最终交付 | 待启动 | `go test -race`、vet、build、gofmt、repolint |
+| R-final | 全量门禁、文档收口、最终交付 | 已完成 | 全仓编译、targeted tests、vet、gofmt、repolint clean；运行期 httptest IPv6 监听受限，列入 P2.2 |
 
 ## 5. 协作与变更门禁
 
