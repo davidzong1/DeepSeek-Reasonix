@@ -419,6 +419,26 @@ type SessionRecoveryInfo struct {
 	Existing     bool
 	Reason       string
 	Meta         agent.BranchMeta
+	commit       *sessionRecoveryCommit
+}
+
+// OnCommit defers publication work until the controller has installed the
+// recovery path and rebound all path-scoped state.
+func (i SessionRecoveryInfo) OnCommit(fn func()) {
+	if i.commit != nil && fn != nil {
+		i.commit.hooks = append(i.commit.hooks, fn)
+	}
+}
+
+type sessionRecoveryCommit struct {
+	hooks []func()
+}
+
+func (c *sessionRecoveryCommit) publish() {
+	for _, hook := range c.hooks {
+		hook()
+	}
+	c.hooks = nil
 }
 
 type externalFolderToolRefs interface {
@@ -2171,36 +2191,6 @@ func (c *Controller) Turn() int {
 	return c.turn
 }
 
-// ResolvePlanDecision answers the Plan card without collapsing revise and exit
-// into the generic approval boolean used by older clients.
-func (c *Controller) ResolvePlanDecision(id string, action PlanDecisionAction) error {
-	if c == nil {
-		return fmt.Errorf("controller is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return fmt.Errorf("empty plan approval id")
-	}
-	switch action {
-	case PlanDecisionStartExecution, PlanDecisionRevisePlan, PlanDecisionExitPlan:
-	default:
-		return fmt.Errorf("unknown plan decision %q", action)
-	}
-	pending, ok, err := c.approval.resolveToolAfter(id, planApprovalTool, func(p pendingApproval) error {
-		return c.emitTurnEventChecked(event.Event{Kind: event.PromptAnswered, ItemID: id, Status: event.TurnInProgress})
-	})
-	if err != nil {
-		return err
-	}
-	if !ok || pending.reply == nil {
-		return nil
-	}
-	pending.kind = "plan"
-	c.recordDecisionReceipt(pending, string(action))
-	pending.reply <- approvalReply{allow: action == PlanDecisionStartExecution}
-	return nil
-}
-
 func (c *Controller) recordDecisionReceipt(pending pendingApproval, outcome string) {
 	if c == nil || c.executor == nil || pending.reply == nil {
 		return
@@ -3027,20 +3017,14 @@ func (c *Controller) NewSession() error {
 		freshPath = agent.NewSessionPath(c.sessionDir, c.label)
 	}
 	freshSession := agent.NewSession(c.systemPrompt)
-	if freshPath != oldPath {
-		if err := c.prepareSessionTransition(freshPath, "new", freshSession); err != nil {
-			return fmt.Errorf("bind new session: %w", err)
-		}
+	commitTransition, err := c.prepareSessionTransition(freshPath, "new", freshSession)
+	if err != nil {
+		return fmt.Errorf("bind new session: %w", err)
 	}
 	// Hold snapshotMu across the swap so an in-flight save cannot pair the old
 	// path with the fresh session (or the fresh path with the old session).
 	c.snapshotMu.Lock()
-	c.mu.Lock()
-	c.sessionPath = freshPath
-	c.guardianPath = guardian.PathFor(freshPath)
-	c.mu.Unlock()
-	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(freshSession)
+	commitTransition.publish()
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
@@ -3080,7 +3064,7 @@ func (c *Controller) ClearSession() error {
 	// live session replaced.
 	if err := c.beginRotation(); err != nil {
 		if errors.Is(err, errTurnRunningRotation) {
-			return fmt.Errorf("cannot clear while a turn is running")
+			return fmt.Errorf("cannot clear while a turn is running: %w", err)
 		}
 		return err
 	}
@@ -3124,23 +3108,17 @@ func (c *Controller) ClearSession() error {
 		freshPath = agent.NewSessionPath(c.sessionDir, c.label)
 	}
 	freshSession := agent.NewSession(c.systemPrompt)
-	if freshPath != oldPath {
-		if err := c.prepareSessionTransition(freshPath, "clear", freshSession); err != nil {
-			if destroy.Async {
-				destroy.Finish()
-			}
-			c.snapshotMu.Unlock()
-			return fmt.Errorf("bind cleared session: %w", err)
+	commitTransition, err := c.prepareSessionTransition(freshPath, "clear", freshSession)
+	if err != nil {
+		if destroy.Async {
+			destroy.Finish()
 		}
+		c.snapshotMu.Unlock()
+		return fmt.Errorf("bind cleared session: %w", err)
 	}
 	c.hooks.SessionEnd(context.Background(), "clear")
 	c.extensionSessionEvent(extension.PointSessionEnd, dispatch.PhaseEnd, oldPath)
-	c.mu.Lock()
-	c.sessionPath = freshPath
-	c.guardianPath = guardian.PathFor(freshPath)
-	c.mu.Unlock()
-	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(freshSession)
+	commitTransition.publish()
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
@@ -3362,21 +3340,17 @@ func (c *Controller) forkNamedReady(turn int, name string, switchToFork bool) (s
 		return "", c.rewindFail(err)
 	}
 	if switchToFork {
-		if err := c.prepareSessionTransition(newPath, "fork", sess); err != nil {
+		commitTransition, err := c.prepareSessionTransition(newPath, "fork", sess)
+		if err != nil {
 			return "", c.rewindFail(fmt.Errorf("bind fork session: %w", err))
 		}
 		// See snapshotMu: the swap must not interleave with an in-flight save.
 		c.snapshotMu.Lock()
-		c.executor.SetSession(sess)
-		c.mu.Lock()
-		c.sessionPath = newPath
-		c.guardianPath = guardian.PathFor(newPath)
-		c.mu.Unlock()
+		commitTransition.publish()
 		// Load the child sidecar when the covered prefix survived the fork. The
 		// loader rebinds its lineage key without touching the parent's sidecar.
 		c.bindExecutorProjection(newPath, true)
 		c.ResetPlannerSession()
-		c.setActiveJobSession(newPath)
 		c.rebindCheckpoints(newPath)
 		// A historical fork rewinds before later failures, so it starts with no
 		// active recovery event even though it inherits the session preference.
@@ -3455,19 +3429,15 @@ func (c *Controller) Branch(name string) (string, error) {
 	}); err != nil {
 		return "", c.rewindFail(err)
 	}
-	if err := c.prepareSessionTransition(newPath, "branch", sess); err != nil {
+	commitTransition, err := c.prepareSessionTransition(newPath, "branch", sess)
+	if err != nil {
 		return "", c.rewindFail(fmt.Errorf("bind branch session: %w", err))
 	}
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
-	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.guardianPath = guardian.PathFor(newPath)
-	c.mu.Unlock()
+	commitTransition.publish()
 	c.bindExecutorProjection(newPath, true)
 	c.ResetPlannerSession()
-	c.setActiveJobSession(newPath)
 	c.rebindCheckpoints(newPath)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
@@ -3520,21 +3490,15 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if err != nil {
 		return agent.BranchInfo{}, c.rewindFail(err)
 	}
-	if err := c.prepareSessionTransition(match.Path, "switch", loaded); err != nil {
+	commitTransition, err := c.prepareSessionTransition(match.Path, "switch", loaded)
+	if err != nil {
 		return agent.BranchInfo{}, c.rewindFail(fmt.Errorf("bind switched session: %w", err))
 	}
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
-	if c.executor != nil {
-		c.executor.SetSession(loaded)
-	}
-	c.mu.Lock()
-	c.sessionPath = match.Path
-	c.guardianPath = guardian.PathFor(match.Path)
-	c.mu.Unlock()
+	commitTransition.publish()
 	c.bindExecutorProjection(match.Path, true)
 	c.ResetPlannerSession()
-	c.setActiveJobSession(match.Path)
 	c.rebindCheckpoints(match.Path)
 	c.restoreTerminalGoalTodos(match.Path)
 	c.loadGuardianSession()
@@ -4109,12 +4073,14 @@ func (c *Controller) recoverShutdownSnapshot(path string, saveErr error) (string
 }
 
 func (c *Controller) commitRecoveredSession(originalPath, reason string, info agent.RecoveryBranchInfo) error {
+	commit := &sessionRecoveryCommit{}
 	recoveryInfo := SessionRecoveryInfo{
 		OriginalPath: originalPath,
 		RecoveryPath: info.Path,
 		Existing:     info.Existing,
 		Reason:       reason,
 		Meta:         info.Meta,
+		commit:       commit,
 	}
 	if onSessionRecovered := c.sessionRecoveredHandler(); onSessionRecovered != nil {
 		if err := onSessionRecovered(recoveryInfo); err != nil {
@@ -4131,6 +4097,7 @@ func (c *Controller) commitRecoveredSession(originalPath, reason string, info ag
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
 	c.transplantInFlightTurnMarker(originalPath, info.Path)
+	commit.publish()
 	return nil
 }
 
@@ -5719,6 +5686,30 @@ func (c *Controller) ApplyMode(plan, autoApproveTools bool) []string {
 		return c.ApplyToolApprovalMode(ToolApprovalYolo)
 	}
 	return c.ApplyToolApprovalMode(ToolApprovalAsk)
+}
+
+// ApplyComposerProfile publishes the collaboration, approval, and Goal axes as
+// one controller operation. The only fallible mutation (durable Goal state)
+// commits first, so a persistence failure leaves Plan and approval unchanged.
+// Serve serializes this call with turn admission and controller replacement.
+func (c *Controller) ApplyComposerProfile(plan bool, toolApprovalMode, goal string) ([]string, error) {
+	toolApprovalMode = strings.ToLower(strings.TrimSpace(toolApprovalMode))
+	switch toolApprovalMode {
+	case ToolApprovalAsk, ToolApprovalAuto, ToolApprovalYolo:
+	default:
+		return nil, fmt.Errorf("tool approval mode must be ask, auto, or yolo")
+	}
+	goal = strings.TrimSpace(goal)
+	if strings.TrimSpace(c.Goal()) != goal {
+		if err := c.SetGoalDurable(goal); err != nil {
+			return nil, fmt.Errorf("persist goal state: %w", err)
+		}
+	}
+	if goal != "" {
+		plan = false
+	}
+	c.applyPlanMode(plan)
+	return c.ApplyToolApprovalMode(toolApprovalMode), nil
 }
 
 // AutoApproveTools reports whether YOLO tool auto-approval is on,
