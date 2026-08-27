@@ -4510,6 +4510,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		}
 		m.finalizeStreamed()
 		m.commitLine(fmt.Sprintf("  %s %s", glyph, e.Text))
+		m.commitNoticeDetail(e.Detail)
 
 	case event.GuardianAssessment:
 		m.finalizeStreamed()

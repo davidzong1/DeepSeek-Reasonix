@@ -406,6 +406,13 @@ func (p *teamPicker) savePoolEdit() {
 			return
 		}
 	}
+	// The store gate accepts any well-formed field; only the adapter knows which
+	// effort and model its endpoint serves. Asking it here turns a typo into an
+	// editor refusal instead of a silent bind failure at t.
+	if err := dryRunPoolEntry(pool.draft); err != nil {
+		pool.errMsg = poolErrMsg(err)
+		return
+	}
 	var err error
 	if pool.adding {
 		err = p.store.AddAgentUser(pool.draft)

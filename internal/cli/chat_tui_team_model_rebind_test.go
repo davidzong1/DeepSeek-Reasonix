@@ -242,6 +242,22 @@ func TestFingerprintSensitiveToRoleProxyEffort(t *testing.T) {
 	if proxyFP == baseFP {
 		t.Error("changing the member's proxy must change the fingerprint")
 	}
+	// Base URL is the field a gateway fix lands on — adding the /v1 the endpoint
+	// needs must reach the member that is already using the entry, which means
+	// invalidating its assembled backend.
+	pool.users["u1"] = team.AgentUser{UserID: "u1", Provider: "openai", Model: "gpt-5.6", Effort: "high", BaseURL: "https://x", APIKey: "sk"}
+	noV1, err := fp(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.users["u1"] = team.AgentUser{UserID: "u1", Provider: "openai", Model: "gpt-5.6", Effort: "high", BaseURL: "https://x/v1", APIKey: "sk"}
+	withV1, err := fp(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noV1 == withV1 {
+		t.Error("changing the pool entry's base url must change the fingerprint")
+	}
 }
 
 // TestRebindMemberAgentUserUpdatesModelRef pins the /model success path: while

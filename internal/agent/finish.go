@@ -31,6 +31,11 @@ func NewFinishTool() *FinishTool { return &FinishTool{} }
 
 func (*FinishTool) Name() string { return "finish" }
 
+// Description states how to close a turn, not an absolute. cleanStopEndsTurn
+// accepts a clean stop that carries a visible answer, so wording that promised
+// the turn "will be sent back" without one would be false — and the earlier
+// attempt to force compliance from here changed nothing for the model that
+// motivated it while costing every prompt cache a cold start.
 func (*FinishTool) Description() string {
 	return "Finalize this turn after giving the user a visible final answer. Call finish exactly once, in a separate tool-call batch after all work is done. Use completed when the request is fully handled, partial when useful work was completed but some requested work remains, or blocked when progress requires external state or user input. To ask the user a question, call ask instead of finish."
 }

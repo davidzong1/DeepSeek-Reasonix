@@ -149,7 +149,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 				}
 			case "high", "max":
 			default:
-				return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be low, high, max, or disabled", name)
+				return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort %q must be low, high, max, or disabled", name, effort)
 			}
 		}
 	case minimax:
@@ -163,7 +163,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		case "": // auto — leave empty so the wire emits thinking.type=adaptive
 		case "adaptive", "disabled":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses MiniMax thinking; effort must be adaptive or disabled", name)
+			return nil, fmt.Errorf("openai: provider %q uses MiniMax thinking; effort %q must be adaptive or disabled", name, effort)
 		}
 	case zhipu:
 		// Zhipu GLM gates chain-of-thought through `thinking.type`
@@ -173,7 +173,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		switch effort {
 		case "", "enabled", "disabled":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses Zhipu thinking; effort must be enabled or disabled", name)
+			return nil, fmt.Errorf("openai: provider %q uses Zhipu thinking; effort %q must be enabled or disabled", name, effort)
 		}
 	case longcat:
 		// LongCat exposes a binary thinking knob on its OpenAI-compatible endpoint:
@@ -182,7 +182,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		switch effort {
 		case "", "enabled", "disabled":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses LongCat thinking; effort must be enabled or disabled", name)
+			return nil, fmt.Errorf("openai: provider %q uses LongCat thinking; effort %q must be enabled or disabled", name, effort)
 		}
 	case ollamaCloud:
 		// Hosted Ollama Cloud uses top-level reasoning_effort. "none" and the
@@ -196,7 +196,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			effort = "max"
 		case "low", "medium", "high":
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses Ollama Cloud thinking; effort must be none, low, medium, high, or max", name)
+			return nil, fmt.Errorf("openai: provider %q uses Ollama Cloud thinking; effort %q must be none, low, medium, high, or max", name, effort)
 		}
 	case effort != "":
 		if hasExplicitEfforts {
@@ -215,7 +215,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			effort = "high"
 		case "low", "medium", "high":
 		default:
-			return nil, fmt.Errorf("openai: provider %q: effort must be low, medium, or high", name)
+			return nil, fmt.Errorf("openai: provider %q: effort %q must be low, medium, or high", name, effort)
 		}
 	}
 	requestEfforts := requestEffortVocabulary(effortEndpoint{protocol: protocol,

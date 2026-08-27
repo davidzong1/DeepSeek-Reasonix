@@ -49,7 +49,7 @@ func TestSubAgentDoesNotInheritParentGoalRecorder(t *testing.T) {
 	if len(recorder.reports) != 0 {
 		t.Fatalf("child wrote reports into parent Goal recorder: %+v", recorder.reports)
 	}
-	if got := lastToolResult(sess, "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
+	if got := lastToolResult(sess, "update_goal"); !strings.Contains(got, "only available while a goal is running") || !strings.Contains(got, "finish") {
 		t.Fatalf("child update_goal result = %q", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestCoordinatorPlannerCannotReportExecutorGoalDisposition(t *testing.T) {
 			t.Fatalf("planner request %d changed the static tool surface: %v", i+1, toolSchemaNames(req.Tools))
 		}
 	}
-	if got := lastToolResult(plannerSess, "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
+	if got := lastToolResult(plannerSess, "update_goal"); !strings.Contains(got, "only available while a goal is running") || !strings.Contains(got, "finish") {
 		t.Fatalf("planner update_goal result = %q", got)
 	}
 	for i, req := range exec.requests {

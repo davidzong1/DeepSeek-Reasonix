@@ -44,7 +44,7 @@ func TestRunSubAgentSalvagesCurrentAnswerBeforePairedGoalError(t *testing.T) {
 	if prov.call != 3 {
 		t.Fatalf("provider calls = %d, want no hidden repair round", prov.call)
 	}
-	if got := lastToolResult(sess, "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
+	if got := lastToolResult(sess, "update_goal"); !strings.Contains(got, "only available while a goal is running") || !strings.Contains(got, "finish") {
 		t.Fatalf("paired update_goal result = %q", got)
 	}
 }

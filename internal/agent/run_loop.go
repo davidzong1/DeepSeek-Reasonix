@@ -206,6 +206,7 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	// once; the user's raw text remains the source above.
 	a.ensureUnreplayableHistoryRecovery()
 	providerInput = withInterruptedRecovery(providerInput, a.pendingInterruptedRecovery())
+	providerInput = withTurnProtocol(providerInput, a.remindTurnProtocol(ctx))
 	a.task.prepareScope(scoped, scope.ID)
 	a.svc.sink.Emit(event.Event{Kind: event.TurnStarted})
 	a.emitTurnPhase(event.TurnPhaseWorking)

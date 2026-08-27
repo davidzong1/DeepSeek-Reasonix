@@ -94,18 +94,15 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 		return nil
 	}
 	if m.memberSwitchBusy() {
-		p.session.errMsg = "Answer the pending approval before switching member"
-		return nil
+		return m.refuseTeamSession("Answer the pending approval before switching member")
 	}
 	binding, err := p.store.Binding(p.model.Name(), memberID)
 	if err != nil {
-		p.session.errMsg = pickerErrMsg(err)
-		return nil
+		return m.refuseTeamSession(pickerErrMsg(err))
 	}
 	backend, err := m.teamBackends.bind(binding)
 	if err != nil {
-		p.session.errMsg = "member unavailable: " + err.Error()
-		return nil
+		return m.refuseTeamSession("member unavailable: " + err.Error())
 	}
 
 	p.session.current = memberID
@@ -120,6 +117,21 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	// onto the shared pump, ingested once the member is bound. No prompt, none.
 	backend.ReplayPendingPrompts()
 	return waitForMemberEvent(m.memberEvents)
+}
+
+// refuseTeamSession records a session-scoped refusal where the user can
+// actually read it. session.errMsg renders in exactly one place — the detail
+// panel — and R7 made that panel opt-in, so a panel-only refusal is invisible in
+// the default layout: a failed bind then looks like "the team opened but shows
+// the wrong model". The transcript is always on screen, so the reason goes there
+// too. Returns nil so callers stay one-line.
+func (m *chatTUI) refuseTeamSession(msg string) tea.Cmd {
+	if m.teamPick == nil {
+		return nil
+	}
+	m.teamPick.session.errMsg = msg
+	m.notice(msg)
+	return nil
 }
 
 // unbindTeamMember hands the window back to the chat's own backend when the team
@@ -278,7 +290,7 @@ func (m *chatTUI) runMemberModelSubcommand(input string) bool {
 	}
 	p := m.teamPick
 	if p.store == nil {
-		p.session.errMsg = "member model unavailable: no team store"
+		m.refuseTeamSession("member model unavailable: no team store")
 		return true
 	}
 	args := tokenizeArgs(input) // args[0] == "/model"
@@ -304,20 +316,20 @@ func (m *chatTUI) rebindMemberAgentUser(ref string) {
 	p := m.teamPick
 	member := p.session.current
 	if m.runtimeSwitchBusy() {
-		p.session.errMsg = "Finish or stop the current turn before changing the member's model"
+		m.refuseTeamSession("Finish or stop the current turn before changing the member's model")
 		return
 	}
 	if err := p.store.BindAgentUser(p.model.Name(), member, ref); err != nil {
-		p.session.errMsg = pickerErrMsg(err)
+		m.refuseTeamSession(pickerErrMsg(err))
 		return
 	}
 	if err := p.reload(member); err != nil {
-		p.session.errMsg = pickerErrMsg(err)
+		m.refuseTeamSession(pickerErrMsg(err))
 		return
 	}
 	if m.teamBackends != nil {
 		if err := m.rebindTeamBackend(p, member); err != nil {
-			p.session.errMsg = pickerErrMsg(err)
+			m.refuseTeamSession(pickerErrMsg(err))
 			return
 		}
 	}
@@ -352,11 +364,11 @@ func (m *chatTUI) openMemberModelPicker() {
 	p := m.teamPick
 	users, err := p.store.ListAgentUsers()
 	if err != nil {
-		p.session.errMsg = pickerErrMsg(err)
+		m.refuseTeamSession(pickerErrMsg(err))
 		return
 	}
 	if len(users) == 0 {
-		p.session.errMsg = "No agent users yet — Esc to the roster, then u to add one"
+		m.refuseTeamSession("No agent users yet — Esc to the roster, then u to add one")
 		return
 	}
 	slot, _ := p.slotOf(p.session.current)

@@ -212,7 +212,7 @@ func TestNonGoalUpdateGoalWithVisibleTextDoesNotSpendRepairRound(t *testing.T) {
 	if got := lastAssistantContent(a.Session()); got != "Here is the answer." {
 		t.Fatalf("last assistant text = %q", got)
 	}
-	if got := lastToolResult(a.Session(), "update_goal"); !strings.Contains(got, "only available while an active goal turn") {
+	if got := lastToolResult(a.Session(), "update_goal"); !strings.Contains(got, "only available while a goal is running") || !strings.Contains(got, "finish") {
 		t.Fatalf("paired update_goal result = %q", got)
 	}
 }

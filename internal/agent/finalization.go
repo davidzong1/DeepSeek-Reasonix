@@ -41,8 +41,31 @@ func (a *Agent) finishRequiredAtResponseEnd(ctx context.Context, state *turnRunt
 	if state.finishCalls == 1 && state.pendingFinalAnswer {
 		return false, nil, true
 	}
+	if cleanStopEndsTurn(state, usage) {
+		return false, nil, true
+	}
 	cont, err := a.requestProtocolRepair(state, "model ended without the required finish tool call")
 	return cont, err, true
+}
+
+// cleanStopEndsTurn accepts a turn the model ended without calling finish, when
+// the turn is demonstrably not degenerate. The guard this relaxes exists to keep
+// a truncated or answerless response from being committed as the final answer
+// (see reasoningOnlyFinishHonoured); it was never about turns carrying a real
+// answer. The three conditions are exactly what rules the degenerate cases out.
+//
+// Reached only from handleFinalResponse — a response with no tool calls — so
+// accepting can never truncate pending tool work. The outcome stays undeclared
+// instead of being invented as "completed": undeclared is already normal for
+// providers without the finish tool, and guessing would report a blocked turn as
+// a finished one. Not provider-scoped on purpose: the models that need it sit
+// behind gateways whose identity says nothing about whether they volunteer
+// terminal tool calls, and the conditions are what make it safe, not the name.
+func cleanStopEndsTurn(state *turnRuntime, usage *provider.Usage) bool {
+	if state == nil || state.finishCalls != 0 || !state.pendingFinalAnswer {
+		return false
+	}
+	return usage != nil && usage.FinishReason == "stop"
 }
 
 func (a *Agent) rejectMixedFinishBatch(state *turnRuntime, text string, calls []provider.ToolCall, usage *provider.Usage) (bool, error, bool) {
@@ -155,6 +178,9 @@ func (a *Agent) requestProtocolRepair(state *turnRuntime, reason string) (bool, 
 		return false, &ProtocolFailedError{Reason: reason}
 	}
 	state.protocolRepairs++
+	// This conversation's model does not finish unprompted; later turns carry the
+	// reminder so they cost one round trip instead of two.
+	a.sess.turnProtocol.arm()
 	a.svc.sink.Emit(event.Event{
 		Kind: event.Notice, Level: event.LevelWarn,
 		Text:   "The model did not complete the required turn protocol; requesting one repair.",

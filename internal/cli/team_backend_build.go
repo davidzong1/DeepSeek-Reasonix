@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"reasonix/internal/boot"
@@ -210,6 +211,33 @@ func proxyFingerprint(p team.ProxyConfig) string {
 		return "off"
 	}
 	return "on\x00" + p.Address
+}
+
+// dryRunPoolEntry refuses a pool entry the member assembly could not use, by
+// doing exactly what assembly does: resolve the provider and construct it. The
+// adapter owns its own effort and model vocabulary (and those differ per model
+// family), so asking it is the only check that cannot drift from the real one —
+// a second whitelist here would be a second truth. Construction is network-free.
+//
+// An in-progress form (no provider or model yet) passes, matching the field
+// validators. So does a provider name this build cannot resolve at all: whether
+// a legacy provider may stay is the store's judgement (it preserves one until the
+// user picks a legal option), and a kind with no registered adapter is the host
+// binary's. This check only answers the one question the adapter owns.
+func dryRunPoolEntry(u team.AgentUser) error {
+	if strings.TrimSpace(u.Provider) == "" || strings.TrimSpace(u.Model) == "" {
+		return nil
+	}
+	kind, _, err := team.ResolveProvider(u.Provider, u.BaseURL)
+	if err != nil || !slices.Contains(provider.Kinds(), kind) {
+		return nil
+	}
+	resolver, err := newMemberProviderResolver(u, netclient.ProxySpec{})
+	if err != nil {
+		return nil
+	}
+	_, err = resolver.Resolve(provider.Selection{})
+	return err
 }
 
 // newMemberBackendBuilder returns the assembly function teamBackends binds
