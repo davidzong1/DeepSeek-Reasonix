@@ -444,8 +444,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// RequireKey fails fast on a missing credential (run/serve); plugin-
 	// namespaced refs carry no config credential — the extension provider holds
 	// its own keys — so the merged resolver's resolution is their only gate.
+	// Failures are wrapped with strict observability (requested model, provider
+	// kind/name, route, missing credential) and an unregistered kind is caught
+	// here so it never reaches backend assembly.
 	if opts.RequireKey && opts.ProviderResolver == nil && providerext.PluginRefOwner(modelName) == "" {
 		if err := cfg.Validate(modelName); err != nil {
+			return nil, strictEntryFailure(entry, modelName, err)
+		}
+		if err := ensureRegisteredKind(entry, modelName); err != nil {
 			return nil, err
 		}
 	}
@@ -530,9 +536,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 
 	// A resolvable model whose API key env is unset would otherwise build fine
 	// (RequireKey is false so the UI stays reachable) and then fail silently on the
-	// first request, showing as an empty/dead model. Surface the cause up front.
+	// first request, showing as an empty/dead model. Surface the cause up front,
+	// naming the exact missing credential of the selected provider.
 	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
-		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
+		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but %s — requests will fail until you set it", modelName, strings.TrimPrefix(missingCredentialText(entry), "; "))})
 	}
 	// Every role setting lazily acquires a workspace write lease on the first
 	// real writer. Read-only turns never take the lease.
@@ -2493,7 +2500,10 @@ func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
 // NewProviderWithProxy builds a provider.Provider with the configured ordinary
 // network proxy settings.
 func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (provider.Provider, error) {
-	return provider.New(e.Kind, provider.Config{
+	if err := ensureRegisteredKind(e, modelRefFromEntry(e)); err != nil {
+		return nil, err
+	}
+	p, err := provider.New(e.Kind, provider.Config{
 		Name:    e.Name,
 		BaseURL: e.BaseURL,
 		Model:   e.Model,
@@ -2524,6 +2534,10 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 			"stateful": e.ResponsesStateful,
 		},
 	})
+	if err != nil {
+		return nil, strictEntryFailure(e, modelRefFromEntry(e), err)
+	}
+	return p, nil
 }
 
 // addBuiltins adds enabled built-in tools to reg. An empty list means all of
