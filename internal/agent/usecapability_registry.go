@@ -52,5 +52,13 @@ func (t *UseCapabilityTool) resolveRegistryTool(ctx context.Context, name, id st
 	} else {
 		base.Args = args
 	}
+	// A tool that carries a pre-validator refuses broken arguments here, before
+	// permission, hooks, audit, or Execute: no authorization outcome may be
+	// produced for a call the target would reject anyway.
+	if v, ok := target.(tool.ArgsValidator); ok {
+		if err := v.ValidateArgs(ctx, base.Args); err != nil {
+			return tool.ResolvedCall{}, fmt.Errorf("%s: %w", name, err)
+		}
+	}
 	return base, nil
 }
