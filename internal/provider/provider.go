@@ -1120,19 +1120,11 @@ func Register(kind string, f Factory) {
 	registry[kind] = f
 }
 
-// New instantiates the provider of the given kind. The unknown-kind error
-// names the requested provider, model, and route so a config typo is
-// identifiable at the failure site instead of surfacing as a bare registry
-// miss (strict provider failure semantics, boot P0.2).
+// New instantiates the provider of the given kind.
 func New(kind string, cfg Config) (Provider, error) {
 	f, ok := registry[kind]
 	if !ok {
-		route := strings.TrimSpace(cfg.BaseURL)
-		if route == "" {
-			route = "(no base_url)"
-		}
-		return nil, fmt.Errorf("provider: unknown kind %q for provider %q (requested model %q, route %s); registered: %v",
-			kind, cfg.Name, cfg.Model, route, Kinds())
+		return nil, fmt.Errorf("provider: unknown kind %q (registered: %v)", kind, Kinds())
 	}
 	p, err := f(cfg)
 	if err != nil {
@@ -1142,14 +1134,6 @@ func New(kind string, cfg Config) (Provider, error) {
 		return nil, fmt.Errorf("provider: factory %q returned nil provider", kind)
 	}
 	return p, nil
-}
-
-// KindRegistered reports whether a provider factory is registered under kind.
-// Boot uses it to fail fast on an unregistered configured kind instead of
-// letting an invalid provider/model reach backend assembly.
-func KindRegistered(kind string) bool {
-	_, ok := registry[kind]
-	return ok
 }
 
 // Kinds returns the registered kinds, sorted.

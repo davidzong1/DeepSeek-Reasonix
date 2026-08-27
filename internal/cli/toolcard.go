@@ -120,13 +120,55 @@ func toolDisplayName(name string) string {
 	return name
 }
 
+// capabilityDisplayName labels a use_capability target by its capability id: a
+// real mcp-* id stays MCP, local sub-agent ids get Sub-agent, the fleet and
+// parallel task ids get Fleet, and every other local capability (tool:, skill:,
+// workflow:, session:, memory:, ...) is a plain Capability. An empty id — a
+// list/inspect/decline call with no target — is the proxy's own local
+// operation, so it is Capability too, never MCP.
+func capabilityDisplayName(id string) string {
+	if strings.HasPrefix(id, "mcp-tool:") || strings.HasPrefix(id, "mcp-server:") {
+		return "MCP"
+	}
+	switch id {
+	case "task:subagent", "task:read_only_subagent":
+		return "Sub-agent"
+	case "task:fleet", "task:parallel_tasks":
+		return "Fleet"
+	}
+	return "Capability"
+}
+
+// capabilityID extracts the capability_id argument of a use_capability call;
+// "" when absent (list/inspect/decline calls carry no target).
+func capabilityID(args string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) != nil {
+		return ""
+	}
+	id, _ := m["capability_id"].(string)
+	return strings.TrimSpace(id)
+}
+
+// toolCardVerb picks the verb shown on the card header. use_capability's label
+// follows its target's capability id (a local sub-agent or fleet is not an MCP
+// call), so a task card reads "Sub-agent(task:subagent)" rather than the
+// generic MCP; every other tool maps through toolVerb as before.
+func toolCardVerb(name, args string) string {
+	if name != "use_capability" {
+		return toolDisplayName(name)
+	}
+	return capabilityDisplayName(capabilityID(args))
+}
+
 // shellToolDisplayName prefers the actual interpreter label when structured
-// execution metadata is present (Git Bash / Windows PowerShell / PowerShell 7+).
-func shellToolDisplayName(name string, ex *event.ShellExecution) string {
+// execution metadata is present (Git Bash / Windows PowerShell / PowerShell 7+);
+// otherwise the card verb, which for use_capability follows its capability id.
+func shellToolDisplayName(name string, ex *event.ShellExecution, args string) string {
 	if name == "bash" && ex != nil && ex.Shell != "" {
 		return shellrun.DisplayName(&tool.ShellExecution{Shell: ex.Shell, ShellVersion: ex.ShellVersion})
 	}
-	return toolDisplayName(name)
+	return toolCardVerb(name, args)
 }
 
 // shellFailureDetail appends exit code, failure phase, and mutation-risk hints
@@ -203,13 +245,13 @@ func argList(v any) string {
 
 // toolCard renders the dispatch line: "  ⏺ Verb(arg)", arg clamped to width.
 func toolCard(name, args string, width int) string {
-	return "  " + toolDot(name) + " " + toolHead(name, toolArg(name, args), width)
+	return "  " + toolDot(name) + " " + toolHead(name, toolCardVerb(name, args), toolArg(name, args), width)
 }
 
 // toolHead builds "Verb(arg)" with the verb bold and the arg clamped to fit the
 // remaining width; shared by toolCard and the diff block header.
-func toolHead(name, arg string, width int) string {
-	label := toolDisplayName(name)
+func toolHead(name, verb, arg string, width int) string {
+	label := verb
 	head := bold(label)
 	if arg != "" {
 		avail := width - 4 - len([]rune(label)) - 2

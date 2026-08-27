@@ -1,12 +1,8 @@
 package boot
 
-// Strict provider/model failure semantics (route P0.2): every resolve or
-// assembly failure surfaces the requested model, the resolved provider
-// kind/name, its route, and — when a credential is missing — which env var is
-// absent. Wraps preserve the cause via %w, so error ownership is unchanged;
-// only the observability of the failure improves. Member-provider credentials
-// are named by their own api_key_env and never misreported as a global
-// DEEPSEEK_API_KEY.
+// Strict provider/model failure semantics (route P0.2): failures name the
+// requested model, resolved provider kind/name, route, and missing credential
+// source. %w preserves cause and error ownership.
 
 import (
 	"fmt"
@@ -30,6 +26,18 @@ func missingCredentialText(e *config.ProviderEntry) string {
 		return fmt.Sprintf("; missing credential %s (looked up via %s)", env, src)
 	}
 	return "; missing credential " + env
+}
+
+// providerConfigSource names the config file the resolved route came from,
+// or "<no config file>" for in-memory configs.
+func providerConfigSource(cfg *config.Config) string {
+	if cfg == nil {
+		return "<no config file>"
+	}
+	if path := config.SourcePath(); path != "" {
+		return path
+	}
+	return "<no config file>"
 }
 
 // strictEntryFailure wraps a resolution/validation failure with the selected
@@ -59,8 +67,14 @@ func strictEntryFailure(e *config.ProviderEntry, requestedModel string, cause er
 // serves, so an invalid provider/model never reaches backend assembly. The
 // error lists the registered kinds for a corrective path.
 func ensureRegisteredKind(e *config.ProviderEntry, requestedModel string) error {
-	if e == nil || provider.KindRegistered(strings.TrimSpace(e.Kind)) {
+	if e == nil {
 		return nil
+	}
+	kind := strings.TrimSpace(e.Kind)
+	for _, registered := range provider.Kinds() {
+		if registered == kind {
+			return nil
+		}
 	}
 	return strictEntryFailure(e, requestedModel,
 		fmt.Errorf("provider kind %q is not registered (registered: %v)", e.Kind, provider.Kinds()))

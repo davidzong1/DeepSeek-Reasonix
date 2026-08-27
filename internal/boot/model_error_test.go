@@ -39,7 +39,7 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 		t.Fatal("expected an error for an unresolvable default_model")
 	}
 	msg := err.Error()
-	for _, want := range []string{`"legacy-missing"`, "deepseek-flash", "[[providers]]"} {
+	for _, want := range []string{`"legacy-missing"`, "deepseek-flash", "[[providers]]", "config:"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error %q should mention %q", msg, want)
 		}

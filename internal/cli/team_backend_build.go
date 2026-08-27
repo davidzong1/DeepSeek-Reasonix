@@ -134,9 +134,10 @@ func memberSystemPromptIdentity(b team.MemberBinding) string {
 	if role == "" {
 		role = "not configured"
 	}
-	return fmt.Sprintf(
+	identity := fmt.Sprintf(
 		"You are member %q of team %q.\nYour team role is: %s.\nParticipate in the team's work as that role and specialty.",
 		b.MemberID, b.Team, role)
+	return identity + "\n" + team.CollaborationDiscipline(b.Leader)
 }
 
 // memberProxySpec maps one member's resolved team proxy onto a transport spec.

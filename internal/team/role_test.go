@@ -93,17 +93,116 @@ func TestTeamStoreAddMemberValidatesRole(t *testing.T) {
 }
 
 func TestSystemPromptForRole(t *testing.T) {
-	got := SystemPromptForRole("alpha", "m1", "architecture analyst")
+	got := SystemPromptForRole("alpha", "m1", "architecture analyst", false)
 	for _, want := range []string{"alpha", "m1", "architecture analyst"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("prompt should contain %q, got:\n%s", want, got)
 		}
 	}
-	empty := SystemPromptForRole("alpha", "m1", "")
+	empty := SystemPromptForRole("alpha", "m1", "", false)
 	if !strings.Contains(empty, "未配置") {
 		t.Fatalf("empty role should render the unconfigured hint, got:\n%s", empty)
 	}
 	if strings.Contains(empty, "你的团队角色是") {
 		t.Fatalf("empty role must not render a role line, got:\n%s", empty)
+	}
+	if !strings.Contains(empty, "团队协作纪律（member）") {
+		t.Fatalf("empty role must still carry the collaboration discipline, got:\n%s", empty)
+	}
+}
+
+func TestSystemPromptForRoleDiscipline(t *testing.T) {
+	leader := SystemPromptForRole("alpha", "m1", "coder", true)
+	member := SystemPromptForRole("alpha", "m1", "coder", false)
+
+	// Leader sequencing: list members, select them, then sleep for reports.
+	li := strings.Index(leader, "leader_list_team")
+	si := strings.Index(leader, "leader_select_task_members")
+	sl := strings.Index(leader, "leader_sleep")
+	if li < 0 || si < 0 || sl < 0 || !(li < si && si < sl) {
+		t.Fatalf("leader prompt must sequence list -> select -> sleep, got:\n%s", leader)
+	}
+	// Checkpoint ack and status tracking instead of terminal polling.
+	if !strings.Contains(leader, "leader_ack_checkpoint") {
+		t.Fatalf("leader prompt must codify checkpoint ack, got:\n%s", leader)
+	}
+	if !strings.Contains(leader, "leader_check_member_status") {
+		t.Fatalf("leader prompt must codify status tracking, got:\n%s", leader)
+	}
+
+	// Member: shared context first, lock before editing, formal report after.
+	if i := strings.Index(member, "member_acquire_file_lock"); i < 0 {
+		t.Fatalf("member prompt must codify file locks, got:\n%s", member)
+	} else if j := strings.Index(member, "member_report_result"); j < 0 || j < i {
+		t.Fatalf("member prompt must order lock before formal report, got:\n%s", member)
+	}
+	if !strings.Contains(member, "member_get_my_task") || !strings.Contains(member, "member_read_shared") {
+		t.Fatalf("member prompt must codify reading task and shared context first, got:\n%s", member)
+	}
+	if !strings.Contains(member, "monitor") {
+		t.Fatalf("member prompt must reject monitor-inferred completion as a formal report, got:\n%s", member)
+	}
+
+	// Shared rules: task-vs-capability distinction and error handling.
+	for _, tc := range []struct{ name, prompt string }{{"leader", leader}, {"member", member}} {
+		if !strings.Contains(tc.prompt, "task/use_capability") {
+			t.Fatalf("%s prompt must codify the task-vs-capability distinction, got:\n%s", tc.name, tc.prompt)
+		}
+		if !strings.Contains(tc.prompt, "空 prompt") {
+			t.Fatalf("%s prompt must ban empty-prompt retries, got:\n%s", tc.name, tc.prompt)
+		}
+		if !strings.Contains(tc.prompt, "dependency skip") || !strings.Contains(tc.prompt, "permission deny") {
+			t.Fatalf("%s prompt must codify split-and-rerun on dependency skip / permission deny, got:\n%s", tc.name, tc.prompt)
+		}
+	}
+
+	// No cross-contamination between the role branches.
+	if strings.Contains(member, "leader_sleep") {
+		t.Fatalf("member prompt must not carry leader rules, got:\n%s", member)
+	}
+	if strings.Contains(leader, "member_report_result") {
+		t.Fatalf("leader prompt must not carry member rules, got:\n%s", leader)
+	}
+}
+
+func TestSystemPromptForRoleCacheStable(t *testing.T) {
+	// The fragment is pure: identical inputs yield byte-identical output, so
+	// a caller injecting it into the turn tail never perturbs the stable
+	// prefix across turns.
+	a := SystemPromptForRole("alpha", "m1", "coder", false)
+	b := SystemPromptForRole("alpha", "m1", "coder", false)
+	if a != b {
+		t.Fatalf("identical inputs must produce byte-identical prompts:\n---first---\n%s\n---second---\n%s", a, b)
+	}
+
+	// The discipline text itself is static: only the identity line varies
+	// with team/member state, never the collaboration rules.
+	other := SystemPromptForRole("beta", "m2", "coder", false)
+	sep := "团队协作纪律"
+	i := strings.Index(a, sep)
+	j := strings.Index(other, sep)
+	if i < 0 || j < 0 {
+		t.Fatalf("both prompts must carry the discipline section, got:\n%s\n---\n%s", a, other)
+	}
+	if a[i:] != other[j:] {
+		t.Fatalf("discipline text must be byte-identical across team/member state:\n%s\n---\n%s", a[i:], other[j:])
+	}
+}
+
+func TestSystemPromptForRoleCollaborationDiscipline(t *testing.T) {
+	leader := SystemPromptForRole("alpha", "m1", "lead", true)
+	for _, want := range []string{"leader_list_team", "leader_select_task_members", "leader_sleep", "leader_ack_checkpoint", "leader_check_member_status"} {
+		if !strings.Contains(leader, want) {
+			t.Fatalf("leader prompt missing %q: %s", want, leader)
+		}
+	}
+	member := SystemPromptForRole("alpha", "m2", "tester", false)
+	for _, want := range []string{"member_get_my_task", "member_read_shared", "member_acquire_file_lock", "member_report_result"} {
+		if !strings.Contains(member, want) {
+			t.Fatalf("member prompt missing %q: %s", want, member)
+		}
+	}
+	if leader == member {
+		t.Fatal("leader and member prompts must differ")
 	}
 }

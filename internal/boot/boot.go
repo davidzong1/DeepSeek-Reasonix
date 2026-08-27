@@ -409,14 +409,18 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 
-	// Fall through a keyless default_model to the next configured chat model
-	// instead of hard-failing every command on "missing env X_API_KEY" (issue
-	// #6996). The fallback only kicks in when the caller did not pass an
-	// explicit opts.Model; explicit choices still fail loudly.
+	// Fall through keyless defaults; explicit opts.Model choices still fail loudly.
 	modelName := opts.Model
+	var skippedKeylessDefault *config.ProviderEntry
 	if modelName == "" {
-		if resolved, _, ok := cfg.ResolveNewSessionChatModel(); ok {
-			modelName = resolved
+		var fellThrough, ok bool
+		modelName, fellThrough, ok = cfg.ResolveNewSessionChatModel()
+		if ok && fellThrough {
+			if def := strings.TrimSpace(cfg.DefaultModel); def != "" && def != modelName {
+				if defEntry, found := cfg.ResolveModel(def); found && defEntry.RequiresAPIKey() && defEntry.APIKey() == "" {
+					skippedKeylessDefault = defEntry
+				}
+			}
 		}
 	}
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
@@ -435,21 +439,21 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Keep deliberate keyless-default reroutes observable with both model names.
+	if skippedKeylessDefault != nil {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Skipped a keyless default_model.", Detail: fmt.Sprintf("default_model %q cannot start: %s; using %q instead. Set the credential or pass --model to pick one explicitly. (config: %s)", modelRefFromEntry(skippedKeylessDefault), strings.TrimPrefix(missingCredentialText(skippedKeylessDefault), "; "), modelName, providerConfigSource(cfg))})
+	}
 	if opts.EffortOverride != nil {
 		entry.Effort = *opts.EffortOverride
 		if entry.Kind == "anthropic" && strings.TrimSpace(entry.Effort) != "" && strings.TrimSpace(entry.Thinking) == "" {
 			entry.Thinking = "adaptive"
 		}
 	}
-	// RequireKey fails fast on a missing credential (run/serve); plugin-
-	// namespaced refs carry no config credential — the extension provider holds
-	// its own keys — so the merged resolver's resolution is their only gate.
-	// Failures are wrapped with strict observability (requested model, provider
-	// kind/name, route, missing credential) and an unregistered kind is caught
-	// here so it never reaches backend assembly.
+	// RequireKey fails fast on a missing credential; plugin refs are resolved by
+	// their extension provider.
 	if opts.RequireKey && opts.ProviderResolver == nil && providerext.PluginRefOwner(modelName) == "" {
 		if err := cfg.Validate(modelName); err != nil {
-			return nil, strictEntryFailure(entry, modelName, err)
+			return nil, fmt.Errorf("%w (config: %s)", strictEntryFailure(entry, modelName, err), providerConfigSource(cfg))
 		}
 		if err := ensureRegisteredKind(entry, modelName); err != nil {
 			return nil, err
@@ -534,10 +538,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Ignored the project config's default_model.", Detail: fmt.Sprintf("./reasonix.toml sets default_model = %q but no configured provider serves it; using %q from your user config instead. Edit or remove that default_model line to silence this notice.", ignored, cfg.DefaultModel)})
 	}
 
-	// A resolvable model whose API key env is unset would otherwise build fine
-	// (RequireKey is false so the UI stays reachable) and then fail silently on the
-	// first request, showing as an empty/dead model. Surface the cause up front,
-	// naming the exact missing credential of the selected provider.
+	// Surface a missing credential up front when the UI remains reachable.
 	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
 		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but %s — requests will fail until you set it", modelName, strings.TrimPrefix(missingCredentialText(entry), "; "))})
 	}

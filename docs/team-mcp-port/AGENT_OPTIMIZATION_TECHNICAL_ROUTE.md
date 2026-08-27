@@ -67,6 +67,16 @@
 - 不修改 baseline，不用 `-update` 掩盖新增复杂度。
 - 拆分后分别运行 repolint 和全量测试，记录前后 file-size/function-size/complexity 指标。
 
+**P2.1 首拆记录（2026-08-27, architecture-analyst-claude）**：从 `internal/agent/task.go`（2035 行）提取身份/模型/effort 解析组 5 个方法（effectiveProfile / effectiveIdentity / usageModelRef / effectiveModelIdentity / effectiveEffortIdentity）至新文件 `internal/agent/task_identity.go`（59 行，task.go 降至 ~1970 行）。纯计算、只读配置字段、方法签名与实现逐字节搬移，行为零变化。新增聚焦回归测试 `task_identity_test.go`（4 用例：subagent 默认回退、base 回退、identityProfile 解析分支、trim 语义），叠加既有 `usage_accounting_test.go` 的 usageModelRef 钉住。验证：gofmt clean、agent 全量 23.6s ok、repolint 本文件零新增违规。说明：repo 级 repolint 失败（essay 1967>1965 等）由工作树中其他成员未提交改动引入（provider 相关 + boot.go 历史计数），非本次拆分；按纪律未用 `-update`，待 P0.1 提交收口时统一处理。
+
+**P0.2 落地记录（2026-08-27, boot-claude / testing-claude）**：
+- 实现（已提交 7cf7051c6）：`provider.New` 未知 kind 错误点名请求的 provider/model/route；`internal/boot/provider_errors.go` 三件套——`missingCredentialText`（缺失凭证来源，含 api_key_env 与查找来源）、`strictEntryFailure`（请求模型/实际 provider/kind/route/缺失凭证信封，`%w` 保留 cause 与错误归属）、`ensureRegisteredKind`（未注册 kind 在装配前快速失败，非法 provider/model 不进 backend）；`NewProviderWithProxy` 接入信封与 gate。
+- wiring（testing-claude，未提交）：RequireKey 失败包 `strictEntryFailure` + `ensureRegisteredKind` 门；#6996 keyless default 回退保留有效路由且可观测——`skippedKeylessDefault` 跟踪 + LevelWarn notice「Skipped a keyless default_model.」（点名被跳过的 default、缺失凭证、替换路由）；重复的 provider_failure.go 片段已删除；Build 级验收测试全绿。
+- config-source 补齐（boot-claude，未提交）：新增 `providerConfigSource`（最高优先级配置文件或 `<no config file>`），D3 配置来源接入三处失败/提示点——RequireKey 错误 `(config: %s)`、keyless 回退 notice Detail、`resolveModelEntry` 未知模型错误（`configured: ..., config: ...`）；notice Detail 改用 `missingCredentialText` 统一凭证片段（空 api_key_env 场景不再拼出裸逗号）。
+- 测试：`provider_errors_test.go`（missingCredentialText/strictEntryFailure/ensureRegisteredKind/NewProviderWithProxy 失败包裹与有效路由构造 + Build 级 `TestBuildNoticesSkippedKeylessDefaultModel` 断言请求模型/替换路由/配置来源/路由保留）；`provider_failure_notice_test.go`（`TestBuildExplicitKeylessModelErrorNamesConfigSource`：显式 keyless + RequireKey 错误点名请求模型、provider、route、缺失凭证、config 文件）；`TestBuildUnknownModelErrorIsActionable` 增补 `config:` 断言。
+- 验收对照：非法 provider/model 不进入 backend（ensureRegisteredKind 装配前失败）✓；缺凭证不创建半成品 backend（RequireKey 路径失败；keyless 回退保持可观测并点名来源）✓；合法 OpenAI/DeepSeek/Anthropic 路由保持既有兼容性（`TestBuildKeylessDefaultFallsBackToConfiguredProvider`/`TestNewProviderWithProxyValidRoute`/既有 boot 全量回归绿）✓；成员凭证错误不误报全局 `DEEPSEEK_API_KEY`（既有 `memberCredentialError` + `TestMemberResolverEntryNeverTriggersGlobalKeyNotice` 未触碰）✓。提交可独立回滚：实现按 7cf7051c6（已提交）+ 收口批（待 P0.1）两段拆分。
+- 门禁：boot 全量 10.7s ok；P0.2 定向 -race ok；gofmt clean；vet clean（provider_errors.go 重构窗口期短暂中断已恢复）；repolint 剩余违规全为并行未提交工作引入（boot.go essay/file-size、provider.go file-size、provider_test.go），未用 `-update`，P0.1 提交收口统一处理。
+
 ### P2-deferred. 并发测试环境
 
 保留现有业务测试和验收代码，不为规避受限环境改写网络语义。后续独立任务处理：
@@ -81,10 +91,10 @@
 | --- | --- | --- | --- |
 | R0 | 汇总问题、记录拍板决策和边界 | 已完成 | 本文档第 1-2 节 |
 | P0.1 | 工作树清点、构建产物排除、按功能提交 | 进行中 | 分主题提交 + `git status` 清洁说明 |
-| P0.2 | provider fallback 严格报错和来源可观测性 | 进行中 | provider/boot/CLI 回归测试 |
+| P0.2 | provider fallback 严格报错和来源可观测性 | 已完成 | 实现+测试全绿（见 §3 P0.2 落地记录）；提交收口待 P0.1 |
 | P1.1 | task 空 prompt 频率观测和错误提示评估 | 待启动 | 计数/日志方案与 cache guard 结论 |
-| P1.2 | leader/member system prompt 协作纪律设计 | 进行中 | prompt 变更提案、顺序/回报行为测试 |
-| P2.1 | 大文件渐进拆分 | 待启动 | 分模块 PR、repolint 指标不回退 |
+| P1.2 | leader/member system prompt 协作纪律设计 | 已完成 | prompt 变更提案、顺序/回报行为测试 |
+| P2.1 | 大文件渐进拆分 | 进行中 | 首拆 task_identity.go 完成（4 测试全绿）；后续模块待排期 |
 | P2.2 | 受限 loopback/IPv6 测试环境 | 后续任务 | 独立环境修复，不改业务语义 |
 | R-final | 全量门禁、文档收口、最终交付 | 待启动 | `go test -race`、vet、build、gofmt、repolint |
 

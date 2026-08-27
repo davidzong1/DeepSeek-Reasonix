@@ -74,7 +74,7 @@ func diffBlock(name, args string, d event.FileDiff, width, maxLines int) []strin
 		return nil
 	}
 	path := diffPath(args)
-	header := "  " + toolDot(name) + " " + toolHead(name, path, width)
+	header := "  " + toolDot(name) + " " + toolHead(name, toolDisplayName(name), path, width)
 	if stat := diffStat(d); stat != "" {
 		header += "  " + stat
 	}

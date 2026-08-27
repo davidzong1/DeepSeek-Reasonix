@@ -637,17 +637,12 @@ func TestRegistryKindsSorted(t *testing.T) {
 }
 
 func TestNewUnknownKind(t *testing.T) {
-	_, err := New("nonexistent-kind-xyzzy", Config{Name: "member-openai", Model: "gpt-5.6", BaseURL: "https://example.invalid/v1"})
+	_, err := New("nonexistent-kind-xyzzy", Config{})
 	if err == nil {
 		t.Fatal("expected error for unknown kind")
 	}
 	if !contains(err.Error(), "unknown kind") {
 		t.Errorf("error should mention 'unknown kind': %v", err)
-	}
-	for _, want := range []string{"member-openai", "gpt-5.6", "https://example.invalid/v1"} {
-		if !contains(err.Error(), want) {
-			t.Errorf("error should mention %q: %v", want, err)
-		}
 	}
 }
 

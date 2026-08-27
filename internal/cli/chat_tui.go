@@ -4461,7 +4461,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.rememberSearchResult(e.Tool)
 		if e.Tool.Err != "" {
 			m.finalizeStreamed()
-			label := shellToolDisplayName(e.Tool.Name, e.Tool.Execution)
+			label := shellToolDisplayName(e.Tool.Name, e.Tool.Execution, e.Tool.Args)
 			detail := shellFailureDetail(e.Tool.Execution)
 			errText := e.Tool.Err
 			if detail != "" {
