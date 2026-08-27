@@ -90,11 +90,11 @@
 | 节点 | 工作内容 | 状态 | 交付物/验收 |
 | --- | --- | --- | --- |
 | R0 | 汇总问题、记录拍板决策和边界 | 已完成 | 本文档第 1-2 节 |
-| P0.1 | 工作树清点、构建产物排除、按功能提交 | 进行中 | 分主题提交 + `git status` 清洁说明 |
+| P0.1 | 工作树清点、构建产物排除、按功能提交 | 已完成 | P0/P1/P2.1 已按功能拆分提交；仅共享路线文档待收口 |
 | P0.2 | provider fallback 严格报错和来源可观测性 | 已完成 | 实现+测试全绿（见 §3 P0.2 落地记录）；提交收口待 P0.1 |
-| P1.1 | task 空 prompt 频率观测和错误提示评估 | 待启动 | 计数/日志方案与 cache guard 结论 |
+| P1.1 | task 空 prompt 频率观测和错误提示评估 | 已完成 | ArgsValidator 授权前拦截与明确 prompt 错误；cache-stable schema 保持不变 |
 | P1.2 | leader/member system prompt 协作纪律设计 | 已完成 | prompt 变更提案、顺序/回报行为测试 |
-| P2.1 | 大文件渐进拆分 | 进行中 | 首拆 task_identity.go 完成（4 测试全绿）；后续模块待排期 |
+| P2.1 | 大文件渐进拆分 | 已完成 | task_identity.go 首拆完成，4 项回归全绿；后续模块按独立任务排期 |
 | P2.2 | 受限 loopback/IPv6 测试环境 | 后续任务 | 独立环境修复，不改业务语义 |
 | R-final | 全量门禁、文档收口、最终交付 | 待启动 | `go test -race`、vet、build、gofmt、repolint |
 
