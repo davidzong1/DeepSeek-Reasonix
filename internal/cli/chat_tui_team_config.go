@@ -40,6 +40,34 @@ func bindKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	return true
 }
 
+// defaultAgentKey owns the team-default agent picker. The empty candidate
+// deliberately remains available so a team can disable sessions again.
+func defaultAgentKey(p *teamPicker, msg tea.KeyPressMsg) bool {
+	if p.kind != teamInputDefaultAgent {
+		return false
+	}
+	switch msg.String() {
+	case "up":
+		stepBind(p, -1)
+	case "down", "j":
+		stepBind(p, +1)
+	case "enter":
+		if len(p.binds) > 0 {
+			ref := p.binds[p.bind]
+			p.confirm(func() error {
+				if err := p.store.SetTeamDefaultAgentUser(p.model.Name(), ref); err != nil {
+					return err
+				}
+				return p.reload("")
+			})
+			p.binds = nil
+		}
+	case "esc", "ctrl+c", "q":
+		p.kind, p.binds = teamInputNone, nil
+	}
+	return true
+}
+
 // startBindKey arms the bind cycle on the focused member, listing every pool
 // entry as a candidate. An empty pool renders its hint inside the cycle
 // instead of failing.
@@ -61,6 +89,31 @@ func startBindKey(p *teamPicker, view *tui.Model) {
 	}
 	p.bind = 0
 	p.kind = teamInputBind
+}
+
+// startDefaultAgentKey opens the team-level default Agent user picker from
+// the member roster.
+func startDefaultAgentKey(p *teamPicker, view *tui.Model) {
+	if p.kind != teamInputNone || p.errMsg != "" || view.Mode() != tui.ModeList {
+		return
+	}
+	users, err := p.store.ListAgentUsers()
+	if err != nil {
+		p.errMsg = pickerErrMsg(err)
+		return
+	}
+	p.binds = []string{""} // clear default / disable team sessions
+	for _, u := range users {
+		p.binds = append(p.binds, u.UserID)
+	}
+	p.bind = 0
+	for i, id := range p.binds {
+		if id == p.defaultAgentUser() {
+			p.bind = i
+			break
+		}
+	}
+	p.kind = teamInputDefaultAgent
 }
 
 // stepBind cycles the candidate cursor, wrapping so every candidate stays

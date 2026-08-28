@@ -7,6 +7,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -240,13 +241,13 @@ func TestLAssignRefusesWhenLeaderExists(t *testing.T) {
 	}
 }
 
-// TestRoleEditingReadOnly pins the leader's ruling: the TUI edits nothing
-// about a member's role — role leaves the member editor, the store keeps
-// its own member-changing APIs.
-func TestRoleEditingReadOnly(t *testing.T) {
-	for _, f := range memberEditFields {
-		if f == "role" {
-			t.Skip("awaiting role read-only seam: memberEditFields still lists role")
-		}
+// TestRoleEditingAvailable pins dynamic Role editing while Leader remains on
+// the dedicated l/k lifecycle path.
+func TestRoleEditingAvailable(t *testing.T) {
+	if !slices.Contains(memberEditFields, "role") {
+		t.Fatal("member role must be editable")
+	}
+	if slices.Contains(memberEditFields, "leader") {
+		t.Fatal("leader identity must stay on the l/k lifecycle path")
 	}
 }

@@ -39,6 +39,37 @@ func TestTeamStoreSetTeamAgentType(t *testing.T) {
 	}
 }
 
+func TestTeamStoreSetTeamDefaultAgentUser(t *testing.T) {
+	ts, root := newTeamStore(t)
+	if err := ts.Save(validDoc()); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := NewAgentUsersStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.AddAgentUser(AgentUser{UserID: "au-1", Identity: "one", Provider: "anthropic"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SetTeamDefaultAgentUser("alpha", "au-1"); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, err := ts.Load()
+	if err != nil || doc.Teams[0].DefaultAgentUserRef != "au-1" {
+		t.Fatalf("default agent ref = %q, err=%v", doc.Teams[0].DefaultAgentUserRef, err)
+	}
+	if err := ts.SetTeamDefaultAgentUser("alpha", "missing"); !errors.Is(err, ErrAgentUserNotFound) {
+		t.Fatalf("missing pool entry: err=%v", err)
+	}
+	if err := ts.SetTeamDefaultAgentUser("alpha", ""); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, _ = ts.Load()
+	if doc.Teams[0].DefaultAgentUserRef != "" {
+		t.Fatalf("cleared default ref = %q", doc.Teams[0].DefaultAgentUserRef)
+	}
+}
+
 func TestTeamStoreSetMemberAgentType(t *testing.T) {
 	ts, _ := newTeamStore(t)
 	if err := ts.Save(validDoc()); err != nil {

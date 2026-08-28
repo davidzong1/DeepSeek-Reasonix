@@ -110,6 +110,7 @@ const (
 	teamInputAddMember                  // typing a new member id
 	teamInputDeleteMember               // confirming deletion of the focused member
 	teamInputBind                       // cycling candidate pool entries to bind
+	teamInputDefaultAgent               // choosing the team's default agent user
 )
 
 // teamPicker is the team management overlay opened by the TEAM button. It owns
@@ -179,7 +180,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			if member != "" {
 				return m.switchTeamMember(member)
 			}
-			if !suspended && p.firstLeader() == "" {
+			if !suspended && p.refusal == "" && p.firstLeader() == "" {
 				// A session needs a leader; a leaderless team parks on the
 				// management page with a refusal the page stays usable past —
 				// l appoints one, and the reload clears it (§11.4).
@@ -203,6 +204,17 @@ func (p *teamPicker) firstLeader() string {
 			if slot.IsLeader() {
 				return slot.MemberID
 			}
+		}
+	}
+	return ""
+}
+
+// defaultAgentUser returns the focused team's configured pool reference.
+func (p *teamPicker) defaultAgentUser() string {
+	name := p.model.Name()
+	for _, t := range p.doc.Teams {
+		if t.Name == name {
+			return strings.TrimSpace(t.DefaultAgentUserRef)
 		}
 	}
 	return ""
@@ -402,6 +414,9 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if bindKey(p, msg) {
 		return m, nil
 	}
+	if defaultAgentKey(p, msg) {
+		return m, nil
+	}
 	if (p.kind == teamInputAdd || p.kind == teamInputAddMember) && typeIntoTeamBuffer(p, msg) {
 		return m, nil
 	}
@@ -415,6 +430,8 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		spaceTeamKey(p, view)
 	case "a", "d":
 		startTeamKey(p, view, msg.String())
+	case "g":
+		startDefaultAgentKey(p, view)
 	case "t":
 		if memberListKeyAllowed(view, p) {
 			cmd = m.enterTeamSession()

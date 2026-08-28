@@ -94,6 +94,9 @@
 | P0.2 | provider fallback 严格报错和来源可观测性 | 已完成 | 实现+测试全绿（见 §3 P0.2 落地记录）；提交收口待 P0.1 |
 | P1.1 | task 空 prompt 频率观测和错误提示评估 | 已完成 | ArgsValidator 授权前拦截与明确 prompt 错误；cache-stable schema 保持不变 |
 | P1.2 | leader/member system prompt 协作纪律设计 | 已完成 | prompt 变更提案、顺序/回报行为测试 |
+| P1.3 | leader 专属成员管理工具接线 | 已完成 | leader backend 注入增删成员/修改角色工具；执行时复核 leader 身份，角色变化清理成员上下文 |
+| P1.4 | 团队默认 Agent 用户 | 已完成 | `g` 选择团队默认用户；未配置时拒绝启动 session；存储、TUI 与恢复路径回归全绿 |
+| P1.5 | 成员 Role 动态更新 | 已完成 | TUI 支持编辑 Role；保存前检查忙态，保存后清空成员上下文并退役旧 backend，下一次绑定按新 Role 重建 system prompt |
 | P2.1 | 大文件渐进拆分 | 已完成 | task_identity.go 首拆完成，4 项回归全绿；后续模块按独立任务排期 |
 | P2.2 | 受限 loopback/IPv6 测试环境 | 后续任务 | 独立环境修复，不改业务语义 |
 | R-final | 全量门禁、文档收口、最终交付 | 已完成 | 全仓编译、targeted tests、vet、gofmt、repolint clean；运行期 httptest IPv6 监听受限，列入 P2.2 |

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,6 +42,11 @@ func writeTeamDoc(t *testing.T, rel string, teams ...team.Team) {
 // writeTeamFixture seeds the primary team.json.
 func writeTeamFixture(t *testing.T, teams ...team.Team) {
 	t.Helper()
+	for i := range teams {
+		if teams[i].DefaultAgentUserRef == "" {
+			teams[i].DefaultAgentUserRef = "fixture-default"
+		}
+	}
 	writeTeamDoc(t, team.TeamFile, teams...)
 }
 
@@ -352,11 +358,11 @@ func TestTeamPickerRendersRealTeamDocMembers(t *testing.T) {
 // Enter_session" while the member editor line names the full surface.
 func TestTeamCompactRosterHelpLine(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
-		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+		{MemberID: "alpha", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
 	}})
 	m := openRoster(t)
 	list := ansi.Strip(m.renderTeamPicker())
-	for _, want := range []string{"a add member", "d delete member", "🌟 t Enter_session", "p proxy", "e edit", "l assign leader", teamExitAllHint} {
+	for _, want := range []string{"a add member", "d delete member", "🌟 t", "Enter_session", "p proxy", "e edit", "l assign leader", teamExitAllHint} {
 		if !strings.Contains(list, want) {
 			t.Fatalf("roster help should show %q, got:\n%s", want, list)
 		}
@@ -385,11 +391,11 @@ func TestTeamCompactRosterHelpLine(t *testing.T) {
 // — the same keys either way, no hard-coded line split.
 func TestTeamRosterHelpWrapsAtEdge(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Fixture Team", Template: []team.MemberSlot{
-		{MemberID: "alpha", Role: team.RoleCoder, Status: team.MemberStatusActive},
+		{MemberID: "alpha", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
 	}})
 	// The production string, never a copy of it: a copy drifts and then pins
 	// nothing but itself.
-	m := openRosterW(t, 160)
+	m := openRosterW(t, 220)
 	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, rosterHelp) {
 		t.Fatalf("a wide panel should keep the help on one line, got:\n%s", got)
 	}
@@ -516,34 +522,37 @@ func TestTeamPickerSpaceEntersRosterThenContext(t *testing.T) {
 	}
 }
 
-// TestTeamMemberEditRoleLeaderReadOnly pins the read-only editor rows: Role
-// and Leader render above the editable fields, enter opens the first editable
-// field (status) instead of a role text buffer, and s never publishes them —
-// assignment flows through l on the roster, step-down through k.
-func TestTeamMemberEditRoleLeaderReadOnly(t *testing.T) {
+// TestTeamMemberEditRolePersistsAndClearsContext pins dynamic Role editing
+// while Leader remains on the dedicated l/k lifecycle path.
+func TestTeamMemberEditRolePersistsAndClearsContext(t *testing.T) {
 	writeTeamFixture(t, leaderTeam())
 	m := openRoster(t)                                 // leaders first: lead pinned, alice after
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // focus alice, the non-leader
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	rendered := ansi.Strip(m.renderTeamPicker())
-	if !strings.Contains(rendered, "Role: coder") || !strings.Contains(rendered, "Leader: off") {
-		t.Fatalf("the editor must render Role/Leader read-only, got:\n%s", rendered)
+	if err := m.teamPick.sessions.AppendMessage("alpha", "alice", team.SessionMessage{Text: "old context"}); err != nil {
+		t.Fatal(err)
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // the first editable field is status
-	if m.teamPick.memberEdit.kind != memberEditFieldEdit {
-		t.Fatal("enter must open an editable field, not a read-only row")
+	for memberEditFields[m.teamPick.memberEdit.edit] != "role" {
+		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if got, ok := m.teamPick.memberEdit.list.choice(); ok {
-		t.Fatalf("opening the picker must not commit a value, got %q", got)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	for range len("coder") {
+		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // cancel the open picker
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})        // save: untouched rows never write
+	for _, r := range "reviewer" {
+		m = teamKey(m, tea.KeyPressMsg{Code: r})
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
 	doc := readStoredTeamDoc(t)
-	if got := doc.Teams[0].Template[1].Role; got != team.RoleCoder {
-		t.Fatalf("s must not change the read-only role, got %q", got)
+	if got := doc.Teams[0].Template[1].Role; got != team.RoleReviewer {
+		t.Fatalf("persisted role = %q, want reviewer", got)
 	}
 	if doc.Teams[0].Template[1].Leader {
-		t.Fatal("s must not publish the read-only leader row")
+		t.Fatal("role edit must not change leader identity")
+	}
+	if dirs, err := m.teamPick.sessions.MemberDirs("alpha"); err != nil || slices.Contains(dirs, "alice") {
+		t.Fatalf("role edit must clear old member context, dirs=%v err=%v", dirs, err)
 	}
 }
 

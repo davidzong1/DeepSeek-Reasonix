@@ -64,6 +64,10 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 			return nil
 		}
 	}
+	if p.defaultAgentUser() == "" {
+		p.refusal = "Set a team default agent user before starting a team session (press g)"
+		return nil
+	}
 	p.errMsg = ""
 	p.refusal = ""
 	session := sessionState{active: true, teamName: p.model.Name(), current: member.ID,
@@ -89,6 +93,21 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 func (p *teamPicker) restoreSession() (string, bool) {
 	if p.sessions != nil {
 		if teamName := p.model.Name(); teamName != "" {
+			if sel, err := p.sessions.ReadSelection(teamName); err == nil && sel.Suspended {
+				return "", true
+			}
+		}
+	}
+	if p.firstLeader() == "" {
+		p.refusal = "Only the leader can start a team session"
+		return "", false
+	}
+	if p.defaultAgentUser() == "" {
+		p.refusal = "Set a team default agent user before starting a team session (press g)"
+		return "", false
+	}
+	if p.sessions != nil {
+		if teamName := p.model.Name(); teamName != "" {
 			if sel, err := p.sessions.ReadSelection(teamName); err == nil {
 				if sel.Suspended {
 					return "", true
@@ -109,6 +128,14 @@ func (p *teamPicker) restoreSession() (string, bool) {
 // page: the leader marker is the gate, mirroring the t key.
 func (p *teamPicker) openSession(initial string) string {
 	if p.sessions == nil {
+		return ""
+	}
+	if p.firstLeader() == "" {
+		p.refusal = "Only the leader can start a team session"
+		return ""
+	}
+	if p.defaultAgentUser() == "" {
+		p.refusal = "Set a team default agent user before starting a team session (press g)"
 		return ""
 	}
 	teamName := p.model.Name()

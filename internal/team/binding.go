@@ -28,6 +28,36 @@ func (s *TeamStore) SetTeamAgentType(teamName string, t string) error {
 	})
 }
 
+// SetTeamDefaultAgentUser points the team at a pool entry used by members
+// without an explicit override. An empty ref clears the default; non-empty
+// refs are validated against the agent-user pool before publishing.
+func (s *TeamStore) SetTeamDefaultAgentUser(teamName, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return s.update(func(doc *TeamDoc) error {
+			i := teamIndex(doc, teamName)
+			if i < 0 {
+				return ErrTeamNotFound
+			}
+			doc.Teams[i].DefaultAgentUserRef = ""
+			return nil
+		})
+	}
+	if _, ok, err := s.agentUsers.GetAgentUser(ref); err != nil {
+		return err
+	} else if !ok {
+		return ErrAgentUserNotFound
+	}
+	return s.update(func(doc *TeamDoc) error {
+		i := teamIndex(doc, teamName)
+		if i < 0 {
+			return ErrTeamNotFound
+		}
+		doc.Teams[i].DefaultAgentUserRef = ref
+		return nil
+	})
+}
+
 // SetMemberAgentType sets a member's launch-type override; empty clears back
 // to the team default. Validation and refusals mirror SetTeamAgentType.
 func (s *TeamStore) SetMemberAgentType(teamName, memberID, t string) error {

@@ -14,7 +14,7 @@ import (
 
 // leaderTeam returns one team with a leader and a coder for session tests.
 func leaderTeam() team.Team {
-	return team.Team{Name: "alpha", Template: []team.MemberSlot{
+	return team.Team{Name: "alpha", DefaultAgentUserRef: "fixture-default", Template: []team.MemberSlot{
 		{MemberID: "lead", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
 		{MemberID: "alice", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}}

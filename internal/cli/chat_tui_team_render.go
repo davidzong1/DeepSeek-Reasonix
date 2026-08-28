@@ -294,6 +294,24 @@ func (p *teamPicker) renderInputState(view *tui.Model, b *strings.Builder) (stri
 			}
 		}
 		b.WriteString(dim("↑/↓ candidate · Enter bind · Esc unbind/cancel"))
+	case teamInputDefaultAgent:
+		b.WriteString(dim("  Team default agent user:\n"))
+		if len(p.binds) == 0 {
+			b.WriteString(dim("    (no agent users yet — u opens the pool)\n"))
+		} else {
+			for i, id := range p.binds {
+				mark := "    "
+				if i == p.bind {
+					mark = "  > "
+				}
+				label := id
+				if label == "" {
+					label = "(none - sessions disabled)"
+				}
+				b.WriteString(mark + label + "\n")
+			}
+		}
+		b.WriteString(dim("↑/↓ candidate · Enter set default · Esc clear/cancel"))
 	default:
 		return "", false
 	}
@@ -319,7 +337,7 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 
 // rosterHelp is the roster's single help block: one line while the panel is
 // wide enough, word-wrapped at the edge when it is not.
-const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · g default agent · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
 	teamExitHint + " · q quit"
 
 // renderRoster renders the compact member list: one row per slot with the
@@ -331,6 +349,12 @@ const rosterHelp = "↑/↓ navigate · a add member · d delete member · 🌟 
 // the team session (leader only), e opens the member editor.
 func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 	members := view.Members()
+	defaultRef := p.defaultAgentUser()
+	if defaultRef == "" {
+		b.WriteString(dim("  Default agent: not configured") + "\n")
+	} else {
+		b.WriteString(dim("  Default agent: ") + accent(defaultRef) + "\n")
+	}
 	if len(members) == 0 {
 		b.WriteString(dim("No team members yet") + "\n")
 		b.WriteString(dim("a add member · Esc back"))
@@ -359,7 +383,7 @@ func compactMemberSummary(member team.Member, status string) string {
 }
 
 // renderMemberEdit renders the member property editor (§5): the member id
-// header with its runtime state, the read-only Role/Leader rows, and the
+// header with its runtime state, the Role/Leader rows, and the
 // editable field list with its cursor on the left and a preview column of the
 // same draft on the right. Only s persists; esc returns with zero writes. The
 // agent fields stay backend-only — the editor's rows are the persisted
@@ -372,8 +396,7 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, li
 	me := &p.memberEdit
 	b.WriteString("  " + accent(member.ID) + "\n")
 	b.WriteString(dim("  State: ") + string(member.State) + "\n")
-	// Role and Leader are read-only here — assignment flows through l on the
-	// roster, step-down through k — so they render above the editable rows.
+	// Leader remains a separate assignment/step-down flow; Role is editable below.
 	role := "-"
 	if me.draft.Role != "" {
 		role = string(me.draft.Role)
@@ -394,7 +417,11 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, li
 	for i, f := range memberEditFields {
 		val := memberFieldValue(me.draft, i)
 		if me.kind == memberEditFieldEdit && i == me.edit {
-			val = me.list.currentLabel() + " ▏"
+			if f == "role" {
+				val = me.buf + " ▏"
+			} else {
+				val = me.list.currentLabel() + " ▏"
+			}
 		}
 		mark := "  "
 		if i == me.edit {
@@ -404,8 +431,12 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, li
 		b.WriteString(padColumn(left, col) + dim("│ "+truncateCells(preview[i], col)) + "\n")
 	}
 	if me.kind == memberEditFieldEdit {
-		me.list.resize(listH - 3)
-		b.WriteString(me.list.view(w, listH))
+		if memberEditFields[me.edit] == "role" {
+			b.WriteString(dim("Type role · Enter confirm · Esc cancel"))
+		} else {
+			me.list.resize(listH - 3)
+			b.WriteString(me.list.view(w, listH))
+		}
 	} else {
 		b.WriteString(dim("↑/↓ field · Enter/Space edit · s save · 🌟 t Enter_session · a/d member") + "\n")
 		b.WriteString(dim("b bind · l leader-mode · Esc back · " + teamExitHint + " · q quit"))
@@ -480,9 +511,17 @@ func (p *teamPicker) renderTeamSession(w int) string {
 	slot, ok := p.sessionSlot()
 	left.WriteString("  " + accent(p.session.current) + "\n")
 	if ok {
-		left.WriteString(dim("  Role: ") + memberFieldValue(slot, 0) + "\n")
-		left.WriteString(dim("  Leader: ") + memberFieldValue(slot, 1) + "\n")
-		left.WriteString(dim("  Status: ") + memberFieldValue(slot, 2) + "\n")
+		role := "-"
+		if slot.Role != "" {
+			role = string(slot.Role)
+		}
+		leader := "off"
+		if slot.IsLeader() {
+			leader = "on"
+		}
+		left.WriteString(dim("  Role: ") + role + "\n")
+		left.WriteString(dim("  Leader: ") + leader + "\n")
+		left.WriteString(dim("  Status: ") + string(slot.Status) + "\n")
 	}
 	for i, id := range p.session.members {
 		mark := "    "

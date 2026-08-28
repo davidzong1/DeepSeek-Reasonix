@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
@@ -19,12 +22,10 @@ const (
 	memberEditFieldEdit                // editing one field; enter confirms back to the list
 )
 
-// memberEditFields is the member property editor's editable field list. Role
-// and Leader are read-only rows — assignment flows through l on the roster and
-// the store's redefine API stays untouched — so only the closed choice sets
-// status/proxy/agent are editable here; role is free text validated at save
-// (§6).
-var memberEditFields = []string{"status", "proxy", "agent"}
+// memberEditFields is the member property editor's editable field list. Leader
+// remains a separate assignment/step-down flow; Role is free text validated
+// and persisted through the same guarded save path as the closed choices.
+var memberEditFields = []string{"status", "proxy", "agent", "role"}
 
 // memberEditState is the member property editor: the draft slot seeded from
 // the focused member, the field cursor, the open field's option list, and the
@@ -36,6 +37,7 @@ type memberEditState struct {
 	edit   int // field cursor into memberEditFields
 	list   optionList
 	errMsg string
+	buf    string
 }
 
 // handleMemberEditNavKey routes the member editor's own keys on the detail
@@ -95,6 +97,10 @@ func (p *teamPicker) openMemberEditField() {
 	me := &p.memberEdit
 	field := memberEditFields[me.edit]
 	me.kind = memberEditFieldEdit
+	if field == "role" {
+		me.buf = string(me.draft.Role)
+		return
+	}
 	me.list.setOptions(optionSingle, p.memberPickerOptions(field), memberPickerInitialID(field, me.draft))
 }
 
@@ -104,6 +110,26 @@ func (p *teamPicker) openMemberEditField() {
 // here and nothing typed ever reaches a buffer.
 func handleMemberFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	me := &p.memberEdit
+	if memberEditFields[me.edit] == "role" {
+		switch msg.String() {
+		case "enter":
+			me.draft.Role = team.RoleID(strings.TrimSpace(me.buf))
+			me.kind, me.buf = memberEditFieldList, ""
+		case "esc", "ctrl+c":
+			me.kind, me.buf = memberEditFieldList, ""
+		case "backspace":
+			if me.buf != "" {
+				me.buf = strings.TrimSuffix(me.buf, lastRune(me.buf))
+			}
+		default:
+			if msg.String() == "space" {
+				me.buf += " "
+			} else if printableKey(msg.String()) {
+				me.buf += msg.String()
+			}
+		}
+		return true
+	}
 	_, action := me.list.handleKey(msg)
 	switch action {
 	case optionListCommit:
@@ -186,6 +212,7 @@ func (p *teamPicker) commitMemberField() {
 	}
 	me.kind = memberEditFieldList
 	me.list = optionList{}
+	me.buf = ""
 	me.errMsg = ""
 }
 
@@ -246,7 +273,29 @@ func memberFieldEqual(field string, old, new team.MemberSlot) bool {
 func (p *teamPicker) applyMemberField(teamName, memberID, field string, draft team.MemberSlot) error {
 	switch field {
 	case "role":
-		return p.store.SetMemberRole(teamName, memberID, draft.Role)
+		if err := team.ValidateRole(string(draft.Role)); err != nil {
+			return err
+		}
+		if p.backends != nil {
+			if backend, ok := p.backends.bound(teamName, memberID); ok {
+				status := backend.RuntimeStatus()
+				if status.Running || status.PendingPrompt || status.BackgroundJobs > 0 {
+					return fmt.Errorf("team: finish or stop member %q before changing its role", memberID)
+				}
+			}
+		}
+		if err := p.store.SetMemberRole(teamName, memberID, draft.Role); err != nil {
+			return err
+		}
+		if p.sessions != nil {
+			if err := p.sessions.ClearMember(teamName, memberID); err != nil {
+				return err
+			}
+		}
+		if p.backends != nil {
+			p.backends.release(teamName, memberID)
+		}
+		return nil
 	case "leader":
 		return p.store.SetMemberLeader(teamName, memberID, draft.Leader)
 	case "status":

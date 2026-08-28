@@ -104,6 +104,36 @@ func TestTeamBindEmptyPoolShowsHint(t *testing.T) {
 	}
 }
 
+func TestTeamDefaultAgentPickerAndSessionGate(t *testing.T) {
+	teamFixture := fixtureTeam()
+	teamFixture.Template[0].Leader = true
+	writeTeamPoolFixture(t, []team.Team{teamFixture}, []team.AgentUser{
+		{UserID: "au-1", Identity: "one", Provider: "anthropic", APIKey: "key"},
+	})
+	m := openTeamOverlay(t)
+	if m.teamPick.session.active {
+		t.Fatal("session must not start without a team default agent user")
+	}
+	if !strings.Contains(ansi.Strip(m.renderTeamPicker()), "default agent user") {
+		t.Fatalf("missing default-agent refusal: %s", ansi.Strip(m.renderTeamPicker()))
+	}
+	// Descend into the roster and choose the team default with g.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = teamKey(m, tea.KeyPressMsg{Code: 'g'})
+	if !strings.Contains(ansi.Strip(m.renderTeamPicker()), "Team default agent user") {
+		t.Fatalf("g should open the default picker: %s", ansi.Strip(m.renderTeamPicker()))
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := readStoredTeamDoc(t).Teams[0].DefaultAgentUserRef; got != "au-1" {
+		t.Fatalf("default agent ref = %q, want au-1", got)
+	}
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatalf("session should start after configuring the team default (mode=%q refusal=%q err=%q)", m.teamPick.model.Mode(), m.teamPick.refusal, m.teamPick.errMsg)
+	}
+}
+
 // TestTeamCycleProxyOverride walks the proxy override cycle and pins every
 // state on disk: inherit → force-on → force-off → inherit.
 func TestTeamCycleProxyOverride(t *testing.T) {
