@@ -2066,10 +2066,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.applyComposerPasteCount(tea.PasteMsg{Content: msg.text}, false, count)
-
 	case memberEventMsg:
 		return m, m.handleMemberEvent(msg)
-
+	case teamRosterRefreshMsg:
+		return m, m.refreshTeamRoster()
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {
 			break

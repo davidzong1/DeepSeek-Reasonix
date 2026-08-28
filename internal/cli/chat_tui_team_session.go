@@ -1,10 +1,65 @@
 package cli
 
 import (
+	"slices"
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
 )
+
+// teamRosterRefreshMsg invalidates the in-memory roster while the team
+// overlay remains open. Leader tools mutate team.json through their own store,
+// so the TUI needs a small polling loop to observe those cross-session writes.
+type teamRosterRefreshMsg struct{}
+
+const teamRosterRefreshInterval = time.Second
+
+func teamRosterRefresh() tea.Cmd {
+	return tea.Tick(teamRosterRefreshInterval, func(time.Time) tea.Msg { return teamRosterRefreshMsg{} })
+}
+
+// refreshTeamRoster re-reads the registry and keeps the active session's
+// member list aligned with disk. A removed current member falls back to the
+// first remaining leader; a new member becomes immediately switchable.
+func (m *chatTUI) refreshTeamRoster() tea.Cmd {
+	if m == nil || m.teamPick == nil || m.teamPick.store == nil {
+		return nil
+	}
+	p := m.teamPick
+	teamName := p.model.Name()
+	if err := p.reload(teamName); err != nil {
+		p.errMsg = pickerErrMsg(err)
+		return teamRosterRefresh()
+	}
+	if !p.session.active {
+		return teamRosterRefresh()
+	}
+	ids := make([]string, 0, len(p.model.Members()))
+	for _, member := range p.model.Members() {
+		ids = append(ids, member.ID)
+	}
+	oldCurrent := p.session.current
+	p.session.members = ids
+	if i := slices.Index(ids, oldCurrent); i >= 0 {
+		p.session.focus = i
+		return teamRosterRefresh()
+	}
+	// The bound member was removed remotely. Rebind to the current leader when
+	// possible, preserving the team session instead of forcing a reopen.
+	leader := p.firstLeader()
+	if leader == "" {
+		m.closeSession()
+		return teamRosterRefresh()
+	}
+	p.session.current = leader
+	p.session.focus = slices.Index(ids, leader)
+	if cmd := m.switchTeamMember(leader); cmd != nil {
+		return tea.Batch(cmd, teamRosterRefresh())
+	}
+	return teamRosterRefresh()
+}
 
 // sessionState is the team session window (§5/§11.4): which member's Agent the
 // window is bound to, and the roster it switches across. Switching changes only
@@ -80,7 +135,7 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 	}
 	p.session = session
 	p.persistSessionSelection()
-	return m.switchTeamMember(member.ID)
+	return tea.Batch(m.switchTeamMember(member.ID), teamRosterRefresh())
 }
 
 // restoreSession resumes the persisted member window when its member is still

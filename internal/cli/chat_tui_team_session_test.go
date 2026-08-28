@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,6 +77,35 @@ func TestTeamSessionSwitchPersistsAndEsc(t *testing.T) {
 	}
 	if got := m.teamPick.model.Mode(); got != "list" {
 		t.Fatalf("esc should return to the roster, got %q", got)
+	}
+}
+
+// TestTeamSessionRosterRefreshesFromLeaderWrites pins the live roster sync:
+// a leader-side tool write is visible on the next refresh tick without closing
+// and reopening the team session.
+func TestTeamSessionRosterRefreshesFromLeaderWrites(t *testing.T) {
+	writeTeamFixture(t, leaderTeam())
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if !m.teamPick.session.active {
+		t.Fatal("team session should be active")
+	}
+	if err := m.teamPick.store.LeaderAddMember("alpha", "lead", team.MemberSlot{
+		MemberID: "bob", Role: team.RoleTester, Status: team.MemberStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(teamRosterRefreshMsg{})
+	m = next.(chatTUI)
+	if !m.teamPick.session.active {
+		t.Fatal("roster refresh must keep the active session open")
+	}
+	if _, ok := m.teamPick.slotOf("bob"); !ok {
+		t.Fatal("new member should be present in the in-memory roster")
+	}
+	if !slices.Contains(m.teamPick.session.members, "bob") {
+		t.Fatalf("new member should be switchable in the active session: %v", m.teamPick.session.members)
 	}
 }
 

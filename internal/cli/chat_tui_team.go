@@ -178,7 +178,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			}
 			member, suspended := p.restoreSession()
 			if member != "" {
-				return m.switchTeamMember(member)
+				return tea.Batch(m.switchTeamMember(member), teamRosterRefresh())
 			}
 			if !suspended && p.refusal == "" && p.firstLeader() == "" {
 				// A session needs a leader; a leaderless team parks on the
