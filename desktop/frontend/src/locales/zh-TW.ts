@@ -2052,7 +2052,9 @@ export const zhTW: Record<DictKey, string> = {
   "todo.dismiss": "關閉待辦列表",
   "todo.pending": "待處理",
   "todo.inProgress": "進行中",
+  "todo.paused": "待繼續",
   "todo.completed": "已完成",
+  "todo.continue": "繼續",
 
   // 斜線選單標籤
   "slash.project": "專案",
@@ -2695,6 +2697,9 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.showMoreTopics": "展開顯示 (+{n})",
   "projectTree.showFewerTopics": "折疊顯示",
   "projectTree.noTopics": "無會話",
+  "projectTree.remoteConnect": "連線",
+  "projectTree.remoteConnecting": "連線中…",
+  "projectTree.remoteConnectFailed": "連線失敗，點擊重試",
   "projectTree.timeFilterAll": "全部時間",
   "projectTree.timeFilter10": "最新 10 條",
   "projectTree.timeFilter20": "最新 20 條",

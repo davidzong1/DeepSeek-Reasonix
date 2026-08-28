@@ -1414,6 +1414,9 @@ export const en = {
   "projectTree.showMoreTopics": "Show more (+{n})",
   "projectTree.showFewerTopics": "Show fewer",
   "projectTree.noTopics": "No sessions",
+  "projectTree.remoteConnect": "Connect",
+  "projectTree.remoteConnecting": "Connecting…",
+  "projectTree.remoteConnectFailed": "Connection failed — click to retry",
   "projectTree.timeFilterAll": "All",
   "projectTree.timeFilter10": "Latest 10",
   "projectTree.timeFilter20": "Latest 20",
@@ -2949,7 +2952,9 @@ export const en = {
   "todo.dismiss": "Dismiss the task list",
   "todo.pending": "Pending",
   "todo.inProgress": "In progress",
+  "todo.paused": "Ready to continue",
   "todo.completed": "Completed",
+  "todo.continue": "Continue",
 
   // slash menu tags
   "slash.project": "project",

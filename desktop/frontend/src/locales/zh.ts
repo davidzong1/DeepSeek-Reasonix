@@ -1415,6 +1415,9 @@ export const zh: Record<DictKey, string> = {
   "projectTree.showMoreTopics": "展开显示 (+{n})",
   "projectTree.showFewerTopics": "折叠显示",
   "projectTree.noTopics": "无会话",
+  "projectTree.remoteConnect": "连接",
+  "projectTree.remoteConnecting": "连接中…",
+  "projectTree.remoteConnectFailed": "连接失败，点击重试",
   "projectTree.timeFilterAll": "全部时间",
   "projectTree.timeFilter10": "最新 10 条",
   "projectTree.timeFilter20": "最新 20 条",
@@ -2952,7 +2955,9 @@ export const zh: Record<DictKey, string> = {
   "todo.dismiss": "关闭待办列表",
   "todo.pending": "待处理",
   "todo.inProgress": "进行中",
+  "todo.paused": "待继续",
   "todo.completed": "已完成",
+  "todo.continue": "继续",
 
   // 斜杠菜单标签
   "slash.project": "项目",

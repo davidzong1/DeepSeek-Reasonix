@@ -125,7 +125,20 @@ console.log("\nbundle budgets");
 // headroom with the smallest existing decimal ratchet.
 // Direct pending-prompt recovery and authoritative remote Goal state bring the
 // measured path to 445.473 KiB. Retain 0.027 KiB of bounded headroom.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 445.5 : 445.5;
+// Restored remote shells now activate their backend session immediately and
+// keep disconnected state out of the mounted surface. The merged production
+// path measures 445.614 KiB; retain 0.086 KiB of bounded build/toolchain
+// headroom with the smallest existing decimal ratchet.
+// Runtime-aware Todo presentation plus exact-tab continuation adds 0.3 KiB gzip
+// to the always-mounted footer path. Keep the state/routing guard with a narrow
+// ratchet rather than showing idle restored work as actively running. The
+// combined path measures 445.9 KiB; retain 0.1 KiB of toolchain headroom.
+// Transcript surface ownership and the token-fenced unloaded-question commit
+// move the exact main-v2 baseline from 445.865 to 447.587 KiB gzip (+0.39%).
+// The final 0.266 KiB retains jump ownership through paint-ready instead of
+// allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
+// native validation hosts and test fixtures stay outside the production graph.
+const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 447.8 : 447.8;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -194,8 +207,15 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // runtime command dispatch bring the measured payload to 2382.9 KiB. The
 // remaining review fences measure 2383.2 KiB; retain 0.1 KiB of headroom.
 // Final remote-runtime parity measures 2384.4 KiB raw. The current main-v2
-// runtime additions bring the combined path to 2404.364 KiB; retain 0.136 KiB
-// of bounded headroom alongside the gzip ratchet above.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_404.5 : 2_404.5;
+// runtime additions bring the combined path to 2404.364 KiB. The final merged
+// restored-shell activation and disconnected-state revival path measures
+// 2404.898 KiB; retain 0.102 KiB of bounded headroom alongside the gzip
+// ratchet above.
+// Runtime-aware Todo status and exact-tab continuation then add to the same
+// initial path. The combined payload measures 2406.2 KiB; retain 0.1 KiB of
+// raw/toolchain headroom for both owners.
+// The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
+// the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_413.2 : 2_413.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
