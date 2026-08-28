@@ -215,7 +215,7 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		return // seam not installed (tests, non-interactive hosts): no member backends
 	}
 	memberDeps := memberBackendDeps{
-		ctx: context.Background(), users: users, events: m.memberEvents, base: m.memberBackendBase,
+		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions, events: m.memberEvents, base: m.memberBackendBase,
 	}
 	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberDeps), 0)
 	// Invalidate a member's assembled backend when its pool entry (ref,

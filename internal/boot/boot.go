@@ -187,6 +187,10 @@ type Options struct {
 	// schemas stay byte-identical, so the provider-visible surface is unchanged.
 	FileOverlay    builtin.FileOverlay
 	TerminalRunner builtin.TerminalRunner
+	// ExtraTools are session-scoped tools supplied by a host (for example the
+	// leader-only team member management tools). They are registered in this
+	// controller only and are provider-visible alongside the unified surface.
+	ExtraTools []tool.Tool
 	// ProviderResolver routes every model role through a caller-owned provider
 	// catalog. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
@@ -742,6 +746,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// Register the full built-in inventory for use_capability dispatch. The
 	// provider-visible surface is narrowed later via SetProviderVisibleTools.
 	addBuiltins(reg, enabledBuiltins, writeRoots, writeRootSet, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
+	for _, extra := range opts.ExtraTools {
+		if extra != nil {
+			reg.Add(extra)
+		}
+	}
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -1954,7 +1963,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 
 	// Provider-visible tool surface is identical for every role setting before
 	// the extension snapshot freezes registry schemas for cache diagnostics.
-	applyUnifiedProviderToolSurface(reg)
+	applyUnifiedProviderToolSurface(reg, opts.ExtraTools...)
 
 	// Freeze the extension kernel's snapshot of exactly what this build wired.
 	// The snapshot is assembled from the in-hand objects above — discovery
@@ -2047,28 +2056,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ImplicitSkillInvocation: implicitSkillInvocation,
 	}
 	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}, !opts.deferPublish), nil
-}
-
-// applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
-// shared core + host-control tools. use_capability can still Get every
-// registered tool, including those hidden from the provider schema.
-func applyUnifiedProviderToolSurface(reg *tool.Registry) {
-	if reg == nil {
-		return
-	}
-	allow := make([]string, 0, 16)
-	for _, name := range UnifiedProviderToolNames() {
-		if _, ok := reg.Get(name); ok {
-			allow = append(allow, name)
-		}
-	}
-	// Always keep use_capability if somehow only that remains.
-	if len(allow) == 0 {
-		if _, ok := reg.Get("use_capability"); ok {
-			allow = []string{"use_capability"}
-		}
-	}
-	reg.SetProviderVisibleTools(allow)
 }
 
 // effectivePlannerModel centralizes planner precedence. Every role setting

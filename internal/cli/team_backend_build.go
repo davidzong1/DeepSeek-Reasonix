@@ -156,10 +156,12 @@ func memberProxySpec(p team.ProxyConfig) netclient.ProxySpec {
 // the boot options this session launched with, so a member inherits the same
 // permissions, workspace root and session directory as the ambient session.
 type memberBackendDeps struct {
-	ctx    context.Context
-	users  memberPoolLookup
-	events chan memberEvent
-	base   func() boot.Options
+	ctx      context.Context
+	users    memberPoolLookup
+	store    *team.TeamStore
+	sessions *team.TeamSessionStore
+	events   chan memberEvent
+	base     func() boot.Options
 }
 
 // memberPoolLookup reads one pool entry. Narrowed to the one method the builder
@@ -272,6 +274,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		opts.ProviderResolver = resolver
 		opts.Sink = memberSink(b.MemberID, deps.events)
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b)
+		if b.Leader && deps.store != nil {
+			opts.ExtraTools = newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID)
+		}
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err

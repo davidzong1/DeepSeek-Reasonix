@@ -165,6 +165,10 @@ func (s *TeamStore) AddMember(teamName string, slot MemberSlot) error {
 	if s.memberPolicy == MemberWriteLeaderOnly {
 		return ErrLeaderOnly
 	}
+	return s.addMember(teamName, slot)
+}
+
+func (s *TeamStore) addMember(teamName string, slot MemberSlot) error {
 	if strings.TrimSpace(slot.MemberID) == "" {
 		return ErrInvalidMember
 	}
@@ -192,6 +196,10 @@ func (s *TeamStore) DeleteMember(teamName, memberID string) error {
 	if s.memberPolicy == MemberWriteLeaderOnly {
 		return ErrLeaderOnly
 	}
+	return s.deleteMember(teamName, memberID)
+}
+
+func (s *TeamStore) deleteMember(teamName, memberID string) error {
 	return s.update(func(doc *TeamDoc) error {
 		i := teamIndex(doc, teamName)
 		if i < 0 {
