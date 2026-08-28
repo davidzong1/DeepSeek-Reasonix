@@ -588,8 +588,8 @@ func typeIntoTeamBuffer(p *teamPicker, msg tea.KeyPressMsg) bool {
 
 // teamPasteTarget returns the overlay's active text buffer: the add-team
 // buffers, the pool field editor's non-provider row, the step-down's exact-id
-// stage. nil = no text input (picker rows). The member editor has no text
-// buffer: role is read-only and every editable field is a picker.
+// stage, or the member editor's free-text role field. nil = no text input
+// (picker rows).
 func teamPasteTarget(p *teamPicker) *string {
 	switch p.kind {
 	case teamInputAdd, teamInputAddMember:
@@ -601,6 +601,9 @@ func teamPasteTarget(p *teamPicker) *string {
 	}
 	if p.reset.kind == leaderResetID {
 		return &p.reset.buf
+	}
+	if p.memberEdit.kind == memberEditFieldEdit && len(memberEditFields) > p.memberEdit.edit && memberEditFields[p.memberEdit.edit] == "role" {
+		return &p.memberEdit.buf
 	}
 	return nil
 }
