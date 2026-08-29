@@ -58,6 +58,24 @@ func TestLeaderMemberToolsMutateRosterAndClearRoleContext(t *testing.T) {
 	}
 }
 
+func TestLeaderAndMemberTaskToolSurfaces(t *testing.T) {
+	service := &teamTaskService{}
+	leader := newLeaderTaskTools(service, "alpha", "lead")
+	if len(leader) != 5 {
+		t.Fatalf("leader task tool count = %d", len(leader))
+	}
+	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status"}
+	for i, want := range wantLeader {
+		if got := leader[i].Name(); got != want {
+			t.Errorf("leader tool %d = %q, want %q", i, got, want)
+		}
+	}
+	member := newMemberTaskTools(service, "alpha", "m1")
+	if len(member) != 2 || member[0].Name() != "member_get_my_task" || member[1].Name() != "member_report_result" {
+		t.Fatalf("member task tools have unexpected names")
+	}
+}
+
 type toolExecutor interface {
 	Name() string
 	Execute(context.Context, json.RawMessage) (string, error)

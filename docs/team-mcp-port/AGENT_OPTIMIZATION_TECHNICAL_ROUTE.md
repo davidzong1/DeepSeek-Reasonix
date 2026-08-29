@@ -98,7 +98,7 @@
 | P1.4 | 团队默认 Agent 用户 | 已完成 | `g` 选择团队默认用户；未配置时拒绝启动 session；存储、TUI 与恢复路径回归全绿 |
 | P1.5 | 成员 Role 动态更新 | 已完成 | TUI 支持编辑 Role；保存前检查忙态，保存后清空成员上下文并退役旧 backend，下一次绑定按新 Role 重建 system prompt |
 | P2.1 | 大文件渐进拆分 | 已完成 | task_identity.go 首拆完成，4 项回归全绿；后续模块按独立任务排期 |
-| P2.2 | 受限 loopback/IPv6 测试环境 | 后续任务 | 独立环境修复，不改业务语义 |
+| P2.2 | 受限 loopback/IPv6 测试环境 | 已完成 | CLI 网络测试显式使用 IPv4 listener；无 loopback 权限时安全跳过，业务网络语义不变 |
 | R-final | 全量门禁、文档收口、最终交付 | 已完成 | 全仓编译、targeted tests、vet、gofmt、repolint clean；运行期 httptest IPv6 监听受限，列入 P2.2 |
 
 ## 5. 协作与变更门禁

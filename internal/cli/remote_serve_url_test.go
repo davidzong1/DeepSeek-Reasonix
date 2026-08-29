@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -16,7 +15,7 @@ func TestRemoteServeBrowserURLUsesFragmentForCurrentServe(t *testing.T) {
 	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
 	t.Cleanup(ctrl.Close)
 	srv := serve.New(ctrl, serve.NewBroadcaster(), config.ServeConfig{AuthMode: "token", Token: "current secret/+"})
-	ts := httptest.NewServer(srv.Handler())
+	ts := newIPv4TestServer(t, srv.Handler())
 	t.Cleanup(ts.Close)
 
 	bound := strings.TrimPrefix(ts.URL, "http://")
@@ -31,7 +30,7 @@ func TestRemoteServeBrowserURLFallsBackForReusedV1214ServeContract(t *testing.T)
 	const token = "legacy secret/+"
 	// v1.21.4 token auth denies unauthenticated /auth/token requests and
 	// bootstraps browser cookies only from the legacy query parameter.
-	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	legacy := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != token {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return

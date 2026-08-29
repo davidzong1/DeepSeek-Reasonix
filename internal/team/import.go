@@ -130,13 +130,16 @@ type mcpAgentUser struct {
 	BaseURL  string `json:"base_url"`
 	Effort   string `json:"effort"`
 
-	AnthropicAPIKey string `json:"anthropic_api_key"`
-	AnthropicModel  string `json:"anthropic_model"`
-	OpenAIAPIKey    string `json:"openai_api_key"`
-	OpenAIModel     string `json:"openai_model"`
-	CodexModel      string `json:"codex_model"`
-	DshAPIKey       string `json:"dsh_api_key"`
-	DshModel        string `json:"dsh_model"`
+	AnthropicAPIKey  string `json:"anthropic_api_key"`
+	AnthropicBaseURL string `json:"anthropic_base_url"`
+	AnthropicModel   string `json:"anthropic_model"`
+	OpenAIAPIKey     string `json:"openai_api_key"`
+	OpenAIBaseURL    string `json:"openai_base_url"`
+	OpenAIModel      string `json:"openai_model"`
+	CodexModel       string `json:"codex_model"`
+	DshAPIKey        string `json:"dsh_api_key"`
+	DshBaseURL       string `json:"dsh_base_url"`
+	DshModel         string `json:"dsh_model"`
 }
 
 // importer carries the parse and merge state for one ImportFromMCP run.
@@ -160,10 +163,14 @@ func (imp *importer) mergePool(doc *AgentUsersDoc) {
 			if agentUserIndex(doc, id) >= 0 {
 				continue
 			}
+			baseURL := g.baseURL
+			if baseURL == "" {
+				baseURL = u.BaseURL
+			}
 			record := AgentUser{
 				UserID:   id,
 				Provider: g.provider,
-				BaseURL:  u.BaseURL,
+				BaseURL:  baseURL,
 				Model:    g.model,
 				Effort:   u.Effort,
 			}
@@ -287,6 +294,7 @@ func (imp *importer) resolveDefaultAgentUser(ref string) (string, bool) {
 // agent_user entry (§2.3); each becomes its own AgentUser record.
 type providerGroup struct {
 	provider string
+	baseURL  string
 	model    string
 	apiKey   string
 	index    int
@@ -305,16 +313,16 @@ func (g providerGroup) id(key string) string {
 // a fixed order, so multi-provider splits are deterministic.
 func providerGroups(u mcpAgentUser) []providerGroup {
 	var groups []providerGroup
-	appendGroup := func(provider, model, apiKey string) {
+	appendGroup := func(provider, baseURL, model, apiKey string) {
 		provider = NormalizeProvider(provider)
 		if model != "" || apiKey != "" {
-			groups = append(groups, providerGroup{provider: provider, model: model, apiKey: apiKey, index: len(groups)})
+			groups = append(groups, providerGroup{provider: provider, baseURL: baseURL, model: model, apiKey: apiKey, index: len(groups)})
 		}
 	}
-	appendGroup("anthropic", u.AnthropicModel, u.AnthropicAPIKey)
-	appendGroup("openai", u.OpenAIModel, u.OpenAIAPIKey)
-	appendGroup("codex", u.CodexModel, "")
-	appendGroup("dsh", u.DshModel, u.DshAPIKey)
+	appendGroup("anthropic", u.AnthropicBaseURL, u.AnthropicModel, u.AnthropicAPIKey)
+	appendGroup("openai", u.OpenAIBaseURL, u.OpenAIModel, u.OpenAIAPIKey)
+	appendGroup("codex", u.OpenAIBaseURL, u.CodexModel, "")
+	appendGroup("dsh", u.DshBaseURL, u.DshModel, u.DshAPIKey)
 	if len(groups) == 0 && u.Provider != "" {
 		groups = append(groups, providerGroup{provider: NormalizeProvider(u.Provider), model: u.Model, index: 0})
 	}

@@ -66,22 +66,18 @@ func (s *TeamStore) SetMemberRole(teamName, memberID string, role RoleID) error 
 // stable prefix.
 const (
 	// leaderCollaborationDiscipline applies to slots whose Leader property is
-	// set: list members, select them, then sleep for reports; track via
-	// status, not terminal polling; ack the checkpoint on high drift.
+	// set: inspect, select, assign, then track durable task state.
 	leaderCollaborationDiscipline = `团队协作纪律（leader）：
 1. 派单前先 leader_list_team 查看成员，再用 leader_select_task_members 选择参与成员；不要把 leader 自身记录当作可分配对象。
-2. 分配后必须 leader_sleep(max_seconds=600) 延时等待成员回报；追踪成员用 leader_check_member_status，不要轮询终端。
-3. 出现高漂移（checkpoint.goal 与任务冲突）时先 leader_ack_checkpoint 确认方向，再继续分配。
+2. 复杂任务必须使用 leader_assign_task_to_relevant 或 leader_assign_subtask 创建持久化子任务；简单任务可由 leader 自行完成。
+3. 分配后用 leader_check_member_status 追踪任务状态，不轮询终端；收到回报后再整合并收口。
 
 `
-	// memberCollaborationDiscipline applies to regular slots: read task and
-	// shared context first, lock files before editing, formal report first on
-	// completion, checkpoint progress for resume.
+	// memberCollaborationDiscipline applies to regular slots: read the durable
+	// task first and formally report completion.
 	memberCollaborationDiscipline = `团队协作纪律（member）：
-1. 动手前先读取任务与共享上下文（member_get_my_task / member_read_shared）。
-2. 代码修改前用 member_acquire_file_lock 申请文件锁，修改完成后释放；并发冲突时用 member_submit_patch 提交补丁。
-3. 任务完成后的第一个动作是 member_report_result 正式回报；monitor 自动推断不能代替正式回报。
-4. 长任务用 member_update_task_checkpoint 记录进度，供中断恢复后续跑。
+1. 动手前先读取持久化任务（member_get_my_task），不要自行发明任务范围。
+2. 完成后第一个动作是 member_report_result 正式回报；自然语言或 monitor 推断不能代替正式回报。
 
 `
 	// sharedCollaborationDiscipline binds both sides: team-dispatch tools vs

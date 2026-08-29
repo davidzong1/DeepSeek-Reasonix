@@ -37,8 +37,10 @@ const mcpFixture = `{
       "base_url": "https://api.anthropic.com",
       "effort": "high",
       "anthropic_api_key": "sk-ant-fake-AAAAAAAA",
+	  "anthropic_base_url": "https://anthropic-gateway.example.com",
       "anthropic_model": "claude-opus-5",
       "openai_api_key": "sk-org-fake-BBBBBBBB",
+	  "openai_base_url": "https://openai-gateway.example.com/v1",
       "openai_model": "gpt-5"
     },
     "au-2": {
@@ -89,10 +91,10 @@ func TestImportFromMCPMapsTeamsAndPool(t *testing.T) {
 	for _, u := range users {
 		byID[u.UserID] = u
 	}
-	if u := byID["au-1"]; u.Provider != "anthropic" || u.Model != "claude-opus-5" || u.APIKey != "" {
+	if u := byID["au-1"]; u.Provider != "anthropic" || u.Model != "claude-opus-5" || u.BaseURL != "https://anthropic-gateway.example.com" || u.APIKey != "" {
 		t.Fatalf("primary record: %+v", u)
 	}
-	if u := byID["au-1@openai"]; u.Provider != "openai" || u.Model != "gpt-5" || u.APIKey != "" {
+	if u := byID["au-1@openai"]; u.Provider != "openai" || u.Model != "gpt-5" || u.BaseURL != "https://openai-gateway.example.com/v1" || u.APIKey != "" {
 		t.Fatalf("split record: %+v", u)
 	}
 	if u := byID["au-2"]; u.Provider != ProviderOpenAI || u.Model != "gpt-5-codex" {
@@ -332,6 +334,7 @@ func TestImportFromMCPDshGroupNormalizesDeepSeek(t *testing.T) {
 	      "provider": "dsh",
 	      "model": "deepseek-v4-flash",
 	      "dsh_api_key": "sk-ds-fake-CCCCCCCC",
+	      "dsh_base_url": "https://deepseek-gateway.example.com/v1",
 	      "dsh_model": "deepseek-v4-flash"
 	    }
 	  }
@@ -351,7 +354,7 @@ func TestImportFromMCPDshGroupNormalizesDeepSeek(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(users) != 1 || users[0].Provider != ProviderDeepSeek || users[0].Model != "deepseek-v4-flash" {
+	if len(users) != 1 || users[0].Provider != ProviderDeepSeek || users[0].Model != "deepseek-v4-flash" || users[0].BaseURL != "https://deepseek-gateway.example.com/v1" {
 		t.Fatalf("dsh group should normalize to deepseek, got %+v", users)
 	}
 }

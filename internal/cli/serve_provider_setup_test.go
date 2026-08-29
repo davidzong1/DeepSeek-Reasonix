@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +38,7 @@ func TestServeStartsWithMissingProviderKey(t *testing.T) {
 	home := t.TempDir()
 	balanceStarted := make(chan struct{})
 	releaseBalance := make(chan struct{})
-	balanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	balanceServer := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		select {
 		case <-balanceStarted:
 		default:

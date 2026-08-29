@@ -51,8 +51,12 @@ node_modules/
 
 # Project-local Reasonix state; keep the checked-in review command.
 /.reasonix/*
+!/.reasonix/
+!/.reasonix/skills/
+!/.reasonix/skills/base/
 !/.reasonix/commands/
 !/.reasonix/commands/review.md
+!/.reasonix/skills/base/**
 
 # Stray Reasonix state written under a package dir by a test whose RealPath
 # resolves to CWD (e.g. remote bootstrap EnsureServe). Never commit these.

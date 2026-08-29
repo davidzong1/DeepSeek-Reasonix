@@ -21,6 +21,13 @@ type teamInboxWire struct {
 	inboxes map[string]*agentruntime.BoardInbox
 }
 
+func (p *teamPicker) boardStore() *team.SQLiteStore {
+	if p == nil || p.board == nil {
+		return nil
+	}
+	return p.board.board
+}
+
 // teamInboxLimit bounds one turn's injected commands; the rest wait for the
 // next turn. teamBoardTimeout keeps a stalled board from blocking the turn.
 const (

@@ -24,10 +24,9 @@ func TestTeamButtonEntryReturnsRestoreCmd(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
 
-	// Without the backend seam there is nothing to bind, so the click opens the
-	// leader's window and returns no command.
-	if cmd := m.onTeamButtonClick(); cmd != nil {
-		t.Fatal("with no member backends the click must not arm a pump")
+	// The entry path assembles the leader backend and arms its event pump.
+	if cmd := m.onTeamButtonClick(); cmd == nil {
+		t.Fatal("the leader entry must arm the member event pump")
 	}
 	if m.teamPick == nil || !m.teamPick.session.active {
 		t.Fatal("the click must open the overlay with the session active")

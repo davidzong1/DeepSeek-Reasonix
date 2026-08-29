@@ -90,3 +90,29 @@ func TestResolveProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveAgentUserProviderLongContextDeepSeekUsesAnthropic(t *testing.T) {
+	kind, endpoint, err := ResolveAgentUserProvider(AgentUser{
+		Provider: ProviderDeepSeek,
+		BaseURL:  "https://gateway.example.com/v1",
+		Model:    "deepseek/deepseek-v4-flash[1m]",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "anthropic" || endpoint != "https://gateway.example.com/v1" {
+		t.Fatalf("long-context route = (%q, %q), want anthropic gateway", kind, endpoint)
+	}
+
+	kind, _, err = ResolveAgentUserProvider(AgentUser{
+		Provider: ProviderDeepSeek,
+		BaseURL:  "https://gateway.example.com/v1",
+		Model:    "deepseek/deepseek-v4-flash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "openai" {
+		t.Fatalf("ordinary custom DeepSeek route = %q, want openai", kind)
+	}
+}

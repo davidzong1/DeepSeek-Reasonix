@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1606,7 +1605,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 	t.Run("anthropic root form resolves via v1 fallback", func(t *testing.T) {
 		var gotPath atomic.Value
 		gotPath.Store("")
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotPath.Store(r.URL.Path)
 			if r.URL.Path == "/v1/models" {
 				w.Header().Set("Content-Type", "application/json")
@@ -1632,7 +1631,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 	t.Run("versioned v1 base URL hits models directly", func(t *testing.T) {
 		var gotPath atomic.Value
 		gotPath.Store("")
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotPath.Store(r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"data":[{"id":"model-a"}]}`)
@@ -1652,7 +1651,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 	})
 
 	t.Run("endpoint-miss on every candidate returns empty (manual flow)", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer srv.Close()

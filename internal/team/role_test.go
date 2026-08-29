@@ -115,29 +115,22 @@ func TestSystemPromptForRoleDiscipline(t *testing.T) {
 	leader := SystemPromptForRole("alpha", "m1", "coder", true)
 	member := SystemPromptForRole("alpha", "m1", "coder", false)
 
-	// Leader sequencing: list members, select them, then sleep for reports.
+	// Leader sequencing: list members, select them, then assign and track.
 	li := strings.Index(leader, "leader_list_team")
 	si := strings.Index(leader, "leader_select_task_members")
-	sl := strings.Index(leader, "leader_sleep")
-	if li < 0 || si < 0 || sl < 0 || !(li < si && si < sl) {
-		t.Fatalf("leader prompt must sequence list -> select -> sleep, got:\n%s", leader)
-	}
-	// Checkpoint ack and status tracking instead of terminal polling.
-	if !strings.Contains(leader, "leader_ack_checkpoint") {
-		t.Fatalf("leader prompt must codify checkpoint ack, got:\n%s", leader)
+	ai := strings.Index(leader, "leader_assign_task_to_relevant")
+	if li < 0 || si < 0 || ai < 0 || !(li < si && si < ai) {
+		t.Fatalf("leader prompt must sequence list -> select -> assign, got:\n%s", leader)
 	}
 	if !strings.Contains(leader, "leader_check_member_status") {
 		t.Fatalf("leader prompt must codify status tracking, got:\n%s", leader)
 	}
 
-	// Member: shared context first, lock before editing, formal report after.
-	if i := strings.Index(member, "member_acquire_file_lock"); i < 0 {
-		t.Fatalf("member prompt must codify file locks, got:\n%s", member)
+	// Member: durable task first, formal report after.
+	if i := strings.Index(member, "member_get_my_task"); i < 0 {
+		t.Fatalf("member prompt must codify task lookup, got:\n%s", member)
 	} else if j := strings.Index(member, "member_report_result"); j < 0 || j < i {
-		t.Fatalf("member prompt must order lock before formal report, got:\n%s", member)
-	}
-	if !strings.Contains(member, "member_get_my_task") || !strings.Contains(member, "member_read_shared") {
-		t.Fatalf("member prompt must codify reading task and shared context first, got:\n%s", member)
+		t.Fatalf("member prompt must order task lookup before formal report, got:\n%s", member)
 	}
 	if !strings.Contains(member, "monitor") {
 		t.Fatalf("member prompt must reject monitor-inferred completion as a formal report, got:\n%s", member)
@@ -157,7 +150,7 @@ func TestSystemPromptForRoleDiscipline(t *testing.T) {
 	}
 
 	// No cross-contamination between the role branches.
-	if strings.Contains(member, "leader_sleep") {
+	if strings.Contains(member, "leader_assign_subtask") {
 		t.Fatalf("member prompt must not carry leader rules, got:\n%s", member)
 	}
 	if strings.Contains(leader, "member_report_result") {
@@ -191,13 +184,13 @@ func TestSystemPromptForRoleCacheStable(t *testing.T) {
 
 func TestSystemPromptForRoleCollaborationDiscipline(t *testing.T) {
 	leader := SystemPromptForRole("alpha", "m1", "lead", true)
-	for _, want := range []string{"leader_list_team", "leader_select_task_members", "leader_sleep", "leader_ack_checkpoint", "leader_check_member_status"} {
+	for _, want := range []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status"} {
 		if !strings.Contains(leader, want) {
 			t.Fatalf("leader prompt missing %q: %s", want, leader)
 		}
 	}
 	member := SystemPromptForRole("alpha", "m2", "tester", false)
-	for _, want := range []string{"member_get_my_task", "member_read_shared", "member_acquire_file_lock", "member_report_result"} {
+	for _, want := range []string{"member_get_my_task", "member_report_result"} {
 		if !strings.Contains(member, want) {
 			t.Fatalf("member prompt missing %q: %s", want, member)
 		}

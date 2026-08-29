@@ -46,6 +46,122 @@ func newLeaderMemberTools(store *team.TeamStore, sessions *team.TeamSessionStore
 	}
 }
 
+// newLeaderTaskTools exposes only the task orchestration surface to a leader
+// backend. The service owns authorization and persistence; these thin tools
+// keep the provider contract stable and easy to inspect.
+func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []tool.Tool {
+	if service == nil {
+		return nil
+	}
+	base := func(name, desc, schema string) *teamTaskTool {
+		return &teamTaskTool{name: name, desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, memberID: leaderID, leader: true}
+	}
+	return []tool.Tool{
+		base("leader_list_team", "List the current team roster before dispatching work.", `{"type":"object","properties":{},"additionalProperties":false}`),
+		base("leader_select_task_members", "Select non-leader members by task and role before assignment.", `{"type":"object","properties":{"task":{"type":"string"},"required_roles":{"type":"string"},"create_missing":{"type":"boolean"}},"required":["task"]}`),
+		base("leader_assign_subtask", "Assign a persisted subtask to one non-leader member and start its backend.", `{"type":"object","properties":{"member_name":{"type":"string"},"subtask":{"type":"string"},"context":{"type":"string"}},"required":["member_name","subtask"]}`),
+		base("leader_assign_task_to_relevant", "Select relevant non-leader members and assign the task to each.", `{"type":"object","properties":{"task":{"type":"string"},"subtask":{"type":"string"},"required_roles":{"type":"string"},"create_missing":{"type":"boolean"}},"required":["task"]}`),
+		base("leader_check_member_status", "Read durable task status for team members without terminal polling.", `{"type":"object","properties":{"member_name":{"type":"string"}}}`),
+	}
+}
+
+func newMemberTaskTools(service *teamTaskService, teamName, memberID string) []tool.Tool {
+	if service == nil {
+		return nil
+	}
+	base := func(name, desc, schema string) *teamTaskTool {
+		return &teamTaskTool{name: name, desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, memberID: memberID}
+	}
+	return []tool.Tool{
+		base("member_get_my_task", "Read this member's unfinished assigned task.", `{"type":"object","properties":{},"additionalProperties":false}`),
+		base("member_report_result", "Report this member's completed task result to the leader.", `{"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}`),
+	}
+}
+
+type teamTaskTool struct {
+	name     string
+	desc     string
+	schema   json.RawMessage
+	service  *teamTaskService
+	teamName string
+	memberID string
+	leader   bool
+}
+
+func (t *teamTaskTool) Name() string            { return t.name }
+func (t *teamTaskTool) Description() string     { return t.desc }
+func (t *teamTaskTool) Schema() json.RawMessage { return t.schema }
+func (t *teamTaskTool) ReadOnly() bool {
+	return t.name == "leader_list_team" || t.name == "leader_select_task_members" || t.name == "leader_check_member_status" || t.name == "member_get_my_task"
+}
+func (t *teamTaskTool) PlanModeSafe() bool { return t.ReadOnly() }
+
+func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		MemberName    string `json:"member_name"`
+		Subtask       string `json:"subtask"`
+		Context       string `json:"context"`
+		Task          string `json:"task"`
+		RequiredRoles string `json:"required_roles"`
+		CreateMissing bool   `json:"create_missing"`
+		Result        string `json:"result"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("%s: invalid arguments: %w", t.name, err)
+	}
+	switch t.name {
+	case "leader_list_team":
+		return t.service.listTeam()
+	case "leader_select_task_members":
+		selected, roles, err := t.service.selectMembers(p.Task, p.RequiredRoles)
+		if err != nil {
+			return "", err
+		}
+		out := fmt.Sprintf("task roles: %s\nselected members: %s", strings.Join(roles, ", "), strings.Join(selected, ", "))
+		if len(selected) == 0 && p.CreateMissing {
+			out += "\nno matching member; create a member explicitly with leader_add_member"
+		}
+		return out, nil
+	case "leader_assign_subtask":
+		assignment, err := t.service.assignSubtask(ctx, p.MemberName, p.Subtask, p.Context)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("task %s assigned to %s (status=%s)", assignment.TaskID, assignment.MemberID, assignment.Status), nil
+	case "leader_assign_task_to_relevant":
+		selected, roles, err := t.service.selectMembers(p.Task, p.RequiredRoles)
+		if err != nil {
+			return "", err
+		}
+		if len(selected) == 0 {
+			if len(roles) > 0 {
+				return "", fmt.Errorf("no active member matches required roles %s; add or retag a member before assigning", strings.Join(roles, ", "))
+			}
+			return "", fmt.Errorf("no active non-leader members available for task; add a member before assigning")
+		}
+		payload := strings.TrimSpace(p.Subtask)
+		if payload == "" {
+			payload = p.Task
+		}
+		assigned := make([]string, 0, len(selected))
+		for _, member := range selected {
+			if _, err := t.service.assignSubtask(ctx, member, payload, "leader task: "+p.Task); err != nil {
+				return "", fmt.Errorf("assign %s: %w", member, err)
+			}
+			assigned = append(assigned, member)
+		}
+		return fmt.Sprintf("task assigned to %s (roles=%s)", strings.Join(assigned, ", "), strings.Join(roles, ", ")), nil
+	case "leader_check_member_status":
+		return t.service.checkStatus(strings.TrimSpace(p.MemberName))
+	case "member_get_my_task":
+		return t.service.memberTask(t.memberID)
+	case "member_report_result":
+		return t.service.report(t.memberID, p.Result)
+	default:
+		return "", fmt.Errorf("%s: unsupported operation", t.name)
+	}
+}
+
 type leaderAddMemberTool struct{ *leaderMemberTool }
 
 func (t *leaderAddMemberTool) Execute(_ context.Context, args json.RawMessage) (string, error) {

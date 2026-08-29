@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,26 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/team"
 )
+
+func TestTeamRoleSkillPromptLoadsRolePlaybook(t *testing.T) {
+	root := t.TempDir()
+	for _, role := range []string{"leader", "member"} {
+		path := filepath.Join(root, ".reasonix", "skills", "base", role, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + role + "\ndescription: team " + role + "\n---\n" + role + " playbook"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := teamRoleSkillPrompt(root, true); !strings.Contains(got, "leader playbook") {
+		t.Fatalf("leader skill prompt = %q", got)
+	}
+	if got := teamRoleSkillPrompt(root, false); !strings.Contains(got, "member playbook") {
+		t.Fatalf("member skill prompt = %q", got)
+	}
+}
 
 // fakeBackend is a control.SessionAPI stand-in that only records teardown, so
 // registry lifetime can be asserted without assembling a real controller. id

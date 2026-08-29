@@ -9,6 +9,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/team"
 )
 
 // waitForMemberEvent turns one blocking read on the shared tagged channel into
@@ -215,7 +216,14 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		return // seam not installed (tests, non-interactive hosts): no member backends
 	}
 	memberDeps := memberBackendDeps{
-		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions, events: m.memberEvents, base: m.memberBackendBase,
+		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
+		tasks: newTeamTaskService(m.teamPick.store, m.teamPick.boardStore(), "", func(b team.MemberBinding) (control.SessionAPI, error) {
+			if m.teamBackends == nil {
+				return nil, team.ErrMemberNotFound
+			}
+			return m.teamBackends.bind(b)
+		}),
+		events: m.memberEvents, base: m.memberBackendBase,
 	}
 	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberDeps), 0)
 	// Invalidate a member's assembled backend when its pool entry (ref,

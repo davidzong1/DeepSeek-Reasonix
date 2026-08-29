@@ -5,12 +5,17 @@ package cli
 // forces a rebuild unless busy, and /model rebind updates modelRef and replays.
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
 
 	"reasonix/internal/control"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
+	_ "reasonix/internal/provider/anthropic"
 	"reasonix/internal/team"
 )
 
@@ -52,6 +57,70 @@ func TestMemberProviderResolverRoutesOpenAI(t *testing.T) {
 	}
 	if override.kind != "openai" || override.endpoint != "https://gateway.example.com/v1" {
 		t.Errorf("override route = %q at %q", override.kind, override.endpoint)
+	}
+}
+
+func TestMemberProviderResolverRoutesLongContextDeepSeekViaAnthropic(t *testing.T) {
+	r, err := newMemberProviderResolver(team.AgentUser{
+		UserID:   "deepseek-long",
+		Provider: "deepseek",
+		BaseURL:  "https://gateway.example.com/v1",
+		Model:    "deepseek/deepseek-v4-flash[1m]",
+		APIKey:   "sk-secret",
+	}, netclient.ProxySpec{Mode: netclient.ModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.kind != "anthropic" || r.endpoint != "https://gateway.example.com/v1" {
+		t.Fatalf("resolver route = %q at %q, want anthropic gateway", r.kind, r.endpoint)
+	}
+	if r.model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("wire model = %q, want client alias suffix removed", r.model)
+	}
+	if !r.deepSeekAnthropic || !r.anthropicBearerHeader {
+		t.Fatalf("Claude-compatible DeepSeek route lost protocol/auth metadata: %+v", r)
+	}
+}
+
+func TestMemberProviderResolverLongContextDeepSeekWireContract(t *testing.T) {
+	const model = "deepseek/deepseek-v4-flash[1m]"
+	var gotPath, gotQuery, gotAuth, gotAPIKey, gotBeta, gotModel string
+	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotPath = req.URL.Path
+		gotQuery = req.URL.RawQuery
+		gotAuth = req.Header.Get("Authorization")
+		gotAPIKey = req.Header.Get("x-api-key")
+		gotBeta = req.Header.Get("anthropic-beta")
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+
+	r, err := newMemberProviderResolver(team.AgentUser{
+		UserID: "deepseek-long", Provider: "deepseek", BaseURL: srv.URL + "/v1",
+		Model: model, APIKey: "sk-test", Effort: "max",
+	}, netclient.ProxySpec{Mode: netclient.ModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.Resolve(provider.Selection{Ref: r.Ref()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "ping"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range chunks {
+	}
+	if gotPath != "/v1/messages" || gotQuery != "beta=true" || gotAuth != "Bearer sk-test" || gotAPIKey != "" || gotBeta != "context-1m-2025-08-07" || gotModel != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("wire path=%q query=%q auth=%q x-api-key=%q beta=%q model=%q", gotPath, gotQuery, gotAuth, gotAPIKey, gotBeta, gotModel)
 	}
 }
 

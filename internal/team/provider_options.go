@@ -66,6 +66,21 @@ func ResolveProvider(provider, baseURL string) (kind, endpoint string, err error
 	}
 }
 
+// ResolveAgentUserProvider resolves the protocol for one complete pool entry.
+// The [1m] suffix is an Anthropic-route model alias used by Claude-compatible
+// gateways. Treating a custom DeepSeek URL ending in /v1 as OpenAI solely from
+// its path sends that alias to /chat/completions, where distributors reject it
+// as an unavailable model. The Anthropic adapter accepts either a root or /v1
+// URL and normalizes both to /v1/messages.
+func ResolveAgentUserProvider(u AgentUser) (kind, endpoint string, err error) {
+	providerName := NormalizeProvider(strings.TrimSpace(u.Provider))
+	model := strings.ToLower(strings.TrimSpace(u.Model))
+	if providerName == ProviderDeepSeek && strings.TrimSpace(u.BaseURL) != "" && strings.HasSuffix(model, "[1m]") {
+		return "anthropic", strings.TrimSpace(u.BaseURL), nil
+	}
+	return ResolveProvider(providerName, strings.TrimSpace(u.BaseURL))
+}
+
 // routeOrDefault resolves a provider whose endpoint is its own official one
 // when the entry carries no base URL override.
 func routeOrDefault(kind, baseURL, official string) (string, string, error) {

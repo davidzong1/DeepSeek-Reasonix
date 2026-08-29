@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/team"
 )
 
@@ -31,14 +33,16 @@ import (
 // process environment would leak it across every member. provider.New takes it
 // directly instead, so it stays on this call path.
 type memberProviderResolver struct {
-	ref      string
-	name     string
-	kind     string
-	endpoint string
-	model    string
-	apiKey   string
-	effort   string
-	proxy    netclient.ProxySpec
+	ref                   string
+	name                  string
+	kind                  string
+	endpoint              string
+	model                 string
+	apiKey                string
+	effort                string
+	proxy                 netclient.ProxySpec
+	deepSeekAnthropic     bool
+	anthropicBearerHeader bool
 }
 
 // newMemberProviderResolver maps one AgentUser onto a single-entry resolver.
@@ -46,7 +50,7 @@ type memberProviderResolver struct {
 // never starts against a guessed endpoint; an unsupported provider is refused
 // here rather than at the first request.
 func newMemberProviderResolver(u team.AgentUser, proxy netclient.ProxySpec) (*memberProviderResolver, error) {
-	kind, endpoint, err := team.ResolveProvider(u.Provider, u.BaseURL)
+	kind, endpoint, err := team.ResolveAgentUserProvider(u)
 	if err != nil {
 		return nil, err
 	}
@@ -54,15 +58,28 @@ func newMemberProviderResolver(u team.AgentUser, proxy netclient.ProxySpec) (*me
 	if name == "" {
 		name = kind
 	}
+	model := strings.TrimSpace(u.Model)
+	deepSeekAnthropic := kind == "anthropic" && team.NormalizeProvider(u.Provider) == team.ProviderDeepSeek && strings.HasSuffix(strings.ToLower(model), "[1m]")
+	if deepSeekAnthropic {
+		// Claude treats [1m] as a client-side context alias. Its wire request
+		// removes the suffix and enables the 1M context beta separately; sending
+		// the alias as the model name makes compatible gateways reject routing.
+		model = strings.TrimSpace(model[:len(model)-len("[1m]")])
+	}
 	return &memberProviderResolver{
 		ref:      memberModelRef(name, u.Model),
 		name:     name,
 		kind:     kind,
 		endpoint: endpoint,
-		model:    strings.TrimSpace(u.Model),
+		model:    model,
 		apiKey:   u.APIKey,
 		effort:   strings.TrimSpace(u.Effort),
 		proxy:    proxy,
+
+		// MCP Claude profiles use ANTHROPIC_AUTH_TOKEN for this route. Preserve
+		// that wire contract after importing the profile into a team AgentUser.
+		deepSeekAnthropic:     deepSeekAnthropic,
+		anthropicBearerHeader: deepSeekAnthropic,
 	}, nil
 }
 
@@ -99,15 +116,24 @@ func (r *memberProviderResolver) Resolve(sel provider.Selection) (provider.Provi
 	if sel.Effort != nil && strings.TrimSpace(*sel.Effort) != "" {
 		effort = strings.TrimSpace(*sel.Effort)
 	}
+	extra := map[string]any{
+		"effort":     effort,
+		"proxy_spec": r.proxy,
+	}
+	if r.deepSeekAnthropic {
+		extra["reasoning_protocol"] = "deepseek"
+		extra["thinking"] = "enabled"
+		extra["anthropic_beta"] = "context-1m-2025-08-07"
+	}
+	if r.anthropicBearerHeader {
+		extra["auth_header"] = true
+	}
 	return provider.New(r.kind, provider.Config{
 		Name:    r.name,
 		BaseURL: r.endpoint,
 		Model:   r.model,
 		APIKey:  r.apiKey,
-		Extra: map[string]any{
-			"effort":     effort,
-			"proxy_spec": r.proxy,
-		},
+		Extra:   extra,
 	})
 }
 
@@ -160,6 +186,7 @@ type memberBackendDeps struct {
 	users    memberPoolLookup
 	store    *team.TeamStore
 	sessions *team.TeamSessionStore
+	tasks    *teamTaskService
 	events   chan memberEvent
 	base     func() boot.Options
 }
@@ -231,7 +258,7 @@ func dryRunPoolEntry(u team.AgentUser) error {
 	if strings.TrimSpace(u.Provider) == "" || strings.TrimSpace(u.Model) == "" {
 		return nil
 	}
-	kind, _, err := team.ResolveProvider(u.Provider, u.BaseURL)
+	kind, _, err := team.ResolveAgentUserProvider(u)
 	if err != nil || !slices.Contains(provider.Kinds(), kind) {
 		return nil
 	}
@@ -273,9 +300,13 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = memberSink(b.MemberID, deps.events)
-		opts.SystemPromptIdentity = memberSystemPromptIdentity(b)
+		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) + teamRoleSkillPrompt(opts.WorkspaceRoot, b.Leader)
+		tasks := deps.tasks.forTeam(b.Team)
 		if b.Leader && deps.store != nil {
-			opts.ExtraTools = newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID)
+			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID)...)
+			opts.ExtraTools = append(opts.ExtraTools, newLeaderTaskTools(tasks, b.Team, b.MemberID)...)
+		} else {
+			opts.ExtraTools = append(opts.ExtraTools, newMemberTaskTools(tasks, b.Team, b.MemberID)...)
 		}
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
@@ -288,6 +319,28 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		ctrl.EnableInteractiveApproval()
 		return ctrl, nil
 	}
+}
+
+// teamRoleSkillPrompt loads the role playbook at backend assembly time. The
+// skill remains discoverable in /skills, while its body is also present from
+// the first team turn so role obligations do not depend on a model remembering
+// to call run_skill. Missing files are a no-op for compatibility with tests and
+// workspaces that do not install the optional playbooks.
+func teamRoleSkillPrompt(root string, leader bool) string {
+	if strings.TrimSpace(root) == "" {
+		return ""
+	}
+	name := "member"
+	if leader {
+		name = "leader"
+	}
+	if sk, ok := skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard}).Read(name); ok {
+		body := strings.TrimSpace(sk.Body)
+		if body != "" {
+			return "\n\n<team-role-skill name=\"" + name + "\">\n" + body + "\n</team-role-skill>"
+		}
+	}
+	return ""
 }
 
 // bindMemberSession points a freshly built backend at the member's own session

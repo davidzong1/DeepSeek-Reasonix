@@ -90,8 +90,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	requestURL, _ := cfg.Extra["request_url"].(string)
 	requestURL = strings.TrimSpace(requestURL)
+	anthropicBeta, _ := cfg.Extra["anthropic_beta"].(string)
+	anthropicBeta = strings.TrimSpace(anthropicBeta)
 	if requestURL == "" {
 		requestURL = root + "/v1/messages"
+		if anthropicBeta != "" {
+			requestURL += "?beta=true"
+		}
 	}
 	officialDeepSeek := openai.IsDeepSeek(root)
 	reasoningProtocol, _ := cfg.Extra["reasoning_protocol"].(string)
@@ -153,6 +158,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		webSearch:        webSearch,
 		headers:          cleanCustomHeaders(headers),
 		authHeader:       authHeader,
+		anthropicBeta:    anthropicBeta,
 		defaultMaxTokens: maxOutputTokens,
 		http:             httpClient, // no overall timeout; lifecycle is ctx-driven
 		idleTimeout:      defaultStreamIdleTimeout,
@@ -186,6 +192,7 @@ type client struct {
 	webSearch        bool   // enable server-side web_search tool (DeepSeek Anthropic API)
 	headers          map[string]string
 	authHeader       bool // send Authorization: Bearer instead of Anthropic's x-api-key header
+	anthropicBeta    string
 	defaultMaxTokens int
 	http             *http.Client
 	idleTimeout      time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
@@ -311,8 +318,15 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			httpReq.Header.Set("x-api-key", c.apiKey)
 		}
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
+		beta := c.anthropicBeta
 		if visionRequestUsesFileID(req) {
-			httpReq.Header.Set("anthropic-beta", "files-api-2025-04-14")
+			if beta != "" {
+				beta += ","
+			}
+			beta += "files-api-2025-04-14"
+		}
+		if beta != "" {
+			httpReq.Header.Set("anthropic-beta", beta)
 		}
 		applyCustomHeaders(httpReq.Header, c.headers)
 		return httpReq, nil

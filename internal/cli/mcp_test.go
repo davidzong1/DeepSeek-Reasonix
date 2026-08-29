@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -328,7 +327,7 @@ func TestMCPUpdateProbesCandidateWithoutRewritingConfig(t *testing.T) {
 func TestMCPBrowseAndInstallOfficialRegistryEntry(t *testing.T) {
 	isolateCLIConfigHome(t)
 	stubMCPReadinessProbe(t)
-	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	registry := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"servers": []any{map[string]any{"server": map[string]any{
 			"name": "io.example/demo", "title": "Demo MCP", "version": "1.0.0",
 			"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp"}},

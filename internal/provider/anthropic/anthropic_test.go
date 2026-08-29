@@ -1035,6 +1035,34 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestStreamSupportsConfiguredAnthropicBeta(t *testing.T) {
+	var gotQuery, gotBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		gotBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name: "gateway", BaseURL: srv.URL, Model: "deepseek/deepseek-v4-flash", APIKey: "sk-test",
+		Extra: map[string]any{"anthropic_beta": "context-1m-2025-08-07"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range chunks {
+	}
+	if gotQuery != "beta=true" || gotBeta != "context-1m-2025-08-07" {
+		t.Fatalf("query=%q beta=%q", gotQuery, gotBeta)
+	}
+}
+
 // Ensure the package wires into the registry under the expected kind.
 func TestRegistered(t *testing.T) {
 	p, err := provider.New("anthropic", provider.Config{Model: "claude-opus-4-8", Name: "claude"})
