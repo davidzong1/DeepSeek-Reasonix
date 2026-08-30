@@ -30,18 +30,39 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
 		m.ingestEvent(msg.ev)
-	} else if memberEventIsTerminal(msg.ev.Kind) {
+	} else if memberEventNeedsAttention(msg.ev.Kind) {
+		m.recordMemberPrompt(msg.member, msg.ev)
 		m.markMemberUnread(msg.member)
 	}
 	return waitForMemberEvent(m.memberEvents)
 }
 
-// memberEventIsTerminal reports whether an unbound member's event is worth a
-// badge: a finished turn or a failure, never streaming deltas — those would
-// make the counter climb for every token.
-func memberEventIsTerminal(kind event.Kind) bool {
+// recordMemberPrompt keeps one non-current member's pending approval/ask on the
+// session — the inbox that lets the leader answer by keybinding instead of
+// switching. An approval/ask registers its id; a finished turn clears the
+// record, because the turn settling means the prompt resolved there.
+func (m *chatTUI) recordMemberPrompt(member string, ev event.Event) {
+	if m.teamPick == nil || m.teamPick.session.prompts == nil {
+		return
+	}
+	switch ev.Kind {
+	case event.TurnDone:
+		delete(m.teamPick.session.prompts, member)
+	case event.ApprovalRequest:
+		m.teamPick.session.prompts[member] = memberPrompt{kind: promptApproval, id: ev.Approval.ID}
+	case event.AskRequest:
+		m.teamPick.session.prompts[member] = memberPrompt{kind: promptAsk, id: ev.Ask.ID}
+	}
+}
+
+// memberEventNeedsAttention reports whether an unbound member's event is worth
+// a badge: a finished turn, a failure, or a pending approval/ask the window is
+// not showing. Streaming deltas never count — they would make the counter climb
+// for every token. ApprovalRequest is included because a background member's
+// unanswered prompt is exactly the "member waiting" state the leader must see.
+func memberEventNeedsAttention(kind event.Kind) bool {
 	switch kind {
-	case event.TurnDone, event.Message:
+	case event.TurnDone, event.Message, event.ApprovalRequest, event.AskRequest:
 		return true
 	}
 	return false
@@ -135,9 +156,11 @@ func (m *chatTUI) refuseTeamSession(msg string) tea.Cmd {
 	return nil
 }
 
-// unbindTeamMember hands the window back to the chat's own backend when the team
-// session closes. Member backends stay assembled in the registry — their
+// unbindTeamMember hands the window back to the chat's own backend when the
+// team session closes. Member backends stay assembled in the registry — their
 // histories and leases are untouched, so re-entering the team resumes them.
+// closeSession has already dropped the active flag, so bindBackend restores
+// the ambient session lease (a member bind never does).
 func (m *chatTUI) unbindTeamMember() {
 	if m.ambient == nil {
 		return // never bound a member
@@ -159,7 +182,11 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 	m.skills = backend.SlashSkills()
 	m.setHostAndInvalidateSlashCatalog(backend.Host())
 	m.updateWatchdogStatusProvider()
-	m.followSessionLease()
+	// Only the ambient restore follows the ambient session lease; a member
+	// bind never does — the member owns its own lease and authority.
+	if !m.teamSessionBound() {
+		m.followSessionLease()
+	}
 	m.refreshEffortStatus()
 
 	// A composer draft was addressed to the outgoing backend; carrying it over
@@ -267,6 +294,14 @@ func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		return m, m.stepSession(-1), true
 	case "ctrl+down":
 		return m, m.stepSession(+1), true
+	case "ctrl+a", "ctrl+x":
+		// A non-current member's pending approval answers by keybinding without a
+		// switch; no pending prompt for the focused member leaves the key to the
+		// composer (select-all / cut), so it is only consumed when one exists.
+		if m.answerMemberPrompt(msg.String() == "ctrl+a") {
+			return m, nil, true
+		}
+		return m, nil, false
 	case "esc":
 		// The panel is a layer over the session, so esc dismisses it before the
 		// session itself: leaving the team is one esc further out.
@@ -285,6 +320,46 @@ func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 // the composer is the session's input.
 func (m chatTUI) teamOverlayModal() bool {
 	return m.teamPick != nil && !m.teamPick.session.active
+}
+
+// answerMemberPrompt approves or denies the focused roster member's pending
+// approval through the hub, so the decision reaches that member's own backend
+// without switching the window. It reports whether it consumed the key: a
+// recorded prompt for the focused member does (a question card is answered by
+// switching, and says so), while no prompt leaves the key to the composer. The
+// bound member's own prompt never appears here — it stays on the pendingApproval
+// modal the ordinary keys answer.
+func (m *chatTUI) answerMemberPrompt(allow bool) bool {
+	p := m.teamPick
+	if p == nil || p.hub == nil || p.session.prompts == nil || len(p.session.members) == 0 {
+		return false
+	}
+	member := p.session.members[p.session.focus]
+	if member == p.session.current {
+		return false // the bound member's prompt is the modal's, not the inbox's
+	}
+	prompt, ok := p.session.prompts[member]
+	if !ok {
+		return false
+	}
+	if prompt.kind != promptApproval {
+		m.refuseTeamSession("question card on " + member + ": switch to it to answer")
+		return true
+	}
+	if err := p.hub.Approve(p.session.teamName, member, prompt.id, allow, false, false); err != nil {
+		m.refuseTeamSession("could not answer " + member + ": " + err.Error())
+		return true
+	}
+	delete(p.session.prompts, member)
+	if n := p.session.unread[member]; n > 0 {
+		p.session.unread[member] = n - 1
+	}
+	verb := "approved"
+	if !allow {
+		verb = "denied"
+	}
+	m.notice(verb + " " + member + "'s pending approval")
+	return true
 }
 
 // runMemberModelSubcommand is /model while a team member is bound: a member's

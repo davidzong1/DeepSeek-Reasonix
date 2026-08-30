@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"reasonix/internal/boot"
@@ -140,6 +142,60 @@ func TestTeamBackendsEvictsLeastRecentlyBound(t *testing.T) {
 		}
 	}
 }
+
+// TestTeamBackendsEvictNeverKillsBusy pins the §P1 eviction guard: a running
+// or pending-prompt backend is never an eviction victim, so the cap can stay
+// momentarily over when every candidate is busy — closing one would kill a
+// live turn or strand a prompt.
+func TestTeamBackendsEvictNeverKillsBusy(t *testing.T) {
+	closed := 0
+	busy := control.RuntimeStatus{Running: true}
+	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		return fakeBackend{closed: &closed, status: busy}, nil
+	}, 2)
+	for _, id := range []string{"a", "b", "c"} {
+		if _, err := r.bind(binding("t", id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0 — a busy eviction victim must never be retired", closed)
+	}
+	if n := len(r.live); n != 3 {
+		t.Fatalf("live = %d, want 3 (over-cap kept when every candidate is running)", n)
+	}
+}
+
+// TestTeamBackendsConcurrentBindEvict races bind/evict/release across
+// goroutines; the registry-wide mutex introduced for §P1 must keep the maps
+// and LRU order coherent under concurrency.
+func TestTeamBackendsConcurrentBindEvict(t *testing.T) {
+	closed := 0
+	var builds int64
+	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		atomic.AddInt64(&builds, 1)
+		return fakeBackend{closed: &closed}, nil
+	}, 4)
+	ids := []string{"a", "b", "c", "d"}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 40 {
+				bid := ids[int(buildn.Add(1))%len(ids)]
+				if _, err := r.bind(binding("t", bid)); err != nil {
+					t.Errorf("bind %s: %v", bid, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	r.closeAll()
+}
+
+var buildn atomic.Int64
 
 // TestTeamBackendsReleasePaths pins the destructive-path primitives: nothing
 // may keep writing a context that is about to be cleared.

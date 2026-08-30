@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"reasonix/internal/team"
@@ -18,11 +20,15 @@ type stubAgent struct {
 
 func (s *stubAgent) Submit(input string)                  { s.submitted = append(s.submitted, input) }
 func (s *stubAgent) SubmitUserTurn(input, display string) { s.submitted = append(s.submitted, input) }
-func (s *stubAgent) Cancel()                              { s.canceled = true }
-func (s *stubAgent) Running() bool                        { return s.canceled == false && len(s.submitted) > 0 }
-func (s *stubAgent) Turn() int                            { return len(s.submitted) }
-func (s *stubAgent) Compose(text string) string           { return text }
-func (s *stubAgent) Close()                               {}
+func (s *stubAgent) SubmitUserTurnOrError(input, display string) error {
+	s.submitted = append(s.submitted, input)
+	return nil
+}
+func (s *stubAgent) Cancel()                    { s.canceled = true }
+func (s *stubAgent) Running() bool              { return s.canceled == false && len(s.submitted) > 0 }
+func (s *stubAgent) Turn() int                  { return len(s.submitted) }
+func (s *stubAgent) Compose(text string) string { return text }
+func (s *stubAgent) Close()                     {}
 
 func newTestBoard(t *testing.T) team.BoardStore {
 	t.Helper()
@@ -38,7 +44,10 @@ func newTestBoard(t *testing.T) team.BoardStore {
 func newTestRuntime(t *testing.T, board team.BoardStore) (*Runtime, map[string]*stubAgent) {
 	t.Helper()
 	agents := map[string]*stubAgent{}
+	var mu sync.Mutex
 	rt := NewRuntime(func(memberID string) (AgentAPI, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		if _, ok := agents[memberID]; !ok {
 			agents[memberID] = &stubAgent{}
 		}
@@ -102,6 +111,88 @@ func TestRuntimeStartBusyMember(t *testing.T) {
 	}
 	if err := rt.Start(context.Background(), team.Task{ID: "t2", Status: team.TaskStatusAssigned}, member); !errors.Is(err, ErrMemberBusy) {
 		t.Fatalf("second start on alpha = %v, want ErrMemberBusy", err)
+	}
+}
+
+// TestRuntimeConcurrentStartSameMember races two starts on the same member:
+// the §P1 reservation admits exactly one, the other fails with ErrMemberBusy,
+// and the member's backend sees exactly one submitted turn — never a
+// double-drive. The test must pass under -race.
+func TestRuntimeConcurrentStartSameMember(t *testing.T) {
+	rt, agents := newTestRuntime(t, nil)
+	alice := team.Member{ID: "alpha"}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = rt.Start(context.Background(), team.Task{ID: team.TaskID("t" + strconv.Itoa(i)), Status: team.TaskStatusAssigned}, alice)
+		}(i)
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	ok := 0
+	for _, err := range errs {
+		if err == nil {
+			ok++
+			continue
+		}
+		if !errors.Is(err, ErrMemberBusy) {
+			t.Fatalf("start err = %v, want ErrMemberBusy for the loser", err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("exactly one start must win, got %d (errs=%v)", ok, errs)
+	}
+	if got := len(agents["alpha"].submitted); got != 1 {
+		t.Fatalf("the winner submitted %d turns, want exactly 1", got)
+	}
+}
+
+func TestRuntimeResumeBusyMember(t *testing.T) {
+	rt, _ := newTestRuntime(t, nil)
+	alice := team.Member{ID: "alpha"}
+	if err := rt.Start(context.Background(), team.Task{ID: "t1", Status: team.TaskStatusAssigned}, alice); err != nil {
+		t.Fatal(err)
+	}
+	err := rt.Resume(context.Background(), team.Task{ID: "t2", Status: team.TaskStatusRunning, AssignedMember: "alpha"}, alice)
+	if !errors.Is(err, ErrMemberBusy) {
+		t.Fatalf("resume onto a busy member = %v, want ErrMemberBusy", err)
+	}
+	// The busy rejection must not leave a reservation behind: alpha is still
+	// owned by t1, and that task can still be canceled.
+	if err := rt.Cancel("t1"); err != nil {
+		t.Fatalf("cancel after refused resume = %v", err)
+	}
+}
+
+// refusingAgent surfaces the execution gate: the backend refuses every
+// submit, standing in for a controller that is closed, rotating or already
+// running a turn the admission guard drops.
+type refusingAgent struct{ stubAgent }
+
+func (s *refusingAgent) SubmitUserTurnOrError(input, display string) error { return errors.New("busy") }
+
+// TestRuntimeStartRefusedSubmissionNoGhostRunning pins §P1's core: a backend
+// that refuses the submitted turn must surface as a start failure and leave
+// the durable task assigned — never a persisted "running" task that never
+// executed (the SaveTask-before-submit two-frame drift).
+func TestRuntimeStartRefusedSubmissionNoGhostRunning(t *testing.T) {
+	rt, store := newTestTaskBoard(t)
+	rt.agents = func(string) (AgentAPI, error) { return &refusingAgent{}, nil }
+	err := rt.Start(context.Background(), team.Task{ID: "t1", Status: team.TaskStatusAssigned}, team.Member{ID: "alpha"})
+	if err == nil {
+		t.Fatal("a refused submission must surface as a start error")
+	}
+	saved, loadErr := store.LoadTask(context.Background(), "t1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if saved.Status != team.TaskStatusAssigned {
+		t.Fatalf("saved status = %s, want assigned (rollback, never a ghost running)", saved.Status)
 	}
 }
 

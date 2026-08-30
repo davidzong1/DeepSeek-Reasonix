@@ -532,6 +532,9 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		if n := p.session.unread[id]; n > 0 && id != p.session.current {
 			label += " " + accent(strconv.Itoa(n))
 		}
+		if pr, ok := p.session.prompts[id]; ok && id != p.session.current {
+			label += " " + accent(memberPromptMarker(pr.kind))
+		}
 		right.WriteString(dim(label) + "\n")
 	}
 	ll := strings.Split(strings.TrimSuffix(left.String(), "\n"), "\n")
@@ -547,8 +550,37 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		}
 		b.WriteString(padColumn(l, col) + dim("│ ") + r + "\n")
 	}
-	b.WriteString(dim("Type below to message this member · Ctrl+Up/Down switch member · Esc hide panel · " + teamExitHint))
+	hint := "Type below to message this member · Ctrl+Up/Down switch member"
+	if p.sessionHasPendingApproval() {
+		hint += " · Ctrl+A approve · Ctrl+X deny"
+	}
+	hint += " · Esc hide panel · " + teamExitHint
+	b.WriteString(dim(hint))
 	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// sessionHasPendingApproval reports whether any non-current member's inbox
+// holds a pending approval — the condition that arms the Ctrl+A/Ctrl+X hint.
+func (p *teamPicker) sessionHasPendingApproval() bool {
+	if p.session.prompts == nil {
+		return false
+	}
+	for id, pr := range p.session.prompts {
+		if id != p.session.current && pr.kind == promptApproval {
+			return true
+		}
+	}
+	return false
+}
+
+// memberPromptMarker is the roster badge for a non-current member's pending
+// prompt: an approval answers by keybinding (Ctrl+A/Ctrl+X), a question card
+// needs its own member's window, so it reads as "answer by switching".
+func memberPromptMarker(kind string) string {
+	if kind == promptApproval {
+		return "⌛"
+	}
+	return "❓"
 }
 
 // renderLeaderReset renders the k step-down confirmation (§6): the warning,

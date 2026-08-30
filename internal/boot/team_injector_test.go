@@ -18,6 +18,10 @@ func (a *stubMemberAgent) Submit(string) {}
 func (a *stubMemberAgent) SubmitUserTurn(input, display string) {
 	a.submitted = append(a.submitted, input)
 }
+func (a *stubMemberAgent) SubmitUserTurnOrError(input, display string) error {
+	a.submitted = append(a.submitted, input)
+	return nil
+}
 func (a *stubMemberAgent) Cancel()                    {}
 func (a *stubMemberAgent) Running() bool              { return false }
 func (a *stubMemberAgent) Turn() int                  { return 0 }

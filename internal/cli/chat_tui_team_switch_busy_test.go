@@ -261,8 +261,10 @@ func TestReplayWithNoPendingShowsNoCard(t *testing.T) {
 
 // TestUnboundMemberApprovalIgnoredNotRendered pins the pending events of a
 // switched-away member: its ApprovalRequest is not ingested into the bound
-// window (no transcript line, no badge, no card) — the switch-back replay is
-// what resurfaces it, never the bound member's window.
+// window (no transcript line, no card) — the switch-back replay is what
+// resurfaces it, never the bound member's window. Since P1, an unanswered
+// background approval DOES badge the member (§P1: the "member waiting" state
+// the leader must see), so the old "must not badge" assertion is inverted.
 func TestUnboundMemberApprovalIgnoredNotRendered(t *testing.T) {
 	m, _ := overlayBusy(t, nil)
 	m = sized(t, m)
@@ -278,8 +280,8 @@ func TestUnboundMemberApprovalIgnoredNotRendered(t *testing.T) {
 	if len(m.transcript) != before {
 		t.Error("an unbound member's approval must not touch the transcript")
 	}
-	if got := m.teamPick.session.unread["alice"]; got != 0 {
-		t.Errorf("an approval must not badge, unread[alice] = %d", got)
+	if got := m.teamPick.session.unread["alice"]; got != 1 {
+		t.Errorf("a background approval must badge the member, unread[alice] = %d", got)
 	}
 	if m.pendingApproval != nil {
 		t.Fatal("an unbound member's approval must not surface a card")

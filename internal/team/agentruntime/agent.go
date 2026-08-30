@@ -8,6 +8,9 @@ package agentruntime
 type AgentAPI interface {
 	Submit(input string)
 	SubmitUserTurn(input, display string)
+	// SubmitUserTurnOrError surfaces a refused submit; the runtime migrates
+	// Start/Resume to it so a refused turn never persists a "running" task.
+	SubmitUserTurnOrError(input, display string) error
 	Cancel()
 	Running() bool
 	Turn() int

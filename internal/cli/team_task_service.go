@@ -28,6 +28,62 @@ type teamTaskService struct {
 	seq       atomic.Uint64
 	cacheMu   sync.Mutex
 	teams     map[string]*teamTaskService
+	// wakeMu guards the late-binding deliverable upon which wakeup delivery
+	// may race (the report path is a member goroutine).
+	wakeMu sync.Mutex
+	onWake []agentruntime.WakeFunc
+}
+
+// setLeaderWakeup installs the delivery function the runtime must call when a
+// task reaches a terminal/attention state. It replaces the no-op default and
+// is safe to call after the service is shared across member backends.
+func (s *teamTaskService) setLeaderWakeup(fn agentruntime.WakeFunc) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
+	s.onWake = []agentruntime.WakeFunc{fn}
+}
+
+// wakeLeader delivers one leader wakeup into the durable board wake stream.
+// The stamp is resolved per wake to the team's current leader member id (see
+// leaderIdentity) — the identity the TUI's consumeWakeups(leader) cursor
+// selects — never the team name, which a leader id need not equal.
+func (s *teamTaskService) wakeLeader(reason string) error {
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
+	for _, fn := range s.onWake {
+		_ = fn(reason)
+	}
+	return nil
+}
+
+// leaderIdentity resolves the team's current leader slot to the identity a
+// wakeup must be stamped with: the leader member id, which is what the TUI's
+// consumeWakeups(leader) filter and cursor select. The store is re-read at
+// every wake so a leader change re-targets delivery without rebuilding the
+// service. An empty result (no leader) makes the wake a no-op — there is no
+// one to wake, and an anonymous append would be forbidden by the board.
+func (s *teamTaskService) leaderIdentity() team.Identity {
+	if s == nil || s.teamStore == nil {
+		return team.Identity{}
+	}
+	doc, _, err := s.teamStore.Load()
+	if err != nil {
+		return team.Identity{}
+	}
+	for _, t := range doc.Teams {
+		if t.Name != s.teamName {
+			continue
+		}
+		for _, slot := range t.Template {
+			if slot.IsLeader() {
+				return team.Identity{MemberID: slot.MemberID, Role: string(slot.Role), Generation: 1}
+			}
+		}
+	}
+	return team.Identity{}
 }
 
 func newTeamTaskService(store *team.TeamStore, board *team.SQLiteStore, teamName string, bind func(team.MemberBinding) (control.SessionAPI, error)) *teamTaskService {
@@ -50,6 +106,10 @@ func newTeamTaskService(store *team.TeamStore, board *team.SQLiteStore, teamName
 			return team.Identity{MemberID: memberID, Role: string(binding.Role), Agent: binding.AgentType}
 		})
 		s.runtime.SetTaskStore(board)
+		s.onWake = []agentruntime.WakeFunc{
+			agentruntime.NewBoardWakeFor(board, team.BoardShared, s.leaderIdentity),
+		}
+		s.runtime.AddWakeup(s.wakeLeader)
 		s.scheduler = teamscheduler.NewRuntimeScheduler(s.runtime)
 		s.scheduler.SetTaskStore(board)
 		s.teams[s.teamName] = s

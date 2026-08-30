@@ -128,6 +128,7 @@ type teamPicker struct {
 	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
 	board      *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
 	backends   *teamBackends          // member Agent backends; nil when the seam is unavailable
+	hub        *teamHub               // member-prompt routing; nil when the store/backends are unavailable
 	sessionDir string                 // where member session files live; "" when unknown
 	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
 	kind       teamInputKind          // transient write state; teamInputNone when idle
@@ -171,6 +172,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 				p.errMsg = pickerErrMsg(err)
 				return nil
 			}
+			p.hub = newTeamHub(store, m.teamBackends, p.model.Name())
 			// Leader wakeups land as notices; a leader without a cursor yet is
 			// quiet — history before the first open does not replay (§5.1).
 			for _, reason := range p.board.consumeWakeups(p.firstLeader()) {

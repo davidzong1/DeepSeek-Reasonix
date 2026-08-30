@@ -67,6 +67,23 @@ func (m *chatTUI) refreshTeamRoster() tea.Cmd {
 // persists through the TeamSessionStore seam (route §4.2); the UI never writes
 // session files itself. Typing goes to the main composer, which submits to
 // whichever member is bound.
+// memberPrompt records one non-current member's pending approval/ask, so the
+// leader can answer an approval by keybinding without switching members and the
+// roster can mark a question card that still needs switching. kind is the
+// decision surface; id correlates with the member's own backend's reply.
+type memberPrompt struct {
+	kind string // promptApproval | promptAsk
+	id   string
+}
+
+// The prompt surfaces: an approval answers by keybinding through the hub, while
+// a question card needs its structured card, so it keeps the switch path but
+// stays recorded (and marked) until it is answered.
+const (
+	promptApproval = "approval"
+	promptAsk      = "ask"
+)
+
 type sessionState struct {
 	active   bool
 	panel    bool // detail panel; off by default so the member's history owns the frame
@@ -74,8 +91,9 @@ type sessionState struct {
 	current  string
 	members  []string
 	focus    int
-	errMsg   string         // session-scoped error, separate from the roster's errMsg
-	unread   map[string]int // non-current members' terminal events, per member
+	errMsg   string                  // session-scoped error, separate from the roster's errMsg
+	unread   map[string]int          // non-current members' terminal events, per member
+	prompts  map[string]memberPrompt // non-current members' pending approval/ask, per member
 }
 
 // setSessionPanel shows or hides the bound session's detail panel. Its rows come
@@ -126,7 +144,8 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 	p.errMsg = ""
 	p.refusal = ""
 	session := sessionState{active: true, teamName: p.model.Name(), current: member.ID,
-		unread: map[string]int{}}
+		unread:  map[string]int{},
+		prompts: map[string]memberPrompt{}}
 	for i, sm := range p.model.Members() {
 		session.members = append(session.members, sm.ID)
 		if sm.ID == member.ID {
@@ -205,7 +224,8 @@ func (p *teamPicker) openSession(initial string) string {
 		return ""
 	}
 	session := sessionState{active: true, teamName: teamName, current: current,
-		unread: map[string]int{}}
+		unread:  map[string]int{},
+		prompts: map[string]memberPrompt{}}
 	for i, m := range p.model.Members() {
 		session.members = append(session.members, m.ID)
 		if m.ID == current {

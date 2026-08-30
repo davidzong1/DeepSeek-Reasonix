@@ -57,6 +57,10 @@ type TurnControl interface {
 	SubmitHTTP(input string)
 	SubmitHTTPFormat(input, format string)
 	SubmitUserTurn(input, display string)
+	// SubmitUserTurnOrError is SubmitUserTurn with an explicit admission
+	// result; the team runtime's task-driving host uses it so a refused turn
+	// is an error, never a silent drop.
+	SubmitUserTurnOrError(input, display string) error
 	Send(input string)
 	SendWithRaw(input, raw string)
 	Run(ctx context.Context, input string) error

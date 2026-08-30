@@ -121,6 +121,51 @@ func TestRuntimeResumePersistsRunning(t *testing.T) {
 	}
 }
 
+// TestRuntimeResumeRefusesPersistFailure: the recovery path writes running to
+// the durable store BEFORE the re-submission — a refused save aborts the resume
+// before the backend is touched, so a crashed restart cannot half-launch an
+// agent that was never submitted (mirror of the Start persist gate).
+func TestRuntimeResumeRefusesPersistFailure(t *testing.T) {
+	rt, agents := newTestRuntime(t, nil)
+	rt.SetTaskStore(failingStore{})
+	task := team.Task{ID: "t1", Status: team.TaskStatusRunning, AssignedMember: "alpha"}
+	err := rt.Resume(context.Background(), task, team.Member{ID: "alpha"})
+	if err == nil {
+		t.Fatal("a refused save must surface")
+	}
+	if len(agents["alpha"].submitted) != 0 {
+		t.Fatalf("agent was submitted despite the refused save: %v", agents["alpha"].submitted)
+	}
+	// The rejected resume must not leave a reservation behind: the member is
+	// free for a fresh start, never wedged by the failed recovery attempt.
+	if member, busy := rt.byMember["alpha"]; busy {
+		t.Fatalf("member reservation leaked after refused resume (%q still holds the task)", member)
+	}
+}
+
+// TestRuntimeResumeRefusedSubmissionRollsBackToAssigned: a backend that refuses
+// the re-submitted turn must surface as a resume failure and leave the durable
+// task assigned — never a persisted "running" task that never ran again (the
+// Resume execution gate, mirror of the Start no-ghost contract). Running has no
+// re-assign edge, so the rollback lands on assigned and the next recovery can
+// retry rather than re-resume an undeliverable ghost.
+func TestRuntimeResumeRefusedSubmissionRollsBackToAssigned(t *testing.T) {
+	rt, store := newTestTaskBoard(t)
+	rt.agents = func(string) (AgentAPI, error) { return &refusingAgent{}, nil }
+	task := team.Task{ID: "t1", Status: team.TaskStatusRunning, AssignedMember: "alpha"}
+	err := rt.Resume(context.Background(), task, team.Member{ID: "alpha"})
+	if err == nil {
+		t.Fatal("a refused re-submit must surface as a resume error")
+	}
+	saved, loadErr := store.LoadTask(context.Background(), "t1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if saved.Status != team.TaskStatusAssigned {
+		t.Fatalf("saved status = %s, want assigned (rollback, never a ghost running)", saved.Status)
+	}
+}
+
 // failingStore rejects every write; it lets the persist-gate tests prove a
 // refused save aborts the state move.
 type failingStore struct{}

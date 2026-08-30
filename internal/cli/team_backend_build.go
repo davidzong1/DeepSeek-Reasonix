@@ -312,12 +312,38 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		if err != nil {
 			return nil, err
 		}
-		if err := bindMemberSession(ctrl, filepath.Join(ctrl.SessionDir(), b.SessionFile)); err != nil {
+		path := filepath.Join(ctrl.SessionDir(), b.SessionFile)
+		if err := bindMemberSession(ctrl, path); err != nil {
+			ctrl.Close()
+			return nil, err
+		}
+		// The member's own session must be writable by this controller alone
+		// (members never share the host's lease), so acquire its write-authority
+		// lease before the first submitted task (admission-6 gate).
+		wl, err := bindMemberSessionAuthority(ctrl, path, true)
+		if err != nil {
 			ctrl.Close()
 			return nil, err
 		}
 		ctrl.EnableInteractiveApproval()
-		return ctrl, nil
+		return memberLeasedBackend{SessionAPI: ctrl, stop: wl}, nil
+	}
+}
+
+// memberLeasedBackend wraps one member's controller with its session lease so
+// retiring the backend (release/evict/rebuild) releases the member's lease.
+type memberLeasedBackend struct {
+	control.SessionAPI
+	stop *memberWriteLease
+}
+
+// Close stops the controller first, then releases the member's session lease —
+// the same order the ambient CLI retires its own controller, so no in-flight
+// save races the release. The history becomes stealable only on retirement.
+func (b memberLeasedBackend) Close() {
+	b.SessionAPI.Close()
+	if b.stop != nil {
+		b.stop.Close()
 	}
 }
 
@@ -341,6 +367,48 @@ func teamRoleSkillPrompt(root string, leader bool) string {
 		}
 	}
 	return ""
+}
+
+// memberWriteLease is one member's session write-authority ownership. The
+// ambient CLI keeps the chat's own session under its lease keeper
+// (rebindSessionLease + BindControllerAuthority), so production writes require a
+// live path-bound authority. A member backend persisted its own session file,
+// so it must hold its own lease for that path — a controller can never write
+// another runtime's session, not even the host's. Released when the backend
+// closes, so a member's history is stealable the moment it is retired.
+type memberWriteLease struct {
+	leases *control.SessionLeaseKeeper
+	strict bool
+}
+
+// bindMemberSessionAuthority acquires the member's own session lease and binds
+// the controller's write authority to it. Originating the fix for the admission
+// 6 refusal: a persisted member session with no bound authority is refused by
+// the write-authority gate at the first submitted task. strict=false keeps
+// headless/test hosts (no persistence, or a seam without a real controller)
+// on the pre-fix permissive path.
+func bindMemberSessionAuthority(ctrl *control.Controller, path string, strict bool) (*memberWriteLease, error) {
+	wl := &memberWriteLease{leases: control.NewSessionLeaseKeeper(), strict: strict}
+	if !strict {
+		return wl, nil
+	}
+	if err := wl.leases.Rebind(path); err != nil {
+		wl.leases.Release()
+		return nil, fmt.Errorf("member session lease: %w", err)
+	}
+	if err := wl.leases.BindControllerAuthority(ctrl); err != nil {
+		wl.leases.Release()
+		return nil, fmt.Errorf("member session write authority: %w", err)
+	}
+	return wl, nil
+}
+
+// Close releases the member's session lease when its backend closes.
+func (w *memberWriteLease) Close() {
+	if w == nil || w.leases == nil {
+		return
+	}
+	w.leases.Release()
 }
 
 // bindMemberSession points a freshly built backend at the member's own session

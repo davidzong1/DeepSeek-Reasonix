@@ -94,29 +94,51 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 	if err := team.TransitionTask(task.Status, team.TaskStatusRunning); err != nil {
 		return err
 	}
+	// The member reservation (§P1 race review) is taken before any assembly
+	// or submit, so a second Start on the same member fails here instead of
+	// double-driving the backend; rollback releases it on every failure path.
 	r.mu.Lock()
 	if _, busy := r.byMember[member.ID]; busy {
 		r.mu.Unlock()
 		return ErrMemberBusy
 	}
+	r.byMember[member.ID] = task.ID
 	r.mu.Unlock()
+	rollback := func() {
+		r.mu.Lock()
+		if r.byMember[member.ID] == task.ID {
+			delete(r.byMember, member.ID)
+		}
+		r.mu.Unlock()
+	}
 	api, err := r.agents(member.ID)
 	if err != nil {
+		rollback()
 		return err
 	}
 	task.Status = team.TaskStatusRunning
 	task.AssignedMember = member.ID
 	injected := r.inject(task)
+	// Write-before-commit holds for the store first; the submit is then the
+	// execution gate (§P1): a refused turn rolls running back to assigned
+	// durably, never a persisted ghost.
 	if r.store != nil {
 		if err := r.store.SaveTask(ctx, task); err != nil {
+			rollback()
 			return err
 		}
 	}
-	api.SubmitUserTurn(injected.Text, task.Desc)
+	if err := api.SubmitUserTurnOrError(injected.Text, task.Desc); err != nil {
+		if r.store != nil {
+			task.Status = team.TaskStatusAssigned
+			_ = r.store.SaveTask(ctx, task) // best-effort rollback; the refusal itself is the returned error
+		}
+		rollback()
+		return err
+	}
 	r.record(task, "running", "")
 	r.mu.Lock()
 	r.live[task.ID] = &runEntry{task: task, member: member.ID, api: api}
-	r.byMember[member.ID] = task.ID
 	r.mu.Unlock()
 	return nil
 }
@@ -156,23 +178,53 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 	if err := team.TransitionTask(task.Status, team.TaskStatusRunning); err != nil {
 		return err
 	}
+	// Same member reservation as Start (§P1): the recovery path must not
+	// double-drive a backend that already holds a live task.
+	r.mu.Lock()
+	if _, busy := r.byMember[member.ID]; busy {
+		r.mu.Unlock()
+		return ErrMemberBusy
+	}
+	r.byMember[member.ID] = task.ID
+	r.mu.Unlock()
+	rollback := func() {
+		r.mu.Lock()
+		if r.byMember[member.ID] == task.ID {
+			delete(r.byMember, member.ID)
+		}
+		r.mu.Unlock()
+	}
 	api, err := r.agents(member.ID)
 	if err != nil {
+		rollback()
 		return err
 	}
 	task.Status = team.TaskStatusRunning
 	task.AssignedMember = member.ID
 	injected := r.inject(task)
+	// Write-before-commit matches Start: the durable store records running
+	// before the backend is touched, so a refused save aborts the resume before
+	// an agent can half-launch.
 	if r.store != nil {
 		if err := r.store.SaveTask(ctx, task); err != nil {
+			rollback()
 			return err
 		}
 	}
-	api.SubmitUserTurn("[resumed]\n"+injected.Text, "[resumed] "+task.Desc)
+	// Same execution gate as Start: a refused resume must never persist a
+	// running task that never ran; the rollback lands on assigned, so it stays
+	// re-dispatchable instead of a ghost a third restart re-resumes.
+	if err := api.SubmitUserTurnOrError("[resumed]\n"+injected.Text, "[resumed] "+task.Desc); err != nil {
+		if r.store != nil {
+			task.Status = team.TaskStatusAssigned
+			_ = r.store.SaveTask(ctx, task) // best-effort rollback; the refusal itself is the returned error
+		}
+		rollback()
+		return err
+	}
 	r.record(task, "running", "resumed")
 	r.mu.Lock()
 	r.live[task.ID] = &runEntry{task: task, member: member.ID, api: api}
-	r.byMember[member.ID] = task.ID
 	r.mu.Unlock()
 	return nil
 }
