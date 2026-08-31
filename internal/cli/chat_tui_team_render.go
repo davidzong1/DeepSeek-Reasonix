@@ -551,26 +551,14 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		b.WriteString(padColumn(l, col) + dim("│ ") + r + "\n")
 	}
 	hint := "Type below to message this member · Ctrl+Up/Down switch member"
-	if p.sessionHasPendingApproval() {
-		hint += " · Ctrl+A approve · Ctrl+X deny"
+	if member, _, ok := p.pendingApprovalMember(); ok {
+		// Named, because the keys answer whichever member is waiting rather than a
+		// cursor the user moved: an unnamed hint would not say whose approval.
+		hint += " · Ctrl+A approve " + member + " · Ctrl+X deny"
 	}
 	hint += " · Esc hide panel · " + teamExitHint
 	b.WriteString(dim(hint))
 	return choicePanelStyle.Width(w).Render(b.String())
-}
-
-// sessionHasPendingApproval reports whether any non-current member's inbox
-// holds a pending approval — the condition that arms the Ctrl+A/Ctrl+X hint.
-func (p *teamPicker) sessionHasPendingApproval() bool {
-	if p.session.prompts == nil {
-		return false
-	}
-	for id, pr := range p.session.prompts {
-		if id != p.session.current && pr.kind == promptApproval {
-			return true
-		}
-	}
-	return false
 }
 
 // memberPromptMarker is the roster badge for a non-current member's pending

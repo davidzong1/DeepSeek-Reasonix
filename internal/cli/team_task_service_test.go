@@ -70,7 +70,7 @@ func TestTeamTaskServiceAssignAndReport(t *testing.T) {
 	if memberService != leaderService {
 		t.Fatalf("same team should reuse task service: got %p want %p", memberService, leaderService)
 	}
-	if _, err := memberService.report("coder", "implemented and tested"); err != nil {
+	if _, err := memberService.report("coder", "", "implemented and tested"); err != nil {
 		t.Fatal(err)
 	}
 	task, err = board.LoadTask(context.Background(), assignment.TaskID)
@@ -148,8 +148,8 @@ func TestTeamTaskServiceConcurrentLeaderAssignMemberReport(t *testing.T) {
 	// the report path must not collide with the leader's live-task writes.
 	var rwg sync.WaitGroup
 	rwg.Add(2)
-	go func() { defer rwg.Done(); _, _ = svc.report("coder", "built green") }()
-	go func() { defer rwg.Done(); _, _ = svc.report("tester", "verified green") }()
+	go func() { defer rwg.Done(); _, _ = svc.report("coder", "", "built green") }()
+	go func() { defer rwg.Done(); _, _ = svc.report("tester", "", "verified green") }()
 	rwg.Wait()
 
 	for i, id := range []string{"coder", "tester"} {
@@ -208,7 +208,7 @@ func TestTeamTaskServiceReportWakesLeader(t *testing.T) {
 	}
 
 	memberService := service.forTeam("alpha")
-	if _, err := memberService.report("coder", "done"); err != nil {
+	if _, err := memberService.report("coder", "", "done"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,7 +262,7 @@ func TestTeamTaskServiceReportWakesLeaderByNameDiffers(t *testing.T) {
 	if got := wire.consumeWakeups("boss"); got != nil {
 		t.Fatalf("first cursor read must be quiet, got %v", got)
 	}
-	if _, err := service.forTeam("alpha").report("coder", "done"); err != nil {
+	if _, err := service.forTeam("alpha").report("coder", "", "done"); err != nil {
 		t.Fatal(err)
 	}
 	reasons := wire.consumeWakeups("boss")

@@ -177,9 +177,11 @@ type refusingAgent struct{ stubAgent }
 func (s *refusingAgent) SubmitUserTurnOrError(input, display string) error { return errors.New("busy") }
 
 // TestRuntimeStartRefusedSubmissionNoGhostRunning pins §P1's core: a backend
-// that refuses the submitted turn must surface as a start failure and leave
-// the durable task assigned — never a persisted "running" task that never
-// executed (the SaveTask-before-submit two-frame drift).
+// that refuses the submitted turn must surface as a start failure and settle the
+// durable task back on assigned — never a persisted "running" task that never
+// executed (the SaveTask-before-submit two-frame drift). It gets there through
+// running -> failed -> assigned, both legal edges, so the task stays
+// re-dispatchable without the store ever holding a state no path can produce.
 func TestRuntimeStartRefusedSubmissionNoGhostRunning(t *testing.T) {
 	rt, store := newTestTaskBoard(t)
 	rt.agents = func(string) (AgentAPI, error) { return &refusingAgent{}, nil }
@@ -192,7 +194,45 @@ func TestRuntimeStartRefusedSubmissionNoGhostRunning(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	if saved.Status != team.TaskStatusAssigned {
-		t.Fatalf("saved status = %s, want assigned (rollback, never a ghost running)", saved.Status)
+		t.Fatalf("saved status = %s, want assigned (settled via failed, never a ghost running)", saved.Status)
+	}
+}
+
+// TestRuntimeConcurrentCancelCompleteOneWinner pins the terminal-claim lock: a
+// leader cancelling while its member reports must resolve to exactly one
+// terminal state. Reading, checking and writing entry.task.Status outside the
+// lock let both callers pass the transition check — and raced on the field.
+// Must pass under -race.
+func TestRuntimeConcurrentCancelCompleteOneWinner(t *testing.T) {
+	rt, store := newTestTaskBoard(t)
+	if err := rt.Start(context.Background(), team.Task{ID: "t1", Status: team.TaskStatusAssigned}, team.Member{ID: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs[0] = rt.Complete("t1", "done") }()
+	go func() { defer wg.Done(); errs[1] = rt.Cancel("t1") }()
+	wg.Wait()
+	won := 0
+	for _, err := range errs {
+		if err == nil {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Fatalf("exactly one terminal move must win, got %d (errs=%v)", won, errs)
+	}
+	saved, err := store.LoadTask(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != team.TaskStatusReported && saved.Status != team.TaskStatusCanceled {
+		t.Fatalf("final status = %s, want one terminal state", saved.Status)
+	}
+	// The winner released the member: a fresh task can start on alpha again.
+	if err := rt.Start(context.Background(), team.Task{ID: "t2", Status: team.TaskStatusAssigned}, team.Member{ID: "alpha"}); err != nil {
+		t.Fatalf("member must be free after the terminal move: %v", err)
 	}
 }
 

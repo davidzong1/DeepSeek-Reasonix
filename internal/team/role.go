@@ -61,16 +61,20 @@ func (s *TeamStore) SetMemberRole(teamName, memberID string, role RoleID) error 
 // AGENT_OPTIMIZATION_TECHNICAL_ROUTE.md P1.2): tool sequencing, checkpoint
 // ack, file locks, formal report, sleep, task-vs-capability distinction and
 // error handling. They are static text — no member or business state ever
-// interpolates into them — so the assembled prompt stays byte-stable across
-// turns for cache-first; callers append them to the turn tail, never the
-// stable prefix.
+// interpolates into them — so a caller may fold them into the cache-stable
+// prefix once at assembly and the prefix still stays byte-stable across turns.
 const (
 	// leaderCollaborationDiscipline applies to slots whose Leader property is
-	// set: inspect, select, assign, then track durable task state.
+	// set: split, assign, then track durable task state. Execution is a
+	// member's job — an unbounded "simple tasks may stay with the leader"
+	// escape hatch let the solo-coding base prompt win and the leader did the
+	// work itself, so the boundary is drawn at write access instead.
 	leaderCollaborationDiscipline = `团队协作纪律（leader）：
-1. 派单前先 leader_list_team 查看成员，再用 leader_select_task_members 选择参与成员；不要把 leader 自身记录当作可分配对象。
-2. 复杂任务必须使用 leader_assign_task_to_relevant 或 leader_assign_subtask 创建持久化子任务；简单任务可由 leader 自行完成。
-3. 分配后用 leader_check_member_status 追踪任务状态，不轮询终端；收到回报后再整合并收口。
+1. 你的职责是拆分、派单、监督进度、统筹授权与对齐颗粒度，不是亲自实现；执行由 member 承担。
+2. 派单前先 leader_list_team 查看成员，再用 leader_select_task_members 选择参与成员；不要把 leader 自身记录当作可分配对象。
+3. 收到任务后先拆成可独立交付的子任务，再用 leader_assign_task_to_relevant 或 leader_assign_subtask 逐个建立持久化子任务；没有合适成员时先 leader_add_member，不要改为自己动手。
+4. 只有拆分与验收所需的只读查看（读文件、查状态）可以自己做；写文件、改代码、跑实现命令必须派给 member。
+5. 分配后用 leader_check_member_status 追踪任务状态，不轮询终端；收到回报后再整合并收口。
 
 `
 	// memberCollaborationDiscipline applies to regular slots: read the durable

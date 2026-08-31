@@ -182,6 +182,22 @@ func TestSystemPromptForRoleCacheStable(t *testing.T) {
 	}
 }
 
+// TestLeaderDisciplineDelegatesExecution pins the boundary a size-based escape
+// hatch ("simple tasks may stay with the leader") kept losing to the base
+// prompt's solo-coding instinct: the leader supervises and dispatches, and the
+// line is drawn at write access, not at how small the task looks.
+func TestLeaderDisciplineDelegatesExecution(t *testing.T) {
+	leader := SystemPromptForRole("alpha", "m1", "lead", true)
+	if strings.Contains(leader, "简单任务可由 leader 自行完成") {
+		t.Fatalf("the unbounded self-execution escape hatch must not return:\n%s", leader)
+	}
+	for _, want := range []string{"不是亲自实现", "执行由 member 承担", "leader_add_member", "必须派给 member"} {
+		if !strings.Contains(leader, want) {
+			t.Fatalf("leader discipline missing %q:\n%s", want, leader)
+		}
+	}
+}
+
 func TestSystemPromptForRoleCollaborationDiscipline(t *testing.T) {
 	leader := SystemPromptForRole("alpha", "m1", "lead", true)
 	for _, want := range []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status"} {

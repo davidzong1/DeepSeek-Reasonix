@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -82,6 +83,8 @@ func (r *Runtime) SetTaskStore(store team.TaskStore) {
 // AddWakeup registers a leader-wakeup delivery, called in registration
 // order after a task reaches a terminal or attention state.
 func (r *Runtime) AddWakeup(fn WakeFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.wake = append(r.wake, fn)
 }
 
@@ -94,9 +97,8 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 	if err := team.TransitionTask(task.Status, team.TaskStatusRunning); err != nil {
 		return err
 	}
-	// The member reservation (§P1 race review) is taken before any assembly
-	// or submit, so a second Start on the same member fails here instead of
-	// double-driving the backend; rollback releases it on every failure path.
+	// The member reservation is taken before any assembly or submit, so a second
+	// Start on the same member fails here instead of double-driving the backend.
 	r.mu.Lock()
 	if _, busy := r.byMember[member.ID]; busy {
 		r.mu.Unlock()
@@ -120,8 +122,8 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 	task.AssignedMember = member.ID
 	injected := r.inject(task)
 	// Write-before-commit holds for the store first; the submit is then the
-	// execution gate (§P1): a refused turn rolls running back to assigned
-	// durably, never a persisted ghost.
+	// execution gate (§P1): a refused turn lands on failed durably and wakes the
+	// leader, never a persisted ghost the board reads as "working".
 	if r.store != nil {
 		if err := r.store.SaveTask(ctx, task); err != nil {
 			rollback()
@@ -129,10 +131,7 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 		}
 	}
 	if err := api.SubmitUserTurnOrError(injected.Text, task.Desc); err != nil {
-		if r.store != nil {
-			task.Status = team.TaskStatusAssigned
-			_ = r.store.SaveTask(ctx, task) // best-effort rollback; the refusal itself is the returned error
-		}
+		r.failDispatch(ctx, task, err.Error())
 		rollback()
 		return err
 	}
@@ -148,26 +147,72 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 // cancel, and the leader is woken. Unknown tasks are an error, not a silent
 // no-op.
 func (r *Runtime) Cancel(taskID team.TaskID) error {
-	r.mu.Lock()
-	entry, ok := r.live[taskID]
-	r.mu.Unlock()
-	if !ok {
-		return ErrTaskUnknown
-	}
-	if err := team.TransitionTask(entry.task.Status, team.TaskStatusCanceled); err != nil {
+	entry, task, restore, err := r.claimTerminal(taskID, team.TaskStatusCanceled)
+	if err != nil {
 		return err
 	}
-	entry.task.Status = team.TaskStatusCanceled
 	if r.store != nil {
-		if err := r.store.SaveTask(context.Background(), entry.task); err != nil {
+		if err := r.store.SaveTask(context.Background(), task); err != nil {
+			restore()
 			return err
 		}
 	}
 	entry.api.Cancel()
-	r.record(entry.task, "canceled", "")
+	r.record(task, "canceled", "")
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " canceled")
 	return nil
+}
+
+// claimTerminal moves one live task to a terminal status while holding the
+// registry lock, and returns the snapshot to persist. The lock is what makes
+// "exactly one of cancel/report wins" real: reading entry.task.Status, checking
+// the transition and writing it back outside the lock let two callers both pass
+// the check and both write a terminal state (plus a data race on entry.task).
+// restore puts the in-memory status back for a failed durable write, or a retry
+// would be refused by its own half-applied move.
+func (r *Runtime) claimTerminal(taskID team.TaskID, next team.TaskStatus) (*runEntry, team.Task, func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.live[taskID]
+	if !ok {
+		return nil, team.Task{}, nil, ErrTaskUnknown
+	}
+	previous := entry.task.Status
+	if err := team.TransitionTask(previous, next); err != nil {
+		return nil, team.Task{}, nil, err
+	}
+	entry.task.Status = next
+	return entry, entry.task, func() {
+		r.mu.Lock()
+		entry.task.Status = previous
+		r.mu.Unlock()
+	}, nil
+}
+
+// failDispatch settles a task whose backend refused the submitted turn, using
+// the two legal edges instead of one illegal write: running -> failed marks the
+// delivery that never happened (and is what a crash mid-settle lands on, never a
+// ghost running), then failed -> assigned takes the one re-assign edge so the
+// task stays live and another member can pick it up. Writing assigned directly
+// skipped both edges and, worse, said nothing — the leader kept reading the
+// member as "working" on a turn that was never delivered.
+func (r *Runtime) failDispatch(ctx context.Context, task team.Task, reason string) {
+	if err := team.TransitionTask(task.Status, team.TaskStatusFailed); err != nil {
+		return
+	}
+	task.Status = team.TaskStatusFailed
+	if r.store != nil {
+		_ = r.store.SaveTask(ctx, task) // best-effort: the refusal itself is the returned error
+	}
+	r.record(task, "failed", reason)
+	if err := team.TransitionTask(task.Status, team.TaskStatusAssigned); err == nil {
+		task.Status = team.TaskStatusAssigned
+		if r.store != nil {
+			_ = r.store.SaveTask(ctx, task)
+		}
+	}
+	r.wakeAll("task " + string(task.ID) + " was refused by its member (" + reason + "); reassign or retry")
 }
 
 // Resume re-drives a task that was interrupted (scheduler.Executor, §4
@@ -211,14 +256,11 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 			return err
 		}
 	}
-	// Same execution gate as Start: a refused resume must never persist a
-	// running task that never ran; the rollback lands on assigned, so it stays
-	// re-dispatchable instead of a ghost a third restart re-resumes.
+	// Same execution gate as Start: a refused resume must never persist a running
+	// task that never ran, so it settles back to assigned and wakes the leader
+	// instead of leaving a ghost a third restart re-resumes.
 	if err := api.SubmitUserTurnOrError("[resumed]\n"+injected.Text, "[resumed] "+task.Desc); err != nil {
-		if r.store != nil {
-			task.Status = team.TaskStatusAssigned
-			_ = r.store.SaveTask(ctx, task) // best-effort rollback; the refusal itself is the returned error
-		}
+		r.failDispatch(ctx, task, err.Error())
 		rollback()
 		return err
 	}
@@ -235,22 +277,17 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 // report path's single migration point — nothing else may flip a task to
 // reported.
 func (r *Runtime) Complete(taskID team.TaskID, summary string) error {
-	r.mu.Lock()
-	entry, ok := r.live[taskID]
-	r.mu.Unlock()
-	if !ok {
-		return ErrTaskUnknown
-	}
-	if err := team.TransitionTask(entry.task.Status, team.TaskStatusReported); err != nil {
+	entry, task, restore, err := r.claimTerminal(taskID, team.TaskStatusReported)
+	if err != nil {
 		return err
 	}
-	entry.task.Status = team.TaskStatusReported
 	if r.store != nil {
-		if err := r.store.SaveTask(context.Background(), entry.task); err != nil {
+		if err := r.store.SaveTask(context.Background(), task); err != nil {
+			restore()
 			return err
 		}
 	}
-	r.record(entry.task, "reported", summary)
+	r.record(task, "reported", summary)
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " reported")
 	return nil
@@ -305,6 +342,17 @@ func (r *Runtime) record(task team.Task, status, detail string) {
 	})
 }
 
+// LiveTask reports whether the runtime is currently driving taskID. The
+// registry entry is written only after the member's backend accepted the turn,
+// so this is what separates "the member is working" from "the board has a row" —
+// a refused, orphaned or pre-restart task is durable but driven by nothing.
+func (r *Runtime) LiveTask(taskID team.TaskID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.live[taskID]
+	return ok
+}
+
 func (r *Runtime) drop(taskID team.TaskID, member string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -315,7 +363,10 @@ func (r *Runtime) drop(taskID team.TaskID, member string) {
 }
 
 func (r *Runtime) wakeAll(reason string) {
-	for _, fn := range r.wake {
+	r.mu.Lock()
+	wake := slices.Clone(r.wake)
+	r.mu.Unlock()
+	for _, fn := range wake {
 		_ = fn(reason) // wakeup failure never wedges completion; boardWake stays durable
 	}
 }

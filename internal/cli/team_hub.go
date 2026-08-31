@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -21,6 +22,27 @@ type teamHub struct {
 	store    *team.TeamStore
 	backends *teamBackends
 	teamName string
+}
+
+// setTeam re-points the hub at the team the session is now on. The name is part
+// of every routing decision, so a hub frozen at construction would resolve a
+// member against the team the overlay opened with, not the one it is showing.
+func (h *teamHub) setTeam(teamName string) {
+	if h == nil {
+		return
+	}
+	if name := strings.TrimSpace(teamName); name != "" {
+		h.mu.Lock()
+		h.teamName = name
+		h.mu.Unlock()
+	}
+}
+
+// team is the hub's current team name.
+func (h *teamHub) team() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.teamName
 }
 
 // newTeamHub returns a routing hub over the member-backend registry. The
@@ -53,7 +75,7 @@ func (h *teamHub) Submit(memberID, text string) error {
 	if strings.TrimSpace(text) == "" {
 		return errors.New("text is required")
 	}
-	backend, err := h.Target(h.teamName, memberID)
+	backend, err := h.Target(h.team(), memberID)
 	if err != nil {
 		return err
 	}
@@ -91,16 +113,35 @@ func (h *teamHub) submitFor() func(control.SessionAPI, string) error {
 	return h.submit
 }
 
+// assembled resolves a member's ALREADY-running backend. A decision must never
+// assemble one: the pending prompt lives in a specific controller's run
+// goroutine, so building a fresh controller would spin up subprocesses and a
+// session lease only to answer an id that does not exist there — and report
+// success. A retired or never-started member is an error the caller can show.
+func (h *teamHub) assembled(teamName, memberID string) (control.SessionAPI, error) {
+	if h == nil {
+		return nil, errors.New("team hub unavailable")
+	}
+	if strings.TrimSpace(memberID) == "" || strings.TrimSpace(teamName) == "" {
+		return nil, errors.New("member_id and team name are required")
+	}
+	if h.backends == nil {
+		return nil, errors.New("team hub: member backends unavailable")
+	}
+	backend, ok := h.backends.bound(teamName, memberID)
+	if !ok {
+		return nil, fmt.Errorf("member %q has no live session, so its prompt is gone — switch to it to see the current state", memberID)
+	}
+	return backend, nil
+}
+
 // Approve answers a pending approval/ask on a named member's backend without
 // switching the window: the decision routes to whichever backend holds the
 // blocked prompt (the controller's run goroutine unblocks there). The bound
 // window's own pendingApproval/chooser are never touched — a background
 // member's prompt can be resolved while another member is bound.
 func (h *teamHub) Approve(teamName, memberID, id string, allow, session, persist bool) error {
-	if h == nil {
-		return errors.New("team hub unavailable")
-	}
-	backend, err := h.Target(teamName, memberID)
+	backend, err := h.assembled(teamName, memberID)
 	if err != nil {
 		return err
 	}
@@ -112,10 +153,7 @@ func (h *teamHub) Approve(teamName, memberID, id string, allow, session, persist
 // Approve: the decision goes to the member's own controller, never the bound
 // window's.
 func (h *teamHub) Answer(teamName, memberID, id string, answers []event.AskAnswer) error {
-	if h == nil {
-		return errors.New("team hub unavailable")
-	}
-	backend, err := h.Target(teamName, memberID)
+	backend, err := h.assembled(teamName, memberID)
 	if err != nil {
 		return err
 	}

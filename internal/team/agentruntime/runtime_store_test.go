@@ -143,13 +143,13 @@ func TestRuntimeResumeRefusesPersistFailure(t *testing.T) {
 	}
 }
 
-// TestRuntimeResumeRefusedSubmissionRollsBackToAssigned: a backend that refuses
-// the re-submitted turn must surface as a resume failure and leave the durable
-// task assigned — never a persisted "running" task that never ran again (the
-// Resume execution gate, mirror of the Start no-ghost contract). Running has no
-// re-assign edge, so the rollback lands on assigned and the next recovery can
-// retry rather than re-resume an undeliverable ghost.
-func TestRuntimeResumeRefusedSubmissionRollsBackToAssigned(t *testing.T) {
+// TestRuntimeResumeRefusedSubmissionSettlesAssigned: a backend that refuses the
+// re-submitted turn must surface as a resume failure and settle the durable task
+// back on assigned — never a persisted "running" task that never ran again (the
+// Resume execution gate, mirror of the Start no-ghost contract). The path is
+// running -> failed -> assigned: both edges legal, and the task stays
+// re-dispatchable rather than a ghost a third restart re-resumes.
+func TestRuntimeResumeRefusedSubmissionSettlesAssigned(t *testing.T) {
 	rt, store := newTestTaskBoard(t)
 	rt.agents = func(string) (AgentAPI, error) { return &refusingAgent{}, nil }
 	task := team.Task{ID: "t1", Status: team.TaskStatusRunning, AssignedMember: "alpha"}
@@ -162,7 +162,7 @@ func TestRuntimeResumeRefusedSubmissionRollsBackToAssigned(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	if saved.Status != team.TaskStatusAssigned {
-		t.Fatalf("saved status = %s, want assigned (rollback, never a ghost running)", saved.Status)
+		t.Fatalf("saved status = %s, want assigned (settled via failed, never a ghost running)", saved.Status)
 	}
 }
 

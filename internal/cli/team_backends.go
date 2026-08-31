@@ -61,6 +61,35 @@ type teamBackends struct {
 	// whose backend is already being assembled waits on that same call instead
 	// of assembling a duplicate. The call is removed once its build settles.
 	building map[string]*buildCall
+	// inboxWire is the durable board every member writes through. Its lifetime is
+	// this registry's, not an overlay's: closing it per overlay left the task
+	// service behind these backends reading a closed database.
+	inboxWire *teamInboxWire
+}
+
+// inbox returns the shared board wire, or nil when none was installed. Nil
+// receiver included: the seam is absent in tests and non-interactive hosts.
+func (r *teamBackends) inbox() *teamInboxWire {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inboxWire
+}
+
+// setInbox installs the shared board wire once. A nil receiver drops it: with no
+// registry there is no task service to outlive the overlay, so the caller keeps
+// its own per-overlay wire.
+func (r *teamBackends) setInbox(w *teamInboxWire) {
+	if r == nil || w == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.inboxWire == nil {
+		r.inboxWire = w
+	}
 }
 
 // buildCall is one in-flight assembly: the result the leading bind produces,
@@ -342,4 +371,8 @@ func (r *teamBackends) closeAll() {
 	for key := range r.building {
 		r.abandon(key)
 	}
+	// The board goes with them: every holder — the task service and each member
+	// backend's tools — has just been released.
+	r.inboxWire.close()
+	r.inboxWire = nil
 }

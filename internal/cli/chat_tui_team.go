@@ -157,14 +157,19 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			sessions, err = team.NewTeamSessionStore(cwd)
 		}
 		if err == nil {
-			if m.teamPick != nil && m.teamPick.board != nil {
-				m.teamPick.board.close()
-			}
-			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions,
-				board: openTeamInbox(cwd)}
+			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
 			m.teamPick = p
 			m.bindTeamBackends(store)
 			p.backends = m.teamBackends
+			// One board per registry, not per overlay: its holders outlive the
+			// overlay. Only the per-member inbox cache is overlay-scoped, because
+			// each inbox pins that member's BindRecord generation.
+			if p.board = m.teamBackends.inbox(); p.board == nil {
+				p.board = openTeamInbox(cwd)
+				m.teamBackends.setInbox(p.board)
+			} else {
+				p.board.resetInboxes()
+			}
 			if m.ctrl != nil {
 				p.sessionDir = m.ctrl.SessionDir()
 			}
@@ -456,12 +461,6 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, cmd
 }
-
-// closeTeamOverlay is the overlay's teardown hook. Member backends deliberately
-// survive it: they hold each member's session lease and any in-flight turn, and
-// reopening [ TEAM ] resumes them instead of rebuilding. They are retired by the
-// cap (least recently bound) or by a destructive operation.
-func (p *teamPicker) closeTeamOverlay() {}
 
 // teamExitAllKey exits every team session from the roster; teamExitAllHint
 // names it in the help lines, so key and label cannot drift apart. It is not a

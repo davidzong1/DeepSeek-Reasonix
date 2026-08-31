@@ -34,18 +34,6 @@ type teamTaskService struct {
 	onWake []agentruntime.WakeFunc
 }
 
-// setLeaderWakeup installs the delivery function the runtime must call when a
-// task reaches a terminal/attention state. It replaces the no-op default and
-// is safe to call after the service is shared across member backends.
-func (s *teamTaskService) setLeaderWakeup(fn agentruntime.WakeFunc) {
-	if s == nil || fn == nil {
-		return
-	}
-	s.wakeMu.Lock()
-	defer s.wakeMu.Unlock()
-	s.onWake = []agentruntime.WakeFunc{fn}
-}
-
 // wakeLeader delivers one leader wakeup into the durable board wake stream.
 // The stamp is resolved per wake to the team's current leader member id (see
 // leaderIdentity) — the identity the TUI's consumeWakeups(leader) cursor
@@ -154,16 +142,43 @@ func (s *teamTaskService) fleet() ([]team.Member, error) {
 		if t.Name != s.teamName {
 			continue
 		}
+		busy := s.busyMembers()
 		fleet := make([]team.Member, 0, len(t.Template))
 		for _, slot := range t.Template {
 			if slot.Status == team.MemberStatusArchived || slot.Status == team.MemberStatusDisabled || slot.IsLeader() {
 				continue
 			}
-			fleet = append(fleet, team.Member{ID: slot.MemberID, Role: slot.Role, State: team.MemberStateIdle})
+			member := team.Member{ID: slot.MemberID, Role: slot.Role, State: team.MemberStateIdle}
+			if ref, working := busy[slot.MemberID]; working {
+				member.State, member.TaskRef = team.MemberStateWorking, ref
+			}
+			fleet = append(fleet, member)
 		}
 		return fleet, nil
 	}
 	return nil, team.ErrTeamNotFound
+}
+
+// busyMembers maps each member the runtime is actually driving to its task. The
+// fleet reported every member as idle with no TaskRef, so the scheduler's
+// idle-before-busy branch never ran and a role could be dispatched onto the one
+// member already working. Only a driven task counts as busy — a queued row is
+// not work in progress, the same distinction memberTaskState draws.
+func (s *teamTaskService) busyMembers() map[string]team.TaskID {
+	busy := map[string]team.TaskID{}
+	if s == nil || s.board == nil {
+		return busy
+	}
+	tasks, err := s.board.LoadLiveTasks(context.Background())
+	if err != nil {
+		return busy
+	}
+	for _, task := range tasks {
+		if s.driving(task.ID) {
+			busy[task.AssignedMember] = task.ID
+		}
+	}
+	return busy
 }
 
 func (s *teamTaskService) listTeam() (string, error) {
@@ -232,6 +247,16 @@ func (s *teamTaskService) assignSubtask(ctx context.Context, memberID, subtask, 
 	if binding.Leader {
 		return teamscheduler.Assignment{}, fmt.Errorf("member %q is the leader and cannot receive a subtask", memberID)
 	}
+	// pick() only honours the requested member when it is in the fleet, so an
+	// archived or disabled target would silently start the work on a same-role
+	// sibling. Refuse before anything is written.
+	fleet, err := s.fleet()
+	if err != nil {
+		return teamscheduler.Assignment{}, err
+	}
+	if !fleetContains(fleet, memberID) {
+		return teamscheduler.Assignment{}, fmt.Errorf("member %q is not an assignable member of team %q (archived, disabled, or the leader)", memberID, s.teamName)
+	}
 	id := team.TaskID(fmt.Sprintf("%s-%d-%d", s.teamName, time.Now().UnixNano(), s.seq.Add(1)))
 	task := team.Task{ID: id, RequireRole: binding.Role, Desc: subtask, ContextRef: strings.TrimSpace(contextText), Status: team.TaskStatusCreated, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), AssignedMember: memberID}
 	if err := team.TransitionTask(task.Status, team.TaskStatusAssigned); err != nil {
@@ -241,15 +266,23 @@ func (s *teamTaskService) assignSubtask(ctx context.Context, memberID, subtask, 
 	if err := s.board.SaveTask(ctx, task); err != nil {
 		return teamscheduler.Assignment{}, err
 	}
-	fleet, err := s.fleet()
-	if err != nil {
-		return teamscheduler.Assignment{}, err
-	}
 	assignment, err := s.scheduler.Assign(task, fleet)
 	if err != nil {
+		// The row stays live on purpose: assigned is re-dispatchable. The defect was
+		// the reporting, not the state — memberTaskState renders a row nothing
+		// drives as queued, never as a member "working".
 		return teamscheduler.Assignment{}, err
 	}
 	return assignment, nil
+}
+
+func fleetContains(fleet []team.Member, memberID string) bool {
+	for _, member := range fleet {
+		if member.ID == memberID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *teamTaskService) memberTask(memberID string) (string, error) {
@@ -284,9 +317,9 @@ func (s *teamTaskService) checkStatus(memberID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	taskByMember := map[string]team.Task{}
+	taskByMember := map[string][]team.Task{}
 	for _, task := range tasks {
-		taskByMember[task.AssignedMember] = task
+		taskByMember[task.AssignedMember] = append(taskByMember[task.AssignedMember], task)
 	}
 	var lines []string
 	for _, t := range doc.Teams {
@@ -298,8 +331,12 @@ func (s *teamTaskService) checkStatus(memberID string) (string, error) {
 				continue
 			}
 			state := "idle"
-			if task, ok := taskByMember[slot.MemberID]; ok {
-				state = fmt.Sprintf("working task=%s status=%s", task.ID, task.Status)
+			if owned := taskByMember[slot.MemberID]; len(owned) > 0 {
+				states := make([]string, 0, len(owned))
+				for _, task := range owned {
+					states = append(states, memberTaskState(task, s.driving(task.ID)))
+				}
+				state = strings.Join(states, "; ")
 			}
 			role := string(slot.Role)
 			if role == "" {
@@ -312,7 +349,34 @@ func (s *teamTaskService) checkStatus(memberID string) (string, error) {
 	return "", team.ErrTeamNotFound
 }
 
-func (s *teamTaskService) report(memberID, result string) (string, error) {
+// driving asks the runtime whether anything is actually executing the task, so
+// the leader's status read is not just the durable row echoed back.
+func (s *teamTaskService) driving(id team.TaskID) bool {
+	return s != nil && s.runtime != nil && s.runtime.LiveTask(id)
+}
+
+// memberTaskState describes one member's task honestly. The durable row alone
+// cannot say whether anything is driving it, and rendering every live row as
+// "working" is what made a refused or orphaned dispatch look like a member busy
+// thinking — the leader then waited on a member that had never been handed
+// anything. driving is the runtime's own registry, written only once the
+// member's backend accepted the turn.
+func memberTaskState(task team.Task, driving bool) string {
+	switch {
+	case driving:
+		return fmt.Sprintf("working task=%s status=%s", task.ID, task.Status)
+	case task.Status == team.TaskStatusRunning:
+		return fmt.Sprintf("stalled task=%s (recorded running, nothing driving it — reassign or retry)", task.ID)
+	default:
+		return fmt.Sprintf("queued task=%s status=%s (not dispatched, nothing driving it)", task.ID, task.Status)
+	}
+}
+
+// report closes one of the member's live tasks. taskID disambiguates: with more
+// than one task owned, picking "the first one LoadLiveTasks returned" could
+// close a task the member never worked on, so an ambiguous report is refused
+// with the choices instead of guessing.
+func (s *teamTaskService) report(memberID, taskID, result string) (string, error) {
 	if err := s.ready(); err != nil {
 		return "", err
 	}
@@ -323,16 +387,64 @@ func (s *teamTaskService) report(memberID, result string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	owned := make([]team.Task, 0, len(tasks))
 	for _, task := range tasks {
-		if task.AssignedMember != memberID {
-			continue
+		if task.AssignedMember == memberID {
+			owned = append(owned, task)
 		}
-		if err := s.runtime.Complete(task.ID, strings.TrimSpace(result)); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("task %s reported to leader", task.ID), nil
 	}
-	return fmt.Sprintf("member %q has no unfinished task to report", memberID), nil
+	target, err := pickReportTarget(memberID, strings.TrimSpace(taskID), owned, s.driving)
+	if err != nil {
+		return "", err
+	}
+	if target == nil {
+		return fmt.Sprintf("member %q has no unfinished task to report", memberID), nil
+	}
+	if err := s.runtime.Complete(target.ID, strings.TrimSpace(result)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("task %s reported to leader", target.ID), nil
+}
+
+// pickReportTarget resolves which of a member's live tasks a report closes. The
+// runtime drives at most one task per member, so the driving one is what the
+// member actually executed — that is the answer whenever a queued or
+// undispatched row would otherwise make the choice ambiguous. Only a genuinely
+// undecidable set is refused, with the ids, rather than closing whichever task
+// LoadLiveTasks happened to return first. A nil task with a nil error means the
+// member owns none.
+func pickReportTarget(memberID, taskID string, owned []team.Task, driving func(team.TaskID) bool) (*team.Task, error) {
+	if taskID != "" {
+		for i := range owned {
+			if string(owned[i].ID) == taskID {
+				return &owned[i], nil
+			}
+		}
+		return nil, fmt.Errorf("task %q is not an unfinished task of member %q", taskID, memberID)
+	}
+	if len(owned) == 0 {
+		return nil, nil
+	}
+	if driving != nil {
+		var live []*team.Task
+		for i := range owned {
+			if driving(owned[i].ID) {
+				live = append(live, &owned[i])
+			}
+		}
+		if len(live) == 1 {
+			return live[0], nil
+		}
+	}
+	if len(owned) == 1 {
+		return &owned[0], nil
+	}
+	ids := make([]string, 0, len(owned))
+	for _, task := range owned {
+		ids = append(ids, string(task.ID))
+	}
+	return nil, fmt.Errorf("member %q has %d unfinished tasks (%s) and none is currently running: pass task_id to say which one this report closes",
+		memberID, len(owned), strings.Join(ids, ", "))
 }
 
 func parseRoles(raw string) []string {

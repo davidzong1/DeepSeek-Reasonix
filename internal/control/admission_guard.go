@@ -20,6 +20,28 @@ const (
 	turnDroppedWriteAuthority
 )
 
+// String names the outcome for an error a human reads. A bare enum index told a
+// team leader nothing about why its member refused the work.
+func (r admissionResult) String() string {
+	switch r {
+	case turnStarted:
+		return "started"
+	case turnParked:
+		return "parked until the current turn settles"
+	case turnDroppedRunning:
+		return "already running a turn"
+	case turnDroppedRotating:
+		return "session is being switched"
+	case turnDroppedClosed:
+		return "session is closed"
+	case turnDroppedDraining:
+		return "session generation is draining"
+	case turnDroppedWriteAuthority:
+		return "session is no longer writable"
+	}
+	return "unknown admission outcome"
+}
+
 // runGuarded runs body under a fresh context, guarding concurrent turns.
 // Finishing-window arrivals park instead of dropping (see admissionResult).
 func (c *Controller) runGuarded(body func(ctx context.Context) error) admissionResult {

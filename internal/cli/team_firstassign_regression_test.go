@@ -151,7 +151,7 @@ func TestTeamTaskServiceCoderFirstAssignPersistentSessionMissingAuthority(t *tes
 	if !errors.Is(err, teamscheduler.ErrStartFailed) {
 		t.Fatalf("err = %v, want ErrStartFailed", err)
 	}
-	if !strings.Contains(err.Error(), "did not accept the turn") || !strings.HasSuffix(err.Error(), "admission 6)") {
+	if !strings.Contains(err.Error(), "did not accept the turn") || !strings.Contains(err.Error(), "admission 6)") {
 		t.Fatalf("err = %q, want the admission-6 refusal marker for diagnosis", err)
 	}
 	tasks, err := board.LoadLiveTasks(context.Background())

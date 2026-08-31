@@ -189,6 +189,9 @@ type memberBackendDeps struct {
 	tasks    *teamTaskService
 	events   chan memberEvent
 	base     func() boot.Options
+	// release retires one member's assembled backend. Late-bound like tasks'
+	// bind hook, because the registry is constructed around this builder.
+	release func(teamName, memberID string)
 }
 
 // memberPoolLookup reads one pool entry. Narrowed to the one method the builder
@@ -300,10 +303,11 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = memberSink(b.MemberID, deps.events)
-		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) + teamRoleSkillPrompt(opts.WorkspaceRoot, b.Leader)
+		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
+			teamRoleSkillPrompt(boot.ResolveWorkspaceRoot(opts.WorkspaceRoot), b.Leader)
 		tasks := deps.tasks.forTeam(b.Team)
 		if b.Leader && deps.store != nil {
-			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID)...)
+			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)
 			opts.ExtraTools = append(opts.ExtraTools, newLeaderTaskTools(tasks, b.Team, b.MemberID)...)
 		} else {
 			opts.ExtraTools = append(opts.ExtraTools, newMemberTaskTools(tasks, b.Team, b.MemberID)...)

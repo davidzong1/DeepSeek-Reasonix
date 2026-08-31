@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"reasonix/internal/event"
 	"reasonix/internal/team"
 )
 
@@ -91,9 +92,23 @@ type sessionState struct {
 	current  string
 	members  []string
 	focus    int
-	errMsg   string                  // session-scoped error, separate from the roster's errMsg
-	unread   map[string]int          // non-current members' terminal events, per member
-	prompts  map[string]memberPrompt // non-current members' pending approval/ask, per member
+	errMsg   string                   // session-scoped error, separate from the roster's errMsg
+	unread   map[string]int           // non-current members' terminal events, per member
+	prompts  map[string]memberPrompt  // non-current members' pending approval/ask, per member
+	live     map[string][]event.Event // non-current members' in-flight turn, replayed on switch
+}
+
+// newSessionState arms one team session window. The per-member maps are created
+// together because every one of them is read unconditionally on the event path:
+// a nil map there is a silently dropped member event, which is exactly how an
+// in-flight turn became invisible.
+func newSessionState(teamName, current string) sessionState {
+	return sessionState{
+		active: true, teamName: teamName, current: current,
+		unread:  map[string]int{},
+		prompts: map[string]memberPrompt{},
+		live:    map[string][]event.Event{},
+	}
 }
 
 // setSessionPanel shows or hides the bound session's detail panel. Its rows come
@@ -143,9 +158,7 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 	}
 	p.errMsg = ""
 	p.refusal = ""
-	session := sessionState{active: true, teamName: p.model.Name(), current: member.ID,
-		unread:  map[string]int{},
-		prompts: map[string]memberPrompt{}}
+	session := newSessionState(p.model.Name(), member.ID)
 	for i, sm := range p.model.Members() {
 		session.members = append(session.members, sm.ID)
 		if sm.ID == member.ID {
@@ -223,9 +236,7 @@ func (p *teamPicker) openSession(initial string) string {
 	if current == "" {
 		return ""
 	}
-	session := sessionState{active: true, teamName: teamName, current: current,
-		unread:  map[string]int{},
-		prompts: map[string]memberPrompt{}}
+	session := newSessionState(teamName, current)
 	for i, m := range p.model.Members() {
 		session.members = append(session.members, m.ID)
 		if m.ID == current {
@@ -307,12 +318,31 @@ func (m *chatTUI) exitTeam() {
 	if m.quickPick != nil && m.quickPick.kind == quickPickerMemberAgentUser {
 		m.quickPick = nil // it lists the bound member's models: it leaves with the team
 	}
-	m.teamPick.closeTeamOverlay()
-	m.teamPick.board.close() // the durable command chain lives with the overlay
+	// The member-backend registry and its board deliberately survive: an assembled
+	// member keeps running its turn. closeTeamResources ends them once, after the
+	// TUI releases the terminal.
 	m.teamPick = nil
 	// The overlay's rows go back to the transcript, so the tail is re-pinned:
 	// keeping the old offset would leave the newest output off-screen.
 	m.forceGotoBottom = true
+}
+
+// closeTeamResources releases the member backends and the board they share, at
+// the one point it is safe to: after the TUI released the terminal. Nothing did
+// this before, so every assembled member kept its session lease and plugin
+// subprocesses to process end.
+func (m *chatTUI) closeTeamResources() {
+	// Hand the controller identity back first, or the caller's own ctrl.Close()
+	// lands on a member controller the registry is about to close. Narrow swap,
+	// not bindBackend: no terminal is left to rebuild derived state for.
+	if m.ambient != nil {
+		m.ctrl = m.ambient
+		m.ambient = nil
+	}
+	if m.teamBackends != nil {
+		m.teamBackends.closeAll()
+		m.teamBackends = nil
+	}
 }
 
 // leaveTeamDeliberately is the Ctrl+T contract: the user said "get me out of the

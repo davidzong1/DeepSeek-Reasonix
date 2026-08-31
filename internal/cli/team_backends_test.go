@@ -38,6 +38,27 @@ func TestTeamRoleSkillPromptLoadsRolePlaybook(t *testing.T) {
 	}
 }
 
+// TestTeamRoleSkillPromptResolvesEmptyWorkspaceRoot pins the assembly boundary
+// the playbook actually crosses: boot.Options.WorkspaceRoot is empty on every
+// launch without --dir, so reading it raw silently dropped the whole role
+// playbook. The builder must resolve the root the way Build does.
+func TestTeamRoleSkillPromptResolvesEmptyWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".reasonix", "skills", "base", "leader", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: leader\ndescription: team leader\n---\nleader playbook"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	got := teamRoleSkillPrompt(boot.ResolveWorkspaceRoot(""), true)
+	if !strings.Contains(got, "leader playbook") {
+		t.Fatalf("an unset workspace root must still load the role playbook, got %q", got)
+	}
+}
+
 // fakeBackend is a control.SessionAPI stand-in that only records teardown, so
 // registry lifetime can be asserted without assembling a real controller. id
 // distinguishes one assembled instance from another by identity, not value.

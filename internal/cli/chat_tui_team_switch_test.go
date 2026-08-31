@@ -43,6 +43,10 @@ func (s stubBackend) SlashSkills() []skill.Skill  { return nil }
 func (s stubBackend) Host() *plugin.Host          { return nil }
 func (s stubBackend) SessionPath() string         { return "" }
 
+// SessionDir is read when the overlay reopens over an already-bound member, so a
+// stub standing in for that member's backend has to answer it.
+func (s stubBackend) SessionDir() string { return "" }
+
 // ReplayPendingPrompts is what switchTeamMember calls after binding to resurface
 // a member's pending approval/ask card (§4.5). Tests count the call; a real
 // controller re-emits the blocked prompt onto its sink here.
@@ -329,7 +333,7 @@ func TestClosingOverlayKeepsMemberBackends(t *testing.T) {
 	if _, err := m.teamBackends.bind(team.MemberBinding{Team: "alpha", MemberID: "lead"}); err != nil {
 		t.Fatal(err)
 	}
-	m.teamPick.closeTeamOverlay()
+
 	if _, ok := m.teamBackends.bound("alpha", "lead"); !ok {
 		t.Error("closing the overlay must not retire member backends")
 	}

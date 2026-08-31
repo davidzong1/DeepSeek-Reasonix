@@ -78,8 +78,13 @@ func promptTestTUI(t *testing.T, approves *int) chatTUI {
 	}, 4)
 	m.teamPick.backends = m.teamBackends
 	m.teamPick.hub = newTeamHub(m.teamPick.store, m.teamBackends, "alpha")
-	if cmd := m.switchTeamMember("lead"); cmd == nil {
-		t.Fatal("binding the leader must arm the pump")
+	// Both members are assembled: a background prompt can only exist because that
+	// member's own backend raised it, and the hub answers the assembled backend
+	// rather than building a fresh controller that holds no such prompt.
+	for _, id := range []string{"alice", "lead"} {
+		if cmd := m.switchTeamMember(id); cmd == nil {
+			t.Fatalf("binding %s must arm the pump", id)
+		}
 	}
 	return m
 }
@@ -98,7 +103,6 @@ func TestMemberPromptKeyAnswersBackgroundApproval(t *testing.T) {
 		t.Fatalf("unread[alice] = %d, want 1", got)
 	}
 
-	m.teamPick.session.focus = 1 // alice
 	next, cmd, consumed := m.handleTeamKey(promptApproveKey)
 	m = next.(chatTUI)
 	if !consumed {
@@ -146,12 +150,13 @@ func TestMemberPromptKeyFallsThroughWithoutPrompt(t *testing.T) {
 	}
 	m.pendingApproval = nil
 
-	// A question card stays on the switch path but its state is not lost.
+	// A question card needs its own structured surface, so it is not offered to
+	// the approve keys at all: they stay the composer's, while the ask stays
+	// recorded and badged for the switch path.
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{
 		Kind: event.AskRequest, Ask: event.Ask{ID: "q1"}}})
-	m.teamPick.session.focus = 1
-	if _, _, consumed := m.handleTeamKey(promptApproveKey); !consumed {
-		t.Fatal("ctrl+a on a question card must be consumed (a refusal, not the composer)")
+	if _, _, consumed := m.handleTeamKey(promptApproveKey); consumed {
+		t.Fatal("ctrl+a must not claim the key for a question card")
 	}
 	if got := m.teamPick.session.prompts["alice"]; got.id != "q1" {
 		t.Fatalf("the ask must stay recorded for the switch path, got %+v", got)

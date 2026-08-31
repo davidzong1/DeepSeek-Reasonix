@@ -21,6 +21,18 @@ type leaderMemberTool struct {
 	sessions *team.TeamSessionStore
 	teamName string
 	leaderID string
+	// release retires the affected member's assembled backend, as the TUI's member
+	// editor already does. Without it a member the leader removed or retagged kept
+	// a live controller writing the context that was just cleared.
+	release func(teamName, memberID string)
+}
+
+// retire releases the member's backend when a registry is wired. A nil release
+// is the test/non-interactive shape, not an error.
+func (t *leaderMemberTool) retire(memberID string) {
+	if t.release != nil {
+		t.release(t.teamName, memberID)
+	}
 }
 
 func (t *leaderMemberTool) Name() string            { return t.name }
@@ -32,12 +44,12 @@ func (t *leaderMemberTool) Execute(context.Context, json.RawMessage) (string, er
 	return "", fmt.Errorf("%s: unsupported operation", t.name)
 }
 
-func newLeaderMemberTools(store *team.TeamStore, sessions *team.TeamSessionStore, teamName, leaderID string) []tool.Tool {
+func newLeaderMemberTools(store *team.TeamStore, sessions *team.TeamSessionStore, teamName, leaderID string, release func(teamName, memberID string)) []tool.Tool {
 	if store == nil || strings.TrimSpace(teamName) == "" || strings.TrimSpace(leaderID) == "" {
 		return nil
 	}
 	base := func(name, desc, schema string) *leaderMemberTool {
-		return &leaderMemberTool{name: name, desc: desc, schema: json.RawMessage(schema), store: store, sessions: sessions, teamName: teamName, leaderID: leaderID}
+		return &leaderMemberTool{name: name, desc: desc, schema: json.RawMessage(schema), store: store, sessions: sessions, teamName: teamName, leaderID: leaderID, release: release}
 	}
 	return []tool.Tool{
 		&leaderAddMemberTool{leaderMemberTool: base("leader_add_member", "Add a member slot to this team. Leader-only.", `{"type":"object","properties":{"member_id":{"type":"string"},"role":{"type":"string"},"agent_user_ref":{"type":"string"}},"required":["member_id"]}`)},
@@ -74,7 +86,7 @@ func newMemberTaskTools(service *teamTaskService, teamName, memberID string) []t
 	}
 	return []tool.Tool{
 		base("member_get_my_task", "Read this member's unfinished assigned task.", `{"type":"object","properties":{},"additionalProperties":false}`),
-		base("member_report_result", "Report this member's completed task result to the leader.", `{"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}`),
+		base("member_report_result", "Report this member's completed task result to the leader. Pass task_id when more than one task is assigned.", `{"type":"object","properties":{"result":{"type":"string"},"task_id":{"type":"string"}},"required":["result"],"additionalProperties":false}`),
 	}
 }
 
@@ -105,6 +117,7 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		RequiredRoles string `json:"required_roles"`
 		CreateMissing bool   `json:"create_missing"`
 		Result        string `json:"result"`
+		TaskID        string `json:"task_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("%s: invalid arguments: %w", t.name, err)
@@ -156,7 +169,7 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	case "member_get_my_task":
 		return t.service.memberTask(t.memberID)
 	case "member_report_result":
-		return t.service.report(t.memberID, p.Result)
+		return t.service.report(t.memberID, p.TaskID, p.Result)
 	default:
 		return "", fmt.Errorf("%s: unsupported operation", t.name)
 	}
@@ -193,6 +206,7 @@ func (t *leaderRemoveMemberTool) Execute(_ context.Context, args json.RawMessage
 	if err := t.store.LeaderRemoveMember(t.teamName, t.leaderID, id); err != nil {
 		return "", err
 	}
+	t.retire(id) // stop the backend before its context is cleared
 	if t.sessions != nil {
 		if err := t.sessions.ClearMember(t.teamName, id); err != nil {
 			return "", fmt.Errorf("member removed but clearing context failed: %w", err)
@@ -215,6 +229,10 @@ func (t *leaderSetRoleTool) Execute(_ context.Context, args json.RawMessage) (st
 	if err := t.store.LeaderSetMemberRole(t.teamName, t.leaderID, id, team.RoleID(role)); err != nil {
 		return "", err
 	}
+	// A role change is a context boundary: the role is baked into the member's
+	// cache-stable prompt at assembly, so the backend must be retired for the
+	// next bind to rebuild it. Mirrors the TUI's member editor.
+	t.retire(id)
 	if t.sessions != nil {
 		if err := t.sessions.ClearMember(t.teamName, id); err != nil {
 			return "", fmt.Errorf("role changed but clearing member context failed: %w", err)

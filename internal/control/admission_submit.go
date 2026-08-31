@@ -5,15 +5,20 @@ import (
 	"fmt"
 )
 
-// SubmitUserTurnOrError is SubmitUserTurn with an explicit admission result:
-// it errors when the session is closed, rotating, draining, missing write
-// authority, or already running. The team runtime's task-driving host uses it
-// so a refused turn never looks like an accepted one.
+// SubmitUserTurnOrError is SubmitUserTurn with an explicit admission result: it
+// errors when the session is closed, rotating, draining, missing write authority,
+// or already running. A parked turn is deliberately NOT an error — the
+// finishing-window park is an accepted turn that runs the moment the current one
+// settles, and calling it a refusal made the team runtime roll back a task whose
+// turn had in fact been delivered, then reject the member's own report for it.
+// The reason is named, not numbered: the leader reads this text.
 func (c *Controller) SubmitUserTurnOrError(input, display string) error {
-	if res := c.runRefTurnResult(input, display); res != turnStarted {
-		return fmt.Errorf("member backend did not accept the turn (admission %d)", res)
+	switch res := c.runRefTurnResult(input, display); res {
+	case turnStarted, turnParked:
+		return nil
+	default:
+		return fmt.Errorf("member backend did not accept the turn: %s (admission %d)", res, int(res))
 	}
-	return nil
 }
 
 // runRefTurnResult is runRefTurn with the admission outcome surfaced.

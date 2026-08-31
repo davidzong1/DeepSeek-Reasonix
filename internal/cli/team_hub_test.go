@@ -279,6 +279,16 @@ func TestTeamHubApprovesBackgroundMember(t *testing.T) {
 		return approveBackend{member: b.MemberID, approves: &approves, answers: &answers}, nil
 	}, 4)
 	hub := newTeamHub(store, backends, "alpha")
+	// The prompt came out of coder's own backend, so it is assembled by
+	// construction. A freshly built controller holds no such prompt id and would
+	// "succeed" against nothing, so the hub reads the registry instead of binding.
+	binding, err := store.Binding("alpha", "coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backends.bind(binding); err != nil {
+		t.Fatal(err)
+	}
 	if err := hub.Approve("alpha", "coder", "a1", true, false, false); err != nil {
 		t.Fatal(err)
 	}
@@ -291,8 +301,16 @@ func TestTeamHubApprovesBackgroundMember(t *testing.T) {
 	if answers != 1 {
 		t.Fatalf("background ask answer reached the wrong backend: answers=%d", answers)
 	}
-	// An unknown member must not route anywhere.
-	if err := hub.Approve("alpha", "nobody", "a1", true, false, false); !errors.Is(err, team.ErrMemberNotFound) {
-		t.Errorf("approve unknown member err = %v, want ErrMemberNotFound", err)
+	// An unknown member must not route anywhere, and neither must a known member
+	// with no assembled backend: its prompt cannot exist, so a "success" there
+	// would be a lie the roster then clears the badge on.
+	if err := hub.Approve("alpha", "nobody", "a1", true, false, false); err == nil {
+		t.Error("approve on an unknown member must fail")
+	}
+	if err := hub.Approve("alpha", "lead", "a1", true, false, false); err == nil {
+		t.Error("approve on a member with no live session must fail, not assemble one")
+	}
+	if approves != 1 {
+		t.Errorf("a refused route must not reach any backend, approves = %d", approves)
 	}
 }

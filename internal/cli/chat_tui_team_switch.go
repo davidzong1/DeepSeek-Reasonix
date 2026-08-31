@@ -23,18 +23,79 @@ func waitForMemberEvent(ch chan memberEvent) tea.Cmd {
 type memberEventMsg memberEvent
 
 // handleMemberEvent routes one member backend's event: the bound member's
-// events render into the transcript exactly as the ambient session's do, and
-// another member's events only mark that member unread — never the transcript,
-// which belongs to whoever is bound. The pump re-arms either way.
+// events render into the transcript exactly as the ambient session's do, while
+// another member's are buffered so switching to it shows the turn it is running
+// right now — History() only carries committed messages, so without the buffer
+// an in-flight turn looked like an idle member. The pump re-arms either way.
 func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
 		m.ingestEvent(msg.ev)
-	} else if memberEventNeedsAttention(msg.ev.Kind) {
-		m.recordMemberPrompt(msg.member, msg.ev)
-		m.markMemberUnread(msg.member)
+	} else if m.teamPick == nil {
+		m.noteOrphanedMemberPrompt(msg.member, msg.ev)
+	} else {
+		m.bufferMemberEvent(msg.member, msg.ev)
+		if memberEventNeedsAttention(msg.ev.Kind) {
+			m.recordMemberPrompt(msg.member, msg.ev)
+			m.markMemberUnread(msg.member)
+		}
 	}
 	return waitForMemberEvent(m.memberEvents)
+}
+
+// noteOrphanedMemberPrompt surfaces a member that blocked on a decision after the
+// user left the team. Its backend stays assembled and its run goroutine waits on
+// an answer, but with no overlay there is no inbox to record into and no roster to
+// badge — the event was simply dropped, so the member hung with nothing on screen.
+// The prompt itself is not lost: ReplayPendingPrompts re-raises it on the next
+// bind, which is exactly what the notice tells the user to do.
+func (m *chatTUI) noteOrphanedMemberPrompt(member string, ev event.Event) {
+	switch ev.Kind {
+	case event.ApprovalRequest, event.AskRequest:
+		m.notice("team member " + member + " is waiting for a decision — open [ TEAM ] and switch to it")
+	}
+}
+
+// memberLiveEventCap bounds one unbound member's buffered turn. Streaming deltas
+// dominate the count, so the cap is what keeps a long background turn from
+// growing without limit; the oldest events are dropped first, which degrades to
+// "you see the tail of what it is doing" rather than to nothing.
+const memberLiveEventCap = 512
+
+// bufferMemberEvent keeps one unbound member's in-flight turn so a switch can
+// replay it. A finished turn clears the buffer: its content is in the member's
+// own History() from then on, and replaying both would double it. Prompt events
+// are excluded because ReplayPendingPrompts owns re-emitting those on bind —
+// buffering them too would raise the same card twice.
+func (m *chatTUI) bufferMemberEvent(member string, ev event.Event) {
+	if m.teamPick == nil || m.teamPick.session.live == nil {
+		return
+	}
+	switch ev.Kind {
+	case event.TurnDone:
+		delete(m.teamPick.session.live, member)
+		return
+	case event.ApprovalRequest, event.AskRequest:
+		return
+	}
+	buffered := append(m.teamPick.session.live[member], ev)
+	if over := len(buffered) - memberLiveEventCap; over > 0 {
+		buffered = buffered[over:]
+	}
+	m.teamPick.session.live[member] = buffered
+}
+
+// replayMemberLiveEvents renders the turn a member started while the window was
+// elsewhere. It runs after the history replay committed, so the buffered events
+// land on top of the member's committed transcript in the order they arrived —
+// the same order the bound path ingested them in.
+func (m *chatTUI) replayMemberLiveEvents(member string) {
+	if m.teamPick == nil || m.teamPick.session.live == nil {
+		return
+	}
+	for _, ev := range m.teamPick.session.live[member] {
+		m.ingestEvent(ev)
+	}
 }
 
 // recordMemberPrompt keeps one non-current member's pending approval/ask on the
@@ -118,7 +179,7 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	if m.memberSwitchBusy() {
 		return m.refuseTeamSession("Answer the pending approval before switching member")
 	}
-	binding, err := p.store.Binding(p.model.Name(), memberID)
+	binding, err := p.store.Binding(p.sessionTeamName(), memberID)
 	if err != nil {
 		return m.refuseTeamSession(pickerErrMsg(err))
 	}
@@ -129,16 +190,36 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 
 	p.session.current = memberID
 	p.session.errMsg = ""
+	p.hub.setTeam(p.sessionTeamName())
 	delete(p.session.unread, memberID) // showing a member is consuming it
+	// The record is the roster inbox's, for members the window is not showing.
+	// Keeping it for the member being bound leaves a badge and an armed
+	// Ctrl+A hint on a prompt its own modal is about to own.
+	delete(p.session.prompts, memberID)
 	if m.ambient == nil {
 		m.ambient = m.ctrl // first member bind: remember the chat's own backend
 	}
 	m.bindBackend(backend)
+	// The turn this member started while the window was elsewhere: bindBackend
+	// replayed its committed history, and these are the events that turn has
+	// produced since, which no History() snapshot can carry yet.
+	m.replayMemberLiveEvents(memberID)
 	// Replay the member's pending approval/ask card: the window was elsewhere
 	// when the prompt registered. The event flows through the member's own sink
 	// onto the shared pump, ingested once the member is bound. No prompt, none.
 	backend.ReplayPendingPrompts()
 	return waitForMemberEvent(m.memberEvents)
+}
+
+// sessionTeamName is the team a member switch resolves against: the bound
+// session's own team, not the roster's focused one. They are normally equal, but
+// the picker's focus is free to move, and resolving a binding against it would
+// bind a same-named member of a different team.
+func (p *teamPicker) sessionTeamName() string {
+	if p.session.active && p.session.teamName != "" {
+		return p.session.teamName
+	}
+	return p.model.Name()
 }
 
 // refuseTeamSession records a session-scoped refusal where the user can
@@ -251,6 +332,11 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 			return m.teamBackends.bind(b)
 		}),
 		events: m.memberEvents, base: m.memberBackendBase,
+		release: func(teamName, memberID string) {
+			if m.teamBackends != nil {
+				m.teamBackends.release(teamName, memberID)
+			}
+		},
 	}
 	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberDeps), 0)
 	// Invalidate a member's assembled backend when its pool entry (ref,
@@ -322,29 +408,20 @@ func (m chatTUI) teamOverlayModal() bool {
 	return m.teamPick != nil && !m.teamPick.session.active
 }
 
-// answerMemberPrompt approves or denies the focused roster member's pending
-// approval through the hub, so the decision reaches that member's own backend
-// without switching the window. It reports whether it consumed the key: a
-// recorded prompt for the focused member does (a question card is answered by
-// switching, and says so), while no prompt leaves the key to the composer. The
-// bound member's own prompt never appears here — it stays on the pendingApproval
-// modal the ordinary keys answer.
+// answerMemberPrompt approves or denies a background member's pending approval
+// through the hub, so the decision reaches that member's own backend without
+// switching the window. It reports whether it consumed the key: a waiting member
+// does, no waiting member leaves Ctrl+A/Ctrl+X to the composer. The bound
+// member's own prompt is never here — that stays on the pendingApproval modal the
+// ordinary keys answer.
 func (m *chatTUI) answerMemberPrompt(allow bool) bool {
 	p := m.teamPick
-	if p == nil || p.hub == nil || p.session.prompts == nil || len(p.session.members) == 0 {
+	if p == nil || p.hub == nil {
 		return false
 	}
-	member := p.session.members[p.session.focus]
-	if member == p.session.current {
-		return false // the bound member's prompt is the modal's, not the inbox's
-	}
-	prompt, ok := p.session.prompts[member]
+	member, prompt, ok := p.pendingApprovalMember()
 	if !ok {
 		return false
-	}
-	if prompt.kind != promptApproval {
-		m.refuseTeamSession("question card on " + member + ": switch to it to answer")
-		return true
 	}
 	if err := p.hub.Approve(p.session.teamName, member, prompt.id, allow, false, false); err != nil {
 		m.refuseTeamSession("could not answer " + member + ": " + err.Error())
@@ -360,6 +437,28 @@ func (m *chatTUI) answerMemberPrompt(allow bool) bool {
 	}
 	m.notice(verb + " " + member + "'s pending approval")
 	return true
+}
+
+// pendingApprovalMember is the background member Ctrl+A/Ctrl+X answers: the first
+// in roster order still waiting on an approval. A bound session moves focus and
+// current together, so there is no independent cursor — reading focus is why
+// these keys could never fire, since focus always indexed the bound member and
+// the "not the bound member" guard then rejected every press. A question card is
+// deliberately not offered: it needs its own structured surface, so it keeps the
+// switch path and its own roster badge.
+func (p *teamPicker) pendingApprovalMember() (string, memberPrompt, bool) {
+	if p == nil || len(p.session.prompts) == 0 {
+		return "", memberPrompt{}, false
+	}
+	for _, id := range p.session.members {
+		if id == p.session.current {
+			continue
+		}
+		if prompt, ok := p.session.prompts[id]; ok && prompt.kind == promptApproval {
+			return id, prompt, true
+		}
+	}
+	return "", memberPrompt{}, false
 }
 
 // runMemberModelSubcommand is /model while a team member is bound: a member's

@@ -50,11 +50,22 @@ func openTeamInbox(cwd string) *teamInboxWire {
 	return &teamInboxWire{board: board, inboxes: map[string]*agentruntime.BoardInbox{}}
 }
 
-// close releases the board store. The wire's consumers are gone with the
-// overlay, so closing after exitTeam is safe.
+// close releases the board store. Only the process-level teardown may call it:
+// the task service and every assembled member backend hold this store, and both
+// outlive the overlay, so closing it on exitTeam left them reading a closed
+// database — permanently, because the registry is built once.
 func (w *teamInboxWire) close() {
 	if w != nil && w.board != nil {
 		_ = w.board.Close()
+	}
+}
+
+// resetInboxes drops the per-member inbox cache. Each inbox pins the member's
+// BindRecord generation from when it was built, so a freshly opened overlay must
+// re-read it; the store itself stays open for its longer-lived holders.
+func (w *teamInboxWire) resetInboxes() {
+	if w != nil {
+		w.inboxes = map[string]*agentruntime.BoardInbox{}
 	}
 }
 

@@ -2268,6 +2268,12 @@ func currentWorkspacePromptLine(root string) string {
 	return "Current workspace: " + strconv.Quote(root)
 }
 
+// ResolveWorkspaceRoot exposes Build's own project-root resolution. A host that
+// needs the root *before* Build — a team member's role playbook is read at
+// assembly — must call this instead of reading Options.WorkspaceRoot, which is
+// empty whenever --dir was not given and would silently disable the lookup.
+func ResolveWorkspaceRoot(explicit string) string { return resolveWorkspaceRoot(explicit) }
+
 func resolveWorkspaceRoot(explicit string) string {
 	if explicit != "" {
 		return explicit

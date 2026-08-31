@@ -68,7 +68,7 @@ func TestTeamTaskServiceCoderAdmission6RefusalDiagnosable(t *testing.T) {
 	if !errors.Is(err, teamscheduler.ErrStartFailed) {
 		t.Fatalf("err = %v, want ErrStartFailed", err)
 	}
-	if !strings.Contains(err.Error(), "did not accept the turn") || !strings.HasSuffix(err.Error(), "admission 6)") {
+	if !strings.Contains(err.Error(), "did not accept the turn") || !strings.Contains(err.Error(), "admission 6)") {
 		t.Fatalf("err = %q, want refusal marker and admission 6 suffix for diagnosis", err)
 	}
 }

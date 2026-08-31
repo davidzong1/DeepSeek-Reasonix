@@ -144,8 +144,8 @@ func TestTeamE2EAssignTaskToRelevantRunsBothMembersAndReportsBoth(t *testing.T) 
 	var wg sync.WaitGroup
 	var rep1, rep2 error
 	wg.Add(2)
-	go func() { defer wg.Done(); _, rep1 = svc.report("coder", "built green") }()
-	go func() { defer wg.Done(); _, rep2 = svc.report("tester", "verified green") }()
+	go func() { defer wg.Done(); _, rep1 = svc.report("coder", "", "built green") }()
+	go func() { defer wg.Done(); _, rep2 = svc.report("tester", "", "verified green") }()
 	wg.Wait()
 	if rep1 != nil || rep2 != nil {
 		t.Fatalf("concurrent reports: coder=%v tester=%v", rep1, rep2)
@@ -202,10 +202,10 @@ func TestTeamE2EBusyMemberDoesNotLeakOntoOthers(t *testing.T) {
 	}
 
 	// Both members report so the runtime drops both live tasks (test hygiene).
-	if _, err := svc.report("coder", "built"); err != nil {
+	if _, err := svc.report("coder", "", "built"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.report("tester", "verified"); err != nil {
+	if _, err := svc.report("tester", "", "verified"); err != nil {
 		t.Fatal(err)
 	}
 }
