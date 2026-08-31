@@ -19,7 +19,6 @@ var sessionReset = map[string]bool{
 	"cacheHit":         true,
 	"cacheMiss":        true,
 	"missingReasoning": true,
-	"turnProtocol":     true,
 	"compactionMu":     true,
 	"compactionState":  true,
 	"cacheState":       true,

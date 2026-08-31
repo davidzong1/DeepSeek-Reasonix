@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"reasonix/internal/capability"
@@ -136,12 +137,46 @@ func TestLocalToolWithoutValidatorUnchanged(t *testing.T) {
 	}
 }
 
-// TestMCPToolArgumentsCompatibilityUnchanged pins the mcp-tool contract: the
-// single-JSON-string arguments form still normalizes, resolves to its real
-// authorized target, and crosses the permission layer exactly as before —
-// untouched by the local-tool pre-validation. (An authorized MCP server is
-// decided by ExplicitlyDenies, not the per-call Check.)
-func TestMCPToolArgumentsCompatibilityUnchanged(t *testing.T) {
+// TestMCPToolArgumentsCrossPermissionUnchanged pins the mcp-tool contract that
+// the local-tool pre-validation must not disturb: an object-form arguments call
+// resolves to its real authorized target and crosses the permission layer via
+// ExplicitlyDenies, not the per-call Check (that is how an authorized MCP server
+// is decided).
+//
+// The nested-JSON-string form this test once accepted is refused now — see
+// TestMCPToolNestedJSONStringArgumentsRefused. Argument validation runs before
+// the gate, so such a call never executes and never reaches it: fail-closed, not
+// a skipped check.
+func TestMCPToolArgumentsCrossPermissionUnchanged(t *testing.T) {
+	reg := tool.NewRegistry()
+	var calls int32
+	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__github__search_issues", readOnly: true, calls: &calls}, server: "github", raw: "search_issues", serverAuthorized: true})
+	uc := NewUseCapabilityTool(context.Background(), nil, nil, reg, capability.NewLedger(), nil, nil)
+	reg.Add(uc)
+	gate := &recordingPermissionGate{allow: true}
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{Gate: gate}, event.Discard)
+
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
+		ID: "1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:github/search_issues","arguments":{"query":"x"}}`,
+	})
+	if len(gate.denyCalls) != 1 || len(gate.calls) != 0 {
+		t.Fatalf("an mcp-tool call must cross permission via ExplicitlyDenies once, deny=%v check=%v", gate.denyCalls, gate.calls)
+	}
+	if !out.resolved || out.resolvedName != "mcp__github__search_issues" {
+		t.Fatalf("mcp-tool call must resolve to its real target, outcome=%+v", out)
+	}
+	if calls != 1 {
+		t.Fatalf("mcp-tool call must execute, calls=%d", calls)
+	}
+}
+
+// TestMCPToolNestedJSONStringArgumentsRefused pins the stricter contract that
+// replaced the old single-JSON-string compatibility: an MCP tool's arguments must
+// be a JSON object. The refusal lands before the permission gate, so the call
+// neither executes nor consults it — the safe direction, and the reason a gate
+// assertion on this input reads as "no check ran".
+func TestMCPToolNestedJSONStringArgumentsRefused(t *testing.T) {
 	reg := tool.NewRegistry()
 	var calls int32
 	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__github__search_issues", readOnly: true, calls: &calls}, server: "github", raw: "search_issues", serverAuthorized: true})
@@ -154,13 +189,16 @@ func TestMCPToolArgumentsCompatibilityUnchanged(t *testing.T) {
 		ID: "1", Name: "use_capability",
 		Arguments: `{"action":"call","capability_id":"mcp-tool:github/search_issues","arguments":"{\"query\":\"x\"}"}`,
 	})
-	if len(gate.denyCalls) != 1 || len(gate.calls) != 0 {
-		t.Fatalf("an mcp-tool call must cross permission via ExplicitlyDenies once, deny=%v check=%v", gate.denyCalls, gate.calls)
+	if out.errMsg == "" {
+		t.Fatalf("a nested JSON string must be refused, outcome=%+v", out)
 	}
-	if !out.resolved || out.resolvedName != "mcp__github__search_issues" {
-		t.Fatalf("mcp-tool call must resolve to its real target, outcome=%+v", out)
+	if !strings.Contains(out.errMsg, "must be a JSON object") {
+		t.Fatalf("the refusal must name the contract, errMsg=%q", out.errMsg)
 	}
-	if calls != 1 {
-		t.Fatalf("mcp-tool call must execute, calls=%d", calls)
+	if calls != 0 || out.executed {
+		t.Fatalf("a refused call must not execute, calls=%d executed=%v", calls, out.executed)
+	}
+	if len(gate.denyCalls) != 0 || len(gate.calls) != 0 {
+		t.Fatalf("validation precedes the gate, so nothing crosses it: deny=%v check=%v", gate.denyCalls, gate.calls)
 	}
 }

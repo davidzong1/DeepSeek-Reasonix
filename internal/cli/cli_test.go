@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
+	"reasonix/internal/netclient"
 	"reasonix/internal/notify"
 	"reasonix/internal/provider"
 	"reasonix/internal/telemetry"
@@ -1573,7 +1574,7 @@ func TestFetchOrFallback(t *testing.T) {
 			BaseURL: "",
 			Models:  []string{"preset-a", "preset-b"},
 		}
-		got := fetchOrFallback(&probe, "Test")
+		got := fetchOrFallback(&probe, "Test", netclient.ProxySpec{})
 		if !reflect.DeepEqual(got, []string{"preset-a", "preset-b"}) {
 			t.Errorf("got %v, want preset-a/b", got)
 		}
@@ -1586,7 +1587,7 @@ func TestFetchOrFallback(t *testing.T) {
 			APIKeyEnv: "REASONIX_FETCH_TEST_KEY",
 			Models:    []string{"preset-a"},
 		}
-		got := fetchOrFallback(&probe, "Test")
+		got := fetchOrFallback(&probe, "Test", netclient.ProxySpec{})
 		if !reflect.DeepEqual(got, []string{"preset-a"}) {
 			t.Errorf("got %v, want preset-a", got)
 		}
@@ -1616,7 +1617,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL, "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL, "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("fetchModelListCompat: %v", err)
 		}
@@ -1638,7 +1639,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL+"/v1", "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL+"/v1", "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("fetchModelListCompat: %v", err)
 		}
@@ -1656,7 +1657,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL, "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL, "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("expected graceful empty result on all-miss, got err: %v", err)
 		}
@@ -1667,11 +1668,52 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 
 	t.Run("non-404 network error short-circuits with the real error", func(t *testing.T) {
 		// Point at a closed port — connection refused, not a 404.
-		models, err := fetchModelListCompat(context.Background(), "http://127.0.0.1:1", "k")
+		models, err := fetchModelListCompat(context.Background(), "http://127.0.0.1:1", "k", netclient.ProxySpec{})
 		if err == nil {
 			t.Fatalf("expected error for unreachable host, got models=%v", models)
 		}
 	})
+
+	t.Run("configured proxy reaches a proxy-only gateway", func(t *testing.T) {
+		const gateway = "http://reasonix-cli-probe.invalid/v1"
+		proxy := newTestProxy(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.String() != gateway+"/models" {
+				http.Error(w, "unexpected target "+r.URL.String(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"proxied-model"}]}`)
+		})
+		defer proxy.Close()
+
+		spec := netclient.ProxySpec{Mode: netclient.ModeCustom, URL: proxy.URL}
+		models, err := fetchModelListCompat(context.Background(), gateway, "k", spec)
+		if err != nil {
+			t.Fatalf("fetchModelListCompat through proxy: %v", err)
+		}
+		if !reflect.DeepEqual(models, []string{"proxied-model"}) {
+			t.Fatalf("models = %v, want [proxied-model]", models)
+		}
+	})
+}
+
+func TestFetchOrFallbackUsesConfiguredProxy(t *testing.T) {
+	const gateway = "http://reasonix-preset-probe.invalid/v1"
+	proxy := newTestProxy(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != gateway+"/models" {
+			http.Error(w, "unexpected target "+r.URL.String(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"live-model"}]}`)
+	})
+	defer proxy.Close()
+
+	probe := config.ProviderEntry{BaseURL: gateway, Models: []string{"preset-model"}}
+	spec := netclient.ProxySpec{Mode: netclient.ModeCustom, URL: proxy.URL}
+	if got := fetchOrFallback(&probe, "Test", spec); !reflect.DeepEqual(got, []string{"live-model"}) {
+		t.Fatalf("models = %v, want live proxy result", got)
+	}
 }
 
 // TestFamilyStaticModels proves the offline fallback unions every member of a

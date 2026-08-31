@@ -14,15 +14,14 @@
 | `delete_range` | false | 用精确 start/end 文本锚点删除文件中的连续范围。 |
 | `delete_symbol` | false | 用 Go AST 删除 Go 源文件中的命名符号。 |
 | `edit_file` | false | 将文件中的唯一精确字符串替换为另一个字符串。 |
-| `finish` | true | 在输出用户可见的最终答案后结束本轮；必须且只能以 `completed`、`partial` 或 `blocked` 调用一次，需要用户输入时应改用 `ask`。 |
-| `glob` | true | 查找匹配 glob pattern 的文件。 |
-| `grep` | true | 在文件或目录下按正则搜索文本。 |
+| `glob` | true | 查找匹配 glob pattern 的文件。无依赖的 glob 应同轮下发。 |
+| `grep` | true | 在文件或目录下按正则搜索文本。无依赖的搜索应同轮下发。 |
 | `kill_shell` | false | 终止后台 `bash` 或 `task` job。 |
-| `ls` | true | 列出目录条目，可递归。 |
+| `ls` | true | 列出目录条目，可递归。无依赖的目录读取应同轮下发。 |
 | `move_file` | false | 移动或重命名文件。 |
 | `multi_edit` | false | 对单个文件原子应用多个编辑。 |
 | `notebook_edit` | false | 编辑 Jupyter notebook 的单个 cell。 |
-| `read_file` | true | 按可分页的行号格式读取文本文件。 |
+| `read_file` | true | 按可分页的行号格式读取文本文件。无依赖的读取应同轮下发。 |
 | `todo_write` | true | 记录并替换当前工作的结构化任务列表。 |
 | `wait` | true | 等待后台 job 完成并返回最终输出。 |
 | `web_fetch` | true | 通过 HTTP/HTTPS 获取 URL 文本内容。 |
@@ -112,7 +111,7 @@ registry 中供调度，但不会展开到 top-level provider schema；模型通
 每个任务共享同一套精简的 provider 可见核心：直接编码工具、后台 shell 生命周期工具，
 以及稳定的能力代理：
 
-`bash`, `bash_output`, `edit_file`, `finish`, `kill_shell`, `read_file`,
+`bash`, `bash_output`, `edit_file`, `kill_shell`, `read_file`,
 `wait`, `write_file`, `compress`（若注册），以及 `use_capability`。
 
 可选工具（`glob`、`grep`、`ls`、`web_fetch`、MCP、skills、subagents、docs、会话历史、

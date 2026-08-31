@@ -21,3 +21,8 @@ func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// newTestProxy wraps httptest.NewServer for cli_test.go's proxy cases. It lives
+// here because that file is over the size ceiling, where every line is recorded
+// debt — and this helper file already imports httptest.
+func newTestProxy(h http.HandlerFunc) *httptest.Server { return httptest.NewServer(h) }
