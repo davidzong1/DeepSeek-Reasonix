@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"mvdan.cc/sh/v3/syntax"
 
@@ -1047,6 +1046,10 @@ type Options struct {
 	// delete_range to the pre-fingerprint full-file fresh-read requirement.
 	// It never enters provider-visible prompts or tool schemas.
 	LegacyAnchorSafetyGate bool
+
+	CompletionEvaluator        CompletionEvaluator
+	CompletionEvaluatorFactory CompletionEvaluatorFactory
+	CompletionValidation       string
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1120,6 +1123,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			recentKeep:             opts.RecentKeep,
 			archiveDir:             opts.ArchiveDir,
 			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,
+			completionAgentConfig:  newCompletionAgentConfig(opts, sink),
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -2753,7 +2757,9 @@ func firstLine(s string) string {
 
 // truncateToolOutput builds the stable provider-visible Content form for a tool
 // result. Under-cap bodies are byte-identical; over-cap bodies keep a tool-aware
-// head and tail while RawContent stores the full local original.
+// preview while RawContent stores the full local original. read_file is special:
+// its preview is a contiguous prefix so an exact recovery cursor can never skip
+// source text that the model did not actually see.
 func truncateToolOutput(s string) (string, string) {
 	return truncateToolOutputFor(s, "", "")
 }
@@ -2763,6 +2769,9 @@ func truncateToolOutput(s string) (string, string) {
 func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 	if len(s) <= maxToolOutputBytes {
 		return s, ""
+	}
+	if toolName == "read_file" {
+		return truncateReadFileOutput(s, toolName, toolCallID)
 	}
 	strategy := snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
 	switch {
@@ -2813,18 +2822,6 @@ func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 	}
 	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(head)-len(tail), len(s))
 	return head + marker + tail, notice
-}
-
-// snapToRuneBoundary returns s[lo:hi] with the bounds nudged outward until
-// both land on rune-start positions.
-func snapToRuneBoundary(s string, lo, hi int) string {
-	for lo > 0 && !utf8.RuneStart(s[lo]) {
-		lo--
-	}
-	for hi < len(s) && !utf8.RuneStart(s[hi]) {
-		hi++
-	}
-	return s[lo:hi]
 }
 
 // finishReasonMessage maps an abnormal finish_reason to a one-line warning,

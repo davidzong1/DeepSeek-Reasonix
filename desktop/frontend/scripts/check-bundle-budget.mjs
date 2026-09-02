@@ -160,7 +160,24 @@ console.log("\nbundle budgets");
 // then absorbs a second post-quiet extent without an unbounded write loop.
 // The combined path measures 456.316 KiB; retain 0.084 KiB with the smallest
 // one-decimal ratchet.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 456.4 : 456.4;
+// The generation-bound history-prepend lease adds stable-key reader anchoring,
+// full mounted coverage, and one final arbiter-owned correction. The measured
+// path is 457.406 KiB after extracting the lease owner to satisfy repolint.
+// Latest-base transcript settle ownership measures 457.518 KiB with this UX;
+// isolated conversation forks and their extracted browser mock adapter bring
+// the combined tree to 458.158 KiB. Retain 0.042 KiB with the smallest
+// one-decimal ratchet. Completion uncertainty adds a terminal outcome and
+// notice without exposing evaluator audits to the frontend; the final merged
+// build measures 458.287 KiB gzip.
+// Transactional Ask resolution and authoritative rejected-submit recovery add
+// 0.3 KiB gzip to the initial controller path. Retain the exact turn fence,
+// bounded ListTabs retry, and stale-prompt guard with a 0.1 KiB headroom.
+// Session-catalog repair presentation stays in the lazy project-tree chunk;
+// compact shared helpers keep the combined initial path within the same gate.
+// Merge-Back adds identity-bound inspection, navigation, and retained-recovery
+// orchestration on top. The merged stable build measures 461.338 KiB and the
+// test channel measures 461.323 KiB; retain each exact one-decimal ceiling.
+const initialJSBudgetKiB = 461.4;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -213,9 +230,14 @@ for (const path of localeChunks) {
   // retain roughly 0.13 KiB of platform headroom for each.
   // Stream-failure diagnostics add five strings per dialect. Together with the
   // reachable-tail recovery copy, the merged chunks measure 58.923 KiB zh and
-  // 59.710 KiB zh-TW. Retain the complete copy with the smallest one-decimal
-  // ratchet for each dialect.
-  const budget = name.startsWith("zh-TW-") ? 59.8 * 1024 : 59.0 * 1024;
+  // 59.710 KiB zh-TW. The isolated-fork guidance brings the measured chunks
+  // to 59.1 KiB zh and 59.9 KiB zh-TW; retain a narrow one-decimal ratchet.
+  // Merge-Back lifecycle and recovery guidance measure 59.819 KiB zh and
+  // 60.612 KiB zh-TW; retain only the next one-decimal ceiling for each.
+  // The retained-recovery receipt and copy action move zh to 59.911 KiB;
+  // session-catalog recovery guidance on the merged base moves zh-TW to
+  // 60.757 KiB; retain only its exact one-decimal ceiling.
+  const budget = name.startsWith("zh-TW-") ? 60.8 * 1024 : 60.0 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -279,6 +301,22 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // The stranded-tail recovery transition plus the WebView2 reachable-tail clamp
 // bring the measured initial payload to 2447.953 KiB. Retain 0.047 KiB with
 // the smallest one-decimal ratchet.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_448.0 : 2_448.0;
+// The extracted history-prepend owner adds 3.953 KiB of bounded transaction
+// state and stable-key coverage checks. Together with the compact
+// session-version host, they measure 2452.7 KiB; the recovery coordinator and
+// dialog remain lazy. Completion uncertainty adds a distinct terminal notice
+// and localized startup copy without collapsing into recovery-paused UX.
+// Latest-base transcript settle ownership brings the measured path to
+// 2452.773 KiB; isolated conversation forks bring the combined tree to
+// 2454.719 KiB on the release toolchain. Completion uncertainty brings the
+// final merged payload to 2455.154 KiB; retain the smallest one-decimal
+// ratchet.
+// Ask turn fencing, rejection reconciliation, and the localized submit-failure
+// notice measure 2456.044 KiB raw; retain 0.056 KiB of one-decimal headroom.
+// Merge-Back's startup ownership and failure-atomic navigation fence add the
+// remaining bounded payload. The retained recovery receipt makes the stable
+// path 2465.105 KiB raw; the merged test channel measures 2464.979 KiB.
+// Retain only each channel's exact one-decimal ceiling.
+const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_465.0 : 2_465.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

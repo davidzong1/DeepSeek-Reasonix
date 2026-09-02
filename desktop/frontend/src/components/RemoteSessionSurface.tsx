@@ -2,6 +2,7 @@ import { CloudOff, Loader2, RotateCw, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
 import { app } from "../lib/bridge";
+import { publishNavigationIntent } from "../lib/useNavigationIntentFence";
 import { Transcript } from "./Transcript";
 import { AskCard } from "./AskCard";
 import { ApprovalModal } from "./ApprovalModal";
@@ -26,9 +27,14 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
   const [actionError, setActionError] = useState("");
   const [extensionFormBusy, setExtensionFormBusy] = useState(false);
   useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, tab.id]);
-  const runAction = (action: () => Promise<unknown>) => {
+  const runAction = async (action: () => Promise<unknown>, propagate = false): Promise<void> => {
     setActionError("");
-    void action().catch((error) => setActionError(error instanceof Error ? error.message : String(error)));
+    try {
+      await action();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      if (propagate) throw error;
+    }
   };
   const submitExtensionForm = (values: Record<string, unknown>) => {
     if (!extensionForm || extensionFormBusy) return;
@@ -43,7 +49,10 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
     const retry = () => {
       // With no explicit target, the backend preserves the parked tab's
       // current named/fresh-session intent instead of silently starting over.
-      runAction(() => app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, {}));
+      runAction(async () => {
+        await publishNavigationIntent("remote-reconnect");
+        return app.OpenRemoteProjectTab(tab.remote!.hostId, tab.remote!.workspace, {});
+      });
     };
     return (
       <div className="remote-surface remote-surface--warning" role="alert">
@@ -133,8 +142,8 @@ export function RemoteSessionSurface({ tab, session }: { tab: TabMeta; session: 
           onAnswer={(id, answers) => runAction(() => session.answer(id, answers.map((answer) => ({
             QuestionID: answer.questionId,
             Selected: answer.selected,
-          }))))}
-          onDismiss={() => runAction(() => session.answer(ask.id, []))}
+          }))), true)}
+          onDismiss={() => runAction(() => session.answer(ask.id, []), true)}
           onStop={() => runAction(() => session.cancelTurn())}
         />
       ) : null}

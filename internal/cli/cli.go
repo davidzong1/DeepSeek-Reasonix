@@ -1293,6 +1293,9 @@ func chatREPL(args []string, version string) int {
 	launchWebPath := handoff.path
 	launchWebSessionID := handoff.sessionID
 	launchWebModelRef := handoff.modelRef
+	if fm, ok := final.(chatTUI); ok {
+		reportShutdownFailure(fm.shutdownErr)
+	}
 	if runErr != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, runErr)
 		return 1

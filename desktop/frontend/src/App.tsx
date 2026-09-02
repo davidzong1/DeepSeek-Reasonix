@@ -34,9 +34,10 @@ import { createBoundedRefreshCoordinator, sameTabMetaLists, seedActiveTabMetaLis
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
 import { useActiveRemoteSession } from "./lib/useRemoteSession";
 import { useRemoteTabOpened } from "./lib/useRemoteTabOpened";
+import { publishNavigationIntent } from "./lib/useNavigationIntentFence";
 import { renameCurrentRemoteSession } from "./lib/remoteSessionActions";
 import { localizedNoticeText, useController, type HistoryLoadTrigger, type Item } from "./lib/useController";
-import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, onSessionRecovered, openExternal } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged, onReady, onRemoteForwards, onRemoteServer, onRemoteStatus, onRuntimeRebuilt, openExternal } from "./lib/bridge";
 import { useConfigLoadWarnings } from "./lib/useConfigLoadWarnings";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
@@ -53,6 +54,7 @@ const ProjectTree = lazy(() => import("./components/ProjectTree").then((module) 
 const RemoteSessionSurface = lazy(() => import("./components/RemoteSessionSurface").then((module) => ({ default: module.RemoteSessionSurface })));
 const ExtensionFormDialog = lazy(() => import("./components/ExtensionFormDialog").then((module) => ({ default: module.ExtensionFormDialog })));
 const MCPInteractionCard = lazy(() => import("./components/MCPInteractionCard").then((module) => ({ default: module.MCPInteractionCard })));
+const WorktreeMergeModal = lazy(() => import("./components/WorktreeMergeModal").then((module) => ({ default: module.WorktreeMergeModal })));
 /** Footer decision surface kinds. Runtime blockers are explicit recovery choices. */
 type DecisionSurfaceKind = MockDecisionSurfaceKind | "extension_form";
 import { StatusBar } from "./components/StatusBar";
@@ -110,6 +112,9 @@ import {
   type WireCompletionSummary,
   type WorkspaceConflictView,
 } from "./lib/types";
+import { runWorktreeMergeLifecycle } from "./lib/worktreeMergeLifecycle";
+import { showWorktreeCleanupNotice } from "./lib/worktreeCleanupNotice";
+import { requestSessionVersions } from "./lib/sessionRecoveryVersionHostBridge";
 import type { WorkspaceVerificationRevealRequest } from "./components/WorkspacePanel";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import type { RewindUndoState } from "./lib/rewindTypes";
@@ -284,6 +289,7 @@ function NoticePreviewPanel() {
 const TranscriptSelectionMenu = lazy(() => import("./components/TranscriptSelectionMenu").then((module) => ({ default: module.TranscriptSelectionMenu })));
 const ContextPanel = lazy(() => import("./components/ContextPanel").then((module) => ({ default: module.ContextPanel })));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
+const SessionRecoveryVersionsHost = lazy(() => import("./components/SessionRecoveryVersionsHost").then((module) => ({ default: module.SessionRecoveryVersionsHost })));
 const HeartbeatView = lazy(() => import("./custom/features/heartbeat/HeartbeatPanel").then((module) => ({ default: module.HeartbeatView })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel })));
 const RemotePanel = lazy(() => import("./components/RemotePanel").then((module) => ({ default: module.RemotePanel })));
@@ -299,7 +305,6 @@ const WorkspacePanel = lazy(async () => {
 
 const CHAT_MIN_WIDTH = 400;
 const WORKSPACE_RESIZER_WIDTH = 8;
-
 function stripLegacyGoalBudgetFlags(arg: string): string {
   const parts = arg.trim().split(/\s+/).filter(Boolean);
   while (parts.length > 0) {
@@ -309,7 +314,6 @@ function stripLegacyGoalBudgetFlags(arg: string): string {
   }
   return parts.join(" ");
 }
-
 function hasLegacyGoalBudgetFlag(arg: string): boolean {
   const first = arg.trim().split(/\s+/, 1)[0]?.toLowerCase();
   return first === "--research" || first === "--auto-research" || first === "--deep" || first === "--simple" || first === "--no-research";
@@ -1038,6 +1042,7 @@ export default function App() {
     openTopicSession,
     activateTopic,
     noteNavigationIntent,
+    registeredNavigationIntent,
     isNavigationIntentCurrent,
     reassertVisibleTabAfterStaleNavigation,
     syncActiveTab,
@@ -1252,6 +1257,7 @@ export default function App() {
   const [backgroundRuntimes, setBackgroundRuntimes] = useState<BackgroundRuntimeView[]>([]);
   const [workspaceConflict, setWorkspaceConflict] = useState<WorkspaceConflictView | null>(null);
   const [pendingClose, setPendingClose] = useState<{ tabId: string; work: ActiveWorkView; stopping: boolean } | null>(null);
+  const [worktreeMergeTabId, setWorktreeMergeTabId] = useState<string | null>(null);
   const topicRenameSkipCommitRef = useRef(false);
   const prevDecisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
   const decisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
@@ -2981,6 +2987,7 @@ export default function App() {
     const lastWorkspace = await app.RemoteLastWorkspace(host.id).catch(() => "");
     const workspace = resolveRemoteWorkspace(lastWorkspace, host.defaultWorkspace);
     if (!remoteWorkspaceLaunchGate.current.isCurrent(host.id, requestSeq)) return;
+    await publishNavigationIntent("remote-workspace");
     await app.OpenRemoteWorkspace(host.id, workspace);
   }, []);
 
@@ -3833,12 +3840,6 @@ export default function App() {
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
   [enqueueNavigation]);
 
-  useEffect(() => onSessionRecovered(() => {
-    recordFrontendDiagnostic("runtime", "session.recovered", { status: "ok" });
-    setProjectRevision((value) => value + 1);
-    void refreshTabMetas(undefined, { afterMutation: true });
-  }), [refreshTabMetas]);
-
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
@@ -3862,6 +3863,15 @@ export default function App() {
     if (state.running && !singleSurfaceLayout) return Promise.resolve();
     return enqueueNavigation({ kind: "resume-session", session });
   }, [enqueueNavigation, singleSurfaceLayout, state.running]);
+
+  const onRecoveryCreated = useCallback(() => {
+    setProjectRevision((value) => value + 1);
+    void refreshTabMetas(undefined, { afterMutation: true });
+  }, [refreshTabMetas]);
+  const onRecoveryLineageChanged = useCallback(() => {
+    setProjectRevision((value) => value + 1);
+    void refreshHistoryView();
+  }, [refreshHistoryView]);
 
   const openTaskMonitorSession = useCallback(async (tabID: string, taskID: string): Promise<boolean> => {
     if (state.running && !singleSurfaceLayout) {
@@ -4080,24 +4090,11 @@ export default function App() {
     },
     [state.running, deleteSession, refreshHistoryView],
   );
-  const onDeleteManySessions = useCallback(
-    async (paths: string[]) => {
+  const onRenameHistorySession = useCallback(
+    async (session: SessionMeta, title: string) => {
       if (state.running) return;
-      const uniquePaths = Array.from(new Set(paths));
-      for (const path of uniquePaths) {
-        // Best effort per path: one locked/missing file must not abandon the
-        // rest of the sweep. The guarded backend method revalidates actual
-        // branch and parent content before moving anything.
-        await app.DeleteRecoveryCopy(path).catch(() => undefined);
-      }
-      await refreshHistoryView();
-    },
-    [state.running, refreshHistoryView],
-  );
-  const onRenameSession = useCallback(
-    async (path: string, title: string) => {
-      if (state.running) return;
-      await renameSession(path, title);
+      if (session.topicId) await app.RenameTopic(session.topicId, title);
+      else await renameSession(session.path, title);
       const sessions = await listSessions();
       setHistView((cur) =>
         cur === null
@@ -4136,20 +4133,6 @@ export default function App() {
     },
     [purgeTrashedSession, listTrashedSessions],
   );
-  const onPurgeRecoveryCopies = useCallback(
-    async (paths: string[]) => {
-      const uniquePaths = Array.from(new Set(paths));
-      for (const path of uniquePaths) {
-        // Permanent copy cleanup must not trust the list result: the backend
-        // rechecks the trashed transcript and its live parent for every path.
-        await app.PurgeRecoveryCopy(path).catch(() => undefined);
-      }
-      const trashed = await listTrashedSessions();
-      setHistView((cur) => (cur === null ? null : { kind: "trash", sessions: trashed }));
-    },
-    [listTrashedSessions],
-  );
-
   // Workspace: open the folder chooser and switch projects. The hook resets the
   // transcript and refreshes meta on a pick. A cancel is a no-op.
   const switchFolder = useCallback(async (path?: string) => {
@@ -4692,6 +4675,16 @@ export default function App() {
               {topicbarSubtitleVisible && (
                 <div className="topicbar__subtitle" title={topicbarSubtitleTitle}>
                   {activeTab?.isolatedWorktree && <WorktreeBadge size={11} />}
+                  {activeTab?.isolatedWorktree && (
+                    <button
+                      type="button"
+                      className="topicbar__worktree-btn"
+                      onClick={() => setWorktreeMergeTabId(activeTab.id)}
+                      title={t("worktree.mergeButtonTooltip")}
+                    >
+                      <span>{t("worktree.mergeAction")}</span>
+                    </button>
+                  )}
                   {topicbarImSourcePlatform && (
                     <span className={`topicbar__source-chip topicbar__source-chip--${topicbarImSourcePlatform}`}>
                       {topicbarImSourceLabel}
@@ -5387,16 +5380,24 @@ export default function App() {
             onResume={onResumeSession}
             onPreview={previewSession}
             onDelete={onDeleteSession}
-            onRename={onRenameSession}
+            onRename={onRenameHistorySession}
             onRestore={onRestoreTrashedSession}
             onPurge={onPurgeTrashedSession}
             onPurgeAll={onPurgeAllTrashedSessions}
-            onPurgeRecoveryCopies={onPurgeRecoveryCopies}
-            onDeleteMany={onDeleteManySessions}
+            onInspectVersions={requestSessionVersions}
             onClose={closeHistory}
           />
         </Suspense>
       )}
+
+      <Suspense fallback={null}>
+        <SessionRecoveryVersionsHost
+          sessions={histView?.sessions}
+          onResumeSession={onResumeSession}
+          onRecoveryCreated={onRecoveryCreated}
+          onLineageChanged={onRecoveryLineageChanged}
+        />
+      </Suspense>
 
       {settingsTarget !== null && (
         <Suspense fallback={null}>
@@ -5475,6 +5476,45 @@ export default function App() {
           onAddToChat={addSelectedTextToComposer}
         />
       </Suspense>
+      {worktreeMergeTabId && (
+        <Suspense fallback={null}>
+          <WorktreeMergeModal
+            tabId={worktreeMergeTabId}
+            isOpen={Boolean(worktreeMergeTabId)}
+            onClose={() => setWorktreeMergeTabId(null)}
+            onMerged={async (res) => {
+              const tabToClose = worktreeMergeTabId;
+              if (!tabToClose || !res.sourceRoot || !res.worktreeRoot || !res.targetBranch || !res.mergedCommit || !res.worktreeBranch || !res.worktreeHead) {
+                throw new Error(res.error || t("worktree.mergeReceiptInvalid"));
+              }
+              const navigationIntentSeq = noteNavigationIntent();
+              try {
+                const navigationIntentToken = await registeredNavigationIntent(navigationIntentSeq);
+                if (!navigationIntentToken || !isNavigationIntentCurrent(navigationIntentSeq)) {
+                  showToast(t("worktree.navigationChangedPreserved"), "error", { durationMs: 9000 });
+                  return;
+                }
+                const lifecycle = await runWorktreeMergeLifecycle(res, tabToClose, navigationIntentToken, {
+                  ensureSource: (sourceRoot) => singleSurfaceLayout
+                    ? ensureBlankSurface("project", sourceRoot, navigationIntentSeq)
+                    : ensureBlankTab("project", sourceRoot, navigationIntentSeq),
+                  isNavigationCurrent: () => isNavigationIntentCurrent(navigationIntentSeq),
+                  seedSource: seedActiveTabMeta,
+                  listTabs: () => app.ListTabs(),
+                  closeWorktree: (request) => app.CloseMergedWorktreeTab(request),
+                  finalize: (request) => app.FinalizeWorktreeMerge(request),
+                  onNavigationPreserved: () => showToast(t("worktree.navigationChangedPreserved"), "error", { durationMs: 9000 }),
+                  onCloseBlocked: () => showToast(t("worktree.cleanupViewBlocked"), "error", { durationMs: 8000 }),
+                });
+                if (lifecycle.phase !== "finalized") return;
+                showWorktreeCleanupNotice(lifecycle.cleanup, t, showToast);
+              } catch (caught: unknown) {
+                showToast(`${t("worktree.mergeDoneCleanupFailed")} ${caught instanceof Error ? caught.message : String(caught)}`, "error", { durationMs: 9000 });
+              }
+            }}
+          />
+        </Suspense>
+      )}
       {windowsFramelessChrome && (
         <WindowsWindowControls
           maximised={mainWindowMaximised}

@@ -224,6 +224,19 @@ type App struct {
 	// another navigation is still activating.
 	singleSurfaceMu sync.Mutex
 
+	// worktreeMergeMu serializes the inspect-confirm-merge/finalize mutation
+	// boundary. Git identities are still revalidated after workspace leases are
+	// acquired; this mutex only prevents duplicate in-process Wails calls.
+	worktreeMergeMu sync.Mutex
+	// Worktree runtime reservations are ordered before App.mu. Runtime owners
+	// hold this gate through final publication; callers must never acquire it
+	// under App.mu. Merge reservations cover both the source and isolated roots,
+	// while cleanup reservations cover the complete allocation through removal.
+	worktreeReservations worktreeRuntimeReservations
+	// navigationIntent linearizes frontend intent publication with the final
+	// merged-worktree removal before the runtime mutation barrier and App.mu.
+	navigationIntent navigationIntentFence
+
 	// sessionRemovalMu serializes operations that remove visible or detached
 	// session bindings. Those operations may snapshot controllers before
 	// deletion; keep that snapshot outside a.mu, but do not let DeleteSession or
@@ -453,6 +466,10 @@ func NewApp() *App {
 		remoteWindows:        newRemoteWindowRegistry(),
 		remoteWindowOwnerID:  newRemoteWindowOwnerID(),
 		topicState:           desktopTopicState,
+		worktreeReservations: worktreeRuntimeReservations{
+			cleanup: map[string]struct{}{},
+			merge:   map[string]struct{}{},
+		},
 	}
 	a.desktopShell.trayState = "probing"
 	a.webView2Recovery = newWebView2RecoveryCoordinator(a)
@@ -746,6 +763,10 @@ func (a *App) restoreOrBuildTabs() {
 	if len(f.Tabs) > 0 {
 		toBuild := make([]*WorkspaceTab, 0, len(f.Tabs))
 		for _, entry := range f.Tabs {
+			releaseAdmission, admissionErr := a.beginProjectRuntimeAdmission(entry.Scope, entry.WorkspaceRoot)
+			if admissionErr != nil {
+				continue
+			}
 			a.mu.Lock()
 			id := a.restoredTabIDLocked(entry.ID)
 			a.mu.Unlock()
@@ -781,10 +802,7 @@ func (a *App) restoreOrBuildTabs() {
 			tab.SessionPath = strings.TrimSpace(entry.SessionPath)
 			tab.ReadOnly = entry.ReadOnly
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
-			a.mu.Lock()
-			a.tabs[tab.ID] = tab
-			a.tabOrder = append(a.tabOrder, tab.ID)
-			a.mu.Unlock()
+			a.publishRestoredTab(tab, releaseAdmission)
 			toBuild = append(toBuild, tab)
 		}
 		a.mu.Lock()
@@ -1968,22 +1986,6 @@ func (a *App) workspaceNotReadyErrLocked(tab *WorkspaceTab) error {
 	return fmt.Errorf("workspace is still starting")
 }
 
-// workspaceRuntimeAdmissionErr is the backend half of the composer readiness
-// contract. The frontend gate avoids an optimistic bubble for known startup
-// states; this check closes the race where a rebuild or lease failure lands
-// after the last metadata refresh but before a bound Submit call.
-func (a *App) workspaceRuntimeAdmissionErr(tab *WorkspaceTab, ctrl control.SessionAPI) error {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if tab != nil && ctrl != nil && tab.Ctrl == ctrl {
-		runtimeView := a.sessionRuntimeViewLocked(tab)
-		if runtimeView.Phase == sessionRuntimeReady {
-			return nil
-		}
-	}
-	return a.workspaceNotReadyErrLocked(tab)
-}
-
 // tabIsReadOnly reads tab.ReadOnly under a.mu; setTabReadOnly can flip it
 // concurrently with Submit-family bound calls. Callers must not hold a.mu.
 func (a *App) tabIsReadOnly(tab *WorkspaceTab) bool {
@@ -2716,30 +2718,13 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 // backend begins processing the request. The fork becomes active only while the
 // source tab still owns focus, so a later tab selection remains authoritative.
 func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
-	sourceTab, ctrl := a.tabAndCtrlByID(tabID)
-	if sourceTab == nil || ctrl == nil {
-		return TabMeta{}, nil
-	}
-	if a.tabIsReadOnly(sourceTab) {
-		return TabMeta{}, readOnlyChannelErr()
-	}
+	result, err := a.forkForTabWithOptions(tabID, turn, false)
+	return result.Tab, err
+}
 
-	if err := a.ensureTabControllerWorkspace(sourceTab); err != nil {
-		return TabMeta{}, err
-	}
-	a.mu.RLock()
-	if a.tabs[sourceTab.ID] != sourceTab || sourceTab.Ctrl == nil {
-		a.mu.RUnlock()
-		return TabMeta{}, nil
-	}
-	ctrl = sourceTab.Ctrl
-	a.mu.RUnlock()
-
-	newPath, err := ctrl.ForkSession(turn, "")
-	if err != nil {
-		return TabMeta{}, err
-	}
-	return a.openForkedSessionTab(sourceTab, newPath)
+// ForkWorktreeForTab forks the requested source tab into an isolated Git worktree.
+func (a *App) ForkWorktreeForTab(tabID string, turn int) (ForkWorktreeResultView, error) {
+	return a.forkForTabWithOptions(tabID, turn, true)
 }
 
 // SummarizeFrom / SummarizeUpTo compress model context after / before the start
@@ -3115,18 +3100,6 @@ func (a *App) deleteSession(path string) error {
 	return nil
 }
 
-type removedSessionRuntime struct {
-	tab           *WorkspaceTab
-	ctrl          control.SessionAPI
-	sink          *tabEventSink
-	sessionDir    string
-	sessionPath   string
-	scope         string
-	workspaceRoot string
-	topicID       string
-	readOnly      bool
-}
-
 type fallbackRuntimeTarget struct {
 	needs         bool
 	scope         string
@@ -3390,14 +3363,21 @@ func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
 		if workspaceRoot == "" {
 			return fmt.Errorf("workspaceRoot is required")
 		}
-		saveWorkspace(workspaceRoot)
-		a.registerProjectRoot(workspaceRoot)
 		actualRoot = workspaceRoot
 	} else {
 		actualRoot = globalWorkspaceRoot()
 		if err := os.MkdirAll(actualRoot, 0o755); err != nil {
 			return fmt.Errorf("create global workspace: %w", err)
 		}
+	}
+	releaseAdmission, err := a.beginProjectRuntimeAdmission(scope, actualRoot)
+	if err != nil {
+		return err
+	}
+	defer releaseAdmission()
+	if scope == "project" {
+		saveWorkspace(workspaceRoot)
+		a.registerProjectRoot(workspaceRoot)
 	}
 
 	model, toolApprovalMode := desktopNewSessionDefaults(scope, actualRoot)
@@ -3599,7 +3579,15 @@ func (a *App) purgeTrashedSession(path string, requireRedundantRecovery bool) er
 // the branch meta sidecar, with the legacy .titles.json map kept as a
 // compatibility write-through for older desktop data paths.
 func (a *App) RenameSession(path, title string) error {
-	return a.renameSessionInDir(a.activeSessionDir(), path, title)
+	dir := a.activeSessionDir()
+	if _, _, err := validateSessionPath(dir, path); err != nil {
+		resolvedDir, _, resolveErr := a.sessionDirForPath(path)
+		if resolveErr != nil {
+			return errors.New("session version is unavailable")
+		}
+		dir = resolvedDir
+	}
+	return friendlySessionFileError(a.renameSessionInDir(dir, path, title))
 }
 
 func (a *App) renameSessionInDir(dir, path, title string) error {
@@ -4642,8 +4630,11 @@ func collectEventLogUserPrompts(path string, info os.FileInfo, resolveUserConten
 	fallbackAt := promptHistoryFallbackMillis(path, info)
 	turn := 0
 	for _, user := range users {
-		text := strings.TrimSpace(resolveUserContent(strings.TrimSpace(user.Text)))
-		if text == "" || control.IsSyntheticUserMessage(text) {
+		if !agent.IsUserAuthoredTurnMessage(user.Message) {
+			continue
+		}
+		text := sessionUserPromptText(user.Message, resolveUserContent)
+		if text == "" {
 			continue
 		}
 		at := fallbackAt
@@ -4684,23 +4675,25 @@ func collectJSONLUserPrompts(path string, info os.FileInfo, resolveUserContent f
 		// 1) Legacy event format: {"kind":"user.message","text":"..."}
 		// 2) Early event format:   {"type":"user.message","text":"..."}
 		// 3) Current provider.Message format: {"role":"user","content":"..."}
-		text := ""
+		var message provider.Message
 		kindOrType := strings.TrimSpace(rec.Kind)
 		if kindOrType == "" {
 			kindOrType = strings.TrimSpace(rec.Type)
 		}
 		if kindOrType == "user.message" {
-			text = strings.TrimSpace(rec.Text)
+			message = provider.Message{Role: provider.RoleUser, Content: strings.TrimSpace(rec.Text)}
 		} else if strings.TrimSpace(rec.Role) == "user" {
-			text = strings.TrimSpace(rec.Content)
+			message = provider.Message{
+				Role: provider.RoleUser, Origin: rec.Origin,
+				Content: strings.TrimSpace(rec.Content), RawContent: strings.TrimSpace(rec.RawContent),
+			}
 		}
-		if text != "" {
-			text = resolveUserContent(text)
-			text = strings.TrimSpace(text)
-			if text == "" {
+		if message.Content != "" {
+			if !agent.IsUserAuthoredTurnMessage(message) {
 				continue
 			}
-			if control.IsSyntheticUserMessage(text) {
+			text := sessionUserPromptText(message, resolveUserContent)
+			if text == "" {
 				continue
 			}
 			at := fallbackAt
@@ -4718,6 +4711,13 @@ func collectJSONLUserPrompts(path string, info os.FileInfo, resolveUserContent f
 		}
 	}
 	return nil
+}
+
+func sessionUserPromptText(message provider.Message, resolveUserContent func(string) string) string {
+	if strings.TrimSpace(message.RawContent) != "" {
+		return strings.TrimSpace(agent.UserMessageText(message))
+	}
+	return strings.TrimSpace(resolveUserContent(strings.TrimSpace(message.Content)))
 }
 
 func promptHistoryFallbackMillis(path string, info os.FileInfo) int64 {
@@ -5117,7 +5117,6 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is not a directory", dir)
 	}
-	saveWorkspace(dir)
 
 	// Open a registered topic so the new workspace appears in the project tree
 	// immediately instead of only existing as an in-memory tab.
@@ -5217,7 +5216,7 @@ func historyProviderMessagesWithPersistedTimes(msgs []provider.Message, sessionP
 	}
 	needsPersistedTime := false
 	for _, msg := range msgs {
-		if msg.Role == provider.RoleUser && msg.CreatedAt <= 0 && agent.IsUserAuthoredTurn(agent.UserMessageText(msg)) {
+		if msg.CreatedAt <= 0 && agent.IsUserAuthoredTurnMessage(msg) {
 			needsPersistedTime = true
 			break
 		}
@@ -5492,15 +5491,7 @@ func historyUserDisplayContent(msg provider.Message, resolveUserContent func(str
 func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(string) string, checkpointTurns map[int]int) []int {
 	out := make([]int, 0)
 	for index, msg := range msgs {
-		if msg.Role != provider.RoleUser {
-			continue
-		}
-		content := agent.UserMessageText(msg)
-		if _, isSteer := agent.SteerText(content); isSteer {
-			continue
-		}
-		content = historyUserDisplayContent(msg, resolveUserContent)
-		if control.IsSyntheticUserMessage(content) {
+		if !agent.IsUserAuthoredTurnMessage(msg) {
 			continue
 		}
 		turn, ok := checkpointTurns[index]
@@ -5577,7 +5568,7 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 		return append(out, rows...)
 	}
 	if state.suppressCanonicalTurn {
-		if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
+		if !agent.IsUserAuthoredTurnMessage(m) {
 			return out
 		}
 		state.suppressCanonicalTurn = false
@@ -5591,11 +5582,11 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 		// regular user bubble or being filtered as synthetic (#4044).
 		// Check against the raw m.Content: resolveUserContent applies
 		// StripComposePrefixes which trims trailing whitespace.
-		if rows, handled := historySteerRows(agent.UserMessageText(m), false); handled {
+		if rows, handled := historySteerRows(m.Content, false); handled {
 			return append(out, rows...)
 		}
 		content = historyUserDisplayContent(m, resolveUserContent)
-		if control.IsSyntheticUserMessage(content) {
+		if agent.IsHostGeneratedUserMessage(m) {
 			return out
 		}
 		if turn, ok := checkpointTurns[index]; ok {
@@ -5690,12 +5681,12 @@ func (state *historyMessageConvertState) consumeHistoryPlannerState(m provider.M
 		return
 	}
 	if m.LocalOnly {
-		if _, isSteer := agent.SteerText(agent.UserMessageText(m)); isSteer {
+		if _, isSteer := agent.SteerText(m.Content); isSteer {
 			return
 		}
 	}
 	if state.suppressCanonicalTurn {
-		if m.Role != provider.RoleUser || !agent.IsUserAuthoredTurn(agent.UserMessageText(m)) {
+		if !agent.IsUserAuthoredTurnMessage(m) {
 			return
 		}
 		state.suppressCanonicalTurn = false
@@ -5703,7 +5694,7 @@ func (state *historyMessageConvertState) consumeHistoryPlannerState(m provider.M
 	if m.Role != provider.RoleUser {
 		return
 	}
-	if control.IsSyntheticUserMessage(historyUserDisplayContent(m, resolveUserContent)) {
+	if agent.IsHostGeneratedUserMessage(m) {
 		return
 	}
 	key := messageDisplayKey(agent.UserMessageText(m))
@@ -5776,15 +5767,7 @@ func visibleHistoryUserTurns(msgs []provider.Message, resolveUserContent func(st
 }
 
 func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) string) bool {
-	if msg.Role != provider.RoleUser {
-		return false
-	}
-	content := agent.UserMessageText(msg)
-	if _, isSteer := agent.SteerText(content); isSteer {
-		return false
-	}
-	content = historyUserDisplayContent(msg, resolveUserContent)
-	return !control.IsSyntheticUserMessage(content)
+	return agent.IsUserAuthoredTurnMessage(msg)
 }
 
 func providerMessagesForVisibleTurnRange(msgs []provider.Message, resolveUserContent func(string) string, startTurn, endTurn int) ([]provider.Message, []int) {
@@ -6196,6 +6179,7 @@ type previewEventRecord struct {
 	Kind             string                    `json:"kind"`
 	Type             string                    `json:"type"`
 	Role             string                    `json:"role"`
+	Origin           provider.MessageOrigin    `json:"origin"`
 	TS               json.RawMessage           `json:"ts"`
 	Time             json.RawMessage           `json:"time"`
 	Timestamp        json.RawMessage           `json:"timestamp"`
@@ -6207,6 +6191,7 @@ type previewEventRecord struct {
 	Detail           string                    `json:"detail"`
 	Code             string                    `json:"code"`
 	Content          string                    `json:"content"`
+	RawContent       string                    `json:"raw_content"`
 	Reasoning        string                    `json:"reasoning"`
 	ReasoningContent string                    `json:"reasoningContent"`
 	MemoryCitations  []provider.MemoryCitation `json:"memoryCitations"`

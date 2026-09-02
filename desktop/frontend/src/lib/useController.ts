@@ -8,9 +8,12 @@ import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady, onRuntimeRebuilt, onTabMeta, onTopicActivation } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { formatInboxCancelError } from "./inboxError";
+import { settleForkConversationForTab } from "./forkWorktree";
+import type { MessageActionScope, MessageActionState } from "./messageActions";
 import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
-import { resolveActiveTurnId } from "./inboxSubmit";
+import { answerPromptForActiveTurn, isLocalRuntimeCommand, normalizeTurnSubmit, resolveActiveTurnId } from "./inboxSubmit";
+import { findTabAfterSubmitFailure, reduceSubmitFailure } from "./turnSubmissionFailure";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { completionSummaryPresentation, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
@@ -45,6 +48,7 @@ import { resolveSnapshotTurnStartedAt, resolveTurnStartedAt, snapshotPredatesTur
 import { TurnEventProjector } from "./turnEventProjection";
 import { useStaleTurnWatchdog } from "./useStaleTurnWatchdog";
 import { useRemoteTabSwitch } from "./useRemoteTabSwitch";
+import { useNavigationIntentFence } from "./useNavigationIntentFence";
 import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, parseTodos, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
@@ -231,8 +235,6 @@ export type ControllerLiveStore = {
   getSnapshot: (tabId: string | undefined) => LiveStream | undefined;
   getModelActiveAt?: (tabId: string | undefined) => number | undefined;
 };
-export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
-export type MessageActionState = { turn: number; scope: MessageActionScope };
 export type HistoryMutationKind = "replace" | "prepend" | "append" | "patch";
 export type HistoryMutation = { seq: number; kind: HistoryMutationKind };
 export type HistoryLoadTrigger = "viewport-user" | "question-jump" | "retry" | "auto-fill";
@@ -245,7 +247,6 @@ type PendingTopicActivation = {
   navigationSeq: number;
   tabId?: string;
   placeholderItems?: Item[];
-  surfacePolicy: HydrateSurfacePolicy;
   /** Terminal event that arrived before the ticket resolved. */
   terminal?: TopicActivationEvent;
 };
@@ -705,28 +706,7 @@ export function runtimeReadyForSubmit(meta?: Meta): boolean {
   return !meta.runtime || meta.runtime.phase === "ready";
 }
 
-// normalizeTurnSubmit is the final frontend boundary before optimistic
-// transcript state is created. Display text may intentionally be shorter than
-// the provider input, but a visible-only message must never start an empty model
-// turn (#6869).
-export function normalizeTurnSubmit(displayText: string, submitText: string): {
-  display: string;
-  submit: string;
-} {
-  const display = displayText.trim();
-  const submit = submitText.trim();
-  if (!submit) throw new Error("Message cannot be empty.");
-  return { display, submit };
-}
-
-// These commands are handled entirely by the desktop host and deliberately do
-// not create an agent turn. Keep them on the compatibility submit entry point:
-// StartTurnForTab must return a durable turnId and would correctly reject a
-// successful local command for having no admitted turn.
-export function isLocalRuntimeCommand(input: string): boolean {
-  const trimmed = input.trim();
-  return trimmed === "/reload" || trimmed === "/effort" || trimmed.startsWith("/effort ");
-}
+export { isLocalRuntimeCommand, normalizeTurnSubmit } from "./inboxSubmit";
 
 const frontendSubmissionEpoch = typeof globalThis.crypto?.randomUUID === "function"
   ? globalThis.crypto.randomUUID()
@@ -804,6 +784,7 @@ type Action =
   | { type: "unsend" }
   | { type: "send_confirmed"; submissionId: string }
   | { type: "turn_admitted"; turnId: string; submissionId: string }
+  | { type: "turn_submit_rejected"; submissionId: string; error: string }
   | { type: "send_failed"; submissionId: string; error: string }
   | { type: "turn_interrupted" }
   | { type: "backend_status"; running: boolean; turnStartedAt?: number; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean; turnId?: string; turnStatus?: string; snapshotAt?: number }
@@ -839,6 +820,7 @@ type Action =
   | { type: "clearExtensionForm" }
   | { type: "extension_notifications_drained" }
   | { type: "approval_drained"; ids: string[]; epoch: number }
+  | { type: "ask_submit_succeeded"; id: string; epoch: number }
   | { type: "submit_prompt_failed"; id: string; epoch: number }
   | { type: "controller_rebuilt" }
   | { type: "reset" }
@@ -1963,6 +1945,8 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
           title: t("notice.recoveryPausedTitle"),
           text: t("notice.recoveryPausedBody"),
         }];
+      } else if (e.outcome === "completion_uncertain") {
+        items = [...finalized, { kind: "notice", id: `e${s.seq}`, level: "info", title: t("notice.completionUncertainTitle"), text: t("notice.completionUncertainBody") }];
       } else if (e.status === "interrupted") {
         const interruptItems: Item[] = [{
           kind: "notice",
@@ -2087,13 +2071,8 @@ export function reducer(s: State, a: Action): State {
       return s.pendingSubmissionId === a.submissionId && a.turnId
         ? { ...s, activeTurnId: a.turnId }
         : s;
-    case "send_failed": {
-      if (s.pendingSubmissionId !== a.submissionId) return s;
-      const idx = s.items.findIndex((it) => it.kind === "user" && it.submissionId === a.submissionId);
-      const items = idx >= 0 ? s.items.map((it, i) => (i === idx ? { ...it, submissionId: undefined, failed: true } : it)) : s.items;
-      const notice: Item = { kind: "notice", id: `n${s.seq}`, level: "warn", text: a.error };
-      return { ...s, pendingUser: undefined, pendingSubmissionId: undefined, deliveryRecoveryActive: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, activeTurnId: undefined, currentAssistant: undefined, assistantSegmentOrdinal: 0, live: undefined, streamAttemptJournal: undefined, turnLifecycleObservedAt: promptEventClock(), seq: s.seq + 1, items: [...removeEmptyAssistantItems(items), notice] };
-    }
+    case "turn_submit_rejected":
+    case "send_failed": return reduceSubmitFailure(s, a.submissionId, a.error, a.type === "turn_submit_rejected", promptEventClock());
     case "turn_interrupted": {
       return withRemoteTurnInterrupted(s);
     }
@@ -2105,6 +2084,7 @@ export function reducer(s: State, a: Action): State {
       const cancelRequested = Boolean(a.cancelRequested);
       const foregroundRunning = foregroundRunningFromRuntimeMeta({ running: a.running, pendingPrompt, backgroundJobs, cancellable: a.cancellable });
       const turnStartedAt = foregroundRunning ? resolveSnapshotTurnStartedAt(s.running || s.turnActive ? s.turnStartAt : 0, a.turnStartedAt) : s.turnStartAt;
+      const activeTurnId = foregroundRunning ? a.turnId ?? s.activeTurnId : undefined;
       // A retry event is newer evidence of foreground activity than an idle
       // snapshot whose fetch started earlier. Keep the turn cancellable until
       // a snapshot started after the retry confirms that it is actually idle.
@@ -2118,6 +2098,7 @@ export function reducer(s: State, a: Action): State {
         cancelRequested === s.cancelRequested &&
         cancellable === s.cancellable &&
         turnStartedAt === s.turnStartAt &&
+        activeTurnId === s.activeTurnId &&
         !clearsRetry
       ) return s;
       if (foregroundRunning) {
@@ -2129,7 +2110,7 @@ export function reducer(s: State, a: Action): State {
           backgroundJobs,
           cancelRequested,
           cancellable,
-          activeTurnId: a.turnId ?? s.activeTurnId,
+          activeTurnId,
           turnStartAt: turnStartedAt,
         };
       }
@@ -2354,6 +2335,11 @@ export function reducer(s: State, a: Action): State {
       const next = { ...s, approval: undefined, pendingPrompt: Boolean(s.ask), resolvedPromptId: s.approval.id };
       return endPromptWaitIfIdle(next);
     }
+    case "ask_submit_succeeded": {
+      if (s.promptEpoch !== a.epoch || s.ask?.id !== a.id) return s;
+      const next = { ...s, ask: undefined, pendingPrompt: Boolean(s.approval), resolvedPromptId: a.id };
+      return endPromptWaitIfIdle(next);
+    }
     // The optimistic clearApproval/clearAsk tombstone was wrong: the backend
     // call that was supposed to actually resolve this id failed, so the
     // prompt is still genuinely pending there. Undo the tombstone so the next
@@ -2476,6 +2462,7 @@ export function useController() {
   // visible tab ID eventually returns to the original value.
   const activeNavigationSeqRef = useRef(0);
   const navigationSourcesRef = useRef(new Map<number, NavigationSourceSnapshot>());
+  const { registerNavigationIntent, registeredNavigationIntent } = useNavigationIntentFence();
   // A render-triggering counter so that mutations to a non-active tab's state still
   // cause a re-render when that tab becomes active.
   const [, setVersion] = useState(0);
@@ -2524,8 +2511,9 @@ export function useController() {
     };
     navigationSourcesRef.current.clear();
     navigationSourcesRef.current.set(seq, source);
+    registerNavigationIntent(seq);
     return seq;
-  }, []);
+  }, [registerNavigationIntent]);
   const snapshotNavigationSourceTab = useCallback((navigationSeq: number) => {
     const source = navigationSourcesRef.current.get(navigationSeq);
     if (!source?.tabId || source.tab || source.tabPromise) return;
@@ -2537,6 +2525,11 @@ export function useController() {
   const isNavigationIntentCurrent = useCallback((seq: number): boolean => {
     return activeNavigationSeqRef.current === seq;
   }, []);
+  const requireRegisteredNavigationIntent = useCallback(async (seq: number): Promise<void> => {
+    const token = await registeredNavigationIntent(seq);
+    if (!token) throw new Error("navigation intent registration failed");
+    if (!isNavigationIntentCurrent(seq)) throw new Error("navigation intent was superseded");
+  }, [isNavigationIntentCurrent, registeredNavigationIntent]);
   const navigationCompletionCurrent = useCallback((seq: number, kind: string, tabId: string): boolean => {
     if (activeNavigationSeqRef.current === seq) return true;
     addBreadcrumb(kind, `stale ${tabId} seq=${seq} current=${activeNavigationSeqRef.current}`);
@@ -3279,6 +3272,14 @@ export function useController() {
     return tabs;
   }, [dispatchRuntimeStatusForTab, loadSessionDataForTab, refreshBalanceForTab]);
 
+  const reconcileRuntimeAfterRejectedMutation = useCallback(async (tabId: string): Promise<void> => {
+    const result = await findTabAfterSubmitFailure(app, tabId, CANCEL_RECONCILE_DELAYS_MS, promptEventClock);
+    if (!result) return;
+    const [tab, snapshotAt] = result;
+    if (tab?.runtime?.epoch) runtimeEpochByTabRef.current.set(tabId, tab.runtime.epoch);
+    dispatchRuntimeStatusForTab(tabId, tab ?? { running: false }, snapshotAt);
+  }, [dispatchRuntimeStatusForTab]);
+
   // Authoritative backstop for the prompt-freshness heuristic: after the reducer
   // rejects a stale idle snapshot, refetch backend state once. If the backend
   // resolved the prompt, the fresh snapshot (fetched after any in-flight replay)
@@ -3445,7 +3446,9 @@ export function useController() {
     }
     noteActivationSettled(event.requestId, "ready");
     ensureTranscriptSubscription(tabId);
-    void loadSessionDataForTab(tabId, true, "open-topic", { placeholderItems: pending.placeholderItems, surfacePolicy: pending.surfacePolicy })
+    // The ticket already prepared the target. Preserve any Ask that raced
+    // ready while reset=true supersedes the earlier agent-ready history read.
+    void loadSessionDataForTab(tabId, true, "open-topic", { placeholderItems: pending.placeholderItems })
       .then(() => {
         if (!isNavigationIntentCurrent(pending.navigationSeq) || activeTabIdRef.current !== tabId) return;
         const hydrated = statesRef.current.get(tabId);
@@ -3678,6 +3681,12 @@ export function useController() {
     lastTurnActivityAtByTab, reconcile: reconcileStaleTurn,
   });
 
+  const rejectTurnSubmission = useCallback((tabId: string, submissionId: string, error: unknown) => {
+    if (statesRef.current.get(tabId)?.pendingSubmissionId !== submissionId) return;
+    dispatchTo(tabId, { type: "turn_submit_rejected", submissionId, error: `Send failed: ${errorMessage(error)}` });
+    void reconcileRuntimeAfterRejectedMutation(tabId);
+  }, [dispatchTo, reconcileRuntimeAfterRejectedMutation]);
+
   // Replay any pending approval/ask prompts when switching tabs, so a
   // plan-mode session left awaiting confirmation rebuilds its modal (#4275).
   useEffect(() => {
@@ -3746,13 +3755,13 @@ export function useController() {
           }
           dispatchTo(tabId, { type: "send_confirmed", submissionId });
         },
-        (error) => dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` }),
+        (error) => rejectTurnSubmission(tabId, submissionId, error),
       );
     } catch (error) {
-      dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
+      rejectTurnSubmission(tabId, submissionId, error);
       throw error;
     }
-  }, [bumpCancelHydrateSeq, dispatchTo]);
+  }, [bumpCancelHydrateSeq, dispatchTo, rejectTurnSubmission]);
 
   const recoverDeliveryToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText) => {
     if (!tabId) throw new Error(t("composer.workspaceStarting"));
@@ -3770,13 +3779,13 @@ export function useController() {
     try {
       void app.SubmitDeliveryRecoveryToTabWithID(tabId, display, submit, submissionId).then(
         () => dispatchTo(tabId, { type: "send_confirmed", submissionId }),
-        (error) => dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` }),
+        (error) => rejectTurnSubmission(tabId, submissionId, error),
       );
     } catch (error) {
-      dispatchTo(tabId, { type: "send_failed", submissionId, error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
+      rejectTurnSubmission(tabId, submissionId, error);
       throw error;
     }
-  }, [dispatchTo]);
+  }, [dispatchTo, rejectTurnSubmission]);
 
   const send = useCallback((displayText: string, submitText = displayText) => {
     const tabId = activeTabIdRef.current ?? activeTabId;
@@ -3930,22 +3939,20 @@ export function useController() {
     });
   }, [activeTabId, dispatchTo]);
 
-  const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]) => {
-    if (!activeTabId) return;
+  const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]): Promise<void> => {
+    if (!activeTabId) return Promise.reject(new Error("active tab is unavailable"));
     const tabId = activeTabId;
-    const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
-    const turnId = statesRef.current.get(tabId)?.activeTurnId;
-    dispatchTo(tabId, { type: "clearAsk" });
-    const request = typeof app.AnswerPromptForTab === "function"
-      ? turnId
-        ? app.AnswerPromptForTab(tabId, turnId, id, answers)
-        : Promise.reject(new Error("active turn id is unavailable"))
-      : app.AnswerQuestionForTab(tabId, id, answers);
-    request.catch(() => {
-      dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
-      replayPendingPromptsForActiveTab(tabId);
-    });
-  }, [activeTabId, dispatchTo]);
+    const state = statesRef.current.get(tabId);
+    const epoch = state?.promptEpoch ?? 0;
+    return answerPromptForActiveTurn(app, tabId, id, answers, state?.activeTurnId).then(
+      () => dispatchTo(tabId, { type: "ask_submit_succeeded", id, epoch }),
+      (error) => {
+        dispatchTo(tabId, { type: "local_notice", level: "warn", text: t("notice.askSubmitFailed", { error: errorMessage(error) }), preserveRuntime: true });
+        void reconcileRuntimeAfterRejectedMutation(tabId);
+        throw error;
+      },
+    );
+  }, [activeTabId, dispatchTo, reconcileRuntimeAfterRejectedMutation]);
 
   const answerMCPInteraction = useCallback(
     (id: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
@@ -4240,6 +4247,7 @@ export function useController() {
     dispatchTo(targetTabId, { type: "hydrate_start", reason: "resume-session", placeholderItems });
     if (!sameSession) dispatchTo(targetTabId, { type: "reset" });
     const surfaceReady = (async (): Promise<SurfaceDataCommit> => {
+      await requireRegisteredNavigationIntent(navigationSeq);
       if (tabId) await waitForTabReady(tabId);
       else if (!(await waitForBackendActiveTab(targetTabId))) {
         return failSessionNavigation(navigationSeq, targetTabId);
@@ -4266,7 +4274,7 @@ export function useController() {
       return terminal("ready");
     })().catch(() => failSessionNavigation(navigationSeq, targetTabId));
     return { value: undefined, surfaceReady };
-  }, [activeTabId, beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, failSessionNavigation, navigationCompletionCurrent, reconcileSessionNavigationForTab, refreshCheckpoints, sessionLoadCurrent, snapshotNavigationSourceTab, waitForBackendActiveTab, waitForTabReady]);
+  }, [activeTabId, beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, failSessionNavigation, navigationCompletionCurrent, reconcileSessionNavigationForTab, refreshCheckpoints, requireRegisteredNavigationIntent, sessionLoadCurrent, snapshotNavigationSourceTab, waitForBackendActiveTab, waitForTabReady]);
 
   const openChannelSession = useCallback((path: string, tabId: string, navigationIntentSeq?: number): NavigationResult<void> | undefined => {
     if (!tabId) return;
@@ -4278,6 +4286,7 @@ export function useController() {
     if (!sameSession) dispatchTo(tabId, { type: "reset" });
     const terminal = (outcome: SurfaceDataOutcome, error?: string): SurfaceDataCommit => ({ intent: navigationSeq, outcome, tabId, error });
     const surfaceReady = (async (): Promise<SurfaceDataCommit> => {
+      await requireRegisteredNavigationIntent(navigationSeq);
       await waitForTabReady(tabId);
       if (!navigationCompletionCurrent(navigationSeq, "session.channel", tabId)) return terminal("superseded");
       const seq = bumpSessionLoadSeq(tabId);
@@ -4298,7 +4307,7 @@ export function useController() {
       return terminal("ready");
     })().catch(() => failSessionNavigation(navigationSeq, tabId));
     return { value: undefined, surfaceReady };
-  }, [beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, failSessionNavigation, isNavigationIntentCurrent, navigationCompletionCurrent, reconcileSessionNavigationForTab, refreshCheckpoints, sessionLoadCurrent, snapshotNavigationSourceTab, waitForTabReady]);
+  }, [beginActiveNavigation, bumpSessionLoadSeq, dispatchTo, failSessionNavigation, isNavigationIntentCurrent, navigationCompletionCurrent, reconcileSessionNavigationForTab, refreshCheckpoints, requireRegisteredNavigationIntent, sessionLoadCurrent, snapshotNavigationSourceTab, waitForTabReady]);
 
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
   const deleteSession = useCallback((path: string) => app.DeleteSession(path).finally(() => invalidateCache()), []);
@@ -4323,14 +4332,16 @@ export function useController() {
 
   const pickWorkspace = useCallback(async (navigationIntentSeq?: number): Promise<string> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     const path = await app.PickWorkspace();
     return refreshWorkspaceState(path, navigationSeq);
-  }, [beginActiveNavigation, refreshWorkspaceState]);
+  }, [beginActiveNavigation, refreshWorkspaceState, requireRegisteredNavigationIntent]);
   const switchWorkspace = useCallback(async (path: string, navigationIntentSeq?: number): Promise<string> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     const next = await app.SwitchWorkspace(path);
     return refreshWorkspaceState(next, navigationSeq);
-  }, [beginActiveNavigation, refreshWorkspaceState]);
+  }, [beginActiveNavigation, refreshWorkspaceState, requireRegisteredNavigationIntent]);
 
   const compact = useCallback(() => {
     const tabId = activeTabIdRef.current;
@@ -4496,19 +4507,16 @@ export function useController() {
     if (!sourceTabId) return { ok: false };
     const forkNavigationSeq = activeNavigationSeqRef.current;
     await waitForTabReady(sourceTabId);
-    const actionScope = (["fork", "summ-from", "summ-upto", "conversation", "code", "both"].includes(scope) ? scope : "both") as MessageActionScope;
+    const actionScope = (["fork", "fork-worktree", "summ-from", "summ-upto", "conversation", "code", "both"].includes(scope) ? scope : "both") as MessageActionScope;
     const { messageActionBusyText } = await import("./controllerSwitchNotices");
     dispatchTo(sourceTabId, { type: "message_action_start", action: { turn, scope: actionScope } });
     dispatchTo(sourceTabId, { type: "local_notice", level: "info", text: messageActionBusyText(actionScope) });
     try {
-      if (actionScope === "fork") {
-        const tab = await app.ForkForTab(sourceTabId, turn);
-        if (tab?.id) {
-          await adoptReturnedTab(tab, sourceTabId, forkNavigationSeq, "tab.fork");
-        } else {
-          await syncActiveTabFromBackend(true);
-        }
-        return { ok: true, tabId: tab?.id, tab };
+      if (actionScope === "fork" || actionScope === "fork-worktree") {
+        return settleForkConversationForTab(app, sourceTabId, turn, actionScope === "fork-worktree",
+          (tabId, level, text) => dispatchTo(tabId, { type: "local_notice", level, text }),
+          tab => adoptReturnedTab(tab, sourceTabId, forkNavigationSeq, "tab.fork"),
+          () => syncActiveTabFromBackend(true));
       }
 
       let outcome: RewindResultView & { ok: boolean } = { ok: true };
@@ -4532,6 +4540,9 @@ export function useController() {
         dispatchPartialRewindNotice(partialNotice, sourceTabId, outcome.tabId, (tabId, text) => dispatchTo(tabId, { type: "local_notice", level: "warn", text })));
       return outcome;
     } catch {
+      if (actionScope === "fork" || actionScope === "fork-worktree") {
+        dispatchTo(sourceTabId, { type: "local_notice", level: "warn", text: t("rewind.forkFailed") });
+      }
       return { ok: false };
     } finally {
       dispatchTo(sourceTabId, { type: "message_action_done" });
@@ -4572,6 +4583,7 @@ export function useController() {
   // Tab management: switch preserves per-tab state; open creates it.
   const switchTab = useCallback(async (tabId: string, optimisticTab?: TabMeta, navigationIntentSeq?: number): Promise<TabMeta[] | undefined> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     if (!navigationCompletionCurrent(navigationSeq, "tab.switch", tabId)) return undefined;
     snapshotNavigationSourceTab(navigationSeq);
     const startedAt = Date.now();
@@ -4717,10 +4729,11 @@ export function useController() {
         return undefined;
       });
     return backendSwitch;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchTo, isNavigationIntentCurrent, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, restoreNavigationSource, snapshotNavigationSourceTab, trackBackendActivation]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchTo, isNavigationIntentCurrent, loadSessionDataForTab, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, restoreNavigationSource, snapshotNavigationSourceTab, trackBackendActivation]);
 
   const switchRemoteTab = useRemoteTabSwitch({
     activeTabIdRef, setActiveTabId, beginNavigation: beginActiveNavigation,
+    requireRegisteredNavigation: requireRegisteredNavigationIntent,
     navigationCanComplete: navigationCompletionCurrent,
     navigationIsCurrent: isNavigationIntentCurrent,
     confirmBackendActiveTab,
@@ -4729,6 +4742,7 @@ export function useController() {
 
   const openProjectTab = useCallback(async (workspaceRoot: string, topicId: string, navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const meta = await app.OpenProjectTab(workspaceRoot, topicId);
@@ -4751,10 +4765,11 @@ export function useController() {
     });
     monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const openGlobalTab = useCallback(async (topicId: string, navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const meta = await app.OpenGlobalTab(topicId);
@@ -4777,10 +4792,11 @@ export function useController() {
     });
     monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const openTopicSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string, navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const meta = await app.OpenTopicSession(scope, workspaceRoot, topicId, sessionPath);
@@ -4803,10 +4819,11 @@ export function useController() {
     });
     monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const activateTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath = "", navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     // Ticketed two-phase activation: the backend switches the visible surface
@@ -4814,11 +4831,7 @@ export function useController() {
     // in the background and report through "topic:activation". Register the
     // pending ticket before the call so synchronously-emitted events match.
     topicActivationSeqRef.current += 1;
-    const pending: PendingTopicActivation = {
-      requestId: `fe-act-${Date.now()}-${topicActivationSeqRef.current}`,
-      navigationSeq,
-      surfacePolicy: "replace-surface",
-    };
+    const pending: PendingTopicActivation = { requestId: `fe-act-${Date.now()}-${topicActivationSeqRef.current}`, navigationSeq };
     pendingTopicActivationRef.current = pending;
     noteActivationRequested(pending.requestId);
     const ticket = await app.StartTopicActivation({
@@ -4849,7 +4862,7 @@ export function useController() {
     const previousSurface = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current) : undefined;
     const sameSession = sameSessionHydrateIdentity(meta, previousSurface?.meta);
     const prevItems = sameSessionPlaceholderItems(meta, previousSurface);
-    pending.placeholderItems = prevItems; pending.surfacePolicy = sameSession ? "preserve-current" : "replace-surface";
+    pending.placeholderItems = prevItems;
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
@@ -4867,12 +4880,13 @@ export function useController() {
       handleTopicActivationEvent(pending.terminal);
     }
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, handleTopicActivationEvent, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, handleTopicActivationEvent, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   // Ensure a blank tab exists for the given scope — reuses an existing one
   // or creates a new tab, then loads its session data.
   const ensureBlankTab = useCallback(async (scope: string, workspaceRoot: string, navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const meta = await app.EnsureBlankTab(scope, workspaceRoot);
@@ -4893,10 +4907,11 @@ export function useController() {
     const load = loadSessionDataForTab(meta.id, true, "new-session", { surfacePolicy: "replace-surface", sessionPath: meta.sessionPath, sessionGeneration: meta.sessionGeneration });
     monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return meta;
-  }, [beginActiveNavigation, bumpCheckpointRefreshSeq, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, bumpCheckpointRefreshSeq, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const ensureBlankSurface = useCallback(async (scope: string, workspaceRoot: string, navigationIntentSeq?: number): Promise<TabMeta> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const meta = await app.EnsureBlankSurface(scope, workspaceRoot);
@@ -4912,10 +4927,11 @@ export function useController() {
     const load = loadSessionDataForTab(meta.id, true, "new-session", { surfacePolicy: "replace-surface", sessionPath: meta.sessionPath, sessionGeneration: meta.sessionGeneration });
     monitorNavigationHydration(navigationSeq, meta.id, load, () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY));
     return meta;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const createIsolatedWorktree = useCallback(async (workspaceRoot: string, navigationIntentSeq?: number): Promise<DeliveryWorktreeOpenResult> => {
     const navigationSeq = navigationIntentSeq ?? beginActiveNavigation();
+    await requireRegisteredNavigationIntent(navigationSeq);
     snapshotNavigationSourceTab(navigationSeq);
     const snapshotAt = promptEventClock();
     const result = await app.CreateIsolatedWorktree(workspaceRoot);
@@ -4938,7 +4954,7 @@ export function useController() {
     });
     monitorNavigationHydration(navigationSeq, meta.id, load, isNewTab ? () => reconcileTabRuntime(meta.id, RUNTIME_STATUS_ONLY) : undefined);
     return result;
-  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, snapshotNavigationSourceTab]);
+  }, [beginActiveNavigation, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, monitorNavigationHydration, navigationCompletionCurrent, reassertVisibleTabAfterStaleNavigation, reconcileTabRuntime, requireRegisteredNavigationIntent, snapshotNavigationSourceTab]);
 
   const commitSingleSurfaceNavigation = useCallback((tabId: string) => {
     if (!tabId || activeTabIdRef.current !== tabId) return false;
@@ -4957,8 +4973,9 @@ export function useController() {
     tabId: string,
     policy: "keep_running" | "stop_and_close" = "keep_running",
   ): Promise<boolean> => {
-    if (tabId === activeTabIdRef.current) beginActiveNavigation();
+    const navigationSeq = tabId === activeTabIdRef.current ? beginActiveNavigation() : undefined;
     try {
+      if (navigationSeq !== undefined) await requireRegisteredNavigationIntent(navigationSeq);
       await app.CloseTabWithPolicy(tabId, policy);
       invalidateProviderStateForTab(tabId);
       disposeComposerProfileState(tabId);
@@ -4971,7 +4988,7 @@ export function useController() {
     } catch {
       return false;
     }
-  }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, releaseTranscriptState, syncActiveTabFromBackend]);
+  }, [activeTabId, beginActiveNavigation, bump, disposeComposerProfileState, invalidateProviderStateForTab, notifyLiveListeners, releaseTranscriptState, requireRegisteredNavigationIntent, syncActiveTabFromBackend]);
 
   const reorderTabs = useCallback(async (tabIds: string[]) => {
     try {
@@ -4999,6 +5016,7 @@ export function useController() {
     // let the running stale activation pass the guard and prune the state of
     // the surface the user just clicked.
     noteNavigationIntent: beginActiveNavigation,
+    registeredNavigationIntent,
     isNavigationIntentCurrent,
     reassertVisibleTabAfterStaleNavigation,
     syncActiveTab: syncActiveTabFromBackend,
