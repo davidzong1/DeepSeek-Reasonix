@@ -21,7 +21,7 @@ import (
 func TestTeamRoleSkillPromptLoadsRolePlaybook(t *testing.T) {
 	root := t.TempDir()
 	for _, role := range []string{"leader", "member"} {
-		path := filepath.Join(root, ".reasonix", "skills", "base", role, "SKILL.md")
+		path := filepath.Join(root, "team", "skills", "base", role, "SKILL.md")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +44,7 @@ func TestTeamRoleSkillPromptLoadsRolePlaybook(t *testing.T) {
 // playbook. The builder must resolve the root the way Build does.
 func TestTeamRoleSkillPromptResolvesEmptyWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, ".reasonix", "skills", "base", "leader", "SKILL.md")
+	path := filepath.Join(root, "team", "skills", "base", "leader", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

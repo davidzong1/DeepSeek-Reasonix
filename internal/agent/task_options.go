@@ -23,6 +23,8 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		UsageSource:              event.UsageSourceSubagent,
 		Gate:                     t.gate,
 		ContextWindow:            ctxWin,
+		VisibleWindowTokens:      t.visibleWindowTokens,
+		CacheAwareCompaction:     t.cacheAwareCompaction,
 		RecentKeep:               t.recentKeep,
 		CompactRatio:             t.compactRatio,
 		ArchiveDir:               t.archiveDir,

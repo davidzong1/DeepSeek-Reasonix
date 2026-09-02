@@ -377,16 +377,28 @@ func (m *chatTUI) teamSessionBound() bool {
 	return m.teamPick != nil && m.teamPick.session.active
 }
 
+// teamOpenKey opens the team overlay from the plain chat by keyboard. On SSH
+// the TUI deliberately runs without application mouse capture (the terminal's
+// native selection and right-click menu stay usable), so no MouseClickMsg ever
+// reaches the [ TEAM ] button — the key is the reliable entry point there.
+// Alt is preferred over Ctrl+Shift on purpose: several common ssh clients and
+// meta modes collapse Ctrl+Shift+T to Ctrl+T, which would collide with the
+// team exit key.
+const teamOpenKey = "alt+t"
+
 // handleTeamKey routes a keypress while the team overlay is open and reports
 // whether the overlay consumed it. The roster and its transient states consume
 // everything. A bound member session consumes only the reserved keys — member
 // switch and esc — so every other key falls through to the composer, which is
 // the whole point: one composer, one transcript, whichever backend is bound.
 // teamExitKey is reserved on every screen: it leaves the team outright. With no
-// overlay open nothing is consumed, so the keyboard is never claimed by a team UI
-// that is not there.
+// overlay open, teamOpenKey opens the overlay and nothing else is consumed, so
+// the keyboard is never claimed by a team UI that is not there.
 func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	if m.teamPick == nil {
+		if msg.String() == teamOpenKey {
+			return m, m.onTeamButtonClick(), true
+		}
 		return m, nil, false
 	}
 	// Checked before every state owner, so no depth — an open field, an armed

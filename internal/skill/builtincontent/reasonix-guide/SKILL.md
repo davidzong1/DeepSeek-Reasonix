@@ -34,14 +34,14 @@ Do not invent auto-fixes. Surface stable issue codes, sources, and remediations 
 
 Winner per skill name (highest first):
 
-1. **project** — `<workspace>/{.reasonix,.agents,.agent,.claude}/skills/`
+1. **project** — `<workspace>/{team,.reasonix,.agents,.agent,.claude}/skills/`
 2. **custom** — `[skills].paths` (and plugin package skill roots)
 3. **global** — `<Reasonix home>/skills` and home convention dirs
 4. **builtin** — shipped skills (including this guide)
 
 Same name: higher scope wins; lower scopes are **shadowed**. `[skills].disabled_skills` hides a name from List/Read entirely.
 
-Discovery conventions: `.reasonix`, `.agents`, `.agent`, `.claude` (see `config.ConventionDirs`). Layouts: `<name>/SKILL.md` or flat `<name>.md` (Claude flat files need skill frontmatter).
+Discovery conventions: `team`, `.reasonix`, `.agents`, `.agent`, `.claude` (see `config.ConventionDirs`). Layouts: `<name>/SKILL.md` or flat `<name>.md` (Claude flat files need skill frontmatter).
 
 ### Checks
 

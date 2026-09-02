@@ -1666,6 +1666,12 @@ func backfillDeepSeekAnthropicCapabilities(p *ProviderEntry) {
 	if strings.TrimSpace(p.Thinking) == "" {
 		p.Thinking = "enabled"
 	}
+	// The official DeepSeek Anthropic route honors the 1M context beta; preset
+	// and migrated entries only advertise it when the user has not pinned a
+	// different beta header. Old config with empty AnthropicBeta injects 1M.
+	if strings.TrimSpace(p.AnthropicBeta) == "" {
+		p.AnthropicBeta = anthropicBetaContext1M
+	}
 	backfillOfficialDeepSeekEffortOverrides(p)
 }
 
@@ -2023,6 +2029,7 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		BalanceURL:     "https://api.deepseek.com/user/balance",
 		Thinking:       "enabled",
 		WebSearch:      boolPointer(true),
+		AnthropicBeta:  anthropicBetaContext1M,
 		ContextWindow:  1_000_000,
 		Prices:         deepSeekV4PricesForConfig(c),
 		ModelOverrides: deepSeekV4EffortOverrides(),

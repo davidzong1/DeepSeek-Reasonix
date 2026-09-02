@@ -1053,7 +1053,7 @@ func (c *Config) NetworkProxyMode() string {
 
 // SkillsConfig configures skill discovery. Paths adds extra "custom"-scope skill
 // roots — each a directory of SKILL.md / <name>.md playbooks — scanned between
-// the project roots (.reasonix/.agents/.agent/.claude under the workspace) and
+// the project roots (team/.reasonix/.agents/.agent/.claude under the workspace) and
 // the global roots. ExcludedPaths hides matching discovery roots without deleting
 // folders. ~, relative paths, and ${VAR} expansion are supported. DisabledSkills
 // hides named skills from the agent prompt, slash invocation, and skill tools
@@ -1343,6 +1343,10 @@ type AgentConfig struct {
 	ToolResultSnipRatio float64 `toml:"tool_result_snip_ratio"`
 	CompactRatio        float64 `toml:"compact_ratio"`
 	CompactForceRatio   float64 `toml:"compact_force_ratio"`
+	// VisibleWindowTokens caps the provider-visible recent verbatim tail below
+	// its default 16% of the context window. Zero keeps the default behavior.
+	VisibleWindowTokens  int  `toml:"visible_window_tokens"`
+	CacheAwareCompaction bool `toml:"cache_aware_compaction"`
 	// ContextEditing is retired; native tool clearing is no longer an auto path.
 	ContextEditing string `toml:"context_editing"`
 	// Keep and RecentKeep are deprecated compatibility fields. They remain
@@ -1416,6 +1420,10 @@ type ProviderEntry struct {
 	// Empty = provider default.
 	Thinking string `toml:"thinking"`
 	Effort   string `toml:"effort"`
+	// AnthropicBeta is the anthropic-beta request header value sent to
+	// Anthropic-compatible endpoints, enabling features like 1M context
+	// ("context-1m-2025-08-07"). Empty (the default) omits the header.
+	AnthropicBeta string `toml:"anthropic_beta"`
 	// Vision marks the model as accepting image input. When set, images the user
 	// attaches are embedded in the request (image_url for openai-kind, base64
 	// blocks for anthropic). Off by default: text-only models 400 on image input,
@@ -1923,7 +1931,7 @@ func Default() *Config {
 				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
 				Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
-				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
+				WebSearch: boolPointer(true), AnthropicBeta: anthropicBetaContext1M, SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
 				ContextWindow: 1_000_000, Price: deepSeekV4FlashPriceUSD(),
 				BillingCurrency: "USD", BillingMode: "payg",
 			},
@@ -1931,7 +1939,7 @@ func Default() *Config {
 				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
 				Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY",
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
-				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
+				WebSearch: boolPointer(true), AnthropicBeta: anthropicBetaContext1M, SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
 				ContextWindow: 1_000_000, Price: deepSeekV4ProPriceUSD(),
 				BillingCurrency: "USD", BillingMode: "payg",
 			},

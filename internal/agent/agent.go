@@ -921,6 +921,12 @@ type Options struct {
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
 	CompactRatio  float64
+	// VisibleWindowTokens caps the recent verbatim tail below 16% of the
+	// window. Zero keeps the default. It bounds only recentTailBudget;
+	// compactTrigger, hardInputCeiling, summary, and persistence are untouched.
+	VisibleWindowTokens int
+	// CacheAwareCompaction defers an automatic fold to hardInputCeiling while warm.
+	CacheAwareCompaction bool
 	// Deprecated compatibility inputs. New agents ignore these fields; automatic
 	// maintenance is controlled only by CompactRatio.
 	SoftCompactRatio       float64
@@ -1120,6 +1126,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			maxSubagentDepth:       maxSubagentDepth,
 			contextWindow:          opts.ContextWindow,
 			compactRatio:           opts.CompactRatio,
+			visibleWindowTokens:    opts.VisibleWindowTokens,
+			cacheAwareCompaction:   opts.CacheAwareCompaction,
 			recentKeep:             opts.RecentKeep,
 			archiveDir:             opts.ArchiveDir,
 			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,

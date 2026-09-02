@@ -252,6 +252,8 @@ type TaskTool struct {
 	maxSteps                      int
 	contextWindow                 int
 	compactRatio                  float64
+	visibleWindowTokens           int
+	cacheAwareCompaction          bool
 	recentKeep                    int
 	temperature                   float64
 	archiveDir                    string
@@ -304,6 +306,8 @@ type TaskToolOptions struct {
 	ParentRegistry                        *tool.Registry
 	MaxSteps                              int
 	ContextWindow                         int
+	VisibleWindowTokens                   int
+	CacheAwareCompaction                  bool
 	RecentKeep                            int
 	SoftCompactRatio                      float64
 	ToolResultSnipRatio                   float64
@@ -330,24 +334,26 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
 	return &TaskTool{
-		prov:             opts.Provider,
-		pricing:          opts.Pricing,
-		quoteContext:     opts.QuoteContext,
-		parentReg:        opts.ParentRegistry,
-		maxSteps:         opts.MaxSteps,
-		contextWindow:    opts.ContextWindow,
-		recentKeep:       opts.RecentKeep,
-		compactRatio:     opts.CompactRatio,
-		temperature:      opts.Temperature,
-		archiveDir:       opts.ArchiveDir,
-		keepPolicy:       opts.KeepPolicy,
-		sysPrompt:        sysPrompt,
-		gate:             opts.Gate,
-		subagentModel:    opts.SubagentModel,
-		subagentEffort:   opts.SubagentEffort,
-		resolveProvider:  opts.ResolveProvider,
-		maxSubagentDepth: DefaultMaxSubagentDepth,
-		completion:       newTaskCompletionConfig(opts),
+		prov:                 opts.Provider,
+		pricing:              opts.Pricing,
+		quoteContext:         opts.QuoteContext,
+		parentReg:            opts.ParentRegistry,
+		maxSteps:             opts.MaxSteps,
+		contextWindow:        opts.ContextWindow,
+		recentKeep:           opts.RecentKeep,
+		compactRatio:         opts.CompactRatio,
+		visibleWindowTokens:  opts.VisibleWindowTokens,
+		cacheAwareCompaction: opts.CacheAwareCompaction,
+		temperature:          opts.Temperature,
+		archiveDir:           opts.ArchiveDir,
+		keepPolicy:           opts.KeepPolicy,
+		sysPrompt:            sysPrompt,
+		gate:                 opts.Gate,
+		subagentModel:        opts.SubagentModel,
+		subagentEffort:       opts.SubagentEffort,
+		resolveProvider:      opts.ResolveProvider,
+		maxSubagentDepth:     DefaultMaxSubagentDepth,
+		completion:           newTaskCompletionConfig(opts),
 	}
 }
 

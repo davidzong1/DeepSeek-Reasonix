@@ -156,7 +156,7 @@ stalled_warning_seconds = 900   # heads-up once per background job after this ma
 # network        = true
 
 # Skills are invokable playbooks (SKILL.md / <name>.md with frontmatter), found
-# under .reasonix/skills, .agents/skills, .agent/skills, .claude/skills (project)
+# under team/skills, .reasonix/skills, .agents/skills, .agent/skills, .claude/skills (project)
 # and the same dirs under ~ (global). Built-ins (explore/research/review/security-review/test)
 # ship out of the box. The model invokes them via run_skill / explore / …; you
 # invoke them via /<name>. Manage with /skill (list, show, enable, disable, new, paths).

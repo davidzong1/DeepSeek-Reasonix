@@ -25,6 +25,9 @@ const (
 	minCompactMessages     = 2    // skip compaction below this many compactable messages
 	fallbackTokPerChar     = 0.25 // ~4 chars/token, used before any usage is available to calibrate
 	protocolReserveTokens  = 256  // provider framing and control fields not represented by message estimates
+	// warmCacheHitRatio is the last-completed-request cache hit share at which
+	// cacheAwareCompaction trusts the prefix is warm enough to defer a fold.
+	warmCacheHitRatio = 0.90
 )
 
 var (
@@ -84,7 +87,34 @@ func (a *Agent) compactTrigger() int {
 	if a.ablation.Off(ablation.Compaction) {
 		ratio = 0.5
 	}
-	return max(1, int(float64(window)*ratio))
+	trigger := max(1, int(float64(window)*ratio))
+	// cacheAwareCompaction defers the fold to the hard ceiling while the
+	// provider prefix is warm — folding would discard a warm cache for no
+	// headroom gain. hardInputCeiling stays the hard upper bound.
+	if a.cacheAwareCompaction && !a.ablation.Off(ablation.Compaction) && a.warmCache() {
+		if hard := a.hardInputCeiling(); hard > trigger {
+			trigger = hard
+		}
+	}
+	return trigger
+}
+
+// warmCache reports whether the last completed request's input was served
+// mostly from the provider cache. It reads the latest real usage receipt; the
+// zero (no request yet / no cache split) means cold.
+func (a *Agent) warmCache() bool {
+	if a == nil {
+		return false
+	}
+	u := a.sess.output.lastUsage.Load()
+	if u == nil {
+		return false
+	}
+	total := u.CacheHitTokens + u.CacheMissTokens
+	if total <= 0 {
+		return false
+	}
+	return float64(u.CacheHitTokens)/float64(total) >= warmCacheHitRatio
 }
 
 // hardInputCeiling is a physical input-safety boundary, not another user
@@ -98,13 +128,19 @@ func (a *Agent) hardInputCeiling() int {
 }
 
 // recentTailBudget is the content-construction budget for the recent verbatim
-// tail. Harness-style compaction always retains 16% of the model window.
+// tail. Harness-style compaction always retains 16% of the model window by
+// default. When VisibleWindowTokens is set (> 0), it caps the budget at that
+// value: the tail is min(16% of window, VisibleWindowTokens).
 func (a *Agent) recentTailBudget() int {
 	window := a.effectiveContextWindow()
 	if a == nil || window <= 0 {
 		return 1
 	}
-	return max(1, int(float64(window)*recentTailBudgetRatio))
+	budget := max(1, int(float64(window)*recentTailBudgetRatio))
+	if a.visibleWindowTokens > 0 && a.visibleWindowTokens < budget {
+		return a.visibleWindowTokens
+	}
+	return budget
 }
 
 // foldEconomics estimates whether compacting the given region saves enough

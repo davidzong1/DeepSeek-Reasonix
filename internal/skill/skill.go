@@ -4,12 +4,12 @@
 // a tool result, a "subagent" skill runs in an isolated child loop and returns
 // only its final answer. Project scope wins over global; only names+descriptions
 // enter the cache-stable system-prompt index (see index.go) — bodies load on
-// demand. Discovery scans several conventions (.reasonix / .agents / .agent /
-// .claude under the project root and the home dir — see config.ConventionDirs) so
-// skills authored for other agent tools migrate in unchanged. Directory skills
-// use <name>/SKILL.md; flat <name>.md files from Claude roots are loaded only
-// when they carry skill frontmatter. Discovery follows symlinks, so linked
-// skills are picked up like real ones.
+// demand. Discovery scans several conventions (team / .reasonix / .agents /
+// .agent / .claude under the project root and the home dir — see
+// config.ConventionDirs) so skills authored for other agent tools migrate in
+// unchanged. Directory skills use <name>/SKILL.md; flat <name>.md files from
+// Claude roots are loaded only when they carry skill frontmatter. Discovery
+// follows symlinks, so linked skills are picked up like real ones.
 package skill
 
 import (
@@ -447,9 +447,9 @@ type discoveryRoot struct {
 }
 
 // roots returns the discovery directories, highest priority first: the
-// convention dirs (config.ConventionDirs: .reasonix / .agents / .agent / .claude)
-// under the project root → custom paths → the Reasonix home skills dir → other
-// home-dir convention dirs. A later root never overrides an earlier one.
+// convention dirs (config.ConventionDirs: team / .reasonix / .agents / .agent /
+// .claude) under the project root → custom paths → the Reasonix home skills dir →
+// other home-dir convention dirs. A later root never overrides an earlier one.
 func (s *Store) roots() []discoveryRoot {
 	if s == nil || s.disableDiscovery {
 		return nil

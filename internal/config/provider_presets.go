@@ -40,6 +40,10 @@ const (
 	longCatOpenAIBaseURL         = "https://api.longcat.chat/openai/v1"
 	longCatAnthropicBaseURL      = "https://api.longcat.chat/anthropic"
 	deepSeekAnthropicBaseURL     = "https://api.deepseek.com/anthropic"
+	// anthropicBetaContext1M enables the 1M context window on DeepSeek's
+	// Anthropic-compatible route. Old config that predates the field gets it via
+	// backfill, so the capability is on without a user edit.
+	anthropicBetaContext1M = "context-1m-2025-08-07"
 )
 
 // CuratedProviderPresets returns one-click provider templates for common
@@ -232,6 +236,7 @@ var curatedProviderPresets = []ProviderPreset{
 			BalanceURL:     "https://api.deepseek.com/user/balance",
 			Thinking:       "enabled",
 			WebSearch:      boolPointer(true),
+			AnthropicBeta:  anthropicBetaContext1M,
 			ContextWindow:  1_000_000,
 			Prices:         deepSeekV4PricesUSD(),
 			ModelOverrides: deepSeekV4EffortOverrides(),

@@ -27,10 +27,13 @@ type agentConfig struct {
 	// agent/skill tools are excluded.
 	subagentDepth    int
 	maxSubagentDepth int
-	// contextWindow and compactRatio decide when at most one provider-visible
-	// checkpoint is installed; recentKeep and archiveDir shape what it keeps.
+	// contextWindow and compactRatio pick the fold trigger; recentKeep and
+	// archiveDir shape what is kept. visibleWindowTokens caps the tail below
+	// 16%; cacheAwareCompaction defers folds while the cache stays warm.
 	contextWindow          int
 	compactRatio           float64
+	visibleWindowTokens    int
+	cacheAwareCompaction   bool
 	recentKeep             int
 	archiveDir             string
 	legacyAnchorSafetyGate bool

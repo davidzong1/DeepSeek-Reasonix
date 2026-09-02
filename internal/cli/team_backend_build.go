@@ -97,16 +97,21 @@ func (r *memberProviderResolver) Ref() string { return r.ref }
 
 // Catalog reports the one entry this resolver owns. Tools and Reasoning are
 // declared: a member is a full Agent, so the assembled request carries the tool
-// schemas — the capability that a bare completion loop lacked.
+// schemas — the capability that a bare completion loop lacked. The [1m] alias
+// carries the 1M context window so the TUI gauge uses the correct denominator.
 func (r *memberProviderResolver) Catalog() []provider.Descriptor {
-	return []provider.Descriptor{{
+	d := provider.Descriptor{
 		Ref:           r.ref,
 		DisplayName:   r.name,
 		Model:         r.model,
 		Tools:         true,
 		Reasoning:     true,
 		DefaultEffort: r.effort,
-	}}
+	}
+	if r.deepSeekAnthropic {
+		d.ContextWindow = 1_000_000
+	}
+	return []provider.Descriptor{d}
 }
 
 // Resolve dials the member's endpoint. An explicit per-call effort wins over

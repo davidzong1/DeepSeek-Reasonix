@@ -22,6 +22,42 @@ func hasModel(c *Config, model string) *ProviderEntry {
 	return nil
 }
 
+func TestBackfillDeepSeekAnthropicCapabilitiesSetsBeta(t *testing.T) {
+	p := &ProviderEntry{Name: "deepseek-anthropic", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic"}
+	backfillDeepSeekAnthropicCapabilities(p)
+	if p.AnthropicBeta != anthropicBetaContext1M {
+		t.Fatalf("AnthropicBeta = %q, want %q", p.AnthropicBeta, anthropicBetaContext1M)
+	}
+
+	// An explicit pinned header survives backfill untouched.
+	pinned := &ProviderEntry{Name: "deepseek-anthropic", Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic", AnthropicBeta: "custom-beta"}
+	backfillDeepSeekAnthropicCapabilities(pinned)
+	if pinned.AnthropicBeta != "custom-beta" {
+		t.Fatalf("pinned AnthropicBeta = %q, want it preserved", pinned.AnthropicBeta)
+	}
+
+	// Non-official endpoints and non-Anthropic kinds never gain the beta.
+	for _, other := range []*ProviderEntry{
+		{Name: "glm", Kind: "anthropic", BaseURL: "https://open.bigmodel.cn/api/anthropic"},
+		{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com"},
+	} {
+		backfillDeepSeekAnthropicCapabilities(other)
+		if other.AnthropicBeta != "" {
+			t.Fatalf("non-official entry got AnthropicBeta = %q", other.AnthropicBeta)
+		}
+	}
+}
+
+func TestPresetDeepSeekAnthropicCarriesContext1MBeta(t *testing.T) {
+	preset, ok := CuratedProviderPreset("deepseek-anthropic")
+	if !ok || len(preset.Entries) != 1 {
+		t.Fatalf("DeepSeek Anthropic preset = %+v", preset)
+	}
+	if got := preset.Entries[0].AnthropicBeta; got != anthropicBetaContext1M {
+		t.Fatalf("preset AnthropicBeta = %q, want %q", got, anthropicBetaContext1M)
+	}
+}
+
 func TestBackfillDeepSeekProRestoresPro(t *testing.T) {
 	c := &Config{Providers: []ProviderEntry{
 		{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY"},
