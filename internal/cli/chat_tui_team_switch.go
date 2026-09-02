@@ -301,6 +301,13 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 // overlay opens, where the team store already exists — the model and the sink in
 // these options are placeholders the member builder overrides per member.
 func (m *chatTUI) bindTeamBackendSeam(maxSteps int, overrides cliBuildOverrides) {
+	// A registry built before this commit pinned a board-less task service (D1);
+	// drop it rather than re-create the registry around a stale service. The
+	// registry itself is rebuilt from the shared board on the next overlay open.
+	if m.teamBackends != nil {
+		m.teamBackends.closeAll()
+		m.teamBackends = nil
+	}
 	m.memberEvents = make(chan memberEvent, memberEventBuffer)
 	m.memberBackendBase = func() boot.Options {
 		return cliProfileBuildOptions("", maxSteps, false, event.Discard, overrides)
@@ -323,15 +330,31 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	if m.memberBackendBase == nil || m.memberEvents == nil || users == nil {
 		return // seam not installed (tests, non-interactive hosts): no member backends
 	}
+	bind := func(b team.MemberBinding) (control.SessionAPI, error) {
+		if m.teamBackends == nil {
+			return nil, team.ErrMemberNotFound
+		}
+		return m.teamBackends.bind(b)
+	}
+	// The board is opened before this call (see onTeamButtonClick), so the task
+	// service — and with it every leader task tool — gets its durable store on
+	// the very first overlay, not on some later open.
+	// The first call to bindTeamBackends happens on the first overlay open,
+	// when m.ctrl is still the chat's own backend — the ambient source a
+	// leader's first member session continues from. It is captured by reference
+	// (nil when the seam races differently), so the carrier reads the chat at
+	// the moment that member is actually assembled.
+	var ambientCtrl control.SessionAPI = m.ctrl
+	var ambientCarrier func() []provider.Message
+	if ambientCtrl != nil {
+		ambientCarrier = func() []provider.Message { return ambientCtrl.History() }
+	}
+	tasks := newTeamTaskService(m.teamPick.store, m.teamPick.boardStore(), "", bind)
 	memberDeps := memberBackendDeps{
 		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
-		tasks: newTeamTaskService(m.teamPick.store, m.teamPick.boardStore(), "", func(b team.MemberBinding) (control.SessionAPI, error) {
-			if m.teamBackends == nil {
-				return nil, team.ErrMemberNotFound
-			}
-			return m.teamBackends.bind(b)
-		}),
+		tasks:  tasks,
 		events: m.memberEvents, base: m.memberBackendBase,
+		ambient: ambientCarrier,
 		release: func(teamName, memberID string) {
 			if m.teamBackends != nil {
 				m.teamBackends.release(teamName, memberID)
@@ -339,6 +362,7 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		},
 	}
 	m.teamBackends = newTeamBackends(newMemberBackendBuilder(memberDeps), 0)
+	m.teamBackends.setTasks(tasks)
 	// Invalidate a member's assembled backend when its pool entry (ref,
 	// provider, model, base url or API key) changed, so a rebind never keeps
 	// serving the previous provider/credential.

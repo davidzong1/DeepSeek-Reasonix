@@ -189,6 +189,10 @@ type memberBackendDeps struct {
 	tasks    *teamTaskService
 	events   chan memberEvent
 	base     func() boot.Options
+	// ambient reads the chat's own conversation for a leader's first member
+	// session (see leaderAmbientCarry). It is captured by reference at registry
+	// build time — nil by default, and never the bound member's own.
+	ambient func() []provider.Message
 	// release retires one member's assembled backend. Late-bound like tasks'
 	// bind hook, because the registry is constructed around this builder.
 	release func(teamName, memberID string)
@@ -317,7 +321,15 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			return nil, err
 		}
 		path := filepath.Join(ctrl.SessionDir(), b.SessionFile)
-		if err := bindMemberSession(ctrl, path); err != nil {
+		fresh, err := bindMemberSession(ctrl, path)
+		if err != nil {
+			ctrl.Close()
+			return nil, err
+		}
+		// A leader's first (file-less) entry continues from the chat's context;
+		// anyone else starts or resumes its own. The seed loads straight from
+		// boot.Build's history, so the member identity survives verbatim.
+		if err := seedMemberAmbient(ctrl, path, fresh, b.Leader, deps.ambient); err != nil {
 			ctrl.Close()
 			return nil, err
 		}
@@ -418,19 +430,67 @@ func (w *memberWriteLease) Close() {
 // bindMemberSession points a freshly built backend at the member's own session
 // file: an existing file is resumed so the member's history, checkpoints and
 // recovery state come back, and an absent one is simply the member's first
-// entry — empty history, never corruption.
-func bindMemberSession(ctrl *control.Controller, path string) error {
+// entry — empty history, never corruption. fresh reports the absent-file
+// branch: only then may a leader's ambient conversation be handed over.
+func bindMemberSession(ctrl *control.Controller, path string) (bool, error) {
 	if _, err := os.Stat(path); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			return err
+			return false, err
 		}
 		ctrl.SetSessionPath(path)
-		return nil
+		return true, nil
 	}
 	session, err := loadResumableSession(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	ctrl.Resume(session, path)
-	return nil
+	return false, nil
+}
+
+// leaderAmbientCarry turns the ambient chat history into the messages a
+// leader's first member session continues from. The carried system message is
+// replaced by the member's own, so the team agent speaks with its member
+// identity rather than whatever profile launched the chat. An empty carrier
+// or a member built around a larger system prompt (extra leader tools) keeps
+// the splice side: put the booted prefix first, retire the generated System.
+func leaderAmbientCarry(ambient []provider.Message, memberPrefix []provider.Message) []provider.Message {
+	if len(ambient) == 0 {
+		return nil
+	}
+	out := make([]provider.Message, 0, len(ambient)+1)
+	for _, msg := range memberPrefix {
+		if msg.Role == provider.RoleSystem {
+			if len(out) == 0 {
+				out = append(out, msg) // the member identity stays the head
+				continue
+			}
+			break // one prefix system message is enough; retire the rest
+		}
+		out = append(out, msg)
+	}
+	for _, msg := range ambient {
+		if msg.Role == provider.RoleSystem {
+			continue // the member's own identity already opened the transcript
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+// seedMemberAmbient hands a leader's first (file-less) member session the
+// chat's own conversation and persists it, so the file's existence — not a
+// flag — stops a second handover on any reopen. Never for non-leaders or a
+// resuming session. Failure reaches the caller: a leader session that cannot
+// persist its seed must not register a backend that pretends to have it.
+func seedMemberAmbient(ctrl *control.Controller, path string, fresh, leader bool, ambient func() []provider.Message) error {
+	if !fresh || !leader || ambient == nil {
+		return nil
+	}
+	carry := leaderAmbientCarry(ambient(), ctrl.History())
+	if len(carry) == 0 {
+		return nil
+	}
+	ctrl.AdoptHistory(carry, path)
+	return ctrl.Snapshot()
 }

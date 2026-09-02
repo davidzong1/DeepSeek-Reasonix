@@ -157,19 +157,21 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			sessions, err = team.NewTeamSessionStore(cwd)
 		}
 		if err == nil {
+			// The board is the task service's dependency, and the registry — with
+			// its task service — is assembled inside bindTeamBackends; opening it
+			// after that froze the service on a nil board (D1).
 			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
-			m.teamPick = p
-			m.bindTeamBackends(store)
-			p.backends = m.teamBackends
-			// One board per registry, not per overlay: its holders outlive the
-			// overlay. Only the per-member inbox cache is overlay-scoped, because
-			// each inbox pins that member's BindRecord generation.
 			if p.board = m.teamBackends.inbox(); p.board == nil {
 				p.board = openTeamInbox(cwd)
-				m.teamBackends.setInbox(p.board)
-			} else {
-				p.board.resetInboxes()
 			}
+			m.teamPick = p
+			m.bindTeamBackends(store)
+			// The registry owns the board, so install it there once; a reopen
+			// keeps it. Only the per-member inbox cache is overlay-scoped, because
+			// each inbox pins that member's BindRecord generation.
+			m.teamBackends.setInbox(p.board)
+			p.backends = m.teamBackends
+			p.board.resetInboxes()
 			if m.ctrl != nil {
 				p.sessionDir = m.ctrl.SessionDir()
 			}

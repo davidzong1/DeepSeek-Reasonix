@@ -65,6 +65,10 @@ type teamBackends struct {
 	// this registry's, not an overlay's: closing it per overlay left the task
 	// service behind these backends reading a closed database.
 	inboxWire *teamInboxWire
+	// tasks is the durable task service the member builder serves. It lives for
+	// the registry's lifetime, like the board: every assembled backend's tools
+	// hold it, so a reopen must keep, never rebuild, it.
+	tasks *teamTaskService
 }
 
 // inbox returns the shared board wire, or nil when none was installed. Nil
@@ -89,6 +93,20 @@ func (r *teamBackends) setInbox(w *teamInboxWire) {
 	defer r.mu.Unlock()
 	if r.inboxWire == nil {
 		r.inboxWire = w
+	}
+}
+
+// setTasks installs the shared task service once. It is set alongside the board
+// on the first overlay open, so a reopen keeps the durable service (and its
+// wakeup wiring) behind every member backend's tools.
+func (r *teamBackends) setTasks(s *teamTaskService) {
+	if r == nil || s == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tasks == nil {
+		r.tasks = s
 	}
 }
 
