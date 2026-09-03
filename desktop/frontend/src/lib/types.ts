@@ -5,6 +5,7 @@ import type { Todo } from "./tools";
 import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
 import type { WireApproval } from "./approvalTypes";
 import type { RemoteProjectNodeFields, RemoteSessionMetaFields, RemoteTabMetaFields } from "./remoteTypes";
+import type { PinnedFileInfo } from "./pinnedContextBridge";
 export * from "./remoteTypes";
 export type { ContextBudgetInfo, ContextMaintenanceInfo, ContextMaintenanceReceipt, WireContextMaintenance } from "./contextMaintenanceTypes";
 export type { ProjectGroupsSnapshot, ProjectRuntimeTopic, ProjectTopicKey, ProjectTopicPage, ProjectTopicPageRequest, ProjectTreeChangedV2, ProjectTreeOrganizationBindings, ProjectTreeRuntimeSnapshot, ProjectTreeSnapshot, SessionCatalogBindings, SessionCatalogStatus, SessionGroup, SessionReference } from "./sessionCatalogTypes";
@@ -131,8 +132,8 @@ export interface WireCacheDiagnostics {
   toolSchemaTokens: number;
   cacheMissTokens: number;
   cacheHitTokens: number;
+  sessionContext?: import("./sessionContextTypes").WireSessionContextDiagnostics;
 }
-
 export interface WireUsage {
   promptTokens: number;
   completionTokens: number;
@@ -469,6 +470,19 @@ export interface SessionRuntimeView {
   issue?: SessionRuntimeIssue;
 }
 
+/** Occupancy report for a session a local serve holds; drives the takeover dialog. */
+export interface SessionTakeoverView {
+  available: boolean;
+  reason?: string;
+  sessionPath?: string;
+  holder?: "serve" | "external" | "other" | "free";
+  remoteAttached?: boolean;
+  running?: boolean;
+  mirrored?: boolean;
+  holderPid?: number;
+  holderHost?: string;
+}
+
 export interface WireFinalReadiness {
   attempts?: number;
   missing?: string[];
@@ -491,6 +505,8 @@ export interface TabMeta extends RemoteTabMetaFields {
   sessionDigest?: string;
   sessionGeneration?: number;
   readOnly?: boolean;
+  /** Remote tab whose session a local runtime on the serve host took over. */
+  takenOver?: boolean;
   filePath?: string;
   projectColor?: string;
   label: string;
@@ -976,9 +992,8 @@ export interface Meta extends RemoteSessionMetaFields {
   goal?: string;
   goalStatus?: GoalStatus;
   goalRuntime?: GoalRuntime;
-  canonicalTodos?: Todo[]; dismissedTodoBatches?: string[];
+  canonicalTodos?: Todo[]; dismissedTodoBatches?: string[]; pinnedFiles?: PinnedFileInfo[];
 }
-
 export type CollaborationMode = "normal" | "plan" | "goal";
 export type ToolApprovalMode = "ask" | "auto" | "yolo";
 // TokenMode is the dual-write wire value for the session quality floor.

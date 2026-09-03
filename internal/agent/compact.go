@@ -155,7 +155,7 @@ func foldEconomics(region []provider.Message) bool {
 func estimateMessagesTokens(msgs []provider.Message) int {
 	total := 0
 	for _, m := range msgs {
-		if m.LocalOnly {
+		if m.LocalOnly || IsPinnedContextRevision(m) {
 			continue
 		}
 		total += 4 // chat-message framing overhead

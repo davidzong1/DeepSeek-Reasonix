@@ -38,4 +38,7 @@ const (
 	NoticeCodeReadStrategyResolved                              = "read_strategy_resolved"
 	NoticeCodeReadLocalSafetyPaged                              = "read_local_safety_paged"
 	NoticeCodeDecisionReceipt, NoticeCodeContextEditingFallback = "decision_receipt", "context_editing_fallback"
+	NoticeCodeSessionTakenOver                                  = "session_taken_over"
+	NoticeCodeSessionReclaimRequested                           = "session_reclaim_requested"
+	NoticeCodeSessionReclaimed                                  = "session_reclaimed"
 )

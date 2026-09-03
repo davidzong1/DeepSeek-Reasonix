@@ -347,6 +347,9 @@ func (s *updateSink) send(update any) {
 // completed since it is history, not a live turn.
 func (s *updateSink) replay(msgs []provider.Message) {
 	for _, m := range msgs {
+		if agent.IsPinnedContextRevision(m) {
+			continue
+		}
 		switch m.Role {
 		case provider.RoleUser:
 			// Replay the user-authored view, not the persisted wire form:

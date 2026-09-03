@@ -1,7 +1,8 @@
 {
-  "SystemHash": "c4a54b2f61c5e15f",
+  "SystemHash": "47b47675712d817a",
   "ToolsHash": "82a7f967dc68f514",
-  "PrefixHash": "54d7b57d0dcf1d92",
+  "PrefixHash": "0530927eb1f873c4",
   "LogRewriteVersion": 0,
-  "ToolSchemaTokens": 4406
+  "ToolSchemaTokens": 4406,
+  "SessionContextDigest": ""
 }

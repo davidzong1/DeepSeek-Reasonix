@@ -122,7 +122,7 @@ func (s *deferredStreamSink) Discard() {
 // evidence re-lease, and the initial user-turn persistence. Callers still own
 // all Run-level defers (workspace lease, evidence commit, delivery checkpoint,
 // steer queue, active-turn timestamp).
-func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string, state *turnRuntime) {
+func (a *Agent) beginRunTurn(ctx context.Context, input string, pinned pinnedRevisionPlan) (rawInput string, state *turnRuntime) {
 	rawInput = RawUserInput(ctx, input)
 	providerInput := input
 	// A fresh user turn starts from zeroed per-turn host state; the new turn's
@@ -209,17 +209,18 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	a.task.prepareScope(scoped, scope.ID)
 	a.svc.sink.Emit(event.Event{Kind: event.TurnStarted})
 	a.emitTurnPhase(event.TurnPhaseWorking)
-	input = a.withTurnPreferences(providerInput)
+	input = a.prepareProviderTurn(ctx, providerInput)
 	userCreatedAt := time.Now().UnixMilli()
 	a.activeTurnCreatedAt.Store(userCreatedAt)
 	rawContent := rawInput
 	if rawContent == "" {
 		rawContent = a.turn.turnInput
 	}
-	a.sess.conversation.Add(provider.Message{
+	userMessage := provider.Message{
 		Role: provider.RoleUser, Origin: inputMessageOrigin(ctx), Content: input, RawContent: rawContent,
 		Images: userImages(ctx), VisionSummary: VisionSummaryFromContext(ctx), CreatedAt: userCreatedAt,
-	})
+	}
+	a.appendPinnedRevisionAndUser(ctx, pinned, userMessage)
 
 	// The loop fields join the classification computed above rather than
 	// opening a second object: one turn, one turnRuntime. The zero values the
@@ -269,7 +270,6 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 		if !a.sess.haveLastPrefixShape {
 			prevPrefixShape = prefixShape
 		}
-
 		// Drain reasons queued since the previous capture (compaction,
 		// snip/prune, rewind, guardian merge) so CompareShape can attribute
 		// any prefix change to the operation that actually caused it, instead
@@ -284,6 +284,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 		text, reasoning, signature, calls, responsesItems, serverSearch, usage := streamed.text, streamed.reasoning, streamed.signature, streamed.calls, streamed.responsesItems, streamed.serverSearch, streamed.usage
 		partialCalls, err := streamed.partialCalls, streamed.err
 		cacheDiagnostics := CompareShape(prevPrefixShape, prefixShape, usage, contentReasons)
+		a.attachSessionContextDiagnostics(&cacheDiagnostics)
 		if err != nil {
 			quote := a.emitTurnUsage(usage, &cacheDiagnostics)
 			a.observeRunBudget(state, usage, quote)

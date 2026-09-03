@@ -89,7 +89,7 @@ func loadSessionUserMessagesWithLimits(path string, limits sessionReplayLimits) 
 		if replay.records > 0 {
 			out := make([]SessionUserMessage, 0, len(replay.msgs))
 			for i, m := range replay.msgs {
-				if m.Role != provider.RoleUser {
+				if m.Role != provider.RoleUser || IsPinnedContextRevision(m) {
 					continue
 				}
 				at := time.Time{}
@@ -110,7 +110,7 @@ func loadSessionUserMessagesWithLimits(path string, limits sessionReplayLimits) 
 	}
 	out := make([]SessionUserMessage, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role != provider.RoleUser {
+		if m.Role != provider.RoleUser || IsPinnedContextRevision(m) {
 			continue
 		}
 		at := time.Time{}

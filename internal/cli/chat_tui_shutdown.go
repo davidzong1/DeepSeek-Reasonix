@@ -46,7 +46,8 @@ func (c *tuiShutdownCompletion) claimFallback() bool {
 // process keeps the active session's compatibility lock for the bounded wait.
 func (m chatTUI) shutdownAndQuit(completion *tuiShutdownCompletion) (tea.Model, tea.Cmd) {
 	defer completion.complete()
-	if m.ctrl != nil {
+	// Only snapshot if we still own the session (no takeover, or takeover returned).
+	if m.ctrl != nil && (m.takeover == nil || !m.takeover.Returned()) {
 		m.shutdownErr = m.ctrl.SnapshotForShutdown()
 		m.followSessionLease()
 	}

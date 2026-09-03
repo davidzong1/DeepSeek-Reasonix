@@ -1971,8 +1971,7 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 	return nil
 }
 
-// buildSettingReplacementController builds and migrates the replacement for rebuildSettingTurnLocked, returning the
-// controller, the runtime posture actually restored, and the session path it
+// buildSettingReplacementController builds and migrates the replacement for rebuildSettingTurnLocked, returning the controller, restored runtime, and session path it
 // bound. reload=false is the legacy settings path (boot.Build plus the
 // desktop's manual migration); reload=true is the stage-3b runtime reload,
 // routing build and migration through boot.Rebuild so history, approval mode
@@ -1994,6 +1993,7 @@ func (a *App) buildSettingReplacementController(tab *WorkspaceTab, snap tabRunti
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
+		PinnedContextLoader:      pinnedContextLoader(snap.workspaceRoot),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 		OnSessionTransition:      a.handleTabSessionTransition(tab),
 		OnSessionTitleChanged:    a.onSessionTitleChanged,

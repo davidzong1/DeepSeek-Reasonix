@@ -99,6 +99,10 @@ func (a *App) forkForTabWithOptions(tabID string, turn int, isolateWorkspace boo
 	if err != nil {
 		return ForkWorktreeResultView{}, a.rollbackUnusedForkWorktree(created, err)
 	}
+	if err := copyPinnedContextState(ctrl.SessionPath(), newPath); err != nil {
+		cleanupErr := removeDesktopSessionArtifacts(newPath)
+		return ForkWorktreeResultView{}, a.rollbackUnusedForkWorktree(created, errors.Join(err, cleanupErr))
+	}
 	opened, err := a.openForkedSessionTabWithWorkspace(sourceTab, newPath, created.WorkspaceRoot)
 	result.Tab = opened.tab
 	if err != nil {

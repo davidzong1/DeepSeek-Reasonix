@@ -163,21 +163,34 @@ console.log("\nbundle budgets");
 // The generation-bound history-prepend lease adds stable-key reader anchoring,
 // full mounted coverage, and one final arbiter-owned correction. The measured
 // path is 457.406 KiB after extracting the lease owner to satisfy repolint.
-// Latest-base transcript settle ownership measures 457.518 KiB with this UX;
-// isolated conversation forks and their extracted browser mock adapter bring
-// the combined tree to 458.158 KiB. Retain 0.042 KiB with the smallest
-// one-decimal ratchet. Completion uncertainty adds a terminal outcome and
-// notice without exposing evaluator audits to the frontend; the final merged
-// build measures 458.287 KiB gzip.
+// Latest-base transcript settle ownership measures 457.523 KiB with this UX.
+// Isolated conversation forks and their extracted browser mock adapter bring
+// the combined tree to 458.158 KiB; completion uncertainty adds a terminal
+// outcome and notice without exposing evaluator audits to the frontend,
+// measuring 458.287 KiB gzip.
 // Transactional Ask resolution and authoritative rejected-submit recovery add
 // 0.3 KiB gzip to the initial controller path. Retain the exact turn fence,
-// bounded ListTabs retry, and stale-prompt guard with a 0.1 KiB headroom.
+// bounded ListTabs retry, and stale-prompt guard.
 // Session-catalog repair presentation stays in the lazy project-tree chunk;
 // compact shared helpers keep the combined initial path within the same gate.
 // Merge-Back adds identity-bound inspection, navigation, and retained-recovery
 // orchestration on top. The merged stable build measures 461.338 KiB and the
-// test channel measures 461.323 KiB; retain each exact one-decimal ceiling.
-const initialJSBudgetKiB = 461.4;
+// test channel measures 461.323 KiB. Deferring selection ownership until a
+// real range exists (#9703/#9711) and adding the session takeover banners
+// move the combined path to 462.2 KiB. Local spectator reclaim adds the
+// desktop-vs-remote command branch. Sticky Context's session-scoped file chips
+// bring the merged stable path to 462.587 KiB. Windows' embedded build metadata
+// lands just above the rounded 462.6 KiB boundary; retain one cross-platform
+// decimal step without widening any chunk or raw gate.
+// Reading the applied item-list transform (instead of the remembered offset)
+// keeps the reader/anchor visual guards from compounding under reduced-motion
+// WebView2; the merged path measures 462.827 KiB. Retain one decimal step.
+// Generation-bound native-thumb transactions and the rebased custom-scrollbar
+// drag add 0.3 KiB gzip; the merged path measures 463.102 KiB.
+// Absorbing content-preserving block-window prepends into the active reader
+// transaction adds 0.2 KiB gzip on top; the merged path measures 463.292 KiB,
+// 8 bytes under the next decimal. Retain one cross-platform decimal step.
+const initialJSBudgetKiB = 463.4;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -237,7 +250,11 @@ for (const path of localeChunks) {
   // The retained-recovery receipt and copy action move zh to 59.911 KiB;
   // session-catalog recovery guidance on the merged base moves zh-TW to
   // 60.757 KiB; retain only its exact one-decimal ceiling.
-  const budget = name.startsWith("zh-TW-") ? 60.8 * 1024 : 60.0 * 1024;
+  // Session takeover adds ~20 locale keys per dialect (banners, dialog,
+  // reclaim), while Sticky Context adds file-state and limit diagnostics. The
+  // merged stable chunks measure 60.395 KiB zh and 61.232 KiB zh-TW; retain
+  // only the next one-decimal ceiling for each dialect.
+  const budget = name.startsWith("zh-TW-") ? 61.3 * 1024 : 60.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -306,17 +323,25 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // session-version host, they measure 2452.7 KiB; the recovery coordinator and
 // dialog remain lazy. Completion uncertainty adds a distinct terminal notice
 // and localized startup copy without collapsing into recovery-paused UX.
-// Latest-base transcript settle ownership brings the measured path to
-// 2452.773 KiB; isolated conversation forks bring the combined tree to
 // 2454.719 KiB on the release toolchain. Completion uncertainty brings the
-// final merged payload to 2455.154 KiB; retain the smallest one-decimal
-// ratchet.
+// final merged payload to 2455.154 KiB.
 // Ask turn fencing, rejection reconciliation, and the localized submit-failure
 // notice measure 2456.044 KiB raw; retain 0.056 KiB of one-decimal headroom.
 // Merge-Back's startup ownership and failure-atomic navigation fence add the
 // remaining bounded payload. The retained recovery receipt makes the stable
 // path 2465.105 KiB raw; the merged test channel measures 2464.979 KiB.
-// Retain only each channel's exact one-decimal ceiling.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_465.0 : 2_465.2;
+// Session takeover banners and #9703/#9711's provisional-selection handoff
+// combine with Sticky Context's pinned-file state at 2469.125 KiB raw on the
+// merged stable path. Retain only the next one-decimal ceiling.
+// The passive reader-anchor lease for delayed WebView2 range commits measures
+// 2469.347 KiB raw (+0.222 KiB, +0.009%). Retain only the next one-decimal
+// ceiling; gzip and largest-chunk budgets remain unchanged.
+// Reading the applied item-list transform for the reader/anchor visual guards
+// adds 0.5 KiB raw on top; the merged path measures 2469.815 KiB.
+// The scrollbar generation fence and drag rebase add 1.1 KiB raw; the merged
+// path measures 2470.932 KiB.
+// The reader-transaction offset absorption adds 0.8 KiB raw on top; the merged
+// path measures 2471.741 KiB.
+const rawInitialBudgetKiB = 2_471.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

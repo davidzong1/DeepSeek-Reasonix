@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
@@ -133,7 +134,7 @@ func recoverOrphanedPasteLabelsFromHistory(sent string, knownBlocks []pastedBloc
 		found := false
 		ambiguous := false
 		for _, v := range slices.Backward(history) {
-			if v.Role != provider.RoleUser {
+			if v.Role != provider.RoleUser || agent.IsPinnedContextRevision(v) {
 				continue
 			}
 			for _, body := range expandedPasteBodies(v.Content, label) {

@@ -396,6 +396,8 @@ type Agent struct {
 	// tool loop is active, but it must keep this message and everything after it
 	// verbatim so cancellation/crash recovery can retain completed tool pairs.
 	activeTurnCreatedAt atomic.Int64
+	// Pinned revisions are staged after admission and appended with the user turn.
+	pinned pinnedContextRuntime
 }
 
 type repeatFailureRecord struct {
@@ -576,35 +578,6 @@ func (a *Agent) MutationObserver() *checkpoint.MutationObserver {
 		return nil
 	}
 	return a.svc.mutationObserver
-}
-
-// Session returns the agent's current conversation, useful for persistence
-// hooks that need to read the message log between turns. sessMu serialises this
-// pointer read against SetSession, so a frontend (serve's concurrent /history and
-// /new handlers) can't race the swap. The run loop touches a.session directly and
-// only swaps it via SetSession while idle, so its reads need no lock.
-func (a *Agent) Session() *Session {
-	a.sess.mu.Lock()
-	defer a.sess.mu.Unlock()
-	return a.sess.conversation
-}
-
-// SetSession replaces the agent's conversation wholesale. Used by
-// `reasonix --resume` to load a saved JSONL transcript before the first turn,
-// so the model picks up exactly where it left off. Callers serialise it against a
-// running turn (it only fires while idle); sessMu guards the pointer swap itself.
-func (a *Agent) SetSession(s *Session) {
-	a.sess.reset(s)
-	// The replaced conversation's task is over, but the ledger and the bill
-	// answer to beginRunTurn's scope check rather than to this seam.
-	a.task.repeatFailures = nil
-	a.task.repeatScope = ""
-	a.pending.preserveEvidence = false
-	a.pending.finalReadinessRecovery = false
-	a.pending.finalReadinessRecoveryPrepared = false
-	if s != nil {
-		a.rebuildTodoState(s.Snapshot())
-	}
 }
 
 // LastUsage returns the most recent per-turn token telemetry the provider
@@ -1303,10 +1276,15 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		// If an extension blocks earlier, release the in-memory reservation so
 		// the still-pending durable marker can authorize a later retry.
 		a.RestoreFinalReadinessRecoveryPreparation()
+		a.discardStagedPinnedContext()
 		return err
 	}
 
-	_, state := a.beginRunTurn(ctx, input)
+	pinned, err := a.preparePinnedRevision()
+	if err != nil {
+		return err
+	}
+	_, state := a.beginRunTurn(ctx, input, pinned)
 	if a.pending.forkRestore != nil {
 		a.pending.forkRestore(state)
 	}
@@ -2095,7 +2073,7 @@ func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provide
 }
 
 func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
-	return CaptureShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion())
+	return captureTurnContextShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion(), a.modelVisibleMessages())
 }
 
 func (a *Agent) systemPrompt() string {

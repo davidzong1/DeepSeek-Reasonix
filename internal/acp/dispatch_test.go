@@ -691,6 +691,10 @@ func TestUpdateSinkReplayStripsInjectedWrappers(t *testing.T) {
 	sink := newUpdateSink(fn, "sess-1")
 	sink.replay([]provider.Message{
 		{
+			Role: provider.RoleUser, Origin: provider.MessageOriginHost,
+			Content: "<pinned_context_revision>private pinned body</pinned_context_revision>",
+		},
+		{
 			Role: provider.RoleUser,
 			Content: "<response-language>\nFinal answer language preference: use Simplified Chinese.\n</response-language>\n" +
 				"Introduce yourself",

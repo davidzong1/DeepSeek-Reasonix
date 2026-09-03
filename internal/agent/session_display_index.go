@@ -63,6 +63,10 @@ type DisplayIndexEntry struct {
 	HasToolCalls bool          `json:"has_tool_calls,omitempty"`
 	LocalOnly    bool          `json:"local_only,omitempty"`
 	ToolResult   bool          `json:"tool_result,omitempty"`
+	// PinnedContextRevision distinguishes the hidden host revision from other
+	// user-role records. History paging needs this bit to keep legacy persisted
+	// user timestamps aligned without decoding the entire transcript prefix.
+	PinnedContextRevision bool `json:"pinned_context_revision,omitempty"`
 	// Synthetic and Steer use raw authored text; desktop may first resolve
 	// @file references for display, but the control-message predicates match.
 	Synthetic bool `json:"synthetic,omitempty"`
@@ -128,15 +132,16 @@ func encodeDisplayIndexEntriesContext(ctx context.Context, idx *SessionDisplayIn
 // counter.
 func classifyDisplayIndexMessage(m provider.Message, index int, offset, length int64, turn int) (DisplayIndexEntry, int) {
 	entry := DisplayIndexEntry{
-		Index:        index,
-		Offset:       offset,
-		Length:       length,
-		Role:         m.Role,
-		AuthoredTurn: turn,
-		HasImages:    len(m.Images) > 0,
-		HasToolCalls: len(m.ToolCalls) > 0,
-		LocalOnly:    m.LocalOnly,
-		ToolResult:   m.Role == provider.RoleTool,
+		Index:                 index,
+		Offset:                offset,
+		Length:                length,
+		Role:                  m.Role,
+		AuthoredTurn:          turn,
+		HasImages:             len(m.Images) > 0,
+		HasToolCalls:          len(m.ToolCalls) > 0,
+		LocalOnly:             m.LocalOnly,
+		ToolResult:            m.Role == provider.RoleTool,
+		PinnedContextRevision: IsPinnedContextRevision(m),
 	}
 	if m.Role == provider.RoleUser {
 		switch {

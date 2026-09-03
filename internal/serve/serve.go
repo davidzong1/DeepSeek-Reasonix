@@ -92,6 +92,11 @@ type Server struct {
 	tagsMu        sync.Mutex
 	tags          map[*control.Controller]*sessionTagSink
 	hostGate      hostGateState // hostGuard allowlist state; see hostguard.go
+	// mirroredMu guards mirrored: sessions whose lease was handed to a local
+	// runtime via POST /handoff. Serve answers reads from the transcript file
+	// and mirrors the writer's frames, but holds no write authority.
+	mirrorMu sync.Mutex
+	mirrored map[string]mirroredSession
 }
 
 // SetControllerBuildOptions records the process-local options used to build
@@ -115,6 +120,7 @@ func New(ctrl control.SessionAPI, bc *Broadcaster, serveCfg config.ServeConfig) 
 		detached:    map[string]*detachedSession{},
 		tags:        map[*control.Controller]*sessionTagSink{},
 		leaseOwners: map[*control.Controller]*control.SessionLeaseKeeper{},
+		mirrored:    map[string]mirroredSession{},
 	}
 	bc.SetCurrentSession(agent.CanonicalSessionPath(ctrl.SessionPath()))
 	if cfg, err := config.Load(); err == nil {
@@ -231,9 +237,7 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 
 	// Off-lock: snapshot, carry history, and build the replacement. None of these
 	// touch s.mu, so concurrent handlers keep reading the live controller.
-	if err := cur.Snapshot(); err != nil {
-		slog.Warn("serve: snapshot before model switch", "err", err)
-	}
+	s.snapshotForeground(cur)
 	// Capture the continue path and history only after Snapshot: a snapshot
 	// conflict can retarget cur to a recovery branch (or adopt the newer disk
 	// transcript), and a pre-snapshot capture would bind the rebuilt controller
@@ -344,10 +348,7 @@ func (s *Server) reloadExtensions(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("cannot reload extensions for this controller implementation")
 	}
-	if err := cur.Snapshot(); err != nil {
-		slog.Warn("serve: snapshot before extension reload", "err", err)
-	}
-
+	s.snapshotForeground(cur)
 	ref := currentModelRef(cur)
 	newCtrl, err := s.rebuild(ctx, cur, ref)
 	if err != nil {
@@ -577,6 +578,12 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /extension-form", s.foregroundMutation(s.submitExtensionForm))
 	mux.HandleFunc("GET /status", s.status)
 	mux.HandleFunc("GET /sessions", s.sessions)
+	mux.HandleFunc("GET /ownership", s.ownership)
+	mux.HandleFunc("POST /handoff", s.handoff)
+	mux.HandleFunc("POST /external/frames", s.externalFrames)
+	mux.HandleFunc("POST /adopt", s.adopt)
+	mux.HandleFunc("POST /reclaim", s.reclaim)
+	mux.HandleFunc("POST /mirror-end", s.mirrorEnd)
 	mux.HandleFunc("GET /commands", s.commands)
 	mux.HandleFunc("GET /pending-prompts", s.pendingPrompts)
 	mux.HandleFunc("GET /skills", s.skills)
@@ -743,6 +750,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		s.bindMu.Unlock()
 		return
 	}
+	if s.rejectMirroredForegroundLocked(w) {
+		s.bindMu.Unlock()
+		return
+	}
 	ctrl := s.ctl()
 	// Fix false 202 while a turn is active: SubmitHTTPFormat silently drops
 	// concurrent input. Clients must use POST /inbox/items for durable follow-up.
@@ -821,7 +832,7 @@ type historyMessage struct {
 
 func historyMessages(msgs []provider.Message) []historyMessage {
 	out := make([]historyMessage, 0, len(msgs))
-	for _, m := range msgs {
+	for _, m := range historyWithoutPinnedContextRevisions(msgs) {
 		if recovered, handled := finalReadinessHistoryMessage(m); handled {
 			out = append(out, recovered...)
 			continue
@@ -855,13 +866,31 @@ func historyMessages(msgs []provider.Message) []historyMessage {
 }
 
 // history returns the session's message log so a reconnecting client can
-// repopulate its transcript, including historical tool cards. Supports ETag caching:
+// repopulate its transcript, including historical tool cards. For a session
+// mirrored to a local writer it reads the transcript file — the writer's
+// turns never enter Serve's in-memory history. Supports ETag caching:
 // if the client sends If-None-Match with the current ETag, the server returns
 // 304 Not Modified with no body, saving bandwidth on reconnects.
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+	// A read-only surface can select a specific session a local runtime owns
+	// (spectator attach): serve the local writer's transcript from the file.
+	if raw := r.URL.Query().Get("session"); raw != "" {
+		if path, msgs, ok := s.externalReadView(raw); ok {
+			writeJSONCached(w, r, historyMessages(msgs))
+			_ = path
+			return
+		}
+	}
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
-	writeJSONCached(w, r, historyMessages(s.ctl().History()))
+	ctrl := s.ctl()
+	if path := agent.CanonicalSessionPath(ctrl.SessionPath()); s.sessionMirrored(path) {
+		if msgs, ok := s.mirroredHistory(path); ok {
+			writeJSONCached(w, r, historyMessages(msgs))
+			return
+		}
+	}
+	writeJSONCached(w, r, historyMessages(ctrl.History()))
 }
 
 // context returns the prompt-vs-window gauge numbers. Supports ETag caching
@@ -972,6 +1001,11 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 	if !s.validateExpectedSessionLocked(w, r) {
+		return
+	}
+	// Forking a mirrored foreground would branch from Serve's stale in-memory
+	// copy; the local writer owns the live transcript.
+	if s.rejectMirroredForegroundLocked(w) {
 		return
 	}
 	path, err := s.ctl().ForkNamed(body.Turn, body.Name)
@@ -1091,52 +1125,50 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path", http.StatusBadRequest)
 		return
 	}
-	dir := s.ctl().SessionDir()
-	if dir == "" {
-		http.Error(w, "sessions disabled", http.StatusBadRequest)
-		return
-	}
-	absDir, err := filepath.Abs(dir)
+	realPath, err := s.resolveSessionPath(body.Path)
 	if err != nil {
-		http.Error(w, "invalid session dir", http.StatusBadRequest)
+		http.Error(w, err.Error(), resolveSessionPathStatus(err))
 		return
 	}
-	realDir, err := filepath.EvalSymlinks(absDir)
-	if err != nil {
-		http.Error(w, "invalid session dir", http.StatusBadRequest)
-		return
-	}
-	absPath, err := filepath.Abs(strings.TrimSpace(body.Path))
-	if err != nil || !store.IsSessionTranscriptName(filepath.Base(absPath)) {
-		http.Error(w, "invalid session path", http.StatusBadRequest)
-		return
-	}
-	realPath, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		http.Error(w, "invalid session path", http.StatusBadRequest)
-		return
-	}
-	if realPath == realDir || !strings.HasPrefix(realPath, realDir+string(os.PathSeparator)) {
-		http.Error(w, "path outside session dir", http.StatusForbidden)
-		return
-	}
-	if agent.IsCleanupPending(realPath) {
-		http.Error(w, "session is pending cleanup", http.StatusBadRequest)
+	// A mirrored session belongs to a local runtime; switching the foreground
+	// onto it would render Serve's frozen in-memory copy and silently strand
+	// the writer. Instead of refusing the attach, mount the client as a
+	// read-only spectator: Serve does NOT take ownership, the remote tab
+	// renders the file-backed /history?session view, /status?session reports
+	// takenOver, and reclaim returns the session through POST /reclaim. This
+	// keeps every client version (no special attach branch) working.
+	// Covers both mirrored sessions (adopted/handed off) and sessions merely
+	// held by another local process (e.g. a .9 desktop tab without adopt).
+	if s.sessionMirrored(realPath) || leaseHeldByForeignRuntime(realPath) {
+		w.Header().Set(sessionPathHeader, agent.CanonicalSessionPath(realPath))
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	// Serialize with /new, /fork, and switchModel so the controller and lease
 	// cannot land on different sessions. Validate first to avoid slow holders.
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
+	s.resumeSession(w, r, realPath)
+}
+
+// resolveSessionPathStatus keeps resume's historical status codes for the
+// shared validation helper.
+func resolveSessionPathStatus(err error) int {
+	if err != nil && err.Error() == "path outside session dir" {
+		return http.StatusForbidden
+	}
+	return http.StatusBadRequest
+}
+
+// resumeSession moves the foreground to realPath. Callers hold bindMu.
+func (s *Server) resumeSession(w http.ResponseWriter, r *http.Request, realPath string) {
 	cur := s.ctl()
 	if s.resumeActiveSession(w, r, cur, realPath) {
 		return
 	}
 	// Snapshot the current session before switching away — while this process
-	// still holds its lease.
-	if err := cur.Snapshot(); err != nil {
-		slog.Warn("serve: snapshot before resume", "err", err)
-	}
+	// still holds its lease (skipped when a local writer owns it).
+	s.snapshotForeground(cur)
 	// Refuse to bind a session another runtime is writing (a desktop window,
 	// another CLI); on success the lease now guards the resume target.
 	if s.leases != nil {
@@ -1305,6 +1337,19 @@ func currentModelRef(c control.SessionAPI) string {
 // status returns a combined status snapshot. The desktop's runtime-only path
 // skips provider balance IO while retaining all reconciliation fields.
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	// A spectator watching a session a local runtime owns selects it
+	// explicitly; report the file-backed read-only view instead of the
+	// foreground controller's.
+	if raw := r.URL.Query().Get("session"); raw != "" {
+		if path, err := s.resolveSessionPath(raw); err == nil {
+			held := s.sessionMirrored(path) || leaseHeldByForeignRuntime(path)
+			writeJSON(w, s.statusViewForPath(path, held))
+			if s.sessionMirrored(path) {
+				s.maybeAutoReclaimMirrored(path)
+			}
+			return
+		}
+	}
 	// Session rotations publish the controller path and executor Session while
 	// holding bindMu. Read the combined snapshot in that same binding epoch so
 	// callers can never pair a newly published path with the outgoing history.
@@ -1360,6 +1405,22 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	sess["backgroundJobs"] = rs.BackgroundJobs
 	sess["cancelRequested"] = rs.CancelRequested
 	sess["cancellable"] = rs.Cancellable
+	if canonical := agent.CanonicalSessionPath(sessionPath); canonical != "" && s.sessionMirrored(canonical) {
+		// A local runtime owns the session: nothing here can run, and the
+		// remote surface must render read-only. This field is the
+		// authoritative ownership signal — notices can be dropped by a slow
+		// subscriber, the status poll cannot.
+		sess["running"] = false
+		sess["pendingPrompt"] = false
+		sess["takenOver"] = true
+		if m, ok := s.mirroredEntry(canonical); ok {
+			sess["reclaimRequested"] = m.reclaimRequested
+		}
+		s.bindMu.Unlock()
+		s.maybeAutoReclaimMirrored(canonical)
+		writeJSON(w, sess)
+		return
+	}
 	if u := ctrl.LastUsage(); u != nil {
 		sess["lastUsage"] = u
 	}
@@ -1509,6 +1570,12 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.detachedBusy(filepath.Clean(abs)) {
 		http.Error(w, "session is running in the background; switch to it and stop the turn first", http.StatusConflict)
+		return
+	}
+	if s.sessionMirrored(abs) {
+		// A local runtime is writing this transcript; deleting it here would
+		// pull the file out from under the writer.
+		http.Error(w, "session is taken over by a local Reasonix window", http.StatusConflict)
 		return
 	}
 	destroy := s.ctl().BeginDestroySession(abs)

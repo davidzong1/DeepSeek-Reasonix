@@ -157,22 +157,23 @@ func (b *displayTurnBuffer) materialize() []HistoryMessage {
 // memory, permissions) scoped to a workspace root, so multiple projects and
 // topics can be active concurrently without interfering.
 type WorkspaceTab struct {
-	ID                  string             // stable random id
-	Scope               string             // "project" | "global"
-	WorkspaceRoot       string             // project root dir (empty for global)
-	SharedHostKey       string             // opaque key for the shared plugin host (set by buildTabController)
-	TopicID             string             // topic within the project
-	TopicTitle          string             // display title
-	topicTitleSource    string             // auto or manual; controls localization at API boundaries
-	SessionPath         string             // exact .jsonl file this tab continues
-	SessionGeneration   uint64             // bumps on session rotation (clear/new); frontend hydrate identity
-	ReadOnly            bool               // true for external channel transcripts opened for browsing
-	Ctrl                control.SessionAPI // nil while booting / on error
-	Label               string             // model label (for the tab badge)
-	Ready               bool               // true once boot.Build completes
-	StartupErr          string             // build error, surfaced to the frontend
-	StartupErrLeaseHeld bool               // true when StartupErr can be retried after a session lease releases
-	runtimeID           string             // process-local SessionRuntime registry identity
+	ID                  string                   // stable random id
+	Scope               string                   // "project" | "global"
+	WorkspaceRoot       string                   // project root dir (empty for global)
+	SharedHostKey       string                   // opaque key for the shared plugin host (set by buildTabController)
+	TopicID             string                   // topic within the project
+	TopicTitle          string                   // display title
+	topicTitleSource    string                   // auto or manual; controls localization at API boundaries
+	SessionPath         string                   // exact .jsonl file this tab continues
+	SessionGeneration   uint64                   // bumps on session rotation (clear/new); frontend hydrate identity
+	ReadOnly            bool                     // true for external channel transcripts opened for browsing
+	Takeover            struct{ Spectator bool } // handoff state grouped by its cross-runtime lifetime
+	Ctrl                control.SessionAPI       // nil while booting / on error
+	Label               string                   // model label (for the tab badge)
+	Ready               bool                     // true once boot.Build completes
+	StartupErr          string                   // build error, surfaced to the frontend
+	StartupErrLeaseHeld bool                     // true when StartupErr can be retried after a session lease releases
+	runtimeID           string                   // process-local SessionRuntime registry identity
 	sessionLease        *agent.SessionLease
 	sessionLeaseMu      sync.Mutex
 	sessionLeaseKey     atomic.Pointer[string] // lock-free mirror; updated with sessionLease under sessionLeaseMu
@@ -243,6 +244,10 @@ type WorkspaceTab struct {
 	disabledMCP      map[string]ServerView
 	mcpOrder         []string
 	lastBuildResult  *boot.BuildResult // incremental extension reload
+
+	PinnedFiles              []string
+	pendingLegacyPinnedFiles []string // round-tripped until the session sidecar publishes
+	pinnedFilesMu            sync.RWMutex
 
 	// metaExtras caches the expensive MetaForTab fields (git branch, image
 	// input capability) computed off the request path by
@@ -668,36 +673,39 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 	usageTelemetry := cloneSessionUsageStats(tab.usageTelemetry)
 	telemetrySessionKey := tab.telemetrySessionKey
 	tab.telemMu.Unlock()
+	pinnedFiles, pendingLegacyPinnedFiles := tab.pinnedFilesState()
 
 	return &WorkspaceTab{
-		ID:                  detachedRuntimeTabID(key),
-		Scope:               tab.Scope,
-		WorkspaceRoot:       tab.WorkspaceRoot,
-		SharedHostKey:       tab.SharedHostKey,
-		TopicID:             tab.TopicID,
-		TopicTitle:          tab.TopicTitle,
-		topicTitleSource:    tab.topicTitleSource,
-		SessionPath:         canonicalTabSessionPath(path),
-		Ctrl:                tab.Ctrl,
-		Label:               tab.Label,
-		Ready:               tab.Ready,
-		StartupErr:          tab.StartupErr,
-		StartupErrLeaseHeld: tab.StartupErrLeaseHeld,
-		runtimeID:           tab.runtimeID,
-		sink:                tab.sink,
-		ActivityStatus:      tab.ActivityStatus,
-		readTelemetry:       readTelemetry,
-		usageTelemetry:      usageTelemetry,
-		telemetrySessionKey: telemetrySessionKey,
-		displayState:        tab.displayBufferState(),
-		model:               tab.model,
-		effort:              cloneStringPtr(tab.effort),
-		qualityFloor:        tab.qualityFloor,
-		mode:                tab.mode,
-		goal:                tab.goal,
-		toolApprovalMode:    tab.toolApprovalMode,
-		disabledMCP:         cloneServerViewMap(tab.disabledMCP),
-		mcpOrder:            append([]string(nil), tab.mcpOrder...),
+		ID:                       detachedRuntimeTabID(key),
+		Scope:                    tab.Scope,
+		WorkspaceRoot:            tab.WorkspaceRoot,
+		SharedHostKey:            tab.SharedHostKey,
+		TopicID:                  tab.TopicID,
+		TopicTitle:               tab.TopicTitle,
+		topicTitleSource:         tab.topicTitleSource,
+		SessionPath:              canonicalTabSessionPath(path),
+		Ctrl:                     tab.Ctrl,
+		Label:                    tab.Label,
+		Ready:                    tab.Ready,
+		StartupErr:               tab.StartupErr,
+		StartupErrLeaseHeld:      tab.StartupErrLeaseHeld,
+		runtimeID:                tab.runtimeID,
+		sink:                     tab.sink,
+		ActivityStatus:           tab.ActivityStatus,
+		readTelemetry:            readTelemetry,
+		usageTelemetry:           usageTelemetry,
+		telemetrySessionKey:      telemetrySessionKey,
+		displayState:             tab.displayBufferState(),
+		model:                    tab.model,
+		effort:                   cloneStringPtr(tab.effort),
+		qualityFloor:             tab.qualityFloor,
+		mode:                     tab.mode,
+		goal:                     tab.goal,
+		toolApprovalMode:         tab.toolApprovalMode,
+		disabledMCP:              cloneServerViewMap(tab.disabledMCP),
+		mcpOrder:                 append([]string(nil), tab.mcpOrder...),
+		PinnedFiles:              pinnedFiles,
+		pendingLegacyPinnedFiles: pendingLegacyPinnedFiles,
 	}
 }
 
@@ -775,6 +783,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	usageTelemetry := cloneSessionUsageStats(source.usageTelemetry)
 	telemetrySessionKey := source.telemetrySessionKey
 	source.telemMu.Unlock()
+	pinnedFiles, pendingLegacyPinnedFiles := source.pinnedFilesState()
 
 	// Share the runtime-owned display state before rebinding the sink. An event
 	// already routed to source and one arriving on target after setBinding then
@@ -802,6 +811,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	target.toolApprovalMode = source.toolApprovalMode
 	target.disabledMCP = cloneServerViewMap(source.disabledMCP)
 	target.mcpOrder = append([]string(nil), source.mcpOrder...)
+	target.setPinnedFilesState(pinnedFiles, pendingLegacyPinnedFiles)
 	target.replaceTelemetry(tabTelemetrySnapshot{ReadFiles: readTelemetry, Usage: usageTelemetry}, telemetrySessionKey)
 	if app != nil {
 		key := sessionRuntimeKey(path)
@@ -936,6 +946,10 @@ func (a *App) attachExistingSessionRuntimeCore(tab *WorkspaceTab, path string, w
 	attachedSink := tab.sink
 	attachedEpoch := a.runtimeEpochForTabLocked(tab)
 	a.mu.Unlock()
+	if path != "" && !tab.ReadOnly {
+		a.attachTakeoverMirror(tab.ID, path)
+		go a.adoptSessionFromLocalServe(tab.ID, path)
+	}
 
 	a.replayPendingPromptsAfterRuntimeAttach(tab.ID, attachedSink, attachedCtrl, attachedEpoch)
 	return true
@@ -1444,7 +1458,7 @@ func recoverPendingTurnProjections(tab *WorkspaceTab, ctrl control.SessionAPI) {
 	}
 	users := make([]string, 0)
 	for _, message := range ctrl.History() {
-		if message.Role == provider.RoleUser {
+		if agent.IsUserAuthoredTurnMessage(message) {
 			if text := strings.TrimSpace(agent.UserMessageText(message)); text != "" {
 				users = append(users, text)
 			}
@@ -1652,6 +1666,18 @@ type tabEventSink struct {
 	botSink       event.Sink // optional: when set, events are also forwarded here
 	botSinkGen    uint64
 	turn          turnSubmissionState // stays reserved through the end of TurnDone fan-out
+	// takeoverMirror, when set, forwards every event to the serve that used to
+	// own this session so the remote tab keeps rendering after a local
+	// takeover. Atomic so Emit reads it without the sink lock.
+	takeoverMirror atomic.Pointer[takeoverMirror]
+}
+
+// setTakeoverMirror installs (or clears) the session-takeover frame mirror.
+func (s *tabEventSink) setTakeoverMirror(m *takeoverMirror) {
+	if s == nil {
+		return
+	}
+	s.takeoverMirror.Store(m)
 }
 
 type closeableEventSink interface {
@@ -1714,6 +1740,9 @@ func (s *tabEventSink) Emit(e event.Event) {
 		}
 	}
 	s.emitRuntimeEvent(eventChannel, toWireTabWithSubmission(e, tabID, s.runtimeEpochSnapshot(), s.submissionIDSnapshot(), turnStartedAt))
+	if m := s.takeoverMirror.Load(); m != nil {
+		m.forwardEvent(e)
+	}
 	if app != nil {
 		if status, update := topicActivityStatusFromEvent(e); update {
 			changed := app.setTabActivityStatus(tabID, status)
@@ -2211,7 +2240,7 @@ func acknowledgeProjectionForController(ctrl control.SessionAPI, turnID string) 
 }
 
 func lastHistoryMessageIsUser(history []provider.Message) bool {
-	return len(history) > 0 && history[len(history)-1].Role == provider.RoleUser
+	return len(history) > 0 && agent.IsUserAuthoredTurnMessage(history[len(history)-1])
 }
 
 func hasPendingInterruptedRecovery(history []provider.Message) bool {
@@ -2220,7 +2249,7 @@ func hasPendingInterruptedRecovery(history []provider.Message) bool {
 		if m.LocalOnly && m.InterruptedTurn != nil {
 			return m.InterruptedTurn.Pending
 		}
-		if m.Role == provider.RoleUser {
+		if agent.IsUserAuthoredTurnMessage(m) {
 			return false
 		}
 	}
@@ -2243,7 +2272,7 @@ func (s *tabEventSink) eventTabAndController() (*WorkspaceTab, control.SessionAP
 
 func lastUserMessageContent(msgs []provider.Message) string {
 	for _, v := range slices.Backward(msgs) {
-		if v.Role == provider.RoleUser {
+		if agent.IsUserAuthoredTurnMessage(v) {
 			return agent.UserMessageText(v)
 		}
 	}
@@ -2354,6 +2383,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		SessionDigest:     sessionDigest,
 		SessionGeneration: tab.SessionGeneration,
 		ReadOnly:          tab.ReadOnly,
+		TakenOver:         tab.Takeover.Spectator,
 		Label:             tab.Label,
 		Ready:             runtimeView.Phase == sessionRuntimeReady && tab.Ctrl != nil,
 		Runtime:           runtimeView,
@@ -3777,6 +3807,28 @@ func (a *App) recordTabStartupFailure(tab *WorkspaceTab, buildGeneration uint64,
 	a.writeTabsSaveRequest(save)
 	if leaseHeld {
 		a.scheduleDeferredStartupBuild(tab.ID)
+		tabID := tab.ID
+		// The deferred loop retries every 2s and re-enters this path. Only the
+		// first transition to lease_blocked needs the explicit meta push — a
+		// repeated push would re-fetch the same list and churn the frontend.
+		a.mu.RLock()
+		rt := a.runtimeForTabLocked(tab)
+		alreadyBlocked := rt != nil && rt.Phase == sessionRuntimeLeaseBlocked && rt.Issue != nil && rt.Issue.Code == "session_lease_held"
+		a.mu.RUnlock()
+		if alreadyBlocked {
+			a.emitReady(wailsCtx, tab.ID)
+			return
+		}
+		// A failed startup emits no agent events, so the frontend's tabMetas
+		// list would never refresh its runtime state and the takeover
+		// banner/button would have nothing to render. Push the authoritative
+		// tab meta (whose Runtime carries the lease_blocked view) explicitly.
+		a.goSafe("tab-meta-push-lease", func() {
+			if a.tabs[tabID] == nil {
+				return
+			}
+			a.emitRuntimeEvent(tabMetaRefreshEventChannel, TabMetaRefreshEvent{TabID: tabID, Meta: a.MetaForTab(tabID)})
+		})
 	}
 	a.emitReady(wailsCtx, tab.ID)
 }
@@ -3825,12 +3877,19 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	}
 	a.mu.Lock()
 	if !tab.removed && tab.Ctrl == nil {
-		tab.Ready = false
-		clearTabStartupError(tab)
-		a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
+		// A lease-blocked tab keeps its blocked banner steady while the
+		// deferred-rebuild loop retries every 2s: resetting to "starting" on
+		// each attempt makes the frontend's takeover banner (and the dialog
+		// built from it) mount/unmount in a 2s cycle. The state flips to ready
+		// only when a retry actually wins the lease. Deliberate user rebuilds
+		// never carry StartupErrLeaseHeld, so they reset as before.
+		if !tab.StartupErrLeaseHeld {
+			tab.Ready = false
+			clearTabStartupError(tab)
+			a.setSessionRuntimePhaseLocked(tab, sessionRuntimeStarting, nil)
+		}
 	}
 	a.mu.Unlock()
-
 	a.reconcileTabWithPinnedSessionMeta(tab)
 
 	// Snapshot the identity/profile fields under a.mu before the off-lock
@@ -3900,7 +3959,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	} else if catalogTopicPath != "" {
 		startupSessionPath = catalogTopicPath
 	}
-
+	prepareStartupPinnedContext(tab, startupSessionPath, tabSessionPath)
 	model := strings.TrimSpace(tabModel)
 	if sessionModel, ok := agent.LoadSessionModel(startupSessionPath); ok {
 		config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, sessionModel)
@@ -3993,6 +4052,7 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
+		PinnedContextLoader:      pinnedContextLoader(root),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 		OnSessionTransition:      a.handleTabSessionTransition(tab),
 		OnSessionTitleChanged:    a.onSessionTitleChanged,
@@ -4201,6 +4261,13 @@ func (a *App) buildTabControllerWithContextCore(tab *WorkspaceTab, loadedSession
 	a.advanceSessionRuntimeEpochLocked(tab)
 	keepBuildContext = true
 	a.mu.Unlock()
+	// A directly-opened session announces itself to a resident serve so the
+	// remote side can watch it read-only and reclaim it (see
+	// adoptSessionFromLocalServe). First-open path of the takeover flow.
+	if path := strings.TrimSpace(tab.currentSessionPath()); path != "" && !tab.ReadOnly {
+		a.attachTakeoverMirror(tab.ID, path)
+		go a.adoptSessionFromLocalServe(tab.ID, path)
+	}
 	recoverPendingTurnProjections(tab, ctrl)
 	a.emitReady(wailsCtx, tab.ID)
 }
@@ -4301,6 +4368,7 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 	if topicID != "" {
 		topicSource = loadTopicTitleSource(topicTitleRoot(scope, workspaceRoot), topicID)
 	}
+	pinnedState, preservePendingLegacy := pinnedContextStateForSessionBinding(tab, binding.path)
 
 	a.mu.Lock()
 	current := a.tabs[tab.ID]
@@ -4324,6 +4392,7 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 		terminalSessions = a.terminals.detachForTab(tab.ID)
 		reopenTerminalGate = !tab.ReadOnly && !tab.removed
 	}
+	applyPinnedContextSessionBinding(tab, pinnedState, preservePendingLegacy)
 	tab.Scope = scope
 	tab.WorkspaceRoot = workspaceRoot
 	tab.SessionPath = canonicalTabSessionPath(binding.path)
@@ -4958,31 +5027,6 @@ const legacyProjectSidebarRecoveryMarker = "desktop-projects-legacy-recovered"
 
 var desktopProjectsFileMu sync.Mutex
 
-type desktopTabEntry struct {
-	ID               string  `json:"id"`
-	Scope            string  `json:"scope"`
-	WorkspaceRoot    string  `json:"workspaceRoot"`
-	TopicID          string  `json:"topicId"`
-	SessionPath      string  `json:"sessionPath,omitempty"`
-	ReadOnly         bool    `json:"readOnly,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	Effort           *string `json:"effort,omitempty"`
-	TokenMode        string  `json:"tokenMode,omitempty"`
-	AgentPreset      string  `json:"agentPreset,omitempty"`
-	QualityFloor     string  `json:"qualityFloor,omitempty"`
-	Mode             string  `json:"mode,omitempty"`
-	Goal             string  `json:"goal,omitempty"`
-	ToolApprovalMode string  `json:"toolApprovalMode,omitempty"`
-}
-
-type desktopTabsFile struct {
-	Tabs           []desktopTabEntry       `json:"tabs"`
-	ActiveTab      string                  `json:"activeTab"`
-	RemoteTabs     []desktopRemoteTabEntry `json:"remoteTabs,omitempty"`
-	RemoteTabOrder []string                `json:"remoteTabOrder,omitempty"`
-	TabOrder       []string                `json:"tabOrder,omitempty"`
-}
-
 func desktopConfigDir() string {
 	return config.ReasonixHomeDir()
 }
@@ -5004,22 +5048,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 			if a.suppressTabStartupRestoreLocked(tab) {
 				continue
 			}
-			entries = append(entries, desktopTabEntry{
-				ID:               tab.ID,
-				Scope:            tab.Scope,
-				WorkspaceRoot:    tab.WorkspaceRoot,
-				TopicID:          tab.TopicID,
-				SessionPath:      tab.currentSessionPath(),
-				ReadOnly:         tab.ReadOnly,
-				Model:            tab.model,
-				Effort:           cloneStringPtr(tab.effort),
-				AgentPreset:      currentTabAgentPreset(tab),
-				TokenMode:        currentTabTokenMode(tab),
-				QualityFloor:     tab.qualityFloor,
-				Mode:             persistedTabMode(currentTabMode(tab)),
-				Goal:             persistedTabGoal(tab),
-				ToolApprovalMode: persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
-			})
+			entries = append(entries, persistedDesktopTabEntry(tab))
 		}
 	}
 	a.tabsSaveVersion++
@@ -6130,78 +6159,6 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 	}
 }
 
-func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionRecoveryInfo) error {
-	return func(info control.SessionRecoveryInfo) error {
-		if strings.TrimSpace(info.RecoveryPath) == "" {
-			return nil
-		}
-		if err := a.handoffTabRecoveryLease(tab, info.RecoveryPath); err != nil {
-			return err
-		}
-		meta := info.Meta
-		scope := strings.TrimSpace(meta.Scope)
-		if scope != "project" {
-			scope = "global"
-		}
-		workspaceRoot := strings.TrimSpace(meta.WorkspaceRoot)
-		if scope == "global" {
-			workspaceRoot = ""
-		}
-		invalidateTopicSessionIndexForPath(info.RecoveryPath)
-		a.mu.Lock()
-		if tab != nil && !tab.removed {
-			oldKey := sessionRuntimeKey(info.OriginalPath)
-			newKey := sessionRuntimeKey(info.RecoveryPath)
-			if oldKey != "" && newKey != "" && a.detachedSessions[oldKey] == tab {
-				delete(a.detachedSessions, oldKey)
-				a.ensureDetachedSessionsLocked()
-				a.detachedSessions[newKey] = tab
-			}
-			tab.SessionPath = canonicalTabSessionPath(info.RecoveryPath)
-			if a.tabs[tab.ID] == tab {
-				a.saveTabsLocked()
-			}
-		}
-		a.mu.Unlock()
-		// The fork continues the same conversation, so its cost history moves
-		// with it: re-key the in-memory telemetry from the original session to
-		// the recovery path and persist the sidecar right away. Without this
-		// the fork's sidecar stays empty until the next usage event (cost
-		// shows 0 after a restart), and the sync-by-key reload would wipe the
-		// carried totals as "another session's" numbers.
-		if tab != nil && !tab.removed {
-			origKey := sessionRuntimeKey(info.OriginalPath)
-			newKey := sessionRuntimeKey(info.RecoveryPath)
-			carried := false
-			if newKey != "" {
-				tab.telemMu.Lock()
-				if tab.telemetrySessionKey == origKey || tab.telemetrySessionKey == "" {
-					tab.telemetrySessionKey = newKey
-					carried = true
-				}
-				tab.telemMu.Unlock()
-			}
-			if carried {
-				_ = saveTelemetry(info.RecoveryPath+".telemetry.json", tab.telemetrySnapshot())
-			}
-		}
-		a.emitSessionRecoveredAndRefresh(sessionDirectoryForPath(info.RecoveryPath), sessionRecoveryEvent{
-			OriginalPath:     info.OriginalPath,
-			RecoveryPath:     info.RecoveryPath,
-			Scope:            scope,
-			WorkspaceRoot:    workspaceRoot,
-			TopicID:          meta.TopicID,
-			TopicTitle:       meta.TopicTitle,
-			RecoveryReason:   meta.RecoveryReason,
-			RecoveryDigest:   meta.RecoveryDigest,
-			RecoveryParentID: string(meta.ParentID),
-			Existing:         info.Existing,
-		})
-		a.invalidatePromptHistoryCache()
-		return nil
-	}
-}
-
 // emitSessionRecoveredAndRefresh registers the frontend pending item before a
 // catalog reconcile can publish the revision that classifies it.
 func (a *App) emitSessionRecoveredAndRefresh(dir string, recovered sessionRecoveryEvent) {
@@ -6584,7 +6541,7 @@ func restoredSessionTopicTitle(dir, sessionPath string, meta agent.BranchMeta) s
 	}
 	if s, err := agent.LoadSession(sessionPath); err == nil {
 		for _, msg := range s.Messages {
-			if msg.Role == provider.RoleUser {
+			if agent.IsUserAuthoredTurnMessage(msg) {
 				if title := topicTitleFromText(agent.UserMessageText(msg)); title != "" {
 					return title
 				}
@@ -8069,6 +8026,10 @@ func (a *App) persistTabSessionPath(tab *WorkspaceTab, path string) {
 	if tab == nil || path == "" {
 		return
 	}
+	// A tab restored from the short-lived tab-scoped implementation may not
+	// have had a session path when startup loaded its legacy pins. Publish that
+	// one-time migration before reconcile loads the new session-owned sidecar.
+	migratePendingLegacyPinnedFiles(tab, path)
 	if reconciled, ok := a.reconcileTabWithSessionPath(tab, path); ok {
 		path = canonicalTabSessionPath(reconciled)
 	}

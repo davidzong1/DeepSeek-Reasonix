@@ -1914,7 +1914,7 @@ func renameOverlongSession(oldPath string) (string, error) {
 // and the checkpoint/job directories. Lock and lease files are disposable and
 // are removed by the caller instead.
 func migrateSessionSidecars(oldPath, newPath, newID string) error {
-	var errs []error
+	errs := []error{migratePinnedContextSidecar(oldPath, newPath, newID)}
 	if len(filepath.Base(oldPath))+len(".meta") <= nameMaxBytes {
 		if meta, ok, err := LoadBranchMeta(oldPath); err != nil {
 			errs = append(errs, err)

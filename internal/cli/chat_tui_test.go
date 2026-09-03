@@ -967,11 +967,11 @@ func TestModalPanelsHideComposerBox(t *testing.T) {
 		{
 			name: "resume picker",
 			setup: func(m *chatTUI) {
-				m.resumePick = &resumePicker{sessions: []agent.SessionInfo{{
+				m.resumePick = &resumePicker{entries: []resumeEntry{{session: agent.SessionInfo{
 					Path:    "one.jsonl",
 					Preview: "previous task",
 					Turns:   3,
-				}}, sel: 0, active: -1}
+				}}}, sel: 0, active: -1}
 			},
 			render: func(m chatTUI) string { return m.renderResumePicker() },
 		},
@@ -2891,7 +2891,7 @@ func TestQueuedFoldedPasteExpandsBeforeInterjectSend(t *testing.T) {
 	defer ctrl.Close()
 	ctrl.EnsureSessionPath()
 	m := newTestChatTUI()
-	m.ctrl = ctrl
+	m.ctrl = &busyInboxController{SessionAPI: ctrl}
 	m.eventCh = make(chan event.Event, 8)
 	m.state = tuiRunning
 	pasted := strings.Repeat("queued pasted content\n", 10)
@@ -2925,7 +2925,7 @@ func TestQueuedFoldedPasteExpandsBeforeInterjectSend(t *testing.T) {
 	}
 
 	// Resume inbox so controller can dispatch after TurnDone.
-	_ = m.ctrl.SetInboxPaused(false)
+	_ = ctrl.SetInboxPaused(false)
 	model, _ = m.Update(agentEventMsg(event.Event{Kind: event.TurnDone}))
 	m = model.(chatTUI)
 	// Controller dispatches asynchronously via maybeDispatch; wait briefly.

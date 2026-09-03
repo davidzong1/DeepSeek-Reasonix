@@ -59,6 +59,7 @@ import (
 	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
+	"reasonix/internal/sessioncontext"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/skill"
 	"reasonix/internal/stats"
@@ -205,8 +206,8 @@ type Options struct {
 	SandboxNetworkOverride *bool
 	SandboxBashOverride    string
 	WorkspaceOnly          bool
-	// SessionTemp is the session-private temp manager; Rebuild reuses old's.
-	SessionTemp *sessiontemp.Manager
+	PinnedContextLoader    control.PinnedContextLoader
+	SessionTemp            *sessiontemp.Manager // session-private temp manager; Rebuild reuses old's
 	RuntimeReload
 	// deferPublish keeps a replacement generation private until migration and
 	// commit succeed. Cold BuildRuntime leaves this false and publishes at boot.
@@ -618,9 +619,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		sysPrompt += "\n\n" + identity
 	}
 	sysPrompt = appendCorePolicies(sysPrompt)
-	if workspaceLine := currentWorkspacePromptLine(root); workspaceLine != "" {
-		sysPrompt += "\n\n" + workspaceLine
-	}
+	sysPrompt += "\n\n" + sessioncontext.PolicyBlock()
+	sessionContextStatic := sessioncontext.Sections{Workspace: currentWorkspacePromptLine(root)}
 	// Execution modes no longer exist. Host obligations are fact-driven and
 	// never rewrite the cache-stable system prefix or tool schemas.
 	if cfg.EnvironmentEnabled() {
@@ -629,27 +629,21 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			environment.RunProbesWithOptions(ctx, environment.DefaultProbes(), environment.ProbeOptions{
 				Overrides: cfg.Environment.Tools,
 				DenyRoots: []string{root},
-				// Persist probe results across restarts: the section below sits
-				// inside the provider-cached prompt prefix, and re-observing
-				// per boot let transient probe flaps (timeouts, PATH drift)
-				// rewrite the prefix and cold-start every session's cache.
+				// Persist probe results across restarts so transient probe flaps do
+				// not generate needless session-context replacements.
 				SnapshotDir: config.CacheDir(),
 			}),
 			runtime.GOOS+"/"+runtime.GOARCH,
 			shellLabel,
 			cfg.Environment.Tools,
 		)
-		if envSection != "" {
-			sysPrompt += "\n\n" + envSection
-		}
+		sessionContextStatic.Environment = envSection
 	}
-	sysPrompt = appendOfflineEnvironmentNote(sysPrompt, cfg.Environment.Offline)
+	sessionContextStatic.Environment = appendOfflineEnvironmentNote(sessionContextStatic.Environment, cfg.Environment.Offline)
 
-	// Persistent memory (REASONIX.md / AGENTS.md hierarchy + auto-memory index)
-	// folds into the system prompt exactly here, once: it becomes part of the
-	// durable, cache-stable prefix every turn reuses, so memory costs nothing per
-	// turn. Mid-session changes never touch this prefix — they ride the
-	// controller's transient turn-injection and fold in on the next session.
+	// Stable memory policy and REASONIX.md / AGENTS.md standing instructions
+	// enter the system prompt. Pinned facts and the background index remain in
+	// the controller-owned session-context snapshot.
 	if _, err := memory.StoreFor(config.MemoryUserDir(), root).MigrateV2(); err != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Memory metadata migration did not complete.", Detail: err.Error()})
 	}
@@ -685,7 +679,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 		allSkills = allSkillStore.List()
 		if implicitSkillInvocation {
-			sysPrompt = skill.ApplyIndex(sysPrompt, skills)
+			sysPrompt += "\n\n" + skill.InvocationPolicyBlock()
 		}
 	}
 	sysPrompt = config.ApplyOfficialDeepSeekV4ProPersona(sysPrompt, entry)
@@ -1713,7 +1707,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("planner %q: %w", pm, err)
 			}
-			plannerSess := agent.NewSession(agent.PlannerPromptWithContext(mem.Block()))
+			plannerContext := mem.SystemBlock()
+			if implicitSkillInvocation {
+				plannerContext = strings.TrimSpace(plannerContext + "\n\n" + skill.ReadOnlyInvocationPolicyBlock())
+			}
+			plannerSess := agent.NewSession(agent.PlannerPromptWithContext(plannerContext))
 			// Planner owns an independent ledger/audit and use_capability frontend
 			// so its MCP calls cannot satisfy or poison Executor Delivery gates.
 			plannerLedger := capability.NewLedger()
@@ -1762,7 +1760,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	visionModelSelector := func(currentRef, _ string) (string, bool) {
 		return selectVisionModel(effectiveResolver, cfg, currentRef)
 	}
-
 	ctrlOpts := control.Options{
 		TaskBudget:                     taskBudgetFromConfig(cfg),
 		GoalTokenBudget:                cfg.Agent.GoalTokenBudget,
@@ -1777,6 +1774,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		VisionProviderResolver:         visionProviderResolver,
 		VisionModelSelector:            visionModelSelector,
 		SystemPrompt:                   sysPrompt,
+		PinnedContextLoader:            opts.PinnedContextLoader,
 		SessionDir:                     sessionDir,
 		Host:                           pluginHost,
 		Commands:                       cmds,
@@ -1821,6 +1819,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ExternalFolderToolRefs: readPathResolver,
 		ResponseLanguage:       cfg.ResponseLanguage(),
 		ReasoningLanguage:      config.ReasoningLanguageForEntry(entry, cfg.ReasoningLanguage()),
+		SessionContextStatic:   sessionContextStatic,
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
