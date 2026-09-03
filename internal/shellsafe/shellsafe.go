@@ -27,6 +27,7 @@ var readOnlyCommands = map[string]bool{
 	"stat": true, "file": true, "du": true, "df": true,
 	"ps": true, "top": true, "htop": true,
 	"diff": true, "cmp": true, "comm": true,
+	"sed": true,
 	"man": true, "info": true, "help": true,
 	"true": true, "false": true, "test": true, "[": true,
 	"basename": true, "dirname": true, "realpath": true, "readlink": true,

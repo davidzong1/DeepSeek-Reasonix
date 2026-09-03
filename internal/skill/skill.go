@@ -796,7 +796,7 @@ func shouldSkipScanDir(name string) bool {
 		return true
 	}
 	switch strings.ToLower(name) {
-	case "assets", "node_modules", "references", "scripts":
+	case "assets", "node_modules", "references", "scripts", "special":
 		return true
 	default:
 		return false
@@ -828,7 +828,12 @@ func (s *Store) readEntry(dir string, scope Scope, requireFlatMarker bool, e os.
 		}
 		file := filepath.Join(full, SkillFile)
 		if _, err := os.Stat(file); err != nil {
-			return Skill{}, false // a directory without a SKILL.md is not a skill
+			// Small case fallback: accept skill.md for compatibility.
+			lower := filepath.Join(full, "skill.md")
+			if _, err2 := os.Stat(lower); err2 != nil {
+				return Skill{}, false // a directory without a recognised skill file is not a skill
+			}
+			file = lower
 		}
 		return s.parse(file, name, scope)
 	}

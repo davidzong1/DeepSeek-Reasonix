@@ -272,7 +272,7 @@ func (p *teamPicker) reload(focus string) error {
 	p.doc = doc
 	views := make([]tui.TeamView, 0, len(doc.Teams))
 	for _, t := range doc.Teams {
-		views = append(views, tui.TeamView{Name: t.Name, Members: slotsToMembers(t.Template)})
+		views = append(views, tui.TeamView{Name: t.Name, Members: p.rosterMembers(t)})
 	}
 	p.model.Reload(views)
 	if focus != "" {
@@ -281,6 +281,25 @@ func (p *teamPicker) reload(focus string) error {
 	p.errMsg = ""
 	p.refusal = ""
 	return nil
+}
+
+// rosterMembers converts a team's template slots into view members with the
+// runtime working state, keeping every slot: the roster manages lifecycle
+// status, so a disabled or archived slot must stay visible to edit. Disk holds
+// no runtime observation; the bound backends do — a member whose backend is
+// Running is working, anything else is idle, so a switch between members never
+// lets one member inherit the other's "working" footer.
+func (p *teamPicker) rosterMembers(t team.Team) []team.Member {
+	members := slotsToMembers(t.Template)
+	for i := range members {
+		if p.backends == nil {
+			continue
+		}
+		if b, ok := p.backends.bound(t.Name, members[i].ID); ok && b.RuntimeStatus().Running {
+			members[i].State = team.MemberStateWorking
+		}
+	}
+	return members
 }
 
 // slotsToMembers converts a team's template slots into view members, keeping

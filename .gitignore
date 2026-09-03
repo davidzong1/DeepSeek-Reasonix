@@ -90,3 +90,5 @@ cache/**
 
 # repolint binary built by `go build ./tools/repolint` into the repo root.
 /repolint
+team/knowledge_base/**
+!team/knowledge_base/README.md

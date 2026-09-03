@@ -15,6 +15,7 @@ import (
 
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
+	"reasonix/internal/frontmatter"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
@@ -368,26 +369,94 @@ func (b memberLeasedBackend) Close() {
 	}
 }
 
-// teamRoleSkillPrompt loads the role playbook at backend assembly time. The
-// skill remains discoverable in /skills, while its body is also present from
-// the first team turn so role obligations do not depend on a model remembering
-// to call run_skill. Missing files are a no-op for compatibility with tests and
-// workspaces that do not install the optional playbooks.
+// teamRoleSkillPrompt loads the role playbook at backend assembly time: the
+// base/<role> skill (historical by-name behaviour) followed by every skill under
+// team/skills/shared and team/skills/special/<role>. Shared and special are read
+// straight from disk so a same-named special skill is not shadowed by base, and
+// one role's special never leaks into the other's prompt. Missing files are a
+// no-op for compatibility with tests and workspaces that do not install the
+// optional playbooks.
 func teamRoleSkillPrompt(root string, leader bool) string {
 	if strings.TrimSpace(root) == "" {
 		return ""
 	}
-	name := "member"
+	role := "member"
 	if leader {
-		name = "leader"
+		role = "leader"
 	}
-	if sk, ok := skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard}).Read(name); ok {
-		body := strings.TrimSpace(sk.Body)
-		if body != "" {
-			return "\n\n<team-role-skill name=\"" + name + "\">\n" + body + "\n</team-role-skill>"
+	skillsDir := filepath.Join(root, "team", "skills")
+	var b strings.Builder
+	// base/<role> resolves by name through the skill store, so its whole package
+	// (frontmatter + body) honours the project skill semantics we ship today.
+	if sk, ok := skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard}).Read(role); ok {
+		if strings.TrimSpace(sk.Body) != "" {
+			b.WriteString("\n\n### " + role + "\n\n" + strings.TrimSpace(sk.Body))
 		}
 	}
+	appendTeamRoleDir(&b, filepath.Join(skillsDir, "shared"))
+	appendTeamRoleDir(&b, filepath.Join(skillsDir, "special", role))
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n\n<team-role-skill name=\"" + role + "\">\n" + strings.TrimSpace(b.String()) + "\n</team-role-skill>"
+}
+
+// appendTeamRoleDir appends the trimmed body of each directory skill under dir,
+// headed by its skill directory name. Within one directory the canonical
+// SKILL.md wins and lowercase skill.md only falls back when it is the sole
+// file, so a role directory never double-injects the same playbook.
+func appendTeamRoleDir(b *strings.Builder, dir string) {
+	// dir itself may be a skill directory (special/<role>/SKILL.md).
+	if skillPath := resolveSkillFile(dir); skillPath != "" {
+		body := readSkillBody(skillPath)
+		if body != "" {
+			b.WriteString("\n\n### " + filepath.Base(dir) + "\n\n" + body)
+		}
+		return
+	}
+	// Otherwise scan for subdirectory skills (shared/<name>/SKILL.md).
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if skillPath := resolveSkillFile(filepath.Join(dir, e.Name())); skillPath != "" {
+			body := readSkillBody(skillPath)
+			if body != "" {
+				b.WriteString("\n\n### " + e.Name() + "\n\n" + body)
+			}
+		}
+	}
+}
+
+// resolveSkillFile returns the path to SKILL.md (canonical) or skill.md
+// (fallback) inside dir, or empty when neither exists.
+func resolveSkillFile(dir string) string {
+	upper := filepath.Join(dir, "SKILL.md")
+	if _, err := os.Stat(upper); err == nil {
+		return upper
+	}
+	lower := filepath.Join(dir, "skill.md")
+	if _, err := os.Stat(lower); err == nil {
+		return lower
+	}
 	return ""
+}
+
+// readSkillBody returns the frontmatter-stripped, trimmed body of a skill file,
+// empty on any read or commonsense parse failure. The leading YAML block is the
+// skill's metadata, not its playbook: only the body is injected into the role
+// prompt.
+func readSkillBody(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	_, body := frontmatter.Split(string(b))
+	return strings.TrimSpace(body)
 }
 
 // memberWriteLease is one member's session write-authority ownership. The

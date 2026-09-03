@@ -220,6 +220,8 @@ func classifyStaticFields(fields []string) CommandEffect {
 			if hasOutputArg(args) {
 				return knownWriter(base, WriteWorkspaceContent, "writes command output")
 			}
+		case "sed":
+			return classifySed(args)
 		}
 		return effect
 	}

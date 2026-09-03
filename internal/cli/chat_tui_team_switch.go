@@ -281,6 +281,14 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 	m.pendingApproval = nil
 	m.bubblePending = false
 	m.turnDiscarded = false
+	// The footer working line reads m.state/turnPhase/elapsed/turnTokens of the
+	// previously bound member; without clearing them a switch to an idle member
+	// would keep showing the outgoing member's "working" status. The incoming
+	// member's own events restore its real phase on replay.
+	m.state = tuiIdle
+	m.turnPhase = ""
+	m.elapsed = 0
+	m.turnTokens = 0
 	m.sessionSwitch = true
 	// Discard the outgoing member's transcript: without this the viewport
 	// accumulates every member ever bound, and the scroll offset lands inside
