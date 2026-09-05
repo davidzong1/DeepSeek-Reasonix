@@ -31,7 +31,7 @@ type sessionToolResultTool struct {
 func (*sessionToolResultTool) Name() string { return "session_tool_result" }
 
 func (*sessionToolResultTool) Description() string {
-	return "Read one bounded UTF-8 page from a complete tool result retained in the current agent session."
+	return "Read one bounded UTF-8 page from a complete tool result retained in the current agent session. This uses tr-... result references; for a sa_... subagent reference, use read_subagent_result instead."
 }
 
 func (*sessionToolResultTool) ReadOnly() bool { return true }
@@ -129,6 +129,9 @@ func (t *sessionToolResultTool) Execute(_ context.Context, args json.RawMessage)
 	}
 	p.ToolCallID = strings.TrimSpace(p.ToolCallID)
 	p.ResultRef = strings.TrimSpace(p.ResultRef)
+	if strings.HasPrefix(p.ToolCallID, "sa_") || strings.HasPrefix(p.ResultRef, "sa_") {
+		return "", fmt.Errorf("session tool result: %q is a subagent reference; use read_subagent_result with ref", firstNonEmpty(p.ResultRef, p.ToolCallID))
+	}
 	if p.ToolCallID == "" {
 		return "", fmt.Errorf("session tool result: tool_call_id is required")
 	}

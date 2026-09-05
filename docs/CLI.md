@@ -237,13 +237,13 @@ Execution failures use `subtype: "error_during_execution"` and
 `is_error: true`. Structured modes keep runtime errors in JSON instead of also
 printing a duplicate human-readable error.
 
-Completion validation defaults to `enforce`. If it still cannot confirm a
-self-contained result after the single automatic continuation, one-shot
-`reasonix run` / `-p` exits with status `1`; JSON retains
-`subtype: "completion_uncertain"` and `is_error: false` because the answer,
-completed work, and resumable session are preserved. Each candidate final adds
-one evaluator request and up to 30 seconds. `shadow` observes synchronously and
-has the same request cost and latency; use `off` to disable the call.
+The completion validator has been removed. A clean model stop without tool
+calls ends the turn directly; a response with tools continues through the tool
+loop, and a truly empty response is retried at the frozen-request boundary.
+Legacy `completion_validation`, `completion_evaluator_model`, and
+`REASONIX_COMPLETION_VALIDATION_MODE` settings remain readable but are ignored
+and are no longer emitted by the config renderer. Host-owned readiness, budget,
+tool-safety, and recovery boundaries remain active.
 
 ### Redacted machine interfaces
 

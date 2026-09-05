@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -102,9 +103,9 @@ func (a *Agent) emitContextRecoveryNotice(kind string, limit *provider.ContextLi
 	if a == nil || a.svc.sink == nil {
 		return
 	}
-	text := "Adjusted the output budget to fit the shared context window."
+	text := i18n.M.ContextRecoveryAdjustBudget
 	if kind == contextRecoveryCompacted {
-		text = "Compacted context after a shared-window overflow and retried."
+		text = i18n.M.ContextRecoveryCompacted
 	}
 	detail := fmt.Sprintf("recovery=%s next_output=%d", kind, nextOutput)
 	if limit != nil {

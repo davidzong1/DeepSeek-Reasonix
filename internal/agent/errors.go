@@ -171,28 +171,14 @@ func (e *RecoveryPauseError) Error() string {
 	return "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send \"continue\" to start a fresh attempt, or add instructions to change direction."
 }
 
-// Stable causes for CompletionUncertainError.
-const (
-	// CompletionUncertainContextTool: context-unavailable tools were called
-	// again after the repair instruction.
-	CompletionUncertainContextTool = "context_tool_repeat"
-	// CompletionUncertainValidatorContinue: the completion validator answered
-	// continue again after the run's one continuation.
-	CompletionUncertainValidatorContinue = "validator_continue"
-	// CompletionUncertainValidatorFailed: the completion validator could not
-	// produce a usable verdict (timeout, invalid output, unavailable).
-	CompletionUncertainValidatorFailed = "validator_failed"
-	// CompletionUncertainValidatorUncertain: the validator answered uncertain —
-	// the evidence did not allow a confident judgment.
-	CompletionUncertainValidatorUncertain = "validator_uncertain"
-)
+// CompletionUncertainContextTool is the retained host-safety cause for a
+// context-unavailable tool being called again after the repair instruction.
+const CompletionUncertainContextTool = "context_tool_repeat"
 
-// CompletionUncertainError reports that the host could not confirm a candidate
-// terminal turn: the completion validator returned continue twice, the
-// validator itself failed, or context-unavailable tools were called again
-// after a repair instruction. It is a control-flow signal, not a provider
-// failure: the candidate answer, tool results, and completed work stay in the
-// session, and the user can continue in the next message.
+// CompletionUncertainError reports that a host safety condition paused the
+// current turn after completed work was retained. It is a control-flow signal,
+// not a provider failure: the candidate answer, tool results, and completed
+// work stay in the session, and the user can continue in the next message.
 type CompletionUncertainError struct {
 	// Cause is the stable classifier naming why completion stayed unconfirmed.
 	Cause string

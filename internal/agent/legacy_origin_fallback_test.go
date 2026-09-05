@@ -8,7 +8,7 @@ import (
 
 func TestLegacyOriginFallbackCoversCurrentHostMessageFamilies(t *testing.T) {
 	for _, content := range []string{
-		completionContinueTailMessage(),
+		CompletionValidationContinuationPrefix + " the last message did not deliver a self-contained final result.",
 		standardTodoContinuationMessage(),
 		emptyFinalRetryMessage(),
 		executorHandoffRetryMessage(),

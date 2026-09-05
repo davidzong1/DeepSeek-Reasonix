@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +14,18 @@ import (
 	"reasonix/internal/sessioncontext"
 	"reasonix/internal/tool"
 )
+
+type workspaceContextProvider struct{}
+
+func (workspaceContextProvider) Name() string { return "workspace-context" }
+
+func (workspaceContextProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 2)
+	ch <- provider.Chunk{Type: provider.ChunkText, Text: "ok"}
+	ch <- provider.Chunk{Type: provider.ChunkDone}
+	close(ch)
+	return ch, nil
+}
 
 func installStubControllerWithCurrentPrompt(t *testing.T, app *App, tab *WorkspaceTab) *control.Controller {
 	t.Helper()
@@ -30,7 +43,7 @@ func installStubControllerWithCurrentPrompt(t *testing.T, app *App, tab *Workspa
 	tab.Ctrl.Close()
 
 	sess := agent.NewSession(sys)
-	ag := agent.New(stubProvider{}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ag := agent.New(workspaceContextProvider{}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{
 		Runner:               ag,
 		Executor:             ag,

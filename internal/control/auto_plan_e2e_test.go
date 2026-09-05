@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -10,6 +11,20 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
+
+// approvalPlanTurn is planTurn with requires_approval set, gating execution
+// behind the host approval gate.
+func approvalPlanTurn(text string) []provider.Chunk {
+	args, _ := json.Marshal(map[string]any{
+		"objective":         text,
+		"requires_approval": true,
+		"steps":             []map[string]string{{"title": text}},
+	})
+	return []provider.Chunk{
+		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "plan-1", Name: "submit_plan", Arguments: string(args)}},
+		{Type: provider.ChunkDone},
+	}
+}
 
 // scriptedTurns is a provider that replays a distinct chunk set per Stream call,
 // so a controller turn that re-enters the agent (plan turn, then approved
@@ -45,6 +60,19 @@ func firstUserMessage(msgs []provider.Message) string {
 		}
 	}
 	return ""
+}
+
+// planTurn delivers the plan text through submit_plan, the planner's only
+// delivery channel; prose plans fail the turn as a protocol error.
+func planTurn(text string) []provider.Chunk {
+	args, _ := json.Marshal(map[string]any{
+		"objective": text,
+		"steps":     []map[string]string{{"title": text}},
+	})
+	return []provider.Chunk{
+		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "plan-1", Name: "submit_plan", Arguments: string(args)}},
+		{Type: provider.ChunkDone},
+	}
 }
 
 func textTurn(text string) []provider.Chunk {

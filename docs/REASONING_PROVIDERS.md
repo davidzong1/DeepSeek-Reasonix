@@ -13,8 +13,8 @@ get a tailored request shape automatically — no extra config needed.
 
 | Provider | Base URL | Reasoning control | `/effort` levels | Notes |
 |----------|----------|-------------------|------------------|-------|
-| DeepSeek V4 Flash | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `low`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility input `medium` normalizes to `high`, while `xhigh` normalizes to `high`. |
-| DeepSeek V4 Pro | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `low`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility inputs `medium` and `xhigh` normalize to `high`. |
+| DeepSeek V4 Flash | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `low`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility input `medium` normalizes to `high`, while `xhigh` normalizes to `high`. Reasoning is replayed on every historical assistant turn that carries it, including turns without tool calls. |
+| DeepSeek V4 Pro | `api.deepseek.com`, `*.deepseek.com` | `thinking.type` + `reasoning_effort` (depth) | `auto`, `disabled`, `low`, `high`, `max` | Thinking on by default; `disabled` turns it off via `thinking.type=disabled`. Compatibility inputs `medium` and `xhigh` normalize to `high`. Reasoning is replayed on every historical assistant turn that carries it, including turns without tool calls. |
 | MiniMax M3 | `api.minimaxi.com`, `*.minimaxi.com` | `thinking.type` (`adaptive`\|`disabled`) | `auto`, `adaptive`, `disabled` | No depth scale; `reasoning_effort` is omitted. |
 | Zhipu GLM | `open.bigmodel.cn` / `*.bigmodel.cn`, `api.z.ai` / `*.z.ai` | `thinking.type` (`enabled`\|`disabled`) | `auto`, `enabled`, `disabled` | **`reasoning_effort` is silently ignored** by the endpoint, so reasoning is driven purely through `thinking.type`. |
 
@@ -66,7 +66,8 @@ New official entries use this native Messages API path and enable provider-side
 `web_search`; existing explicit providers, including legacy
 `deepseek-anthropic` entries, keep their configured protocol. Reasonix emits
 `thinking.type=enabled|disabled` with `output_config.effort`, replays unsigned
-DeepSeek thinking blocks from historical tool-call turns, omits unsupported
+DeepSeek thinking blocks from every historical assistant turn that carries
+reasoning when the request declares tools (tool-call turn or not), omits unsupported
 images, and relies on DeepSeek's automatic prefix cache instead of ignored
 `cache_control` markers.
 
@@ -74,6 +75,25 @@ The preset exposes the same model-specific effort scale for Flash and Pro:
 `auto`, `disabled`, `low`, `high`, and `max`. The Anthropic-compatible endpoint
 accepts `low|high|max` on the wire. Legacy `medium` and `xhigh` both normalize
 to `high`.
+
+The OpenAI-compatible DeepSeek path follows the same replay rule when a request
+declares tools: every historical assistant turn with stored `reasoning_content`
+is serialized back verbatim, whether or not that turn called a tool. Without
+tools, DeepSeek ignores this field and does not concatenate it into context. If
+an old session still fails with the provider's specific reasoning pass-back HTTP
+400, Reasonix rebuilds only the provider-visible projection of the old history,
+retries once, and leaves later turns on the normal replay path; canonical
+session history remains unchanged.
+
+## Missing-reasoning recovery
+
+When a provider requires reasoning to be replayed for a tool turn but returns a
+completed tool call without reasoning, Reasonix performs one exact retry of the
+frozen request before executing the tool. It does not disable thinking for the
+session or run a long-lived provider fallback circuit. If the retry still
+cannot produce replayable reasoning, the provider-specific recovery policy
+returns a clear protocol error; the existing one-shot stale-history 400 repair
+remains available for failures caused by earlier persisted history.
 
 ## Everything else (standard `reasoning_effort`)
 

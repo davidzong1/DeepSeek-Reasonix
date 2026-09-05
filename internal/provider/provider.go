@@ -1038,6 +1038,9 @@ type Config struct {
 	Model   string         // model id
 	APIKey  string         // resolved from api_key_env
 	Extra   map[string]any // kind-specific options
+	// ModelInfo is adapter-owned metadata for the exact model instance. It is
+	// optional so existing third-party factories remain source-compatible.
+	ModelInfo *ModelInfo
 }
 
 // AuthError reports that a provider rejected the API key (HTTP 401/403).

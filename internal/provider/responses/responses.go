@@ -52,7 +52,8 @@ func newFromConfig(cfg provider.Config) (provider.Provider, error) {
 	requestURL, _ := cfg.Extra["request_url"].(string)
 	return New(Config{
 		Name: cfg.Name, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
-		Effort: effort, Mode: mode, Stateful: stateful, WebSearch: webSearch, Proxy: proxy,
+		ModelInfo: cfg.ModelInfo,
+		Effort:    effort, Mode: mode, Stateful: stateful, WebSearch: webSearch, Proxy: proxy,
 		KeyEnv: keyEnv, KeySource: keySource, MaxOutputTokens: maxOutputTokens, RequestURL: requestURL,
 		// Extra 原样透传：vision 等能力开关由调用方（boot/CLI）写入
 		// cfg.Extra，factory 若丢弃则 New() 读不到（评审 #7234 第 3 点）。
@@ -66,6 +67,7 @@ type Config struct {
 	APIKey     string
 	BaseURL    string
 	Model      string
+	ModelInfo  *provider.ModelInfo
 	Effort     string
 	Mode       string // stateful | stateless; empty uses vendor detection.
 	Stateful   *bool  // legacy form of Mode; nil preserves vendor detection.
@@ -115,6 +117,7 @@ type client struct {
 	webSearch                          bool
 	maxOutputTokens                    int
 	vision                             bool // model accepts image input; embed Images as input_image parts
+	modelInfo                          provider.ModelInfo
 	http                               *http.Client
 	idleTimeout                        time.Duration
 	authed                             atomic.Bool
@@ -141,11 +144,12 @@ func New(cfg Config) provider.Provider {
 		sessionCache = *cfg.SessionCache
 	}
 	vision, _ := cfg.Extra["vision"].(bool)
-	// Official DeepSeek image input is pinned to one SKU. Ignore Extra["vision"]
-	// so stale config cannot emit input_image items for Flash/Pro.
-	if vendor == "deepseek" {
-		vision = openai.IsOfficialDeepSeekVisionModel(cfg.Model)
+	if cfg.ModelInfo != nil {
+		vision = cfg.ModelInfo.SupportsInput(provider.ModalityImage)
 	}
+	// Official DeepSeek image input is pinned to one SKU. Ignore metadata or
+	// Extra["vision"] for Flash/Pro.
+	vision = openai.DeepSeekImageInputAllowed(vendor == "deepseek", cfg.RequestURL, cfg.Model, cfg.ModelInfo != nil, vision)
 	httpClient := &http.Client{}
 	if built, err := netclient.NewHTTPClient(cfg.Proxy, netclient.TransportOptions{
 		DialTimeout: 30 * time.Second, KeepAlive: 30 * time.Second,
@@ -158,13 +162,33 @@ func New(cfg Config) provider.Provider {
 	if requestURL == "" {
 		requestURL = baseURL + "/responses"
 	}
+	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
+	if cfg.ModelInfo != nil {
+		modelInfo = *cfg.ModelInfo
+		modelInfo.ID = cfg.Model
+	}
+	if vision {
+		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
+	} else if modelInfo.SupportsInput(provider.ModalityImage) {
+		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
+	}
 	return &client{
 		name: cfg.Name, apiKey: cfg.APIKey, keyEnv: cfg.KeyEnv, keySource: cfg.KeySource,
 		baseURL: baseURL, requestURL: requestURL, model: cfg.Model, effort: cfg.Effort,
 		vendor: vendor, caps: cap, mode: cfg.mode(), sessionCache: sessionCache, webSearch: cfg.WebSearch, maxOutputTokens: maxOutputTokens,
-		vision: vision,
-		http:   httpClient, idleTimeout: defaultStreamIdleTimeout,
+		vision:    vision,
+		modelInfo: modelInfo,
+		http:      httpClient, idleTimeout: defaultStreamIdleTimeout,
 	}
+}
+
+func (c *client) ModelInfo() provider.ModelInfo {
+	if c == nil {
+		return provider.ModelInfo{}
+	}
+	info := c.modelInfo
+	info.InputModalities = append([]provider.ModelModality(nil), info.InputModalities...)
+	return info
 }
 
 func responsesReasoningDisabled(effort string) bool {

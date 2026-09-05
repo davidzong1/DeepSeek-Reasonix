@@ -60,8 +60,19 @@ function subagentPhaseLabel(t: Translator, phase: SubagentPhase): string {
     case "tool": return t("subagent.phase.tool");
     case "retrying": return t("subagent.phase.retrying");
     case "completed": return t("subagent.phase.completed");
+    case "partial": return t("subagent.phase.partial");
     case "failed": return t("subagent.phase.failed");
     case "cancelled": return t("subagent.phase.cancelled");
+  }
+}
+
+function subagentOutcomeLabel(t: Translator, status: string): string {
+  switch (status) {
+    case "completed": return t("subagent.outcome.completed");
+    case "partial": return t("subagent.outcome.partial");
+    case "failed": return t("subagent.outcome.failed");
+    case "cancelled": return t("subagent.outcome.cancelled");
+    default: return status;
   }
 }
 
@@ -341,7 +352,8 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const shellOutput = isShellCard && displayOutput ? displayOutput : null;
   const shellPreview = shellOutput ? splitPreview(shellOutput, SHELL_PREVIEW_LINES) : null;
   const hasStderrDetails = Boolean(execution?.outputTail && execution.outputTail.trim());
-  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasStderrDetails || riskLabel || verificationLabel);
+  const hasSubagentOutcome = Boolean(item.subagentStatus || item.subagentRef);
+  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasSubagentOutcome || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
   const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
   const hasErrorDetails = errorText ? errorNeedsDetails(errorText, errorSummary) : false;
@@ -505,6 +517,16 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
               </div>
             )}
             {sp.truncated && <div className="tool__note">{t("subagent.preview.truncated")}</div>}
+          </div>
+        )}
+
+        {open && hasSubagentOutcome && (
+          <div className="tool__subagent-outcome">
+            <div className="tool__subagent-outcome-status">
+              {t("subagent.outcome.label")} {subagentOutcomeLabel(t, item.subagentStatus ?? "unknown")}{item.subagentRetryable ? ` · ${t("subagent.outcome.retryable")}` : ""}
+            </div>
+            {item.subagentRef && <code>{item.subagentRef}</code>}
+            {item.subagentErrorCode && <div className="tool__note">{item.subagentErrorCode}</div>}
           </div>
         )}
 

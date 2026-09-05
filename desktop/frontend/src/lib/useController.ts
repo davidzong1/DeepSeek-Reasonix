@@ -12,8 +12,8 @@ import { settleForkConversationForTab } from "./forkWorktree";
 import type { MessageActionScope, MessageActionState } from "./messageActions";
 import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
-import { answerPromptForActiveTurn, isLocalRuntimeCommand, normalizeTurnSubmit, resolveActiveTurnId } from "./inboxSubmit";
-import { findTabAfterSubmitFailure, reduceSubmitFailure } from "./turnSubmissionFailure";
+import { answerPromptForActiveTurn, normalizeTurnSubmit, resolveActiveTurnId } from "./inboxSubmit";
+import { findTabAfterSubmitFailure, reduceManagementConfirmation, reduceSubmitFailure } from "./turnSubmissionFailure";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { completionSummaryPresentation, normalizeCompletionSummary, sessionQualityFloor } from "./completionSummary";
@@ -53,6 +53,7 @@ import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, parseTodos, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode, type QualityFloor } from "./types";
+import { parseSubagentOutcomeText } from "./subagentOutcome";
 import type {
   BalanceInfo,
   CheckpointMeta,
@@ -107,9 +108,7 @@ export const SUBAGENT_PROGRESS_NOTICE = "reasonix.subagent.notice";
 // to ordinary tool output on older frontends.
 const SUBAGENT_PROGRESS_PREFIX = "reasonix.subagent.";
 const TURN_ACTIVITY_KINDS = new Set(["turn_started", "text", "reasoning", "message", "tool_dispatch", "tool_progress", "tool_result_preview", "tool_result"]);
-const SUBAGENT_PROGRESS_PHASES = new Set([
-  "queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "failed", "cancelled",
-]);
+const SUBAGENT_PROGRESS_PHASES = new Set(["queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "partial", "failed", "cancelled"]);
 // Tool names that initialize a sub-agent progress card. parallel_tasks/fleet
 // are group cards: they settle when their whole child progress tree is
 // terminal, since they never receive a terminal status of their own.
@@ -121,9 +120,7 @@ const SUBAGENT_PREVIEW_REASONING_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_TEXT_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_NOTICE_LIMIT = 2 << 10;
 const RUNTIME_STATUS_ONLY = { hydrateSessionData: false } as const;
-export type SubagentPhase =
-  | "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying"
-  | "completed" | "failed" | "cancelled";
+export type SubagentPhase = "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying" | "completed" | "partial" | "failed" | "cancelled";
 // In-memory-only sub-agent progress preview. Never persisted: history
 // hydration rebuilds tool items from the transcript without these fields, and
 // the full sub-agent transcript stays the source of truth after a restart.
@@ -141,7 +138,7 @@ export function isSubagentProgressName(name: string | undefined): boolean {
   return !!name && name.startsWith(SUBAGENT_PROGRESS_PREFIX);
 }
 export function isTerminalSubagentPhase(phase: string | undefined): boolean {
-  return phase === "completed" || phase === "failed" || phase === "cancelled";
+  return phase === "completed" || phase === "partial" || phase === "failed" || phase === "cancelled";
 }
 function isGroupSubagentTool(name: string): boolean {
   return name === "parallel_tasks" || name === "fleet";
@@ -149,6 +146,7 @@ function isGroupSubagentTool(name: string): boolean {
 function terminalStatusOf(phase: string): ToolStatus {
   switch (phase) {
     case "completed": return "done";
+    case "partial": return "error";
     case "failed": return "error";
     case "cancelled": return "stopped";
   }
@@ -285,7 +283,7 @@ export type Item =
       args: string;
       readOnly: boolean;
       resolvedName?: string;
-      capabilityId?: string;
+      capabilityId?: string; subagentRef?: string; subagentStatus?: string; subagentErrorCode?: string; subagentRetryable?: boolean;
       status: ToolStatus;
       output?: string; searchSources?: SearchSource[]; // display-only provider search results; replay data stays in output/serverSearch
       error?: string;
@@ -706,7 +704,7 @@ export function runtimeReadyForSubmit(meta?: Meta): boolean {
   return !meta.runtime || meta.runtime.phase === "ready";
 }
 
-export { isLocalRuntimeCommand, normalizeTurnSubmit } from "./inboxSubmit";
+export { normalizeTurnSubmit } from "./inboxSubmit";
 
 const frontendSubmissionEpoch = typeof globalThis.crypto?.randomUUID === "function"
   ? globalThis.crypto.randomUUID()
@@ -783,6 +781,7 @@ type Action =
   | { type: "user"; text: string; submitText?: string; seq: number; submissionId: string; deliveryRecovery?: boolean }
   | { type: "unsend" }
   | { type: "send_confirmed"; submissionId: string }
+  | { type: "management_confirmed"; submissionId: string }
   | { type: "turn_admitted"; turnId: string; submissionId: string }
   | { type: "turn_submit_rejected"; submissionId: string; error: string }
   | { type: "send_failed"; submissionId: string; error: string }
@@ -949,7 +948,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           summary: summarizeFileDiff(fileDiff) || tc.summary,
           fileDiff,
           isShell: tc.name === "bash" || (tc.id || "").startsWith("shell-"),
-          execution: result?.execution,
+          execution: result?.execution, ...parseSubagentOutcomeText(output),
         });
         seq++;
       }
@@ -970,7 +969,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         error,
         dataArchived: m.toolResultArchived || undefined,
         isShell: (m.toolName || "") === "bash" || (m.toolCallId || "").startsWith("shell-"),
-        execution: m.execution,
+        execution: m.execution, ...parseSubagentOutcomeText(output),
       });
       seq++;
       continue;
@@ -1663,7 +1662,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
           const args = t.args ? t.args : it.args;
           const fileDiff = fileDiffFromWire(t);
           const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined, isShell: it.isShell || t.name === "bash" || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
+            next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, subagentRef: t.subagentRef ?? it.subagentRef, subagentStatus: t.subagentStatus ?? it.subagentStatus, subagentErrorCode: t.subagentErrorCode ?? it.subagentErrorCode, subagentRetryable: t.subagentRetryable ?? it.subagentRetryable, summary, fileDiff, argChars: undefined, isShell: it.isShell || t.name === "bash" || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
         }
         if (t.parentId) touchSubagentParent(next, t.parentId);
         return { ...settled, items: next };
@@ -1731,7 +1730,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
             durationMs: t.durationMs,
             summary,
             isShell: existing.isShell || existing.name === "bash" || t.name === "bash",
-            execution: t.execution ?? existing.execution,
+            execution: t.execution ?? existing.execution, subagentRef: t.subagentRef ?? existing.subagentRef, subagentStatus: t.subagentStatus ?? existing.subagentStatus, subagentErrorCode: t.subagentErrorCode ?? existing.subagentErrorCode, subagentRetryable: t.subagentRetryable ?? existing.subagentRetryable,
           };
         }
       }
@@ -2067,6 +2066,7 @@ export function reducer(s: State, a: Action): State {
       });
     }
     case "send_confirmed": return confirmPendingUser(s, a.submissionId);
+    case "management_confirmed": return reduceManagementConfirmation(s, a.submissionId, promptEventClock());
     case "turn_admitted":
       return s.pendingSubmissionId === a.submissionId && a.turnId
         ? { ...s, activeTurnId: a.turnId }
@@ -3738,7 +3738,7 @@ export function useController() {
         ? app.SubmitEditedDisplayToTabWithID(tabId, display, submit, original, submissionId)
         : display !== submit
         ? app.SubmitDisplayToTabWithID(tabId, display, submit, submissionId)
-        : typeof app.StartTurnForTab === "function" && !isLocalRuntimeCommand(submit)
+        : typeof app.StartTurnForTab === "function"
         ? app.StartTurnForTab(tabId, submit, submissionId)
         : app.SubmitToTabWithID(tabId, submit, submissionId);
       if (initialGoal) {
@@ -3750,6 +3750,7 @@ export function useController() {
       }
       void submitPromise.then(
         (receipt) => {
+          if (receipt && typeof receipt === "object" && "disposition" in receipt && receipt.disposition === "management_handled") return void dispatchTo(tabId, { type: "management_confirmed", submissionId });
           if (receipt && typeof receipt === "object" && "turnId" in receipt && typeof receipt.turnId === "string") {
             dispatchTo(tabId, { type: "turn_admitted", turnId: receipt.turnId, submissionId });
           }

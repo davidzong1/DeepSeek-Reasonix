@@ -210,7 +210,7 @@ func TestIsHostRecoveryGuidance(t *testing.T) {
 }
 
 func TestMessageOriginIsAuthoritativeWithLegacyFallback(t *testing.T) {
-	hostText := completionContinueTailMessage()
+	hostText := CompletionValidationContinuationPrefix + " the last message did not deliver a self-contained final result."
 	for _, tc := range []struct {
 		name string
 		msg  provider.Message

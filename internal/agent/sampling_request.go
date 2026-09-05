@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -13,6 +15,14 @@ import (
 // messages, no schema reorder, no previous_response_id drift from failed attempts.
 type samplingRequest struct {
 	req provider.Request
+}
+
+func isEmptyStreamResult(text, reasoning string, calls []provider.ToolCall, responsesItems []json.RawMessage, serverSearch []provider.ServerSearchCall) bool {
+	return strings.TrimSpace(text) == "" &&
+		strings.TrimSpace(reasoning) == "" &&
+		len(calls) == 0 &&
+		len(responsesItems) == 0 &&
+		len(serverSearch) == 0
 }
 
 // modelInputMessages derives the stable provider-visible view from durable
@@ -65,9 +75,15 @@ func (a *Agent) handleSamplingError(
 	result, last streamedTurn,
 	billable *provider.Usage,
 ) (retry bool, terminal streamedTurn) {
-	if provider.IsStreamInterrupted(result.err) && attempt < maxSamplingAttempts {
-		streamSink.Discard()
+	retryableEmpty := errors.Is(result.err, provider.ErrEmptyResponse)
+	if (provider.IsStreamInterrupted(result.err) || retryableEmpty) && attempt < maxSamplingAttempts {
+		if streamSink != nil {
+			streamSink.Discard()
+		}
 		reason := provider.StreamInterruptReason(result.err)
+		if retryableEmpty {
+			reason = "empty_response"
+		}
 		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err)
 		a.svc.sink.Emit(event.Event{
 			Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries,
@@ -162,14 +178,33 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 // explicit range compression can continue to resolve anchors across calls.
 func (a *Agent) providerProjectionMessages(msgs []provider.Message) []provider.Message {
 	if a != nil {
-		// The provider-declared fallback owns this tool loop. Strict projection
-		// here would erase its completed tool round before adapter serialization.
-		if !a.sess.missingReasoning.fallbackActive || !provider.SupportsMissingReasoningFallback(a.svc.prov) {
-			if repaired, changed := provider.ProjectReplaySafeMessages(a.svc.prov, msgs); changed {
-				msgs = repaired
-			}
+		strongCutoff := a.sess.reasoningReplayStrongProjection
+		if strongCutoff > 0 && a.strictAlternatingRoles {
+			// The cutoff is measured after role coalescing on the repaired
+			// request, so apply the same outbound shape before slicing it.
+			msgs = coalesceProjectionUserRuns(msgs)
 		}
-		if a.strictAlternatingRoles {
+		if strongCutoff > 0 {
+			// A repaired thinking-400 conversation keeps the stripped
+			// projection only for the history that caused the rejection.
+			resolvedCutoff := resolveReasoningReplayPrefix(msgs, strongCutoff, a.sess.reasoningReplayStrongProjectionAnchor)
+			if resolvedCutoff > 0 {
+				if repaired, changed := provider.ProjectReasoningStrippedMessagesPrefix(a.svc.prov, msgs, resolvedCutoff); changed {
+					msgs = repaired
+				}
+			} else {
+				// The canonical shape no longer contains the repair anchor
+				// (for example after rewind). Do not silently disable all
+				// provider projection; re-arm from the current history.
+				a.sess.clearReasoningReplayStrongProjection()
+				if repaired, changed := provider.ProjectReplaySafeMessages(a.svc.prov, msgs); changed {
+					msgs = repaired
+				}
+			}
+		} else if repaired, changed := provider.ProjectReplaySafeMessages(a.svc.prov, msgs); changed {
+			msgs = repaired
+		}
+		if a.strictAlternatingRoles && a.sess.reasoningReplayStrongProjection <= 0 {
 			return coalesceProjectionUserRuns(msgs)
 		}
 	}

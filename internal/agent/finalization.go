@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -111,7 +112,7 @@ func (c landCause) nudge(state *turnRuntime, submitPlan bool) string {
 
 func (c landCause) noticeText() string {
 	if c.kind == "task_budget" {
-		return "This task reached its spend budget; asking for a final answer."
+		return i18n.M.TaskBudget
 	}
 	return toolBudgetNoticeText()
 }

@@ -278,7 +278,7 @@ func TestRunOutputEventsJSONLClassifiesRecoveryPauseAsControlledOutcome(t *testi
 func TestRunOutputJSONPreservesCompletionUncertainAsControlledOutcome(t *testing.T) {
 	var out bytes.Buffer
 	sink := newRunOutputSink(&out, runOutputJSON)
-	runErr := &agent.CompletionUncertainError{Cause: agent.CompletionUncertainValidatorContinue}
+	runErr := &agent.CompletionUncertainError{Cause: agent.CompletionUncertainContextTool}
 	if err := sink.Finalize("abc", time.Now(), runErr); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestClassifyRunCompletion(t *testing.T) {
 	if got := classifyRunCompletion(pause); got.outcome != event.TurnOutcomeRecoveryPaused || got.isError || got.exitCode != 0 {
 		t.Fatalf("pause completion = %+v", got)
 	}
-	uncertain := fmt.Errorf("wrapped: %w", &agent.CompletionUncertainError{Cause: agent.CompletionUncertainValidatorFailed})
+	uncertain := fmt.Errorf("wrapped: %w", &agent.CompletionUncertainError{Cause: agent.CompletionUncertainContextTool})
 	if got := classifyRunCompletion(uncertain); got.outcome != event.TurnOutcomeCompletionUncertain || got.subtype != event.TurnOutcomeCompletionUncertain || got.isError || got.exitCode != 1 {
 		t.Fatalf("completion uncertain = %+v", got)
 	}

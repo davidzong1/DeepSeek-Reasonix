@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ const (
 	subagentPhaseTool       subagentProgressPhase = "tool"
 	subagentPhaseRetrying   subagentProgressPhase = "retrying"
 	subagentPhaseCompleted  subagentProgressPhase = "completed"
+	subagentPhasePartial    subagentProgressPhase = "partial"
 	subagentPhaseFailed     subagentProgressPhase = "failed"
 	subagentPhaseCancelled  subagentProgressPhase = "cancelled"
 )
@@ -729,8 +731,8 @@ func (s *subagentProgressSink) Emit(e event.Event) {
 
 // finish flushes pending previews, emits the single terminal status, and — if
 // the tracker owns its merger — closes it. ctxErr non-nil maps to cancelled,
-// other errors to failed, success to completed. Idempotent: late events and
-// repeated calls are ignored.
+// a typed partial outcome maps to partial, other errors to failed, and success
+// to completed. Idempotent: late events and repeated calls are ignored.
 func (t *subagentProgressTracker) finish(ctxErr, runErr error) {
 	t.mu.Lock()
 	if t.done {
@@ -743,6 +745,10 @@ func (t *subagentProgressTracker) finish(ctxErr, runErr error) {
 		phase = subagentPhaseCancelled
 	} else if runErr != nil {
 		phase = subagentPhaseFailed
+		var subErr *SubagentRunError
+		if errors.As(runErr, &subErr) && subErr.Outcome.Status == SubagentOutcomePartial {
+			phase = subagentPhasePartial
+		}
 	}
 	durationMs := t.merger.clock.Now().Sub(t.started).Milliseconds()
 	t.mu.Unlock()

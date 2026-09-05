@@ -321,11 +321,6 @@ func (m *metricsAggregator) observe(e event.Event) {
 		if e.Usage == nil {
 			return
 		}
-		if e.UsageSource == event.UsageSourceCompletionEvaluator {
-			m.inc("completion_evaluator_finish_reason", completionEvaluatorFinishReasonBucket(e.Usage.FinishReason))
-			m.inc("completion_evaluator_cache_hit", completionEvaluatorCacheBucket(e.Usage.CacheHitTokens, e.Usage.CacheMissTokens))
-			return
-		}
 		if e.Usage.FinishReason != "" {
 			m.inc("finish_reason", e.Usage.FinishReason)
 		}
@@ -344,76 +339,28 @@ func (m *metricsAggregator) observe(e event.Event) {
 	case event.CompactionDone:
 		m.inc("compaction", "total")
 	case event.Notice:
-		if e.Text == "No visible answer was produced; asking the assistant to respond again." || strings.HasPrefix(e.Detail, "empty final answer blocked") {
+		if e.Code == event.NoticeCodeEmptyFinal || strings.HasPrefix(e.Detail, "empty final answer blocked") {
 			m.inc("empty_final", "total")
 		}
 	}
 }
 
-func (m *metricsAggregator) observeCompletionValidation(info event.CompletionValidationInfo) {
-	mode := knownBucket(info.Mode, "off", "shadow", "enforce")
-	outcome := knownBucket(info.Outcome, "complete", "continue", "needs_user", "blocked", "uncertain", "error")
-	m.inc("completion_validation_outcome", mode+"_"+outcome)
-	m.inc("completion_validation_latency", completionValidationLatencyBucket(info.DurationMs))
-	if info.Attempt > 1 {
-		m.inc("completion_validation_attempt", "repair")
+func (m *metricsAggregator) observeSubagentLifecycle(info event.SubagentLifecycleInfo) {
+	phase := knownBucket(info.Phase, "child_created", "child_running", "child_completed", "child_partial", "child_failed", "child_cancelled", "child_resume")
+	status := knownBucket(info.Status, "queued", "running", "completed", "partial", "failed", "cancelled")
+	m.inc("subagent_lifecycle", phase+"_"+status)
+	if info.ErrorCode != "" {
+		m.inc("subagent_error", knownBucket(info.ErrorCode, "completion_uncertain", "final_readiness", "review_unavailable", "max_steps", "incomplete_read", "provider_connection", "subagent_error"))
+	}
+	if info.Retryable {
+		m.inc("subagent_retryable", "yes")
 	} else {
-		m.inc("completion_validation_attempt", "first")
-	}
-	if strings.TrimSpace(info.ErrorClass) != "" {
-		m.inc("completion_validation_error", knownBucket(info.ErrorClass, "timeout", "invalid_output", "unavailable", "over_budget", "error"))
-	}
-}
-
-func completionValidationLatencyBucket(ms int64) string {
-	switch {
-	case ms < 1_000:
-		return "lt_1s"
-	case ms < 5_000:
-		return "s_1_5"
-	case ms < 15_000:
-		return "s_5_15"
-	default:
-		return "s_15_60"
+		m.inc("subagent_retryable", "no")
 	}
 }
 
 func metricsEventRequiresPersist(e event.Event) bool {
-	return e.Kind == event.TurnDone ||
-		(e.Kind == event.Usage && e.UsageSource == event.UsageSourceCompletionEvaluator)
-}
-
-func completionEvaluatorFinishReasonBucket(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "stop", "tool_calls", "length", "content_filter", "repetition_truncation":
-		return strings.ToLower(strings.TrimSpace(value))
-	case "":
-		return "unknown"
-	default:
-		return "other"
-	}
-}
-
-func completionEvaluatorCacheBucket(hit, miss int) string {
-	total := hit + miss
-	if total <= 0 {
-		return "unknown"
-	}
-	pct := hit * 100 / total
-	switch {
-	case pct == 0:
-		return "0"
-	case pct < 25:
-		return "1_24"
-	case pct < 50:
-		return "25_49"
-	case pct < 75:
-		return "50_74"
-	case pct < 90:
-		return "75_89"
-	default:
-		return "90_100"
-	}
+	return e.Kind == event.TurnDone
 }
 
 func cacheBucket(hit, miss int) string {

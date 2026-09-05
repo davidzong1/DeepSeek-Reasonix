@@ -40,6 +40,9 @@ func standardTodoContinuationPolicyFromContext(ctx context.Context) (StandardTod
 }
 
 func (a *Agent) continueStandardTodo(ctx context.Context, state *turnRuntime) bool {
+	if !a.hostContinuationEnabled(ctx) {
+		return false
+	}
 	policy, ok := standardTodoContinuationPolicyFromContext(ctx)
 	if !ok || !policy.ExecutionExpected || !a.standardTodoContinuationEligible(state) {
 		return false

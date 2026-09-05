@@ -99,6 +99,11 @@ call ID 时必须用它消除歧义。`offset` 默认 0，`limit` 默认 16KiB�
 按 UTF-8 字节偏移分页读取某个引用对应的完整最终答案，因此长篇并行调研无需一次性全部
 注入父会话也不会丢失。引用只允许在当前会话 lineage 和工作区内读取。
 
+已持久化的子 Agent 结果还会携带明确的 `status`（`completed`、`partial`、`failed` 或
+`cancelled`）和 `retryable` 标志。部分完成或失败的子 Agent 可能仍带有最后一条可见回答和
+引用：用 `read_subagent_result` 查看，用原有 `task` / `run_skill` 的 `continue_from` 参数
+继续可重试的任务。`session:tool_result` 只用于普通工具输出，不用于读取子 Agent transcript。
+
 `use_capability`（`action` = `list` | `inspect` | `call` | `decline`）在 provider
 可见工具面上始终存在（没有按任务复杂度切换的工具档位）。可选工具仍在 host
 registry 中供调度，但不会展开到 top-level provider schema；模型通过 `use_capability`

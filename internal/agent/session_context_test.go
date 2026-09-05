@@ -140,44 +140,6 @@ func TestSessionContextDiagnosticsAreContentFreeAndAttributeChanges(t *testing.T
 	}
 }
 
-func TestToollessPlannerPublishesRoleSpecificContextDiagnostics(t *testing.T) {
-	plannerProvider := testutil.NewMock("planner",
-		testutil.Turn{Text: "first plan", Usage: &provider.Usage{PromptTokens: 10, CacheMissTokens: 10}},
-		testutil.Turn{Text: "second plan", Usage: &provider.Usage{PromptTokens: 12, CacheHitTokens: 6, CacheMissTokens: 6}},
-	)
-	var diagnostics []*event.CacheDiagnostics
-	sink := event.FuncSink(func(e event.Event) {
-		if e.Kind == event.Usage && e.Source == event.UsageSourcePlanner {
-			diagnostics = append(diagnostics, e.CacheDiagnostics)
-		}
-	})
-	coordinator := NewCoordinator(plannerProvider, NewSession("planner system"), nil, nil, Options{}, nil, 0, sink, nil)
-	executor := sessioncontext.Build(sessioncontext.Sections{SkillsCatalog: "main-only"})
-	first := sessioncontext.Build(sessioncontext.Sections{SkillsCatalog: "read-only", BackgroundMemory: "one"})
-	second := sessioncontext.Build(sessioncontext.Sections{SkillsCatalog: "read-only", BackgroundMemory: "two"})
-	for i, snapshot := range []sessioncontext.Snapshot{first, second} {
-		ctx := WithTurnContextBundle(context.Background(), TurnContextBundle{Executor: executor, Planner: snapshot})
-		if _, err := coordinator.plan(ctx, []string{"first task", "second task"}[i]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(diagnostics) != 2 || diagnostics[0] == nil || diagnostics[1] == nil {
-		t.Fatalf("planner diagnostics = %+v", diagnostics)
-	}
-	if firstDiag := diagnostics[0].SessionContext; firstDiag == nil || firstDiag.TargetRole != "planner" ||
-		firstDiag.Digest != first.Digest || strings.Join(firstDiag.Reasons, ",") != "first_seen" {
-		t.Fatalf("first planner context diagnostics = %+v", firstDiag)
-	}
-	if secondDiag := diagnostics[1].SessionContext; secondDiag == nil || secondDiag.Digest != second.Digest ||
-		strings.Join(secondDiag.Reasons, ",") != "memory_changed" || !secondDiagHasPrefixReason(diagnostics[1], "session_context") {
-		t.Fatalf("second planner context diagnostics = %+v / %+v", secondDiag, diagnostics[1])
-	}
-	request := plannerProvider.LastRequest()
-	if request == nil || len(request.Messages) < 3 || request.Messages[len(request.Messages)-2].Content != second.Content {
-		t.Fatalf("planner request did not retain independent latest context: %+v", request)
-	}
-}
-
 func TestSubagentDoesNotInheritParentTurnContext(t *testing.T) {
 	parentSnapshot := sessioncontext.Build(sessioncontext.Sections{
 		Workspace:        "/parent/workspace",

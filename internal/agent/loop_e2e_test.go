@@ -718,7 +718,7 @@ func TestMissingReasoningRecoveryAdoptsRetryWithoutToolCall(t *testing.T) {
 	}
 }
 
-func TestMissingReasoningRecoveryFailureFallsBackBeforeToolExecution(t *testing.T) {
+func TestMissingReasoningRecoveryFailureUsesOriginalProtocolResult(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{
 			ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}},
@@ -734,7 +734,7 @@ func TestMissingReasoningRecoveryFailureFallsBackBeforeToolExecution(t *testing.
 	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, sink)
 
 	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err != nil {
-		t.Fatalf("Run should keep the complete first response, got %v", err)
+		t.Fatalf("Run should keep the provider-compatible original response, got %v", err)
 	}
 	var toolResults int
 	for _, message := range a.Session().Messages {
@@ -749,8 +749,8 @@ func TestMissingReasoningRecoveryFailureFallsBackBeforeToolExecution(t *testing.
 	if len(usageEvents) == 0 || usageEvents[0].Usage == nil || usageEvents[0].Usage.TotalTokens != 23 {
 		t.Fatalf("failed recovery usage was not accounted for: %+v", usageEvents)
 	}
-	if sink.recoveryCount(event.ProtocolRecoveryMissingReasoningFallback) != 1 {
-		t.Fatalf("fallback audit missing: %+v", sink.recovery)
+	if sink.recoveryCount(event.ProtocolRecoveryMissingReasoningFallback) != 0 {
+		t.Fatalf("unexpected long-lived fallback audit: %+v", sink.recovery)
 	}
 }
 

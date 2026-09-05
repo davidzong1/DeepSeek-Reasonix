@@ -1394,6 +1394,8 @@ func displayEventFromEnvelope(envelope turnevent.Envelope) (event.Event, bool) {
 			StartedAt: w.Tool.StartedAt, EndedAt: w.Tool.EndedAt, Partial: w.Tool.Partial,
 			ArgChars: w.Tool.ArgChars, Refreshed: w.Tool.Refreshed, ParentID: w.Tool.ParentID,
 			AttemptID: w.Tool.AttemptID, FileDiff: event.FileDiff{Diff: w.Tool.Diff, Added: w.Tool.Added, Removed: w.Tool.Removed},
+			SubagentRef: w.Tool.SubagentRef, SubagentStatus: w.Tool.SubagentStatus,
+			SubagentErrorCode: w.Tool.SubagentErrorCode, SubagentRetryable: w.Tool.SubagentRetryable,
 		}
 	}
 	if len(w.MemoryCitations) > 0 {

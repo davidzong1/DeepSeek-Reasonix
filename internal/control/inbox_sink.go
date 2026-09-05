@@ -165,9 +165,9 @@ func (s *inboxEventSink) RecordRunBudget(sample event.RunBudgetSample) {
 	event.RecordRunBudget(s.inner, sample)
 }
 
-func (s *inboxEventSink) RecordCompletionValidation(info event.CompletionValidationInfo) {
+func (s *inboxEventSink) RecordSubagentLifecycle(info event.SubagentLifecycleInfo) {
 	if s == nil {
 		return
 	}
-	event.RecordCompletionValidation(s.inner, info)
+	event.RecordSubagentLifecycle(s.inner, info)
 }

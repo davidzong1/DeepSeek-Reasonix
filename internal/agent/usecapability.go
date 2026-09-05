@@ -1451,7 +1451,7 @@ func EmitProxyAudit(sink event.Sink, resolved tool.ResolvedCall) {
 	sink.Emit(event.Event{
 		Kind:   event.Notice,
 		Level:  event.LevelInfo,
-		Text:   fmt.Sprintf("capability proxy: %s → %s", resolved.DisplayName, resolved.TargetName),
+		Text:   capabilityProxyNoticeText(resolved.DisplayName, resolved.TargetName),
 		Detail: resolved.CapabilityID,
 	})
 }

@@ -277,11 +277,20 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	if _, err := decodeTOMLFile(path, &header); err != nil {
 		return false, fmt.Errorf("config %s: %w", path, err)
 	}
-	if header.ConfigVersion >= Default().ConfigVersion {
+	defaultVersion := Default().ConfigVersion
+	if header.ConfigVersion > defaultVersion {
+		return false, nil
+	}
+	classicDesktopLayout := strings.EqualFold(strings.TrimSpace(header.Desktop.LayoutStyle), "classic")
+	if header.ConfigVersion == defaultVersion && !classicDesktopLayout {
 		return false, nil
 	}
 	cfg := LoadForEdit(path)
 	changed := false
+	if classicDesktopLayout {
+		cfg.Desktop.LayoutStyle = "workbench"
+		changed = true
+	}
 	if header.ConfigVersion < deepSeekPricingResetConfigVersion {
 		resetOfficialProviderPricingDefaults(cfg)
 		changed = true
@@ -313,7 +322,9 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	cfg.ConfigVersion = Default().ConfigVersion
+	if header.ConfigVersion < defaultVersion {
+		cfg.ConfigVersion = defaultVersion
+	}
 	if err := cfg.SaveTo(path); err != nil {
 		return false, err
 	}

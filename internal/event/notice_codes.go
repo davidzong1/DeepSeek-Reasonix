@@ -41,4 +41,5 @@ const (
 	NoticeCodeSessionTakenOver                                  = "session_taken_over"
 	NoticeCodeSessionReclaimRequested                           = "session_reclaim_requested"
 	NoticeCodeSessionReclaimed                                  = "session_reclaimed"
+	NoticeCodeReasoningReplayRepair                             = "reasoning_replay_repair"
 )

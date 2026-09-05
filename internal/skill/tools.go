@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -30,6 +31,15 @@ type SubagentRunOptions struct {
 }
 
 type SubagentRunner func(ctx context.Context, sk Skill, task string, opts SubagentRunOptions) (string, error)
+
+// SubagentOutputError is implemented by host runners that can preserve a
+// bounded result envelope alongside a terminal error. Tool dispatchers should
+// return that output to the parent model while retaining the error for host
+// status and recovery classification.
+type SubagentOutputError interface {
+	error
+	SubagentOutput() string
+}
 
 // ProfileResolver returns the model/effort profile a subagent skill will use.
 // It is optional; without one, skill frontmatter still supplies display metadata.
@@ -161,6 +171,10 @@ func (t *runSkillTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		}
 		out, err := t.runner(ctx, sk, rawArgs, opts)
 		if err != nil {
+			var outputErr SubagentOutputError
+			if errors.As(err, &outputErr) && strings.TrimSpace(outputErr.SubagentOutput()) != "" {
+				return outputErr.SubagentOutput(), err
+			}
 			return "", err
 		}
 		return tool.GuardSubagentHostDecisionText(out), nil
@@ -306,6 +320,10 @@ func (t *readOnlySkillTool) Execute(ctx context.Context, args json.RawMessage) (
 		}
 		out, err := t.runner(ctx, sk, rawArgs, SubagentRunOptions{})
 		if err != nil {
+			var outputErr SubagentOutputError
+			if errors.As(err, &outputErr) && strings.TrimSpace(outputErr.SubagentOutput()) != "" {
+				return outputErr.SubagentOutput(), err
+			}
 			return "", err
 		}
 		return tool.GuardSubagentHostDecisionText(out), nil

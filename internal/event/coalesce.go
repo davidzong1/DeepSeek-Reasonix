@@ -248,6 +248,6 @@ func (c *coalescer) RecordRunBudget(sample RunBudgetSample) {
 	c.enqueueCapability(func() { RecordRunBudget(c.inner, sample) })
 }
 
-func (c *coalescer) RecordCompletionValidation(info CompletionValidationInfo) {
-	c.enqueueCapability(func() { RecordCompletionValidation(c.inner, info) })
+func (c *coalescer) RecordSubagentLifecycle(info SubagentLifecycleInfo) {
+	c.enqueueCapability(func() { RecordSubagentLifecycle(c.inner, info) })
 }

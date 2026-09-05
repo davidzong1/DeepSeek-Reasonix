@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -140,7 +141,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 }
 
 func loopGuardNoticeText() string {
-	return "The assistant is not making progress; asking it to change approach."
+	return i18n.M.LoopGuard
 }
 
 // batchStormSignature returns a per-turn fixation signature — each call's

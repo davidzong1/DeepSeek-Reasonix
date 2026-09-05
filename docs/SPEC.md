@@ -221,9 +221,11 @@ and resources.
 
 ### 3.5 Two-model collaboration (`Coordinator`)
 
-When `agent.planner_model` names a provider different from the executor, a
-`Coordinator` runs two models in **separate sessions** to keep each one's prompt
-prefix cache-stable:
+When `agent.planner_model` is set, a `Coordinator` runs two models in
+**separate sessions** to keep each one's prompt prefix cache-stable. An empty
+`planner_model` leaves the session executor-only. A configured but unusable
+planner model is a configuration error and does not silently continue on the
+executor:
 
 - The **planner** (low-frequency) runs in its own session with the same standing
   memory context plus a filtered read-only research tool set, then produces a
@@ -240,11 +242,12 @@ prefix cache-stable:
 - The planner uses one stable system prompt. Only a small host-authored
   `<planner-turn>` block names the explicit route. The plan distinguishes
   verified from candidate touchpoints and records non-goals, risks, acceptance
-  criteria, and command-level verification when the evidence supports them. If
-  the planner still does not finalize after the bounded research and grace
-  round, plan-and-execute falls back to the executor with the pristine task;
-  plan-only and plan-for-approval remain fail-closed. The incomplete planner
-  turn is rolled back rather than exposed as a broken manual continuation.
+  criteria, and command-level verification when the evidence supports them.
+  `submit_plan` is the only delivery channel; a prose reply without a submitted
+  plan is a planner protocol error. If the planner still does not finalize after
+  the bounded research and grace round, every route fails closed and the
+  executor is not started. The incomplete planner turn is rolled back rather
+  than exposed as a broken manual continuation.
 - A bare plan-first route hands the completed plan directly to the executor.
   Plan-for-approval is reserved for an explicit request to wait for
   confirmation; the host enforces that boundary even if the planner omits its
@@ -1042,7 +1045,7 @@ base_url       = "https://api.deepseek.com/anthropic"
 # models_url   = "https://proxy.example.com/v1/models"             # optional model discovery URL
 models         = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
 default        = "deepseek-v4-flash"   # optional; defaults to models[0]
-# vision_models = ["deepseek-v4-flash-vision-exp"]  # Settings image-input checkbox; only this SKU is sent on the wire
+# vision_models = ["deepseek-v4-flash-vision-exp"]  # legacy compatibility; Settings derives image support from model metadata
 # Official DeepSeek vision accepts inline base64, http(s) image URLs, and Files API file_id.
 api_key_env    = "DEEPSEEK_API_KEY"
 web_search     = true

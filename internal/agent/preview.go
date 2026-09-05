@@ -259,6 +259,10 @@ const (
 	HostRecoveryGuidanceTransientPrefix  = "The tool timed out or hit a transient execution limit."
 	ReadinessContinuationPrefix          = "This turn ended with work still outstanding:"
 	StandardTodoContinuationPrefix       = "The current task list still has an in-progress item."
+	// CompletionValidationContinuationPrefix is retained only so legacy
+	// synthetic user messages from pre-Harness sessions remain classified as
+	// host-generated after the completion validator is removed.
+	CompletionValidationContinuationPrefix = "The host could not confirm this turn is complete:"
 )
 
 // legacySyntheticUserPrefixes recognizes host messages written before

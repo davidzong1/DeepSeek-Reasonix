@@ -73,6 +73,7 @@ type toolOutcome struct {
 	recoveryStopTurn   bool
 	recoveryStopReason string
 	incompleteRead     *incompleteReadDeferred
+	subagentOutcome    *SubagentOutcome
 }
 
 // batchExecution is the result of one provider tool-call batch.

@@ -5,22 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"reasonix/internal/completioneval"
 	"reasonix/internal/provider"
 )
 
-// mainConversationRequests drops the completion validator's isolated requests
-// so prefix assertions stay aimed at the main conversation.
+// mainConversationRequests is retained as a test helper name for callers that
+// predate the removal of the completion validator. All provider requests now
+// belong to the main deterministic Agent loop.
 func mainConversationRequests(reqs []provider.Request) []provider.Request {
-	out := make([]provider.Request, 0, len(reqs))
-	for _, req := range reqs {
-		if len(req.Messages) > 0 && req.Messages[0].Role == provider.RoleSystem &&
-			req.Messages[0].Content == completioneval.PolicyPrompt {
-			continue
-		}
-		out = append(out, req)
-	}
-	return out
+	return append([]provider.Request(nil), reqs...)
 }
 
 // robustTempDir is a drop-in for t.TempDir whose cleanup retries RemoveAll for a

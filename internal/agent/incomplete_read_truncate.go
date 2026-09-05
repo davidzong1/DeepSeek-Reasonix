@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"reasonix/internal/i18n"
 )
 
 // truncateReadFileOutput returns a contiguous prefix on a complete rendered
@@ -22,7 +24,7 @@ func truncateReadFileOutput(s, toolName, toolCallID string) (string, string) {
 	for range 4 {
 		marker := toolOutputRecoveryMarkerAt(toolName, toolCallID, resultRef, len(s), len(head), len(head))
 		if len(head)+len(marker) <= maxToolOutputBytes {
-			notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(head), len(s))
+			notice := fmt.Sprintf(i18n.M.ToolOutputTruncatedFmt, len(s)-len(head), len(s))
 			return head + marker, notice
 		}
 		trimTo := len(head) - (len(head) + len(marker) - maxToolOutputBytes)
@@ -39,7 +41,7 @@ func truncateReadFileOutput(s, toolName, toolCallID string) (string, string) {
 	if len(marker) > maxToolOutputBytes {
 		marker = snapToRuneBoundary(marker, 0, maxToolOutputBytes)
 	}
-	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(head), len(s))
+	notice := fmt.Sprintf(i18n.M.ToolOutputTruncatedFmt, len(s)-len(head), len(s))
 	return head + marker, notice
 }
 

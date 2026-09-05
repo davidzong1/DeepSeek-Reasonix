@@ -81,6 +81,9 @@ func (a *Agent) trackTodoProgress(ctx context.Context, state *turnRuntime, recei
 		state.todoStallRounds++
 	}
 	state.todoProgress, state.trackingTodoProgress = nextProgress, nextTracking
+	if !a.hostContinuationEnabled(ctx) {
+		return
+	}
 	if state.todoStallRounds == todoProgressNudgeRounds {
 		a.sess.conversation.Add(HostGeneratedUserMessage(a.withTurnPreferences(todoProgressNudgeMessage(state.todoStallRounds))))
 		a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -13,6 +14,9 @@ import (
 func (a *Agent) runSamplingAttempt(ctx context.Context, turn int, sink event.Sink, frozen *samplingRequest, attemptID string) streamedTurn {
 	before := provider.RequestAttemptCount(ctx)
 	result := a.streamWithFrozen(ctx, turn, sink, frozen, attemptID)
+	if result.err == nil && isEmptyStreamResult(result.text, result.reasoning, result.calls, result.responsesItems, result.serverSearch) {
+		result.err = fmt.Errorf("%w: model returned a completed response with no content", provider.ErrEmptyResponse)
+	}
 	delta := max(provider.RequestAttemptCount(ctx)-before, 0)
 	result.usage = estimateFailedAttemptUsage(result.usage, *frozen, result, delta)
 	if result.usage != nil {

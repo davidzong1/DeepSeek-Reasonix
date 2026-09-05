@@ -39,10 +39,47 @@ type Messages struct {
 	ReadinessContinuing    string // host is automatically finishing known readiness gaps
 	RecoveryPaused         string // controlled Auto retry pause; user can continue in the next message
 	CompletionUncertain    string // completion validator could not confirm the result; work is kept
-	ReceiptVerified        string // end-of-turn receipt, nothing unproven
-	ReceiptGapsHeader      string // end-of-turn receipt, header above the unproven list
-	ReceiptRisksHeader     string // end-of-turn receipt, header above declared risks
-	ReceiptMore            string // end-of-turn receipt, "and N more" tail
+	ReasoningReplayRepair  string // provider rejected replayed thinking blocks; history repaired and retried once
+	// Host guard/recovery notices (event.Notice texts the fronts render verbatim).
+	EmptyFinal                       string // empty_final: no visible answer; retrying
+	ExecutorHandoff                  string // executor_handoff: answered without using tools
+	ToolBudget                       string // tool_budget: tool-call round limit reached
+	TaskBudget                       string // tool_budget variant: task spend budget reached
+	LoopGuard                        string // loop_guard: no-progress tool loop
+	ProgressGuard                    string // progress_guard: repeated work without new evidence
+	SoftBudgetConverge               string // loop_guard: converging a long read-only investigation
+	EvidenceNudge                    string // evidence_nudge: unverified mutations
+	ReasoningGovernor                string // reasoning_governor engaged
+	UnappliedSteerFmt                string // unapplied_steer — %s = the dropped guidance
+	DeprecatedContextRetention       string // agent.keep / agent.recent_keep deprecation warning
+	FinishReasonLength               string
+	FinishReasonContentFilter        string
+	FinishReasonRepetition           string
+	StreamInterruptedIdleTimeout     string
+	StreamInterruptedPrematureEOF    string
+	StreamInterruptedConnectionReset string
+	ToolOutputTruncatedFmt           string // %d = elided bytes, %d = original bytes
+	IncompleteReadFinishBlocked      string
+	ReadContinuationRequired         string
+	IncompleteReadDetected           string
+	ReadStrategyRequired             string
+	ReadStrategyProgress             string
+	ReadStrategyResolved             string
+	ReadLocalSafetyPaged             string
+	ReadCompleted                    string
+	ReadRestrictedStrategyFmt        string // %d = estimated tokens, %d = token budget
+	ContextRecoveryAdjustBudget      string
+	ContextRecoveryCompacted         string
+	PlannerFallback                  string
+	PlannerSafetyFallback            string
+	PlannerPlanAwaitingApproval      string
+	PlannerPlanNotApproved           string
+	PlannerPlanOnly                  string
+	CapabilityProxyFmt               string // %s = display name, %s = resolved target
+	ReceiptVerified                  string // end-of-turn receipt, nothing unproven
+	ReceiptGapsHeader                string // end-of-turn receipt, header above the unproven list
+	ReceiptRisksHeader               string // end-of-turn receipt, header above declared risks
+	ReceiptMore                      string // end-of-turn receipt, "and N more" tail
 	// ReceiptGapKinds maps a completion gap kind to its short human phrase.
 	ReceiptGapKinds   map[string]string
 	NoSessionToResume string // shown when --continue / --resume finds nothing

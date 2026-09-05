@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"time"
 
 	"reasonix/internal/event"
@@ -29,6 +30,19 @@ func (a *Agent) emitBatchToolResults(calls []provider.ToolCall, outcomes []toolO
 			DurationMs:   durations[i],
 			Execution:    toEventShellExecution(o.execution, durations[i]),
 		}
+		if o.subagentOutcome != nil {
+			tr.SubagentRef = o.subagentOutcome.Ref
+			tr.SubagentStatus = string(o.subagentOutcome.Status)
+			tr.SubagentErrorCode = o.subagentOutcome.ErrorCode
+			tr.SubagentRetryable = o.subagentOutcome.Retryable
+		} else if isSubagentToolCall(c) {
+			if outcome, ok := ParseSubagentOutcome(o.output); ok {
+				tr.SubagentRef = outcome.Ref
+				tr.SubagentStatus = string(outcome.Status)
+				tr.SubagentErrorCode = outcome.ErrorCode
+				tr.SubagentRetryable = outcome.Retryable
+			}
+		}
 		if startedAt[i] > 0 {
 			tr.StartedAt = startedAt[i]
 			tr.EndedAt = startedAt[i] + durations[i]
@@ -44,6 +58,19 @@ func (a *Agent) emitBatchToolResults(calls []provider.ToolCall, outcomes []toolO
 		}
 		a.recordToolExecutionAudit(readOnly, ranParallel[i], startedAt[i], durations[i], batchStart, o)
 	}
+}
+
+func isSubagentToolName(name string) bool {
+	switch name {
+	case "task", "read_only_task", "run_skill", "read_only_skill", "explore", "research", "review", "security_review", "security-review", "parallel_tasks", "fleet":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSubagentToolCall(call provider.ToolCall) bool {
+	return isSubagentToolName(call.Name) || strings.HasPrefix(strings.TrimSpace(call.CapabilityID), "skill:")
 }
 
 func (a *Agent) recordToolExecutionAudit(readOnly, parallel bool, startedAt, durationMs int64, batchStart time.Time, o toolOutcome) {

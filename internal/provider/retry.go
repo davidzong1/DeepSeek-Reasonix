@@ -338,6 +338,9 @@ func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOption
 			if limitErr := ParseContextLimitError(apiErr); limitErr != nil {
 				return nil, limitErr
 			}
+			if replayErr := ParseReasoningReplayError(apiErr); replayErr != nil {
+				return nil, replayErr
+			}
 			return nil, apiErr
 		}
 		lastErr = apiErr

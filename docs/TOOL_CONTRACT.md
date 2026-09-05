@@ -131,6 +131,12 @@ final answer by UTF-8 byte offset, so long parallel research remains lossless
 without injecting every report into the parent context at once. References are
 restricted to the current conversation lineage and workspace.
 
+Persisted child results also carry an explicit `status` (`completed`, `partial`,
+`failed`, or `cancelled`) and `retryable` flag. A partial or failed child may
+include its last visible answer and reference; use `read_subagent_result` for
+inspection and the original `task`/`run_skill` `continue_from` parameter for a
+retryable continuation. `session:tool_result` is only for ordinary tool output.
+
 `use_capability` (`action` = `list` | `inspect` | `call` | `decline`) is on the
 provider-visible surface for every task. Host verification obligations come
 from real tool actions, not from preclassifying the prompt. Optional tools stay registered for host dispatch but are not

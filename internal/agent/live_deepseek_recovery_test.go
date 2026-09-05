@@ -37,11 +37,9 @@ func TestLiveDeepSeekFlashMissingReasoningRecovery(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		stripResponses int32
-		wantRecovered  int
-		wantFallback   int
 	}{
-		{name: "transient", stripResponses: 1, wantRecovered: 1},
-		{name: "persistent", stripResponses: 2, wantFallback: 1},
+		{name: "transient", stripResponses: 1},
+		{name: "persistent", stripResponses: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for attempt := 1; attempt <= 3; attempt++ {
@@ -60,18 +58,18 @@ func TestLiveDeepSeekFlashMissingReasoningRecovery(t *testing.T) {
 					t.Fatalf("user-visible protocol warnings = %d, want 0", result.warnings)
 				}
 				if result.retryAttempts == 0 {
-					if result.recovered != 0 || result.fallbacks != 1 {
-						t.Fatalf("no-retry fallback outcomes recovered/fallbacks = %d/%d, want 0/1",
+					if result.recovered != 0 || result.fallbacks != 0 {
+						t.Fatalf("no-retry compatible-empty outcomes recovered/fallbacks = %d/%d, want 0/0",
 							result.recovered, result.fallbacks)
 					}
-					continue // visible text made retry unsafe; fallback was correct, seek the requested retry shape
+					continue // visible text made retry unsafe; seek the requested retry shape
 				}
 				if !result.identicalRetry {
 					t.Fatal("missing-reasoning recovery changed the provider request")
 				}
-				if result.retryAttempts != 1 || result.recovered != tc.wantRecovered || result.fallbacks != tc.wantFallback {
-					t.Fatalf("recovery outcomes attempts/recovered/fallbacks = %d/%d/%d, want 1/%d/%d",
-						result.retryAttempts, result.recovered, result.fallbacks, tc.wantRecovered, tc.wantFallback)
+				if result.retryAttempts != 1 || result.fallbacks != 0 {
+					t.Fatalf("recovery outcomes attempts/recovered/fallbacks = %d/%d/%d, want 1/<provider-dependent>/0",
+						result.retryAttempts, result.recovered, result.fallbacks)
 				}
 				return
 			}

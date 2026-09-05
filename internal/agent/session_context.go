@@ -161,19 +161,6 @@ func (a *Agent) prepareTurnContext(ctx context.Context) (provider.Message, bool)
 	return HostGeneratedUserMessage(snapshot.Content), true
 }
 
-func appendTurnContextToSession(sess *Session, visible []provider.Message, snapshot sessioncontext.Snapshot, bootstrapOnly bool) bool {
-	if sess == nil || snapshot.Content == "" {
-		return false
-	}
-	if previous, found := latestTurnContextSnapshot(visible); found {
-		if bootstrapOnly || previous.Digest == snapshot.Digest {
-			return false
-		}
-	}
-	sess.Add(HostGeneratedUserMessage(snapshot.Content))
-	return true
-}
-
 func latestTurnContextSnapshot(messages []provider.Message) (sessioncontext.Snapshot, bool) {
 	for i := range slices.Backward(messages) {
 		message := messages[i]

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -29,7 +30,7 @@ func (a *Agent) resolveIncompleteReadToolRoundBoundary(ctx context.Context, stat
 		a.recordModelTextObservationValue(observed)
 	}
 	for _, readID := range round.resolvedIDs {
-		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyResolved, "Reasonix validated a narrowed read strategy receipt.", "read_id="+readID)
+		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyResolved, i18n.M.ReadStrategyResolved, "read_id="+readID)
 	}
 	if round.pause != nil {
 		a.contextManager().ObserveUsage(usage)
@@ -38,7 +39,7 @@ func (a *Agent) resolveIncompleteReadToolRoundBoundary(ctx context.Context, stat
 	instruction := state.incompleteReads.nextInstruction()
 	if instruction != "" {
 		a.sess.conversation.Add(HostGeneratedUserMessage(a.withTurnPreferences(instruction)))
-		a.emitIncompleteReadNotice(event.NoticeCodeReadContinuationRequired, "Reasonix is continuing or narrowing an incomplete file read before allowing changes or completion.", "read continuation instruction appended")
+		a.emitIncompleteReadNotice(event.NoticeCodeReadContinuationRequired, i18n.M.ReadContinuationRequired, "read continuation instruction appended")
 	}
 	if ctx.Err() != nil {
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs())
@@ -115,19 +116,19 @@ func (a *Agent) finalizeIncompleteReadOutcome(deferred *incompleteReadDeferred, 
 		out.output = readStrategyPreview(deferred.rawOutput, transition.readID, transition.totalTokens, transition.limitTokens)
 		out.rawOutput = deferred.rawOutput
 		out.truncated = true
-		out.truncMsg = fmt.Sprintf("read_file switched to restricted strategy: estimated_tokens=%d budget_tokens=%d", transition.totalTokens, transition.limitTokens)
-		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyRequired, "The complete file did not fit the dynamic context budget; Reasonix entered restricted search/read mode.", fmt.Sprintf("read_id=%s bytes=%d tokens=%d budget_tokens=%d", transition.readID, transition.totalBytes, transition.totalTokens, transition.limitTokens))
+		out.truncMsg = fmt.Sprintf(i18n.M.ReadRestrictedStrategyFmt, transition.totalTokens, transition.limitTokens)
+		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyRequired, i18n.M.ReadStrategyRequired, fmt.Sprintf("read_id=%s bytes=%d tokens=%d budget_tokens=%d", transition.readID, transition.totalBytes, transition.totalTokens, transition.limitTokens))
 	}
 	if transition.detected {
-		a.emitIncompleteReadNotice(event.NoticeCodeIncompleteReadDetected, "Reasonix detected an incomplete file read and armed a host continuation.", "read_id="+transition.readID)
+		a.emitIncompleteReadNotice(event.NoticeCodeIncompleteReadDetected, i18n.M.IncompleteReadDetected, "read_id="+transition.readID)
 	}
 	if transition.strategyProgress {
-		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyProgress, "Reasonix recorded valid progress in a restricted read strategy.", "read_id="+transition.readID)
+		a.emitIncompleteReadNotice(event.NoticeCodeReadStrategyProgress, i18n.M.ReadStrategyProgress, "read_id="+transition.readID)
 	}
 	if transition.localSafetyPaged {
-		a.emitIncompleteReadNotice(event.NoticeCodeReadLocalSafetyPaged, "Reasonix safely paged a large local read_file result.", "read_id="+transition.readID)
+		a.emitIncompleteReadNotice(event.NoticeCodeReadLocalSafetyPaged, i18n.M.ReadLocalSafetyPaged, "read_id="+transition.readID)
 	}
 	if transition.completed {
-		a.emitIncompleteReadNotice(event.NoticeCodeReadCompleted, "Reasonix finished recovering the complete file read.", "read_id="+transition.readID)
+		a.emitIncompleteReadNotice(event.NoticeCodeReadCompleted, i18n.M.ReadCompleted, "read_id="+transition.readID)
 	}
 }

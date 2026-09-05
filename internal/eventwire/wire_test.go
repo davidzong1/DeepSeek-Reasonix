@@ -252,6 +252,22 @@ func TestToWireToolCarriesResolvedCapabilityMetadata(t *testing.T) {
 	}
 }
 
+func TestToWireToolCarriesSubagentOutcomeMetadata(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.ToolResult, Tool: event.Tool{
+		ID: "skill-1", Name: "run_skill", SubagentRef: "sa_child",
+		SubagentStatus: "partial", SubagentErrorCode: "completion_uncertain", SubagentRetryable: true,
+	}})
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"subagentRef":"sa_child"`, `"subagentStatus":"partial"`, `"subagentErrorCode":"completion_uncertain"`, `"subagentRetryable":true`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("subagent outcome JSON = %s, want %s", b, want)
+		}
+	}
+}
+
 func TestToWireToolOmitsHostOnlyWorkspaceMutationMetadata(t *testing.T) {
 	privatePath := "/Users/private/secret-project/file.go"
 	w := ToWire(event.Event{Kind: event.ToolResult, Tool: event.Tool{

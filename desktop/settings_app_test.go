@@ -2026,7 +2026,6 @@ func TestSetDesktopLanguagePersistsResponseLanguageAndUpdatesLiveTabs(t *testing
 	if err := app.SetDesktopLanguage("en"); err != nil {
 		t.Fatalf("SetDesktopLanguage: %v", err)
 	}
-
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	if cfg.DesktopLanguage() != "en" || cfg.Language != "en" {
 		t.Fatalf("saved language prefs = desktop:%q response:%q, want en/en", cfg.DesktopLanguage(), cfg.Language)

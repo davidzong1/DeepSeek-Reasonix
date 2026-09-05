@@ -4467,7 +4467,7 @@ reasoning_protocol = "none"
 	}
 }
 
-func TestClassicLayoutQuickClicksSerializeWorkspaceRebuild(t *testing.T) {
+func TestLegacyClassicLayoutQuickClicksSerializeWorkspaceRebuild(t *testing.T) {
 	runQuickClickWorkspaceReconcileTest(t, "classic")
 }
 

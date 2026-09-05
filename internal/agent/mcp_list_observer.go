@@ -2,8 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 )
 
 type mcpListObservation struct {
@@ -43,6 +45,11 @@ func (a *Agent) activateMCPListObserver() func() {
 		return func() {}
 	}
 	return activator.activateMCPListObserver()
+}
+
+// capabilityProxyNoticeText renders the EmitProxyAudit line from the catalogue.
+func capabilityProxyNoticeText(displayName, targetName string) string {
+	return fmt.Sprintf(i18n.M.CapabilityProxyFmt, displayName, targetName)
 }
 
 func (a *Agent) bindMCPListObserverCapability() {

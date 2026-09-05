@@ -41,6 +41,9 @@ type ContextPreparePolicy struct {
 	// old post-turn shim directly. Production Prepare estimates the current view
 	// from its calibrated final request shape.
 	ObservedInputTokens int
+	// AllowChunkedFallback enables fragment/tree-reduce recovery after a single
+	// summary fails. Ordinary pressure/overflow leave this false.
+	AllowChunkedFallback bool
 }
 
 // PreparedContext is the frozen result of a successful Prepare transaction.
@@ -184,7 +187,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	result := prepared
 	for range maxSummaries {
 		mustFree := policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard
-		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions, forceFold, mustFree)
+		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions, forceFold, mustFree, policy.AllowChunkedFallback)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return PreparedContext{}, err

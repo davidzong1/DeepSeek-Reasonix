@@ -454,25 +454,14 @@ func (a *Agent) foldSummaryWithChunkedFallback(ctx context.Context, trigger stri
 }
 
 // compact writes a context projection; trigger stays "auto"/"manual" for UI cards.
-func (a *Agent) compact(ctx context.Context, trigger, instructions string, force bool) error {
-	_, err := a.compactToProjection(ctx, trigger, instructions, force, false)
-	return err
+func (a *Agent) summarizeFold(ctx context.Context, trigger string, fold []provider.Message, instructions string, sourceTokens int, inputMode string, allowChunked bool) (foldSummary, CompactionTelemetry, error) {
+	if allowChunked {
+		return a.foldSummaryWithChunkedFallback(ctx, trigger, fold, instructions, sourceTokens, inputMode)
+	}
+	return a.foldSummaryWithTelemetry(ctx, trigger, fold, instructions, sourceTokens, inputMode)
 }
 
-// compactToProjection installs one content-driven summary checkpoint:
-// stable prefix + one structured digest + recent verbatim tail.
-// The canonical transcript is never rewritten. CompactionNoop means nothing
-// was foldable; callers at physical overflow must treat that as hard failure.
-// mustFree marks the fold the caller cannot proceed without. Automatic and
-// over-ceiling manual rescue paths cap the summary input; ordinary manual
-// compaction keeps the uncapped user-requested range.
-func (a *Agent) compactToProjection(ctx context.Context, trigger, instructions string, force, mustFree bool) (CompactionOutcome, error) {
-	a.sess.compactionRunMu.Lock()
-	defer a.sess.compactionRunMu.Unlock()
-	return a.compactToProjectionLocked(ctx, trigger, instructions, force, mustFree)
-}
-
-func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instructions string, force, mustFree bool) (CompactionOutcome, error) {
+func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instructions string, force, mustFree, allowChunked bool) (CompactionOutcome, error) {
 	activeTurn := a.activeTurnCreatedAt.Load()
 	canonical, transcriptVersion := a.sess.conversation.snapshotMessagesVersion()
 	a.sess.compactionMu.Lock()
@@ -548,7 +537,7 @@ func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instruct
 	} else if providerVisibleFingerprint(modelInputMessages(fold)) != originalFoldHash {
 		inputMode = SummaryInputExtensionRewritten
 	}
-	res, tele, err := a.foldSummaryWithChunkedFallback(ctx, trigger, fold, instructions, sourceTokens, inputMode)
+	res, tele, err := a.summarizeFold(ctx, trigger, fold, instructions, sourceTokens, inputMode, allowChunked)
 	if err != nil {
 		a.emitCompactionTelemetry(tele)
 		a.emitCompactionAborted(trigger)
