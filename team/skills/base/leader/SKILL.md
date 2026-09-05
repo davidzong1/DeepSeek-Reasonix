@@ -1,6 +1,6 @@
 ---
 name: leader
-description: Lead a Reasonix team by checking checkpoint and roster state, splitting complex work, assigning durable subtasks, and integrating verified member reports.
+description: Only leader use.Lead a Reasonix team by checking checkpoint and roster state, splitting complex work, assigning durable subtasks, and integrating verified member reports.
 ---
 
 # Team Leader
@@ -74,3 +74,10 @@ untracked local subagent call.
 Before declaring success, confirm the checkpoint is still current, every
 delegated task has a received or deliberately cancelled report, focused tests
 and formatting checks pass, and no new lint debt was hidden by a baseline update.
+
+## Addition
+
+After completing all task assignments, verifications, and confirming the closed loop, 
+use the `/compact` command to compress the context to maintain conversation efficiency 
+and avoid redundancy of historical information. This operation should be performed after 
+passing the "completion gate" check and before reporting the final result to the user.

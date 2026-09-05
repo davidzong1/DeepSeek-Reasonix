@@ -538,6 +538,13 @@ func CacheDir() string {
 	return dir
 }
 
+// UserStateDir is the reasonix user state root: REASONIX_STATE_HOME when set,
+// else the Reasonix home directory. Global per-user data — chat sessions,
+// stats, and the team registry — lives under it; callers join their own
+// subdirectory. "" when the root cannot be resolved, which disables user-scoped
+// data.
+func UserStateDir() string { return userSupportDir() }
+
 // MemoryUserDir returns the reasonix user state root (…/reasonix), under which
 // the user-global REASONIX.md and the per-project auto-memory store live. Empty
 // when the user state dir can't be resolved, which disables user-scoped memory.

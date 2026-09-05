@@ -8,7 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"reasonix/internal/boot"
 	"reasonix/internal/control"
+	"reasonix/internal/knowledge_base/model"
 	"reasonix/internal/team"
 	"reasonix/internal/team/agentruntime"
 	teamscheduler "reasonix/internal/team/scheduler"
@@ -32,6 +34,12 @@ type teamTaskService struct {
 	// may race (the report path is a member goroutine).
 	wakeMu sync.Mutex
 	onWake []agentruntime.WakeFunc
+	// kb is this service's opened team knowledge base (nil until first capture
+	// or recall). kbDataRoot "" keeps the KB off, the default for plain hosts
+	// and tests.
+	kbDataRoot string
+	kbMu       sync.Mutex
+	kb         *boot.TeamKnowledge
 }
 
 // wakeLeader delivers one leader wakeup into the durable board wake stream.
@@ -119,8 +127,123 @@ func (s *teamTaskService) forTeam(teamName string) *teamTaskService {
 		return cached
 	}
 	child := newTeamTaskService(s.teamStore, s.board, teamName, s.bind)
+	child.kbDataRoot = s.kbDataRoot
 	s.teams[teamName] = child
 	return child
+}
+
+// setKnowledgeDataRoot enables this service's durable team knowledge base and
+// every per-team child created afterwards. An empty root keeps the KB off, so
+// plain sessions and tests never open a manager.
+func (s *teamTaskService) setKnowledgeDataRoot(root string) {
+	if s == nil {
+		return
+	}
+	s.kbDataRoot = strings.TrimSpace(root)
+}
+
+// ensureKB returns this service's team knowledge base, opening it once through
+// the boot host helper on first use. A nil data root (or a team the KB cannot
+// address) leaves it off; an open failure is returned so capture stays
+// best-effort rather than silently pretending the KB is live.
+func (s *teamTaskService) ensureKB() (*boot.TeamKnowledge, error) {
+	if s == nil || strings.TrimSpace(s.kbDataRoot) == "" || strings.TrimSpace(s.teamName) == "" {
+		return nil, nil
+	}
+	s.kbMu.Lock()
+	defer s.kbMu.Unlock()
+	if s.kb != nil {
+		return s.kb, nil
+	}
+	tk, err := boot.OpenTeamKnowledge(&boot.KBHost{}, s.teamName, s.kbDataRoot)
+	if err != nil {
+		return nil, err
+	}
+	s.kb = tk
+	return tk, nil
+}
+
+// captureTurn feeds one member's completed turn tail into the team knowledge
+// base: the report's result text is ingested at turn tail and the rule/quality
+// pipeline decides what becomes durable knowledge. Best-effort by contract
+// (§9): an unavailable, failing, or unclassifiable KB never fails the report.
+func (s *teamTaskService) captureTurn(memberID, result string) {
+	tk, err := s.ensureKB()
+	if err != nil || tk == nil {
+		return
+	}
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return
+	}
+	_, _ = tk.Manager.Ingest(context.Background(), []model.Thought{{
+		ID: model.NewID(), TeamID: s.teamName, AgentID: strings.TrimSpace(memberID),
+		Kind: model.ThoughtConclusion, Text: text,
+	}})
+}
+
+// recallKnowledge reads this team's durable knowledge for a query and formats
+// it as a compact tail for the caller. Disabled KB is a friendly string, not an
+// error, so the recall tool degrades gracefully on hosts without a KB.
+func (s *teamTaskService) recallKnowledge(q string) (string, error) {
+	if s == nil || strings.TrimSpace(s.kbDataRoot) == "" || strings.TrimSpace(s.teamName) == "" {
+		return "team knowledge base is not enabled for this session", nil
+	}
+	tk, err := s.ensureKB()
+	if err != nil {
+		return "", err
+	}
+	if tk == nil {
+		return "team knowledge base is not enabled for this session", nil
+	}
+	query := strings.TrimSpace(q)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	got, err := tk.Manager.Query(context.Background(), model.Query{Text: query, Scope: model.ScopeTeam, Limit: 8})
+	if err != nil {
+		return "", err
+	}
+	if len(got) == 0 {
+		return "no matching knowledge in this team's knowledge base", nil
+	}
+	var b strings.Builder
+	for _, r := range got {
+		it := r.Item
+		fmt.Fprintf(&b, "- [%s] %s %s (%s)\n", it.Kind, it.Title, it.Status, it.AuthorID)
+		if body := strings.TrimSpace(it.Body); body != "" {
+			if line, _, _ := strings.Cut(body, "\n"); len(line) > 0 {
+				fmt.Fprintf(&b, "  %s\n", line)
+			}
+		}
+	}
+	return strings.TrimSuffix(b.String(), "\n"), nil
+}
+
+// closeKnowledge drains and closes every knowledge base this service opened —
+// its own team's and each cached child team's. Idempotent and nil-safe.
+func (s *teamTaskService) closeKnowledge() {
+	if s == nil {
+		return
+	}
+	s.kbMu.Lock()
+	tk := s.kb
+	s.kb = nil
+	s.kbMu.Unlock()
+	if tk != nil {
+		_ = tk.Close()
+	}
+	s.cacheMu.Lock()
+	children := make([]*teamTaskService, 0, len(s.teams))
+	for _, c := range s.teams {
+		if c != s {
+			children = append(children, c)
+		}
+	}
+	s.cacheMu.Unlock()
+	for _, c := range children {
+		c.closeKnowledge()
+	}
 }
 
 func (s *teamTaskService) ready() error {
@@ -403,6 +526,7 @@ func (s *teamTaskService) report(memberID, taskID, result string) (string, error
 	if err := s.runtime.Complete(target.ID, strings.TrimSpace(result)); err != nil {
 		return "", err
 	}
+	s.captureTurn(memberID, result)
 	return fmt.Sprintf("task %s reported to leader", target.ID), nil
 }
 

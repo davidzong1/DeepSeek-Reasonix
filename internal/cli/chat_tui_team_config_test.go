@@ -13,10 +13,12 @@ import (
 
 // writeTeamPoolFixture seeds both documents — team.json and agent_users.json —
 // under one temp root and chdirs into it, so the overlay reads and writes the
-// pair as one project.
+// pair as one project. The user-global default team root is pinned to the
+// fixture root's .reasonix (see writeTeamDoc).
 func writeTeamPoolFixture(t *testing.T, teams []team.Team, users []team.AgentUser) {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("REASONIX_STATE_HOME", filepath.Join(root, ".reasonix"))
 	store, err := team.NewFileStore(root)
 	if err != nil {
 		t.Fatal(err)

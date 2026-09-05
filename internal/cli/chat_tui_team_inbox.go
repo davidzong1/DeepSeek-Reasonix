@@ -36,14 +36,11 @@ const (
 	teamInboxWakeLimit = 16
 )
 
-// openTeamInbox opens the board store under the team root. A missing or
+// openTeamInbox opens the board store under a team data dir — a project's
+// .reasonix/team or the user-global <state root>/team. A missing or
 // unreadable store returns nil: the team UI never depends on the board.
-func openTeamInbox(cwd string) *teamInboxWire {
-	root, err := team.TeamRoot(cwd)
-	if err != nil {
-		return nil
-	}
-	board, err := team.NewSQLiteStore(context.Background(), filepath.Join(root, "board.db"))
+func openTeamInbox(dir string) *teamInboxWire {
+	board, err := team.NewSQLiteStore(context.Background(), filepath.Join(dir, "board.db"))
 	if err != nil {
 		return nil
 	}

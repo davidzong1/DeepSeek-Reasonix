@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -25,11 +24,6 @@ var (
 	ErrInvalidPolicy  = errors.New("team: invalid member write policy")
 )
 
-var (
-	primaryPath = filepath.Join(".reasonix", "team", TeamFile)
-	legacyPath  = filepath.Join(".reasonix", "team", TeamsLegacyFile)
-)
-
 // MemberWritePolicy gates who may add or delete member slots (§11-A). Open
 // lets any caller through the CAS loop; LeaderOnly reserves creation and
 // deletion for the leader. The policy is a store-level switch, defaulting to
@@ -42,26 +36,44 @@ const (
 )
 
 // TeamStore is the domain-level registry store (§2.5, §3.4): the primary
-// document is .reasonix/team/team.json; Load falls back to the legacy
-// teams.json read-only, and MigrateLegacy publishes it exactly once. Every
-// mutation runs load-modify-CompareAndSwap, so a concurrent writer surfaces
-// as ErrCASConflict instead of being clobbered.
+// document is team.json inside a team data dir — a project's
+// <root>/.reasonix/team, or <user state root>/team for the user-global
+// default. Load falls back to the legacy teams.json read-only, and
+// MigrateLegacy publishes it exactly once. Every mutation runs
+// load-modify-CompareAndSwap, so a concurrent writer surfaces as
+// ErrCASConflict instead of being clobbered.
 type TeamStore struct {
-	store        *FileStore
+	store        *FileStore       // rooted at the team data dir
+	anchor       string           // data root reported by Root(); "" = the data dir
 	agentUsers   *AgentUsersStore // pool store for binding validation (§5)
 	memberPolicy MemberWritePolicy
 }
 
-// NewTeamStore returns a TeamStore rooted at projectRoot.
+// NewTeamStore returns the project-rooted TeamStore: data in
+// <projectRoot>/.reasonix/team, Root() = projectRoot.
 func NewTeamStore(projectRoot string) (*TeamStore, error) {
-	if _, err := TeamRoot(projectRoot); err != nil {
-		return nil, err
+	return NewTeamStoreAt(projectRoot, "")
+}
+
+// NewTeamStoreAt roots a TeamStore at an explicit team data dir (absolute).
+// anchor is the root reported by Root() — hosts place sibling runtime data
+// (e.g. a knowledge base) next to it — and defaults to the data dir. An empty
+// dataDir resolves the project data dir <anchor>/.reasonix/team.
+func NewTeamStoreAt(anchor, dataDir string) (*TeamStore, error) {
+	if dataDir == "" {
+		var err error
+		if dataDir, err = TeamRoot(anchor); err != nil {
+			return nil, err
+		}
 	}
-	store, err := NewFileStore(projectRoot)
+	if anchor == "" {
+		anchor = dataDir
+	}
+	store, err := NewFileStore(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	ts := &TeamStore{store: store, agentUsers: &AgentUsersStore{store: store}}
+	ts := &TeamStore{store: store, anchor: anchor, agentUsers: &AgentUsersStore{store: store}}
 	ts.agentUsers.inUse = ts.agentUserInUse
 	return ts, nil
 }
@@ -89,6 +101,23 @@ func (s *TeamStore) agentUserInUse(id string) (bool, error) {
 	return false, nil
 }
 
+// Root reports the anchor this store was opened at — the workspace root for a
+// project-rooted store, or the anchor passed to NewTeamStoreAt — which hosts
+// use to place sibling runtime data (e.g. a knowledge base) next to the team.
+// "" for a nil store.
+func (s *TeamStore) Root() string {
+	if s == nil {
+		return ""
+	}
+	if s.anchor != "" {
+		return s.anchor
+	}
+	if s.store == nil {
+		return ""
+	}
+	return s.store.root
+}
+
 // SetMemberWritePolicy switches the member create/delete gate; an unknown
 // policy value is refused.
 func (s *TeamStore) SetMemberWritePolicy(p MemberWritePolicy) error {
@@ -106,14 +135,14 @@ func (s *TeamStore) SetMemberWritePolicy(p MemberWritePolicy) error {
 // A corrupt primary surfaces loudly and is never masked by fallback.
 func (s *TeamStore) Load() (TeamDoc, bool, error) {
 	var doc TeamDoc
-	err := s.store.Load(primaryPath, &doc)
+	err := s.store.Load(TeamFile, &doc)
 	if err == nil {
 		return doc, false, nil
 	}
 	if !os.IsNotExist(err) {
 		return TeamDoc{}, false, err
 	}
-	if err := s.store.Load(legacyPath, &doc); err != nil {
+	if err := s.store.Load(TeamsLegacyFile, &doc); err != nil {
 		return TeamDoc{}, false, err
 	}
 	return doc, true, nil
@@ -121,12 +150,12 @@ func (s *TeamStore) Load() (TeamDoc, bool, error) {
 
 // Save publishes doc to the primary file atomically (§3.4).
 func (s *TeamStore) Save(doc TeamDoc) error {
-	return s.store.Save(primaryPath, &doc)
+	return s.store.Save(TeamFile, &doc)
 }
 
 // CompareAndSwap publishes doc only if the primary file still holds expected.
 func (s *TeamStore) CompareAndSwap(expected, doc TeamDoc) error {
-	return s.store.CompareAndSwap(primaryPath, &expected, &doc)
+	return s.store.CompareAndSwap(TeamFile, &expected, &doc)
 }
 
 // AddTeam appends a team; a duplicate or empty name is refused.
@@ -244,10 +273,10 @@ func (s *TeamStore) SetMemberStatus(teamName, memberID string, status MemberStat
 // (ErrMigrateRefused). The legacy file is left in place as read-only fallback.
 func (s *TeamStore) MigrateLegacy() error {
 	var doc TeamDoc
-	if err := s.store.Load(legacyPath, &doc); err != nil {
+	if err := s.store.Load(TeamsLegacyFile, &doc); err != nil {
 		return err
 	}
-	err := s.store.CompareAndSwap(primaryPath, nil, &doc)
+	err := s.store.CompareAndSwap(TeamFile, nil, &doc)
 	if errors.Is(err, ErrCASConflict) {
 		return fmt.Errorf("%w (primary %s exists; %w)", ErrMigrateRefused, TeamFile, ErrCASConflict)
 	}
@@ -268,7 +297,7 @@ func (s *TeamStore) update(fn func(*TeamDoc) error) error {
 			return err
 		}
 		if create {
-			err = s.store.CompareAndSwap(primaryPath, nil, &doc)
+			err = s.store.CompareAndSwap(TeamFile, nil, &doc)
 		} else {
 			err = s.CompareAndSwap(expected, doc)
 		}

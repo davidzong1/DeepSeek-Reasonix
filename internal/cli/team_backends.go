@@ -389,8 +389,12 @@ func (r *teamBackends) closeAll() {
 	for key := range r.building {
 		r.abandon(key)
 	}
-	// The board goes with them: every holder — the task service and each member
-	// backend's tools — has just been released.
+	// The board goes with them, and the task service's knowledge base — whose
+	// Manager worker outlives each overlay — closes here, before its board.
+	if r.tasks != nil {
+		r.tasks.closeKnowledge()
+		r.tasks = nil
+	}
 	r.inboxWire.close()
 	r.inboxWire = nil
 }

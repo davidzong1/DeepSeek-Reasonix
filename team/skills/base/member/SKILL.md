@@ -1,6 +1,6 @@
 ---
 name: member
-description: Execute one durable Reasonix team subtask within its assigned scope, verify the result, and formally report it to the leader.
+description: Only member use.Execute one durable Reasonix team subtask within its assigned scope, verify the result, and formally report it to the leader.
 ---
 
 # Team Member
@@ -53,3 +53,8 @@ team task, reassign yourself, or act as the leader.
   blockers. A chat message or monitor status is not a substitute.
 - After the report is accepted, remain available for a targeted follow-up; do
   not silently broaden the original scope.
+
+## Addition
+
+After completing the subtask assigned to you by the `leader`, use the `/compact` 
+command to compress the context to avoid redundancy of historical information.

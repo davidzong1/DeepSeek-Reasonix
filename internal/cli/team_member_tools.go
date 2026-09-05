@@ -74,6 +74,7 @@ func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []t
 		base("leader_assign_subtask", "Assign a persisted subtask to one non-leader member and start its backend.", `{"type":"object","properties":{"member_name":{"type":"string"},"subtask":{"type":"string"},"context":{"type":"string"}},"required":["member_name","subtask"]}`),
 		base("leader_assign_task_to_relevant", "Select relevant non-leader members and assign the task to each.", `{"type":"object","properties":{"task":{"type":"string"},"subtask":{"type":"string"},"required_roles":{"type":"string"},"create_missing":{"type":"boolean"}},"required":["task"]}`),
 		base("leader_check_member_status", "Read durable task status for team members without terminal polling.", `{"type":"object","properties":{"member_name":{"type":"string"}}}`),
+		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
 	}
 }
 
@@ -87,6 +88,7 @@ func newMemberTaskTools(service *teamTaskService, teamName, memberID string) []t
 	return []tool.Tool{
 		base("member_get_my_task", "Read this member's unfinished assigned task.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		base("member_report_result", "Report this member's completed task result to the leader. Pass task_id when more than one task is assigned.", `{"type":"object","properties":{"result":{"type":"string"},"task_id":{"type":"string"}},"required":["result"],"additionalProperties":false}`),
+		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
 	}
 }
 
@@ -104,7 +106,7 @@ func (t *teamTaskTool) Name() string            { return t.name }
 func (t *teamTaskTool) Description() string     { return t.desc }
 func (t *teamTaskTool) Schema() json.RawMessage { return t.schema }
 func (t *teamTaskTool) ReadOnly() bool {
-	return t.name == "leader_list_team" || t.name == "leader_select_task_members" || t.name == "leader_check_member_status" || t.name == "member_get_my_task"
+	return t.name == "leader_list_team" || t.name == "leader_select_task_members" || t.name == "leader_check_member_status" || t.name == "member_get_my_task" || t.name == "team_knowledge_recall"
 }
 func (t *teamTaskTool) PlanModeSafe() bool { return t.ReadOnly() }
 
@@ -118,6 +120,7 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		CreateMissing bool   `json:"create_missing"`
 		Result        string `json:"result"`
 		TaskID        string `json:"task_id"`
+		Query         string `json:"query"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("%s: invalid arguments: %w", t.name, err)
@@ -170,6 +173,8 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return t.service.memberTask(t.memberID)
 	case "member_report_result":
 		return t.service.report(t.memberID, p.TaskID, p.Result)
+	case "team_knowledge_recall":
+		return t.service.recallKnowledge(p.Query)
 	default:
 		return "", fmt.Errorf("%s: unsupported operation", t.name)
 	}

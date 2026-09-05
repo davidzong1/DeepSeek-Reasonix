@@ -13,10 +13,13 @@ import (
 )
 
 // writeAgentUsersFixture seeds agent_users.json with pool entries and chdirs
-// into the fixture root, so the pool screen loads real data.
+// into the fixture root, so the pool screen loads real data. The user-global
+// default team root is pinned to the fixture root's .reasonix (see
+// writeTeamDoc), so the pool document lands where the overlay reads it.
 func writeAgentUsersFixture(t *testing.T, users ...team.AgentUser) {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("REASONIX_STATE_HOME", filepath.Join(root, ".reasonix"))
 	au, err := team.NewAgentUsersStore(root)
 	if err != nil {
 		t.Fatal(err)

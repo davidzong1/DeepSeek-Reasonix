@@ -10,7 +10,18 @@ GOEXE := $(shell go env GOEXE)
 GOLANGCI_VERSION := $(shell cat .golangci-version)
 WAILS_VERSION := $(shell tr -d '[:space:]' < .wails-version)
 
-.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
+# User-local install layout. PREFIX defaults to $(HOME)/.local so a plain
+# `make install` never needs root; override for a system-wide install, e.g.
+#   sudo make install PREFIX=/usr/local
+# DESTDIR stages a tree for packaging: the binary lands at
+# $(DESTDIR)$(PREFIX)/bin/reasonix. Install/uninstall manage ONLY the reasonix
+# binary — they never create or delete user data under $(HOME)/.reasonix (or
+# REASONIX_HOME) and never touch the self-updater's .<base>.new / .<base>.old
+# transient files next to an installed binary.
+PREFIX ?= $(HOME)/.local
+DESTDIR ?=
+
+.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean install uninstall
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix$(GOEXE) ./cmd/reasonix
@@ -88,3 +99,37 @@ cross:
 
 clean:
 	rm -rf bin dist
+
+# install places the real reasonix binary (never a symlink) so the self-updater
+# can replace it in place; a read-only bin dir fails with a hint instead of a
+# cryptic permission error and a half-written install.
+install: build
+	@set -e; \
+	bin="$(DESTDIR)$(PREFIX)/bin"; \
+	mkdir -p "$$bin" 2>/dev/null || { \
+		echo "error: cannot create $$bin"; \
+		echo "hint: default is 'PREFIX?=$(HOME)/.local' (no root). For system-wide: 'sudo make install PREFIX=/usr/local'. Prefer your package manager when reasonix ships there."; \
+		exit 1; \
+	}; \
+	if [ ! -w "$$bin" ]; then \
+		echo "error: $$bin is not writable by $$(id -un) — install aborted, nothing changed"; \
+		echo "hint: use the per-user default 'make install PREFIX=$(HOME)/.local' or a writable prefix, or run 'sudo make install PREFIX=/usr/local'; self-update ('reasonix upgrade') needs a writable install dir."; \
+		exit 1; \
+	fi; \
+	install -m 0755 bin/reasonix$(GOEXE) "$$bin/reasonix$(GOEXE)"; \
+	echo "installed: $$bin/reasonix$(GOEXE)"
+
+# uninstall removes only the reasonix binary installed by `make install`; it
+# never removes $(PREFIX) wholesale and never touches user data under
+# $(HOME)/.reasonix (or REASONIX_HOME).
+uninstall:
+	@set -e; \
+	bin="$(DESTDIR)$(PREFIX)/bin"; \
+	f="$$bin/reasonix$(GOEXE)"; \
+	if [ -e "$$f" ] || [ -L "$$f" ]; then \
+		rm -f -- "$$f"; \
+		echo "removed: $$f"; \
+	else \
+		echo "nothing to remove: $$f"; \
+	fi; \
+	echo "note: user data under $(HOME)/.reasonix (or REASONIX_HOME) was left untouched"

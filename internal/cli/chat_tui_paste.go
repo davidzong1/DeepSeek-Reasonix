@@ -341,9 +341,7 @@ func (m chatTUI) applyComposerPasteCount(msg tea.PasteMsg, terminal bool, count 
 	// land in its active buffer or are dropped. A bound member session is not
 	// modal — the composer is that member's input, so pastes fall through.
 	if m.teamOverlayModal() {
-		if target := teamPasteTarget(m.teamPick); target != nil {
-			*target += msg.Content
-		}
+		teamOverlayPaste(m.teamPick, msg.Content)
 		return m, nil
 	}
 	var cmds []tea.Cmd

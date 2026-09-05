@@ -39,3 +39,38 @@ func TestResolveWorkspaceRootExplicitAndGitFallback(t *testing.T) {
 		t.Fatalf("resolveWorkspaceRoot(\"\") = %q, want git root %q", got, repo)
 	}
 }
+
+// TestNearestGitRootHomeCeiling proves the workspace root never climbs to the
+// user's home directory: a dotfiles repo at $HOME is user-global state, not a
+// project, while a real repo strictly below home is still found.
+func TestNearestGitRootHomeCeiling(t *testing.T) {
+	home := t.TempDir()
+	oldHome := osUserHomeDir
+	osUserHomeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { osUserHomeDir = oldHome })
+
+	mkdir := func(p string) {
+		t.Helper()
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// $HOME itself is a git repo (dotfiles): never a project root.
+	mkdir(filepath.Join(home, ".git"))
+
+	// A real repo strictly below home resolves from a deep subdir.
+	repo := filepath.Join(home, "proj")
+	mkdir(filepath.Join(repo, ".git"))
+	deep := filepath.Join(repo, "a", "b")
+	mkdir(deep)
+	if got, ok := nearestGitRoot(deep); !ok || got != repo {
+		t.Fatalf("nearestGitRoot(%q) = (%q,%v), want repo %q below home", deep, got, ok, repo)
+	}
+
+	// A home subdir with no nested repo must not resolve upward to $HOME's .git.
+	bare := filepath.Join(home, "elsewhere")
+	mkdir(bare)
+	if got, ok := nearestGitRoot(bare); ok {
+		t.Fatalf("nearestGitRoot(%q) = %q, want no git root above $HOME", bare, got)
+	}
+}

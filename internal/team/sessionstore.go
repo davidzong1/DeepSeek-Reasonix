@@ -90,15 +90,23 @@ type TeamSessionStore struct {
 }
 
 // NewTeamSessionStore returns a session store rooted at the project's team
-// root. Every path this store builds is relative to that root, so the context
-// and session trees stay inside .reasonix/team instead of the project root
-// itself — TestSessionPathsStayUnderTeamRoot pins the physical location.
+// data dir. Every path this store builds is relative to that root, so the
+// context and session trees stay inside the team data dir instead of the
+// project root itself — TestSessionPathsStayUnderTeamRoot pins the physical
+// location.
 func NewTeamSessionStore(projectRoot string) (*TeamSessionStore, error) {
 	root, err := TeamRoot(projectRoot)
 	if err != nil {
 		return nil, err
 	}
-	store, err := NewFileStore(root)
+	return NewTeamSessionStoreDir(root)
+}
+
+// NewTeamSessionStoreDir returns a session store rooted at an explicit team
+// data dir — a project's .reasonix/team or the user-global <state root>/team —
+// so member context and session files follow the registry wherever it lives.
+func NewTeamSessionStoreDir(dir string) (*TeamSessionStore, error) {
+	store, err := NewFileStore(dir)
 	if err != nil {
 		return nil, err
 	}

@@ -3,7 +3,6 @@ package team
 import (
 	"errors"
 	"os"
-	"path/filepath"
 )
 
 // Agent-user pool errors. ErrLastAgentUser refuses emptying the pool by
@@ -18,25 +17,26 @@ var (
 	ErrAgentUserInUse    = errors.New("team: agent user is referenced by a member; unbind it first")
 )
 
-var agentUsersPath = filepath.Join(".reasonix", "team", AgentUsersFile)
-
-// AgentUsersStore is the pool document store (§2.1): agent_users.json under
-// .reasonix/team. It is a sibling of TeamStore — the pool belongs to no team,
-// and its document must not block team.json writes — sharing the atomic
-// write chokepoint, so key material lands at 0600 exactly like team.json.
-// The optional inUse check lets a host store (TeamStore) refuse deleting a
-// referenced entry; a standalone pool has no teams to consult.
+// AgentUsersStore is the pool document store (§2.1): agent_users.json beside
+// team.json in the team data dir. It is a sibling of TeamStore — the pool
+// belongs to no team, and its document must not block team.json writes —
+// sharing the atomic write chokepoint, so key material lands at 0600 exactly
+// like team.json. The optional inUse check lets a host store (TeamStore)
+// refuse deleting a referenced entry; a standalone pool has no teams to
+// consult.
 type AgentUsersStore struct {
 	store *FileStore
 	inUse func(id string) (bool, error) // reference check; nil = none
 }
 
-// NewAgentUsersStore returns a pool store rooted at projectRoot.
+// NewAgentUsersStore returns a pool store rooted at the project's team data
+// dir (<projectRoot>/.reasonix/team).
 func NewAgentUsersStore(projectRoot string) (*AgentUsersStore, error) {
-	if _, err := TeamRoot(projectRoot); err != nil {
+	root, err := TeamRoot(projectRoot)
+	if err != nil {
 		return nil, err
 	}
-	store, err := NewFileStore(projectRoot)
+	store, err := NewFileStore(root)
 	if err != nil {
 		return nil, err
 	}
@@ -45,14 +45,14 @@ func NewAgentUsersStore(projectRoot string) (*AgentUsersStore, error) {
 
 // Save publishes the pool document atomically.
 func (s *AgentUsersStore) Save(doc AgentUsersDoc) error {
-	return s.store.Save(agentUsersPath, &doc)
+	return s.store.Save(AgentUsersFile, &doc)
 }
 
 // Load reads the pool document; an absent one is an empty pool, and a read
 // never creates the file.
 func (s *AgentUsersStore) Load() (AgentUsersDoc, error) {
 	var doc AgentUsersDoc
-	err := s.store.Load(agentUsersPath, &doc)
+	err := s.store.Load(AgentUsersFile, &doc)
 	if err == nil {
 		return doc, nil
 	}
@@ -64,7 +64,7 @@ func (s *AgentUsersStore) Load() (AgentUsersDoc, error) {
 
 // CompareAndSwap publishes doc only if the stored pool still matches expected.
 func (s *AgentUsersStore) CompareAndSwap(expected, doc AgentUsersDoc) error {
-	return s.store.CompareAndSwap(agentUsersPath, &expected, &doc)
+	return s.store.CompareAndSwap(AgentUsersFile, &expected, &doc)
 }
 
 // update runs fn against the pool and publishes it under the same CAS loop as
@@ -81,7 +81,7 @@ func (s *AgentUsersStore) update(fn func(*AgentUsersDoc) error) error {
 			return err
 		}
 		if create {
-			err = s.store.CompareAndSwap(agentUsersPath, nil, &doc)
+			err = s.store.CompareAndSwap(AgentUsersFile, nil, &doc)
 		} else {
 			err = s.CompareAndSwap(expected, doc)
 		}
@@ -101,7 +101,7 @@ func (s *AgentUsersStore) update(fn func(*AgentUsersDoc) error) error {
 // a mutation must create it with expected == nil.
 func (s *AgentUsersStore) loadForUpdate() (AgentUsersDoc, bool, error) {
 	var doc AgentUsersDoc
-	err := s.store.Load(agentUsersPath, &doc)
+	err := s.store.Load(AgentUsersFile, &doc)
 	if err == nil {
 		return doc, false, nil
 	}

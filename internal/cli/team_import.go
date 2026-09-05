@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -67,11 +66,15 @@ func teamImportCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1
 	}
-	store, err := team.NewTeamStore(cwd)
+	roots, err := openTeamDataRoots(cwd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1
 	}
+	if roots.note != "" {
+		fmt.Fprintln(os.Stderr, "team import:", roots.note)
+	}
+	store := roots.store
 
 	report, err := store.ImportFromMCP(*from, team.ImportOptions{ImportCredentials: confirmed})
 	if err != nil {
@@ -144,11 +147,16 @@ func teamImportSummary(store *team.TeamStore) {
 			fmt.Println(line)
 		}
 	}
-	pool, err := loadPoolSummary()
+	users, err := store.ListAgentUsers()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "team import: agent_users unreadable:", err)
 		return
 	}
+	pool := make([]poolEntry, 0, len(users))
+	for _, u := range users {
+		pool = append(pool, poolEntry{UserID: u.UserID, Provider: u.Provider, BaseURL: u.BaseURL, Model: u.Model, Effort: u.Effort})
+	}
+	sort.Slice(pool, func(i, j int) bool { return pool[i].UserID < pool[j].UserID })
 	fmt.Println("agent_users:")
 	for _, u := range pool {
 		line := fmt.Sprintf("  %s  provider=%s  model=%s", u.UserID, u.Provider, u.Model)
@@ -159,36 +167,14 @@ func teamImportSummary(store *team.TeamStore) {
 	}
 }
 
-// poolEntry is the display-only projection of one agent_users.json record:
-// identity, provider, and config, never key material (K3).
+// poolEntry is the display-only projection of one agent_users record: identity,
+// provider, and config, never key material (K3).
 type poolEntry struct {
 	UserID   string
 	Provider string
 	BaseURL  string
 	Model    string
 	Effort   string
-}
-
-// loadPoolSummary reads agent_users.json straight from disk so the summary
-// stays independent of TeamStore internals; unknown JSON fields (api_key,
-// secret_ref) are dropped by the decoder.
-func loadPoolSummary() ([]poolEntry, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(filepath.Join(cwd, ".reasonix", "team", team.AgentUsersFile))
-	if err != nil {
-		return nil, err
-	}
-	var doc struct {
-		AgentUsers []poolEntry `json:"agent_users"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	sort.Slice(doc.AgentUsers, func(i, j int) bool { return doc.AgentUsers[i].UserID < doc.AgentUsers[j].UserID })
-	return doc.AgentUsers, nil
 }
 
 // orDefault renders empty as inherit, so the summary line reads as the

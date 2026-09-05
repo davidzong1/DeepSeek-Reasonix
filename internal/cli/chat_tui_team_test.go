@@ -17,10 +17,15 @@ import (
 )
 
 // writeTeamDoc saves a registry document at rel through team.FileStore and
-// chdirs into the fixture root, so the [ TEAM ] overlay loads real data.
+// chdirs into the fixture root, so the [ TEAM ] overlay loads real data. The
+// user-global default team root is pinned to the fixture root's .reasonix, so
+// the overlay's data dir is the same <root>/.reasonix/team the fixture seeded
+// (and every read-back helper reads from cwd) — each test stays isolated from
+// the shared test home.
 func writeTeamDoc(t *testing.T, rel string, teams ...team.Team) {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("REASONIX_STATE_HOME", filepath.Join(root, ".reasonix"))
 	store, err := team.NewFileStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -57,9 +62,42 @@ func writeLegacyTeamFixture(t *testing.T, teams ...team.Team) {
 	writeTeamDoc(t, team.TeamsLegacyFile, teams...)
 }
 
+// isolateTeamStateRoot pins the user-global default team root so an
+// overlay-open test never touches the shared process test home. Fixtures that
+// seed a registry (writeTeamDoc and friends) pin it themselves to the fixture
+// root's .reasonix; tests that chdir into a temp fixture root without seeding
+// (empty/corrupt/bootstrap) get the same <cwd>/.reasonix/team, matching the
+// read-back helpers. An overlay opened without any chdir (the package dir)
+// gets an isolated empty store rather than writing team docs into the source
+// tree.
+func isolateTeamStateRoot(t *testing.T) {
+	t.Helper()
+	if os.Getenv("REASONIX_STATE_HOME") != "" {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), ".reasonix")
+	if isWithinTempDir(cwd) {
+		root = filepath.Join(cwd, ".reasonix")
+	}
+	t.Setenv("REASONIX_STATE_HOME", root)
+}
+
+// isWithinTempDir reports whether dir sits under the process temp dir, i.e.
+// it is a per-test t.TempDir() fixture root rather than the package dir.
+func isWithinTempDir(dir string) bool {
+	tmp := filepath.Clean(os.TempDir())
+	dir = filepath.Clean(dir)
+	return dir == tmp || strings.HasPrefix(dir, tmp+string(os.PathSeparator))
+}
+
 // openTeamOverlayW builds a sized chat TUI and clicks [ TEAM ] open.
 func openTeamOverlayW(t *testing.T, width int) chatTUI {
 	t.Helper()
+	isolateTeamStateRoot(t)
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), width)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 24})

@@ -52,6 +52,7 @@ type poolState struct {
 	focus  int
 	kind   poolInputKind
 	buf    string
+	cur    int // rune cursor into buf while a text field is being typed
 	errMsg string
 	draft  team.AgentUser // editor draft: the new entry, or the entry under field edit
 	detail bool           // entry detail view; esc steps back before closing
@@ -212,6 +213,7 @@ func (p *teamPicker) armPoolEditor(adding bool) {
 	}
 	pool.edit = firstMissingField(pool.draft, adding)
 	pool.buf = ""
+	pool.cur = 0
 }
 
 // firstMissingField returns the first editor row whose field is empty, so the
@@ -255,21 +257,23 @@ func handlePoolEditKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 				pool.list.setOptions(optionSingle, poolProviderOptions(pool.draft.Provider), pool.draft.Provider)
 			} else {
 				pool.buf = poolFieldValue(pool.draft, pool.edit)
+				pool.cur = fieldRuneCount(pool.buf)
 			}
 		}
 	case "s":
 		p.savePoolEdit()
 	case "esc", "ctrl+c":
-		pool.kind, pool.buf, pool.draft, pool.errMsg, pool.adding = poolInputNone, "", team.AgentUser{}, "", false
+		pool.kind, pool.buf, pool.draft, pool.errMsg, pool.adding, pool.cur = poolInputNone, "", team.AgentUser{}, "", false, 0
 	}
 	return true
 }
 
-// handlePoolEditFieldKey routes a keypress inside one field's edit: printable
-// keys type, enter validates and merges the field into the draft, esc discards
-// this field's edit and returns to the field list. A validation refusal keeps
-// the edit on screen so it can be fixed in place. The provider field is a
-// picker instead — printable keys never touch it.
+// handlePoolEditFieldKey routes a keypress inside one field's edit: runes
+// insert at the cursor and left/right/home/end move it, enter validates and
+// merges the field into the draft, esc discards this field's edit and returns
+// to the field list. A validation refusal keeps the edit on screen so it can
+// be fixed in place. The provider field is a picker instead — printable keys
+// never touch it.
 func handlePoolEditFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	pool := &p.pool
 	if poolEditFields[pool.edit] == team.AgentUserFieldProvider {
@@ -279,16 +283,24 @@ func handlePoolEditFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	case "enter":
 		p.commitPoolField()
 	case "esc", "ctrl+c":
-		pool.kind, pool.buf, pool.errMsg = poolInputEdit, "", ""
+		pool.kind, pool.buf, pool.errMsg, pool.cur = poolInputEdit, "", "", 0
 	case "backspace":
-		if pool.buf != "" {
-			pool.buf = strings.TrimSuffix(pool.buf, lastRune(pool.buf))
-		}
+		pool.buf, pool.cur = fieldBackspace(pool.buf, pool.cur)
+	case "delete":
+		pool.buf, pool.cur = fieldDelete(pool.buf, pool.cur)
+	case "left":
+		pool.cur = fieldMove(pool.buf, pool.cur, -1)
+	case "right":
+		pool.cur = fieldMove(pool.buf, pool.cur, +1)
+	case "home":
+		pool.cur = 0
+	case "end":
+		pool.cur = fieldRuneCount(pool.buf)
 	default:
 		if msg.String() == "space" {
-			pool.buf += " "
+			pool.buf, pool.cur = fieldInsert(pool.buf, pool.cur, " ")
 		} else if printableKey(msg.String()) {
-			pool.buf += msg.String()
+			pool.buf, pool.cur = fieldInsert(pool.buf, pool.cur, msg.String())
 		}
 	}
 	return true
@@ -350,7 +362,7 @@ func (p *teamPicker) commitPoolField() {
 			pool.buf = id
 		}
 		applyPoolEditField(pool, field)
-		pool.errMsg, pool.buf, pool.kind = "", "", poolInputEdit
+		pool.errMsg, pool.buf, pool.kind, pool.cur = "", "", poolInputEdit, 0
 		return
 	}
 	if err := team.ValidateAgentUserField(field, pool.buf); err != nil {
@@ -360,6 +372,7 @@ func (p *teamPicker) commitPoolField() {
 	applyPoolEditField(pool, field)
 	pool.errMsg = ""
 	pool.buf = ""
+	pool.cur = 0
 	pool.kind = poolInputEdit
 }
 
@@ -423,7 +436,7 @@ func (p *teamPicker) savePoolEdit() {
 		pool.errMsg = poolErrMsg(err)
 		return
 	}
-	pool.kind, pool.buf, pool.edit, pool.draft, pool.adding = poolInputNone, "", 0, team.AgentUser{}, false
+	pool.kind, pool.buf, pool.edit, pool.draft, pool.adding, pool.cur = poolInputNone, "", 0, team.AgentUser{}, false, 0
 	if err := p.reloadPool(); err != nil {
 		pool.errMsg = poolErrMsg(err)
 	}

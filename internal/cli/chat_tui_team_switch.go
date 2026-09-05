@@ -358,6 +358,10 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		ambientCarrier = func() []provider.Message { return ambientCtrl.History() }
 	}
 	tasks := newTeamTaskService(m.teamPick.store, m.teamPick.boardStore(), "", bind)
+	// The durable knowledge base rides the same service: it opens lazily on a
+	// member's first completed turn and closes with the registry's board. Its
+	// data root is the overlay's team data dir, user-global under Direction B.
+	tasks.setKnowledgeDataRoot(teamKBDataRoot(m.teamPick.dataDir))
 	memberDeps := memberBackendDeps{
 		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
 		tasks:  tasks,

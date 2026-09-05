@@ -38,6 +38,7 @@ type memberEditState struct {
 	list   optionList
 	errMsg string
 	buf    string
+	cur    int // rune cursor into buf while the role field is being typed
 }
 
 // handleMemberEditNavKey routes the member editor's own keys on the detail
@@ -99,33 +100,44 @@ func (p *teamPicker) openMemberEditField() {
 	me.kind = memberEditFieldEdit
 	if field == "role" {
 		me.buf = string(me.draft.Role)
+		me.cur = fieldRuneCount(me.buf)
 		return
 	}
 	me.list.setOptions(optionSingle, p.memberPickerOptions(field), memberPickerInitialID(field, me.draft))
 }
 
-// handleMemberFieldKey routes a keypress inside one open field: the option list
-// moves with up/down, confirms with enter and discards with esc — zero writes.
-// The field owns every key while it is open, so "s"/"t" are ordinary letters
-// here and nothing typed ever reaches a buffer.
+// handleMemberFieldKey routes a keypress inside one open field: the role field
+// is free text — runes insert at the cursor, left/right/home/end move it,
+// backspace/delete remove around it, and enter confirms — while the remaining
+// fields are option lists that move with up/down and confirm with enter, zero
+// writes until s. The field owns every key while it is open, so "s"/"t" are
+// ordinary letters here.
 func handleMemberFieldKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	me := &p.memberEdit
 	if memberEditFields[me.edit] == "role" {
 		switch msg.String() {
 		case "enter":
 			me.draft.Role = team.RoleID(strings.TrimSpace(me.buf))
-			me.kind, me.buf = memberEditFieldList, ""
+			me.kind, me.buf, me.cur = memberEditFieldList, "", 0
 		case "esc", "ctrl+c":
-			me.kind, me.buf = memberEditFieldList, ""
+			me.kind, me.buf, me.cur = memberEditFieldList, "", 0
 		case "backspace":
-			if me.buf != "" {
-				me.buf = strings.TrimSuffix(me.buf, lastRune(me.buf))
-			}
+			me.buf, me.cur = fieldBackspace(me.buf, me.cur)
+		case "delete":
+			me.buf, me.cur = fieldDelete(me.buf, me.cur)
+		case "left":
+			me.cur = fieldMove(me.buf, me.cur, -1)
+		case "right":
+			me.cur = fieldMove(me.buf, me.cur, +1)
+		case "home":
+			me.cur = 0
+		case "end":
+			me.cur = fieldRuneCount(me.buf)
 		default:
 			if msg.String() == "space" {
-				me.buf += " "
+				me.buf, me.cur = fieldInsert(me.buf, me.cur, " ")
 			} else if printableKey(msg.String()) {
-				me.buf += msg.String()
+				me.buf, me.cur = fieldInsert(me.buf, me.cur, msg.String())
 			}
 		}
 		return true
@@ -213,6 +225,7 @@ func (p *teamPicker) commitMemberField() {
 	me.kind = memberEditFieldList
 	me.list = optionList{}
 	me.buf = ""
+	me.cur = 0
 	me.errMsg = ""
 }
 

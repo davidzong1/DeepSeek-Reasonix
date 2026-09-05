@@ -64,18 +64,24 @@ func TestLeaderMemberToolsMutateRosterAndClearRoleContext(t *testing.T) {
 func TestLeaderAndMemberTaskToolSurfaces(t *testing.T) {
 	service := &teamTaskService{}
 	leader := newLeaderTaskTools(service, "alpha", "lead")
-	if len(leader) != 5 {
+	if len(leader) != 6 {
 		t.Fatalf("leader task tool count = %d", len(leader))
 	}
-	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status"}
+	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status", "team_knowledge_recall"}
 	for i, want := range wantLeader {
 		if got := leader[i].Name(); got != want {
 			t.Errorf("leader tool %d = %q, want %q", i, got, want)
 		}
 	}
 	member := newMemberTaskTools(service, "alpha", "m1")
-	if len(member) != 2 || member[0].Name() != "member_get_my_task" || member[1].Name() != "member_report_result" {
-		t.Fatalf("member task tools have unexpected names")
+	wantMember := []string{"member_get_my_task", "member_report_result", "team_knowledge_recall"}
+	if len(member) != 3 {
+		t.Fatalf("member task tool count = %d", len(member))
+	}
+	for i, want := range wantMember {
+		if got := member[i].Name(); got != want {
+			t.Errorf("member tool %d = %q, want %q", i, got, want)
+		}
 	}
 }
 

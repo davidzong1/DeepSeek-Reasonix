@@ -92,3 +92,4 @@ cache/**
 /repolint
 team/knowledge_base/**
 !team/knowledge_base/README.md
+!team/knowledge_base/KNOWLEDGE_BASE_DESIGN.md

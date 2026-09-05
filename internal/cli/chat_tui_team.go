@@ -126,6 +126,7 @@ type teamPicker struct {
 	refusal    string                 // transient operation refusal; the page stays up
 	store      *team.TeamStore        // storage seam; nil when the project root is unusable
 	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	dataDir    string                 // team data dir backing store and board; "" when unknown
 	board      *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
 	backends   *teamBackends          // member Agent backends; nil when the seam is unavailable
 	hub        *teamHub               // member-prompt routing; nil when the store/backends are unavailable
@@ -150,22 +151,20 @@ type teamPicker struct {
 func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	cwd, err := os.Getwd()
 	if err == nil {
-		var store *team.TeamStore
-		var sessions *team.TeamSessionStore
-		store, err = team.NewTeamStore(cwd)
+		roots, err := openTeamDataRoots(cwd)
 		if err == nil {
-			sessions, err = team.NewTeamSessionStore(cwd)
-		}
-		if err == nil {
+			if roots.note != "" {
+				m.notice("team: " + roots.note)
+			}
 			// The board is the task service's dependency, and the registry — with
 			// its task service — is assembled inside bindTeamBackends; opening it
 			// after that froze the service on a nil board (D1).
-			p := &teamPicker{model: tui.New(nil), store: store, sessions: sessions}
+			p := &teamPicker{model: tui.New(nil), store: roots.store, sessions: roots.sessions, dataDir: roots.dataDir}
 			if p.board = m.teamBackends.inbox(); p.board == nil {
-				p.board = openTeamInbox(cwd)
+				p.board = openTeamInbox(roots.dataDir)
 			}
 			m.teamPick = p
-			m.bindTeamBackends(store)
+			m.bindTeamBackends(roots.store)
 			// The registry owns the board, so install it there once; a reopen
 			// keeps it. Only the per-member inbox cache is overlay-scoped, because
 			// each inbox pins that member's BindRecord generation.
@@ -179,7 +178,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 				p.errMsg = pickerErrMsg(err)
 				return nil
 			}
-			p.hub = newTeamHub(store, m.teamBackends, p.model.Name())
+			p.hub = newTeamHub(roots.store, m.teamBackends, p.model.Name())
 			// Leader wakeups land as notices; a leader without a cursor yet is
 			// quiet — history before the first open does not replay (§5.1).
 			for _, reason := range p.board.consumeWakeups(p.firstLeader()) {

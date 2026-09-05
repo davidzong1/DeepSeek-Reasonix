@@ -2273,26 +2273,6 @@ func currentWorkspacePromptLine(root string) string {
 	return "Current workspace: " + strconv.Quote(root)
 }
 
-// ResolveWorkspaceRoot exposes Build's own project-root resolution. A host that
-// needs the root *before* Build — a team member's role playbook is read at
-// assembly — must call this instead of reading Options.WorkspaceRoot, which is
-// empty whenever --dir was not given and would silently disable the lookup.
-func ResolveWorkspaceRoot(explicit string) string { return resolveWorkspaceRoot(explicit) }
-
-func resolveWorkspaceRoot(explicit string) string {
-	if explicit != "" {
-		return explicit
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	if root, ok := nearestGitRoot(wd); ok {
-		return root
-	}
-	return wd
-}
-
 func normalizeAdditionalDirs(root string, dirs []string) ([]string, error) {
 	if len(dirs) == 0 {
 		return nil, nil
@@ -2398,28 +2378,6 @@ func pathComparisonKey(path string) string {
 		return strings.ToLower(path)
 	}
 	return path
-}
-
-func nearestGitRoot(start string) (string, bool) {
-	dir, err := filepath.Abs(start)
-	if err != nil {
-		dir = filepath.Clean(start)
-	}
-	for {
-		if isGitMarker(filepath.Join(dir, ".git")) {
-			return dir, true
-		}
-		next := filepath.Dir(dir)
-		if next == dir {
-			return "", false
-		}
-		dir = next
-	}
-}
-
-func isGitMarker(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && (fi.IsDir() || fi.Mode().IsRegular())
 }
 
 func newSubagentStore(sessionDir string, parentLive func(sessionPath string) bool) (*agent.SubagentStore, error) {

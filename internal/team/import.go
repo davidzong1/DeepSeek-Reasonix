@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"net"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -335,8 +334,7 @@ func (s *TeamStore) backupForImport() ([]string, error) {
 	ts := time.Now().Format("20060102-150405")
 	var backups []string
 	for _, file := range []string{TeamFile, AgentUsersFile} {
-		rel := filepath.Join(".reasonix", "team", file)
-		full, err := safePath(s.store.root, rel)
+		full, err := safePath(s.store.root, file)
 		if err != nil {
 			return nil, err
 		}
@@ -347,7 +345,7 @@ func (s *TeamStore) backupForImport() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		bak := filepath.Join(".reasonix", "team", file+"."+ts+".pre-import.bak")
+		bak := file + "." + ts + ".pre-import.bak"
 		if err := AtomicWrite(s.store.root, bak, data); err != nil {
 			return nil, err
 		}

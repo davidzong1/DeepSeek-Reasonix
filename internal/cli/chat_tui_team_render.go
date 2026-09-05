@@ -174,7 +174,7 @@ func (p *teamPicker) renderPoolEdit(w, listH int) string {
 			if f == team.AgentUserFieldProvider {
 				val = p.pool.list.currentLabel() + " ▏"
 			} else {
-				val = p.pool.buf + "▏"
+				val = fieldCursorView(p.pool.buf, p.pool.cur)
 			}
 		}
 		mark := "  "
@@ -418,7 +418,7 @@ func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, li
 		val := memberFieldValue(me.draft, i)
 		if me.kind == memberEditFieldEdit && i == me.edit {
 			if f == "role" {
-				val = me.buf + " ▏"
+				val = fieldCursorView(me.buf, me.cur)
 			} else {
 				val = me.list.currentLabel() + " ▏"
 			}

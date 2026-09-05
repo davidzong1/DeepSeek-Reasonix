@@ -70,9 +70,13 @@ func mcpFixture(t *testing.T, dir string) string {
 }
 
 // inDir chdirs into dir for the test lifetime, since teamImportCommand
-// resolves .reasonix against the working directory.
+// resolves .reasonix against the working directory. The user-global default
+// team root is pinned to dir/.reasonix, so the import's data dir is the same
+// <dir>/.reasonix/team the read-back assertions target — each test stays
+// isolated from the shared test home.
 func inDir(t *testing.T, dir string) {
 	t.Helper()
+	t.Setenv("REASONIX_STATE_HOME", filepath.Join(dir, ".reasonix"))
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
