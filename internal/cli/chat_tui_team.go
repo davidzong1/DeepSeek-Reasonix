@@ -139,6 +139,7 @@ type teamPicker struct {
 	bind       int                    // candidate cursor for teamInputBind
 	leader     bool                   // leader mode; gates member and pool create/delete
 	memberEdit memberEditState        // member property editor; owns the detail screen
+	proxyEdit  teamProxyState         // team proxy settings editor; opens from the roster p
 	session    sessionState           // team session window; active replaces the roster
 	reset      leaderResetState       // k step-down confirmation; owns every key while active
 }
@@ -425,6 +426,10 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
 		return m, nil
 	}
+	if p.proxyEdit.kind != teamProxyNone {
+		p.handleTeamProxyKey(msg)
+		return m, nil
+	}
 	view := p.model
 	// An open member field owns every key while it is being edited (§5): "s"
 	// and "t" are letters there. The field-list screen owns its own keys —
@@ -548,10 +553,11 @@ func handleTeamSharedKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg) (c
 // configTeamKey routes the member-config keys to their editors and reports
 // whether the key was consumed: u opens the agent-user pool from the team
 // list, e descends from the compact roster into the member editor, b arms the
-// bind cycle, p cycles the proxy override on the roster (the member editor
-// owns the proxy field), and l assigns the focused member as leader on the
-// roster — refused with the holder's id when the team already has one, leaders
-// step down through k — or toggles leader mode on the detail screen.
+// bind cycle, p opens the team proxy settings from the roster (the member
+// editor owns each member's proxy override field), and l assigns the focused
+// member as leader on the roster — refused with the holder's id when the team
+// already has one, leaders step down through k — or toggles leader mode on the
+// detail screen.
 func configTeamKey(p *teamPicker, view *tui.Model, key string) bool {
 	switch key {
 	case "u":
@@ -569,9 +575,7 @@ func configTeamKey(p *teamPicker, view *tui.Model, key string) bool {
 		}
 	case "p":
 		if view.Mode() == tui.ModeList {
-			if err := p.cycleProxy(); err != nil {
-				p.errMsg = pickerErrMsg(err)
-			}
+			p.armTeamProxy()
 		}
 	case "l":
 		switch view.Mode() {
@@ -609,8 +613,8 @@ func typeIntoTeamBuffer(p *teamPicker, msg tea.KeyPressMsg) bool {
 
 // teamPasteTarget returns the overlay's active text buffer: the add-team
 // buffers, the pool field editor's non-provider row, the step-down's exact-id
-// stage, or the member editor's free-text role field. nil = no text input
-// (picker rows).
+// stage, the team proxy address field, or the member editor's free-text role
+// field. nil = no text input (picker rows).
 func teamPasteTarget(p *teamPicker) *string {
 	switch p.kind {
 	case teamInputAdd, teamInputAddMember:
@@ -622,6 +626,9 @@ func teamPasteTarget(p *teamPicker) *string {
 	}
 	if p.reset.kind == leaderResetID {
 		return &p.reset.buf
+	}
+	if p.proxyEdit.kind == teamProxyField && teamProxyFields[p.proxyEdit.edit] == "address" {
+		return &p.proxyEdit.buf
 	}
 	if p.memberEdit.kind == memberEditFieldEdit && len(memberEditFields) > p.memberEdit.edit && memberEditFields[p.memberEdit.edit] == "role" {
 		return &p.memberEdit.buf

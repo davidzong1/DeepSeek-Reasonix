@@ -358,3 +358,57 @@ func TestImportFromMCPDshGroupNormalizesDeepSeek(t *testing.T) {
 		t.Fatalf("dsh group should normalize to deepseek, got %+v", users)
 	}
 }
+
+// TestImportFromMCPPreservesMemberProxyOverride pins the member override
+// contract: the source proxy_mode (enabled/disabled) and the legacy
+// proxy_enabled boolean both land on MemberSlot.ProxyEnabled, absent overrides
+// stay nil (inherit), and the report counts what it carried.
+func TestImportFromMCPPreservesMemberProxyOverride(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	src := writeMCPSource(t, `{
+	  "teams": {
+	    "alpha": {
+	      "default_agent": "claude",
+	      "members": {
+	        "on":    {"role": "coder", "proxy_mode": "enabled"},
+	        "off":   {"role": "coder", "proxy_mode": "disabled"},
+	        "legacy": {"role": "coder", "proxy_enabled": false},
+	        "onl":   {"role": "coder", "proxy_enabled": true},
+	        "inher": {"role": "coder"},
+	        "inherit_mode": {"role": "coder", "proxy_mode": "inherit"}
+	      }
+	    }
+	  },
+	  "agent_users": {}
+	}`)
+	report, err := ts.ImportFromMCP(src, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProxyOverridesImported != 4 {
+		t.Fatalf("ProxyOverridesImported = %d, want 4: %+v", report.ProxyOverridesImported, report)
+	}
+	doc, _, err := ts.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*bool{}
+	for _, m := range doc.Teams[0].Template {
+		got[m.MemberID] = m.ProxyEnabled
+	}
+	if b := got["on"]; b == nil || !*b {
+		t.Fatalf("proxy_mode enabled should force on, got %v", got["on"])
+	}
+	if b := got["off"]; b == nil || *b {
+		t.Fatalf("proxy_mode disabled should force off, got %v", got["off"])
+	}
+	if b := got["legacy"]; b == nil || *b {
+		t.Fatalf("legacy proxy_enabled false should force off, got %v", got["legacy"])
+	}
+	if b := got["onl"]; b == nil || !*b {
+		t.Fatalf("legacy proxy_enabled true should force on, got %v", got["onl"])
+	}
+	if got["inher"] != nil || got["inherit_mode"] != nil {
+		t.Fatalf("absent/inherit override must stay nil, got inher=%v inherit_mode=%v", got["inher"], got["inherit_mode"])
+	}
+}

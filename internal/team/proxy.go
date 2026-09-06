@@ -9,11 +9,13 @@ import (
 )
 
 // DefaultProxyAddress is the proxy fallback when an enabled config names none.
-const DefaultProxyAddress = "127.0.0.1:7980"
+// It matches the mult_agent_mcp default so a Reasonix team proxy is the same
+// endpoint a migrated source configured.
+const DefaultProxyAddress = "127.0.0.1:7890"
 
 // ErrInvalidProxy reports a proxy config the store refuses: an enabled proxy
 // must name a resolvable IP:port address, host part a literal IP (no DNS).
-var ErrInvalidProxy = errors.New("team: invalid proxy config: enabled proxy needs an IP:port address like 127.0.0.1:7980")
+var ErrInvalidProxy = errors.New("team: invalid proxy config: enabled proxy needs an IP:port address like 127.0.0.1:7890")
 
 // UnmarshalJSON reads both document generations: the current address form and
 // the legacy host/port split written before the address change. A legacy doc
@@ -39,7 +41,7 @@ func (p *ProxyConfig) UnmarshalJSON(b []byte) error {
 
 // SetTeamProxy sets the team-default proxy; an enabled config without a
 // resolvable IP:port address is refused. An enabled config naming no address
-// is normalized to the default (127.0.0.1:7980) before it lands on disk, so
+// is normalized to the default (127.0.0.1:7890) before it lands on disk, so
 // the stored shape is always explicit. The team default stays explicit: pass
 // ProxyConfig{} to record "off".
 func (s *TeamStore) SetTeamProxy(teamName string, p ProxyConfig) error {

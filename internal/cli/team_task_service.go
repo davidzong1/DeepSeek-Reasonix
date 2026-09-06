@@ -40,6 +40,11 @@ type teamTaskService struct {
 	kbDataRoot string
 	kbMu       sync.Mutex
 	kb         *boot.TeamKnowledge
+	// discussionDataDir roots the team's durable discussion document; "" keeps
+	// that persistence off, the default for plain hosts and tests.
+	discussionDataDir string
+	discussionMu      sync.Mutex
+	dstore            *team.DiscussionStore
 }
 
 // wakeLeader delivers one leader wakeup into the durable board wake stream.
@@ -128,6 +133,7 @@ func (s *teamTaskService) forTeam(teamName string) *teamTaskService {
 	}
 	child := newTeamTaskService(s.teamStore, s.board, teamName, s.bind)
 	child.kbDataRoot = s.kbDataRoot
+	child.discussionDataDir = s.discussionDataDir
 	s.teams[teamName] = child
 	return child
 }
@@ -140,6 +146,16 @@ func (s *teamTaskService) setKnowledgeDataRoot(root string) {
 		return
 	}
 	s.kbDataRoot = strings.TrimSpace(root)
+}
+
+// setDiscussionDataDir roots this service's durable team discussion document
+// and every per-team child created afterwards. An empty dir keeps discussion
+// persistence off, so plain sessions and tests never touch the team data dir.
+func (s *teamTaskService) setDiscussionDataDir(dir string) {
+	if s == nil {
+		return
+	}
+	s.discussionDataDir = strings.TrimSpace(dir)
 }
 
 // ensureKB returns this service's team knowledge base, opening it once through
@@ -163,11 +179,36 @@ func (s *teamTaskService) ensureKB() (*boot.TeamKnowledge, error) {
 	return tk, nil
 }
 
+// isMajorDefectResult is the deterministic gate the KB capture consults: a
+// report whose first line names a defect or blocker is a shared-blackboard
+// event (the report already landed there), never durable team knowledge.
+func isMajorDefectResult(text string) bool {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	low := strings.ToLower(line)
+	for _, m := range majorDefectMarkers {
+		if strings.HasPrefix(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// majorDefectMarkers lead a defect report's first line. Each carries a colon or
+// a clear verb so a normal result that merely mentions a defect mid-text is not
+// misrouted.
+var majorDefectMarkers = []string{
+	"defect:", "major defect:", "blocked by", "blocker:", "blocked:", "critical:", "fatal:",
+}
+
 // captureTurn feeds one member's completed turn tail into the team knowledge
 // base: the report's result text is ingested at turn tail and the rule/quality
-// pipeline decides what becomes durable knowledge. Best-effort by contract
-// (§9): an unavailable, failing, or unclassifiable KB never fails the report.
+// pipeline decides what becomes durable knowledge. A major-defect result never
+// enters the KB. Best-effort by contract (§9): an unavailable, failing, or
+// unclassifiable KB never fails the report.
 func (s *teamTaskService) captureTurn(memberID, result string) {
+	if isMajorDefectResult(result) {
+		return
+	}
 	tk, err := s.ensureKB()
 	if err != nil || tk == nil {
 		return
@@ -218,6 +259,43 @@ func (s *teamTaskService) recallKnowledge(q string) (string, error) {
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n"), nil
+}
+
+// expireKnowledge retires this team's live knowledge last updated before an
+// RFC 3339 cutoff — the leader-only expiry entry point. The reason defaults to
+// no_longer_true and only the Retire whitelist is accepted. Errors name the
+// fix: a bad timestamp, a disabled KB, or an unknown reason are all actionable.
+func (s *teamTaskService) expireKnowledge(before, reason string) (string, error) {
+	before = strings.TrimSpace(before)
+	if before == "" {
+		return "", fmt.Errorf("before is required (RFC 3339 timestamp)")
+	}
+	cut, err := time.Parse(time.RFC3339, before)
+	if err != nil {
+		return "", fmt.Errorf("before must be an RFC 3339 timestamp, got %q", before)
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = string(model.ReasonNoLongerTrue)
+	}
+	r := model.RetireReason(strings.TrimSpace(reason))
+	if !r.Valid() {
+		return "", fmt.Errorf("reason must be one of no_longer_true, tombstone, personal_data, got %q", r)
+	}
+	if s == nil || strings.TrimSpace(s.kbDataRoot) == "" || strings.TrimSpace(s.teamName) == "" {
+		return "", fmt.Errorf("team knowledge base is not enabled for this session")
+	}
+	tk, err := s.ensureKB()
+	if err != nil {
+		return "", err
+	}
+	if tk == nil {
+		return "", fmt.Errorf("team knowledge base is not enabled for this session")
+	}
+	n, err := tk.Manager.ExpireBefore(context.Background(), cut, r)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("retired %d %s knowledge item(s) created before %s", n, r, cut.UTC().Format(time.RFC3339)), nil
 }
 
 // closeKnowledge drains and closes every knowledge base this service opened —

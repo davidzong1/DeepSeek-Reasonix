@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type ImportReport struct {
 	AgentUsersCreated       int
 	CredentialFields        int // key fields carried into agent_users.json (ImportCredentials)
 	CredentialFieldsSkipped int // key fields dropped (default, K1)
+	ProxyOverridesImported  int // member proxy_mode/proxy_enabled carried onto the slot
 	UnresolvedRefs          int // model/default_agent_user refs with no pool match
 	Backups                 []string
 }
@@ -118,6 +120,11 @@ type mcpMember struct {
 	Role  string `json:"role"`
 	Agent string `json:"agent"`
 	Model string `json:"model"`
+	// ProxyMode and ProxyEnabled carry the source member override (proxy_mode
+	// plus its legacy boolean); both absent means inherit. Mapping them onto
+	// ProxyEnabled keeps a force-off member from inheriting the team proxy.
+	ProxyMode    string `json:"proxy_mode"`
+	ProxyEnabled *bool  `json:"proxy_enabled"`
 }
 
 // mcpAgentUser carries one agent_user pool entry: a declared provider/model
@@ -250,13 +257,17 @@ func (imp *importer) buildTeam(name string, src mcpTeam) Team {
 // the standalone Leader property so the member's role stays a business role.
 // The member's model binds an AgentUserRef when it resolves to exactly one
 // pool record; ambiguous or missing matches leave the ref empty and count as
-// unresolved.
+// unresolved. The member's proxy override travels too: a force-off member must
+// not silently start inheriting the team default after import.
 func (imp *importer) buildMember(id string, m mcpMember) MemberSlot {
-	slot := MemberSlot{MemberID: id, Status: MemberStatusActive, AgentType: m.Agent}
+	slot := MemberSlot{MemberID: id, Status: MemberStatusActive, AgentType: m.Agent, ProxyEnabled: m.proxyOverride()}
 	if m.Role == string(RoleLeader) {
 		slot.Leader = true
 	} else {
 		slot.Role = RoleID(m.Role)
+	}
+	if slot.ProxyEnabled != nil {
+		imp.report.ProxyOverridesImported++
 	}
 	if m.Model == "" {
 		return slot
@@ -273,6 +284,26 @@ func (imp *importer) buildMember(id string, m mcpMember) MemberSlot {
 		imp.report.UnresolvedRefs++
 	}
 	return slot
+}
+
+// proxyOverride normalizes the source member's proxy override onto the *bool
+// the registry stores: nil = inherit, true = force on, false = force off. The
+// source writes an explicit proxy_mode (inherit/enabled/disabled) and, on
+// older records, a legacy proxy_enabled boolean; the mode wins when present,
+// else the legacy boolean, else inherit.
+func (m mcpMember) proxyOverride() *bool {
+	switch strings.TrimSpace(m.ProxyMode) {
+	case "enabled":
+		on := true
+		return &on
+	case "disabled":
+		off := false
+		return &off
+	}
+	if m.ProxyEnabled != nil {
+		return m.ProxyEnabled
+	}
+	return nil
 }
 
 // resolveDefaultAgentUser reports whether the source default_agent_user

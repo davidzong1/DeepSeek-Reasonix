@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|
 | A1 | AgentUserRef 与 MemberID 解耦：ref 是配置快照可共享，runtime/游标/历史永远按 (team, memberID) 隔离 | §2.1, §7 | 领域单测 | internal/team | ✅ 通过（实现者 TestRegistryStartIsIdempotentAndIsolatesSharedConfig） |
 | A2 | Role 自由文本注入 system prompt；role 空 → 未配置提示；leader 字符串不再作为 Leader 状态来源 | §2.2 | 领域单测（prompt 装配） | internal/team | ✅ 通过（TestValidateRole / TestSystemPromptForRole 含空 role；Snapshot.Role 装配） |
-| A3 | Proxy：默认 `127.0.0.1:7980`；仅 IP:port 合法；空值用默认；非法 host/port 拒绝；无认证字段 | §4.3 | 领域单测 | internal/team | ✅ 通过（实现者 5 测 + 本会话补 TestProxyAcceptsIPPortAddresses 正向 IPv4/IPv6/默认） |
+| A3 | Proxy：默认 `127.0.0.1:7890`；仅 IP:port 合法；空值用默认；非法 host/port 拒绝；无认证字段 | §4.3 | 领域单测 | internal/team | ✅ 通过（实现者 5 测 + 本会话补 TestProxyAcceptsIPPortAddresses 正向 IPv4/IPv6/默认） |
 | A4 | context 路径 = `.reasonix/team/context/<team>/<member-id>/`，只含合法 team/member 键（拒绝穿越/非法键） | §4.1 | 领域单测 | internal/team | ✅ 通过（TestSessionStoreRejectsEscapingKeys / MemberPathStaysUnderContextRoot） |
 | A5 | 同 AgentUserRef 的两个成员：不同 runtime、不同游标、不同历史；首次装配创建独立状态 | §2.1, §7 | 领域单测 | internal/team | ✅ 通过（实现者 adapter 隔离测试，含 cursor/messages/role 三隔离） |
 | A6 | 成员上下文写入：原子写 + 写后读回；同成员并发 Save 冲突可读拒绝（CAS）；不同成员无锁竞争 | §4.1 | 领域单测 | internal/team | ✅ 通过（实现为全局 writeMu 原子 chokepoint + 单逻辑写者，无 CAS 冲突语义；草案并发冲突测试不适用，RoundTrip 系列验证写后读回） |
@@ -88,8 +88,8 @@ func TestSameMemberConcurrentSaveConflict(t *testing.T) {
 
 // A3: Proxy 默认与 IP:port 校验。
 func TestProxyAddressDefaultsAndValidation(t *testing.T) {
-	if got := DefaultProxyAddress; got != "127.0.0.1:7980" {
-		t.Fatalf("DefaultProxyAddress = %q, want 127.0.0.1:7980", got)
+	if got := DefaultProxyAddress; got != "127.0.0.1:7890" {
+		t.Fatalf("DefaultProxyAddress = %q, want 127.0.0.1:7890", got)
 	}
 	for _, ok := range []string{"127.0.0.1:7980", "10.0.0.1:80", "[::1]:8080"} {
 		if err := ValidateProxyAddress(ok); err != nil {
@@ -429,7 +429,7 @@ go run ./tools/repolint
 | `TestTeamCompactRosterKeysRouteToDetail` | e 可能改为进入属性编辑而非详情 | ✅ 已同步（成员编辑由 `TestTeamMemberEdit*` 承接，e/Enter 语义按落盘核对） |
 | `TestTeamPickerRendersRealTeamDocMembers` | 详情态渲染可能变化 | ✅ 已同步 |
 | `internal/team/proxy_test.go` | 旧 host+port 校验 → IP:port 校验 | ✅ 已同步（含 legacy JSON 兼容测试）+ 本会话补正向 IP:port 用例 |
-| `TestTeamImportDisplay` | 导入 proxy 校验（7890 仍为合法 IP:port，仅默认值变 7980） | ✅ 已同步（7890 合法地址保留，默认值 7980 由 proxy 测试覆盖） |
+| `TestTeamImportDisplay` | 导入 proxy 校验（7890 为合法 IP:port，且为 Reasonix 默认） | ✅ 已同步（7890 合法地址保留，默认值 7890 由 proxy 测试覆盖） |
 
 ## 6. P4 测试矩阵与草案（2026-08-22，P4.5 先行；P4.1-P4.4 落盘后激活执行）
 

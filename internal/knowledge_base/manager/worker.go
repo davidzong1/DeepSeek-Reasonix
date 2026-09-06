@@ -63,6 +63,8 @@ func (m *Manager) process(j job) error {
 		return m.processIngest(j.payload)
 	case jobKindRetire:
 		return m.processRetire(j.payload)
+	case jobKindExpire:
+		return m.processExpire(j.payload)
 	case jobKindClear:
 		return m.processClearTeam(j.payload)
 	default:
@@ -100,6 +102,39 @@ func (m *Manager) processRetire(payload []byte) error {
 		m.emit("retired", id, string(req.Reason))
 	}
 	return nil
+}
+
+// processExpire retires every live item created before the cutoff by handing
+// their ids to the same retire handler, so expiry inherits Retire's idempotency
+// (already-retired or vanished ids are no-ops on replay). The retired count is
+// recorded for the caller that flushed and is waiting on it.
+func (m *Manager) processExpire(payload []byte) error {
+	var req expireReq
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return err
+	}
+	items, err := m.st.List()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if items[i].Status == model.StatusLive && items[i].CreatedAt.Before(req.Before) {
+			ids = append(ids, items[i].ID)
+		}
+	}
+	var retireErr error
+	if len(ids) > 0 {
+		data, err := json.Marshal(retireReq{IDs: ids, Reason: req.Reason})
+		if err != nil {
+			return err
+		}
+		retireErr = m.processRetire(data)
+	}
+	m.expired.mu.Lock()
+	m.expired.n = len(ids)
+	m.expired.mu.Unlock()
+	return retireErr
 }
 
 // processClearTeam fails closed on team/scope mismatch, moves the team directory

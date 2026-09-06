@@ -136,22 +136,44 @@ func TestTeamDefaultAgentPickerAndSessionGate(t *testing.T) {
 	}
 }
 
-// TestTeamCycleProxyOverride walks the proxy override cycle and pins every
-// state on disk: inherit → force-on → force-off → inherit.
-func TestTeamCycleProxyOverride(t *testing.T) {
+// TestTeamProxyEditorOpensFromRoster pins that the roster p key opens the team
+// proxy settings editor seeded with the team default (off, default address),
+// that s saves the enabled flag plus address through SetTeamProxy, and that
+// Esc cancels with zero writes. The member-level override cycle is gone: a
+// member's inherit/on/off lives in the member editor's proxy field.
+func TestTeamProxyEditorOpensFromRoster(t *testing.T) {
 	writeTeamPoolFixture(t, []team.Team{fixtureTeam()}, nil)
 	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: 'p'})
-	if got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled; got == nil || !*got {
-		t.Fatalf("first p should force the proxy on, got %v", got)
+	got := ansi.Strip(m.renderTeamPicker())
+	for _, want := range []string{"Members use proxy", "Address", "off", team.DefaultProxyAddress} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("p should open the team proxy editor showing %q, got:\n%s", want, got)
+		}
 	}
+	// Esc cancels with zero writes.
+	teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if p := readStoredTeamDoc(t).Teams[0].Proxy; p != nil {
+		t.Fatalf("Esc must not write a team proxy, got %+v", p)
+	}
+}
+
+// TestTeamProxyEditorSavesEnabled pins the editor's save path: open the enabled
+// field, pick on, confirm, and s publishes the team default proxy through
+// SetTeamProxy, persisting the normalized address.
+func TestTeamProxyEditorSavesEnabled(t *testing.T) {
+	writeTeamPoolFixture(t, []team.Team{fixtureTeam()}, nil)
+	m := openRoster(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: 'p'})
-	if got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled; got == nil || *got {
-		t.Fatalf("second p should force the proxy off, got %v", got)
-	}
-	teamKey(m, tea.KeyPressMsg{Code: 'p'})
-	if got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled; got != nil {
-		t.Fatalf("third p should restore inheritance, got %v", got)
+	// The enabled field is the default cursor row; enter opens its on/off picker
+	// seeded on the current value (off), so up moves to on.
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})    // off -> on
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm the pick
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save
+	p := readStoredTeamDoc(t).Teams[0].Proxy
+	if p == nil || !p.Enabled || p.Address != team.DefaultProxyAddress {
+		t.Fatalf("s should enable the team default proxy, got %+v", p)
 	}
 }
 

@@ -64,10 +64,10 @@ func TestLeaderMemberToolsMutateRosterAndClearRoleContext(t *testing.T) {
 func TestLeaderAndMemberTaskToolSurfaces(t *testing.T) {
 	service := &teamTaskService{}
 	leader := newLeaderTaskTools(service, "alpha", "lead")
-	if len(leader) != 6 {
+	if len(leader) != 7 {
 		t.Fatalf("leader task tool count = %d", len(leader))
 	}
-	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status", "team_knowledge_recall"}
+	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status", "team_knowledge_recall", "team_knowledge_expire"}
 	for i, want := range wantLeader {
 		if got := leader[i].Name(); got != want {
 			t.Errorf("leader tool %d = %q, want %q", i, got, want)

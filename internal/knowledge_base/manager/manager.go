@@ -33,6 +33,7 @@ type Manager struct {
 	chunk    extract.Config
 	llm      extract.Extractor
 	state    pendingState
+	expired  expireResult
 	wg       sync.WaitGroup
 }
 
@@ -113,6 +114,34 @@ func (m *Manager) Retire(ctx context.Context, ids []string, reason model.RetireR
 	}
 	_, err = m.enqueue(jobKindRetire, data)
 	return err
+}
+
+// ExpireBefore retires this team's live items created strictly before the
+// cutoff, returning how many it retired. The scan runs on the worker behind the
+// write queue, so it sees every prior write; a re-run returns 0 (those items
+// are already retired). Flushing here is what lets the async job report its
+// count to the waiting caller.
+func (m *Manager) ExpireBefore(ctx context.Context, before time.Time, reason model.RetireReason) (int, error) {
+	if before.IsZero() {
+		return 0, fmt.Errorf("%w: empty expire cutoff", model.ErrInvalid)
+	}
+	if !reason.Valid() {
+		return 0, fmt.Errorf("%w: reason %q", model.ErrInvalid, reason)
+	}
+	data, err := json.Marshal(expireReq{Before: before.UTC(), Reason: reason})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := m.enqueue(jobKindExpire, data); err != nil {
+		return 0, err
+	}
+	if err := m.Flush(ctx); err != nil {
+		return 0, err
+	}
+	m.expired.mu.Lock()
+	n := m.expired.n
+	m.expired.mu.Unlock()
+	return n, nil
 }
 
 // ClearTeam fails closed unless team is the Manager's bound team and scope is

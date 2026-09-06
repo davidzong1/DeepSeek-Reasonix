@@ -35,14 +35,40 @@ team task, reassign yourself, or act as the leader.
 - Add focused regression coverage for changed behavior. Run formatting and
   relevant tests, then inspect the diff and lint output without widening a
   baseline.
+- Before re-deriving a decision or convention the team already settled, recall
+  it on demand with `team_knowledge_recall`: pass only a `query` — the read is
+  team-scoped and returns at most 8 hits. Read first; guess only when the
+  recall has no match.
 
 ## Blockers And Communication
 
 - Surface missing permissions, dependency skips, conflicting edits, provider
   failures, and test-environment limitations with evidence and the affected
   task id.
+- A confirmed major defect is a **shared-blackboard** record, not knowledge:
+  report it through the board's durable report/conclusion event with a defect
+  marker and the affected task id, and never as a KB item or through
+  `team_knowledge_recall`-bound knowledge.
 - Do not poll terminals or rely on monitor auto-detection as a completion
   signal. The durable task state and formal report are authoritative.
+
+## Discussion Rounds
+
+When the leader opens a discussion and you are a participant, each round is
+your own independent analysis. Read the topic, form your own position on
+scope, approach, and risk, then contribute it through the structured
+discussion interface (`DiscussionService`): you `Submit` one conclusion for the
+current round; natural-language chat text is not treated as a submission.
+
+- The `Submit` write is keyed `(round, member)` — a retry or a revision
+  replaces your own entry and never touches another member's. Do not submit for
+  a round that is not current, do not write on another member's behalf, and do
+  not act after the leader has `Advance`d or `End`ed the session. State the
+  implementation boundary you commit to and any boundary you will not cross.
+- When a route is set, claim only the subtask the leader assigns within the
+  boundary you confirmed — do not broaden scope or take on unassigned work.
+- The formal completion of the subtask you then execute still goes through
+  `member_report_result`, per Finish below.
 
 ## Finish
 

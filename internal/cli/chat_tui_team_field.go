@@ -87,6 +87,9 @@ func fieldPasteEnd(p *teamPicker) {
 	if p.pool.active && p.pool.kind == poolInputEditField && poolEditFields[p.pool.edit] != team.AgentUserFieldProvider {
 		p.pool.cur = fieldRuneCount(p.pool.buf)
 	}
+	if p.proxyEdit.kind == teamProxyField && teamProxyFields[p.proxyEdit.edit] == "address" {
+		p.proxyEdit.cur = fieldRuneCount(p.proxyEdit.buf)
+	}
 	if p.memberEdit.kind == memberEditFieldEdit && len(memberEditFields) > p.memberEdit.edit && memberEditFields[p.memberEdit.edit] == "role" {
 		p.memberEdit.cur = fieldRuneCount(p.memberEdit.buf)
 	}

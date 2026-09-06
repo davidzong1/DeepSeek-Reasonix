@@ -60,6 +60,10 @@ func (m chatTUI) renderTeamPicker() string {
 	case tui.ModeQuit:
 		b.WriteString(dim("Leave team view? Esc cancels · Enter or q confirms"))
 	default:
+		if p.proxyEdit.kind != teamProxyNone {
+			b.WriteString(p.renderTeamProxy(w))
+			return choicePanelStyle.Width(w).Render(b.String())
+		}
 		p.renderRoster(view, &b, w)
 	}
 	return choicePanelStyle.Width(w).Render(b.String())
@@ -344,9 +348,10 @@ const rosterHelp = "↑/↓ navigate · a add member · d delete member · g def
 // member id and its role, leader marker, and lifecycle status. The agent
 // fields — launch type and agent-user binding — stay readable in the
 // document but the UI never renders them.
-// Every key shown here acts on the member row: a/d add and delete, p cycles
-// the proxy override, l assigns/clears the focused member's leader, t opens
-// the team session (leader only), e opens the member editor.
+// Every key shown here acts on the member row: a/d add and delete, p opens the
+// team proxy settings (member overrides edit in the member editor's proxy
+// field), l assigns/clears the focused member's leader, t opens the team
+// session (leader only), e opens the member editor.
 func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 	members := view.Members()
 	defaultRef := p.defaultAgentUser()
@@ -493,6 +498,64 @@ func memberProxyLabel(e *bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// renderTeamProxy renders the team proxy settings editor: the enabled switch
+// and the IP:port address, with the field cursor and the open field's picker or
+// typed value. Only s persists; Esc returns with zero writes.
+func (p *teamPicker) renderTeamProxy(w int) string {
+	var b strings.Builder
+	b.WriteString(accent(p.model.Name()+" · proxy") + "\n")
+	if p.proxyEdit.errMsg != "" {
+		b.WriteString(p.proxyEdit.errMsg + "\n")
+	}
+	col := max((w-8)/2, 12)
+	for i, f := range teamProxyFields {
+		val := p.teamProxyFieldValue(i)
+		if p.proxyEdit.kind == teamProxyField && i == p.proxyEdit.edit {
+			if f == "enabled" {
+				val = p.proxyEdit.list.currentLabel() + " ▏"
+			} else {
+				val = fieldCursorView(p.proxyEdit.buf, p.proxyEdit.cur)
+			}
+		}
+		mark := "  "
+		if i == p.proxyEdit.edit {
+			mark = "> "
+		}
+		label := teamProxyFieldLabel(f) + ": " + truncateCells(val, col-6)
+		b.WriteString(padColumn(mark+label, col+2) + "\n")
+	}
+	if p.proxyEdit.kind == teamProxyField {
+		if teamProxyFields[p.proxyEdit.edit] == "enabled" {
+			p.proxyEdit.list.resize(max((w-2)/2-3, 3))
+			b.WriteString(p.proxyEdit.list.view(w, optionListHeight(8)))
+		} else {
+			b.WriteString(dim("Type address · Enter confirm · Esc cancel"))
+		}
+	} else {
+		b.WriteString(dim("↑/↓ field · Enter edit · s save · Esc cancel"))
+	}
+	return b.String()
+}
+
+// teamProxyFieldLabel names a team proxy editor row.
+func teamProxyFieldLabel(f string) string {
+	if f == "enabled" {
+		return "Members use proxy"
+	}
+	return "Address"
+}
+
+// teamProxyFieldValue reads a team proxy editor row's current draft value.
+func (p *teamPicker) teamProxyFieldValue(i int) string {
+	if teamProxyFields[i] == "enabled" {
+		if p.proxyEdit.on {
+			return "on"
+		}
+		return "off"
+	}
+	return p.proxyEdit.addr
 }
 
 // renderTeamSession renders the session detail panel (§5/§11.4): the team name,

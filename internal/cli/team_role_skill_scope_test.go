@@ -1,16 +1,8 @@
 package cli
 
-// Team-role skill scope tests — pinned against current production behavior.
-//
-// teamRoleSkillPrompt (team_backend_build.go:380) now reads:
-//   1. base/<role> by name through the skill store
-//   2. shared/ from disk (every skill directory under team/skills/shared)
-//   3. special/<role> from disk (every skill directory under team/skills/special/<role>)
-//
-// Shared and special are read straight from disk so a same-named playbook is
-// not shadowed by base, and one role's special never leaks into the other's
-// prompt. Within each directory, SKILL.md is the canonical spelling; a
-// lowercase skill.md is only used when no SKILL.md exists in that directory.
+// Scope and spelling pins for the role-skill loader (team_role_skill.go);
+// isolation guarantees (allowlist, symlink refusal, byte budget) are pinned in
+// team_role_skill_isolation_test.go.
 
 import (
 	"os"

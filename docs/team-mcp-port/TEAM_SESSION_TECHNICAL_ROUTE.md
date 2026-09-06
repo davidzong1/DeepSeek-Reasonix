@@ -19,7 +19,7 @@
 5. 跨成员上下文共享不在本阶段实现，后续通过共享黑板任务实现。
 6. `Role` 是自由文本，用于成员身份和专精方向，并注入该成员的 system prompt；Role 不承担 Leader 标识职责。
 7. 多个成员可以复用同一个 `AgentUserRef`，但成员实例、runtime、上下文、游标和恢复状态必须完全独立。
-8. Proxy 只支持 `IP:port`，默认值为 `127.0.0.1:7980`，本阶段不支持认证字段。
+8. Proxy 只支持 `IP:port`，默认值为 `127.0.0.1:7890`，本阶段不支持认证字段。
 9. `k` 是独立的解除 Leader 快捷键。解除前必须经过三级确认；确认完成后清空整个团队所有成员的历史上下文。
 10. 解除 Leader 后团队可以暂时无 Leader；没有 Leader 时 `t` 必须拒绝进入团队会话，直到重新授予 Leader。
 
@@ -122,7 +122,7 @@ Proxy 配置存入现有 Team/Proxy 配置文档，字段最小化为：
 
 ```text
 enabled: bool
-address: "127.0.0.1:7980"
+address: "127.0.0.1:7890"
 ```
 
 地址必须解析为合法 IP 和端口；空值使用默认地址。不得引入用户名、密码或 Token 字段。
@@ -194,7 +194,7 @@ Idle
 
 ### P1：领域和配置 —— ✅ 领域契约已完成（2026-08-22，architecture-analyst-claude）
 
-> 已落地：`ValidateRole`（自由文本校验：UTF-8/长度/控制字符）+ `SetMemberRole`（AddMember 同门控）+ `SystemPromptForRole`（turn tail 装配，空角色未配置提示）；Proxy `Address` 单字段 IP:port 校验 + 默认 `127.0.0.1:7980` + legacy host/port 兼容读取；`DeleteAgentUser` 引用保护（`ErrAgentUserInUse`，成员 override 与团队默认均受检）。成员编辑 TUI 界面由 TUI 侧接线（领域接口已就绪）。
+> 已落地：`ValidateRole`（自由文本校验：UTF-8/长度/控制字符）+ `SetMemberRole`（AddMember 同门控）+ `SystemPromptForRole`（turn tail 装配，空角色未配置提示）；Proxy `Address` 单字段 IP:port 校验 + 默认 `127.0.0.1:7890` + legacy host/port 兼容读取；`DeleteAgentUser` 引用保护（`ErrAgentUserInUse`，成员 override 与团队默认均受检）。成员编辑 TUI 界面由 TUI 侧接线（领域接口已就绪）。
 >
 > **CLI 接缝状态（2026-08-22，cli-researcher）**：poolErrMsg 已映射 `ErrAgentUserInUse`；旧 s 循环-status 测试已迁移为成员编辑保存流程（TestTeamMemberEditStatusPersists）；成员编辑态输入隔离已接线。handleTeamPickerKey 复杂度已拆分，repolint 通过。
 >

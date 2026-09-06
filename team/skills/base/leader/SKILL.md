@@ -45,6 +45,31 @@ untracked local subagent call.
 - Ensure the team has a valid default Agent user before starting a member
   session. Provider/model or credential failures are actionable errors; never
   silently substitute another provider.
+- Before dispatching work that builds on settled decisions, recall durable
+  knowledge on demand with `team_knowledge_recall`: pass only a `query` — the
+  read is team-scoped and returns at most 8 hits. Prefer it over re-asking
+  members for history the team already recorded.
+
+## Large Tasks: Align Before Dispatch
+
+A large, cross-cutting, or design-heavy request is not a queue of subtasks to
+split straight away: implementation needs a shared technical route first. For
+such a task, run a team discussion before dispatching any implementation work.
+Discussion runs on the structured discussion interface (`DiscussionService`:
+`Start` / `Submit` / `Advance` / `End` / `Summary`) — a host-driven session,
+not chat text and not the deprecated discussion tools.
+
+1. `Start` the discussion on the design question with a frozen participant set
+   and a round cap in [1,3]. Each round, participants `Submit` their own
+   current-round conclusion; you converge on the `Summary`, then either
+   `Advance` to the next round or `End` once a route is agreed — or the cap is
+   reached.
+2. Record the agreed route and its boundaries before splitting. The route
+   decides granularity and write boundaries; a subtask may not silently widen
+   past what the discussion assigned.
+3. Only then split and dispatch subtasks against the aligned route, per the
+   Dispatch rules below. Keep one task identity through dispatch, execution,
+   and reporting.
 
 ## Follow-Up And Integration
 
@@ -56,6 +81,24 @@ untracked local subagent call.
   do not mutate its role or backend merely to force progress.
 - Record blockers with the affected task and generation. A stale-generation
   result must not be merged or used to wake a new execution window.
+
+## Knowledge And Defects
+
+- Recall the team knowledge base **on demand** with `team_knowledge_recall`
+  (query-only: one required `query`; always team scope; up to 8 hits; read-only)
+  when a prior decision, convention, or conclusion would change the split or the
+  verification. KB content is retrieved per call — never injected up front.
+- A confirmed major defect is a **shared-blackboard** record, not knowledge:
+  surface it through the board's durable report/conclusion event with a defect
+  marker and the affected task id, and never as a KB item.
+- Retire knowledge that predates the current mainline with the leader-only
+  `team_knowledge_expire`: `before` is a required RFC 3339 timestamp; `reason`
+  is optional and defaults to `no_longer_true`. Resolve `before` from the task
+  board before calling (expiry contract §2.2): take the most recent completed
+  mainline tasks that precede the current task — up to three, fewer if that is
+  all there is — and set `before` to the earliest of their `CreatedAt`. With no
+  completed mainline task, do not call: the sweep is a no-op. Leader-only —
+  member sessions never receive it.
 
 ## Tool And Error Discipline
 

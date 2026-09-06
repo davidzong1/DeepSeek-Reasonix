@@ -75,6 +75,7 @@ func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []t
 		base("leader_assign_task_to_relevant", "Select relevant non-leader members and assign the task to each.", `{"type":"object","properties":{"task":{"type":"string"},"subtask":{"type":"string"},"required_roles":{"type":"string"},"create_missing":{"type":"boolean"}},"required":["task"]}`),
 		base("leader_check_member_status", "Read durable task status for team members without terminal polling.", `{"type":"object","properties":{"member_name":{"type":"string"}}}`),
 		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+		base("team_knowledge_expire", "Retire this team's knowledge created before an RFC 3339 cutoff. Leader-only write.", `{"type":"object","properties":{"before":{"type":"string"},"reason":{"type":"string"}},"required":["before"]}`),
 	}
 }
 
@@ -121,6 +122,8 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		Result        string `json:"result"`
 		TaskID        string `json:"task_id"`
 		Query         string `json:"query"`
+		Before        string `json:"before"`
+		Reason        string `json:"reason"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("%s: invalid arguments: %w", t.name, err)
@@ -175,6 +178,8 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		return t.service.report(t.memberID, p.TaskID, p.Result)
 	case "team_knowledge_recall":
 		return t.service.recallKnowledge(p.Query)
+	case "team_knowledge_expire":
+		return t.service.expireKnowledge(p.Before, p.Reason)
 	default:
 		return "", fmt.Errorf("%s: unsupported operation", t.name)
 	}

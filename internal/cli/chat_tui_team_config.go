@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/team"
@@ -151,32 +153,163 @@ func (p *teamPicker) unbindFrom() error {
 	return p.reload("")
 }
 
-// cycleProxy advances the focused member's proxy override around
-// inherit → force-on → force-off → inherit and publishes it (§7.4).
-func (p *teamPicker) cycleProxy() error {
-	member, ok := p.model.Focused()
-	if !ok {
-		return nil
+// teamProxyKind is the cli-owned write state of the team proxy settings editor
+// (§7.4): the field-list navigator or one open field's edit.
+type teamProxyKind int
+
+const (
+	teamProxyNone teamProxyKind = iota
+	teamProxyList
+	teamProxyField // editing one field of the team proxy config
+)
+
+// teamProxyFields are the editor's rows: the enabled switch members inherit and
+// the address (IP:port) the store validates as one field.
+var teamProxyFields = []string{"enabled", "address"}
+
+// teamProxyState is the team proxy settings editor: the draft config seeded
+// from the focused team, the field cursor, and the open field's value. Only s
+// publishes; Esc returns with zero writes, mirroring the member editor.
+type teamProxyState struct {
+	kind   teamProxyKind
+	on     bool
+	addr   string
+	edit   int
+	list   optionList
+	buf    string
+	cur    int // rune cursor into buf while the address field is being typed
+	errMsg string
+}
+
+// armTeamProxy seeds the editor from the focused team's persisted proxy: a team
+// without one opens off with the default address, so enabling just saves it.
+func (p *teamPicker) armTeamProxy() {
+	if p.kind != teamInputNone || p.errMsg != "" {
+		return
 	}
-	slot, ok := p.slotOf(member.ID)
-	if !ok {
-		return nil
+	st := teamProxyState{kind: teamProxyList, addr: team.DefaultProxyAddress}
+	for _, t := range p.doc.Teams {
+		if t.Name != p.model.Name() || t.Proxy == nil {
+			continue
+		}
+		st.on = t.Proxy.Enabled
+		if t.Proxy.Address != "" {
+			st.addr = t.Proxy.Address
+		}
 	}
-	var next *bool
-	switch {
-	case slot.ProxyEnabled == nil:
-		on := true
-		next = &on
-	case *slot.ProxyEnabled:
-		off := false
-		next = &off
+	p.proxyEdit = st
+}
+
+// handleTeamProxyKey owns every key while the team proxy editor is active.
+func (p *teamPicker) handleTeamProxyKey(msg tea.KeyPressMsg) bool {
+	if p.proxyEdit.kind == teamProxyNone {
+		return false
+	}
+	if p.proxyEdit.kind == teamProxyList {
+		switch msg.String() {
+		case "up", "k":
+			p.proxyEdit.edit = (p.proxyEdit.edit + len(teamProxyFields) - 1) % len(teamProxyFields)
+		case "down", "j":
+			p.proxyEdit.edit = (p.proxyEdit.edit + 1) % len(teamProxyFields)
+		case "enter", "space":
+			p.openTeamProxyField()
+		case "s":
+			p.saveTeamProxy()
+		case "esc", "ctrl+c":
+			p.proxyEdit = teamProxyState{}
+		}
+		return true
+	}
+	return p.handleTeamProxyFieldKey(msg)
+}
+
+// openTeamProxyField opens the focused row: enabled is an on/off pick, address
+// is free text. Nothing is written until s.
+func (p *teamPicker) openTeamProxyField() {
+	if teamProxyFields[p.proxyEdit.edit] == "enabled" {
+		p.proxyEdit.kind = teamProxyField
+		initial := "off"
+		if p.proxyEdit.on {
+			initial = "on"
+		}
+		p.proxyEdit.list.setOptions(optionSingle, []option{{id: "on"}, {id: "off"}}, initial)
+		return
+	}
+	p.proxyEdit.kind = teamProxyField
+	p.proxyEdit.buf = p.proxyEdit.addr
+	p.proxyEdit.cur = fieldRuneCount(p.proxyEdit.buf)
+}
+
+// handleTeamProxyFieldKey routes a keypress inside one open field: the enabled
+// row is an on/off picker, the address row free text edited like the member
+// role field. Enter confirms back to the list; Esc cancels the field edit.
+func (p *teamPicker) handleTeamProxyFieldKey(msg tea.KeyPressMsg) bool {
+	if teamProxyFields[p.proxyEdit.edit] == "enabled" {
+		_, action := p.proxyEdit.list.handleKey(msg)
+		switch action {
+		case optionListCommit:
+			p.commitTeamProxyField()
+		case optionListCancel:
+			p.proxyEdit.kind = teamProxyList
+			p.proxyEdit.list = optionList{}
+			p.proxyEdit.errMsg = ""
+		}
+		return true
+	}
+	switch msg.String() {
+	case "enter":
+		p.proxyEdit.addr = strings.TrimSpace(p.proxyEdit.buf)
+		p.proxyEdit.kind, p.proxyEdit.buf, p.proxyEdit.cur = teamProxyList, "", 0
+	case "esc", "ctrl+c":
+		p.proxyEdit.kind, p.proxyEdit.buf, p.proxyEdit.cur = teamProxyList, "", 0
+	case "backspace":
+		p.proxyEdit.buf, p.proxyEdit.cur = fieldBackspace(p.proxyEdit.buf, p.proxyEdit.cur)
+	case "delete":
+		p.proxyEdit.buf, p.proxyEdit.cur = fieldDelete(p.proxyEdit.buf, p.proxyEdit.cur)
+	case "left":
+		p.proxyEdit.cur = fieldMove(p.proxyEdit.buf, p.proxyEdit.cur, -1)
+	case "right":
+		p.proxyEdit.cur = fieldMove(p.proxyEdit.buf, p.proxyEdit.cur, +1)
+	case "home":
+		p.proxyEdit.cur = 0
+	case "end":
+		p.proxyEdit.cur = fieldRuneCount(p.proxyEdit.buf)
 	default:
-		next = nil
+		if msg.String() == "space" {
+			p.proxyEdit.buf, p.proxyEdit.cur = fieldInsert(p.proxyEdit.buf, p.proxyEdit.cur, " ")
+		} else if printableKey(msg.String()) {
+			p.proxyEdit.buf, p.proxyEdit.cur = fieldInsert(p.proxyEdit.buf, p.proxyEdit.cur, msg.String())
+		}
 	}
-	if err := p.store.SetMemberProxyOverride(p.model.Name(), member.ID, next); err != nil {
-		return err
+	return true
+}
+
+// commitTeamProxyField merges the open field into the draft and returns to the
+// field list; the whole config validates at s through SetTeamProxy.
+func (p *teamPicker) commitTeamProxyField() {
+	if teamProxyFields[p.proxyEdit.edit] == "enabled" {
+		id, _ := p.proxyEdit.list.choice()
+		p.proxyEdit.on = id == "on"
 	}
-	return p.reload("")
+	p.proxyEdit.kind = teamProxyList
+	p.proxyEdit.list = optionList{}
+	p.proxyEdit.errMsg = ""
+}
+
+// saveTeamProxy is the s key: the one store write of the editor. The draft
+// publishes through SetTeamProxy — which validates the address (literal IP and
+// port) and refuses a bad one — then the roster re-reads (§8.3).
+func (p *teamPicker) saveTeamProxy() {
+	name := p.model.Name()
+	cfg := team.ProxyConfig{Enabled: p.proxyEdit.on, Address: strings.TrimSpace(p.proxyEdit.addr)}
+	if err := p.store.SetTeamProxy(name, cfg); err != nil {
+		p.proxyEdit.errMsg = pickerErrMsg(err)
+		return
+	}
+	p.proxyEdit = teamProxyState{}
+	if err := p.reload(""); err != nil {
+		p.errMsg = pickerErrMsg(err)
+	}
 }
 
 // toggleLeader switches leader mode, which gates member and pool create and

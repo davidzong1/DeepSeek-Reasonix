@@ -525,8 +525,8 @@ func TestMemberProxySpec(t *testing.T) {
 	if blank.Mode != netclient.ModeOff {
 		t.Errorf("an enabled proxy with no address must be off, got %q", blank.Mode)
 	}
-	on := memberProxySpec(team.ProxyConfig{Enabled: true, Address: "127.0.0.1:7980"})
-	if on.Mode != netclient.ModeCustom || on.URL != "http://127.0.0.1:7980" {
+	on := memberProxySpec(team.ProxyConfig{Enabled: true, Address: "127.0.0.1:7890"})
+	if on.Mode != netclient.ModeCustom || on.URL != "http://127.0.0.1:7890" {
 		t.Errorf("proxy spec = %+v", on)
 	}
 }

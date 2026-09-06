@@ -362,6 +362,9 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	// member's first completed turn and closes with the registry's board. Its
 	// data root is the overlay's team data dir, user-global under Direction B.
 	tasks.setKnowledgeDataRoot(teamKBDataRoot(m.teamPick.dataDir))
+	// The discussion document lives beside the registry and board under the
+	// same team data dir; its terminal outcome is deposited into the KB above.
+	tasks.setDiscussionDataDir(m.teamPick.dataDir)
 	memberDeps := memberBackendDeps{
 		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
 		tasks:  tasks,

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"sync"
+	"time"
 
 	"reasonix/internal/knowledge_base/model"
 	"reasonix/internal/knowledge_base/queue"
@@ -12,6 +13,7 @@ const (
 	jobKindIngest   = "ingest"
 	jobKindRetire   = "retire"
 	jobKindClear    = "clearteam"
+	jobKindExpire   = "expire"
 )
 
 type job struct {
@@ -40,6 +42,19 @@ type ingestReq struct {
 type retireReq struct {
 	IDs    []string           `json:"ids"`
 	Reason model.RetireReason `json:"reason"`
+}
+
+type expireReq struct {
+	Before time.Time          `json:"before"`
+	Reason model.RetireReason `json:"reason"`
+}
+
+// expireResult hands one expire job's retired count back to the caller that
+// waited on it. It lives behind its own guard so pendingState's flag set stays
+// unchanged.
+type expireResult struct {
+	mu sync.Mutex
+	n  int
 }
 
 type clearReq struct {
