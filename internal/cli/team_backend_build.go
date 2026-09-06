@@ -39,6 +39,7 @@ type memberProviderResolver struct {
 	apiKey                string
 	effort                string
 	proxy                 netclient.ProxySpec
+	context1M             bool
 	deepSeekAnthropic     bool
 	anthropicBearerHeader bool
 }
@@ -57,22 +58,24 @@ func newMemberProviderResolver(u team.AgentUser, proxy netclient.ProxySpec) (*me
 		name = kind
 	}
 	model := strings.TrimSpace(u.Model)
-	deepSeekAnthropic := kind == "anthropic" && team.NormalizeProvider(u.Provider) == team.ProviderDeepSeek && strings.HasSuffix(strings.ToLower(model), "[1m]")
-	if deepSeekAnthropic {
-		// Claude treats [1m] as a client-side context alias. Its wire request
-		// removes the suffix and enables the 1M context beta separately; sending
-		// the alias as the model name makes compatible gateways reject routing.
-		model = strings.TrimSpace(model[:len(model)-len("[1m]")])
+	wireModel, context1M := team.ResolveAgentUserModel(u)
+	providerName := team.NormalizeProvider(strings.TrimSpace(u.Provider))
+	deepSeekAnthropic := providerName == team.ProviderDeepSeek && kind == "anthropic" && context1M
+	if context1M {
+		// [1m] is a client-side context alias for every provider. DeepSeek's
+		// Anthropic-compatible route additionally enables its protocol beta below.
+		model = wireModel
 	}
 	return &memberProviderResolver{
-		ref:      memberModelRef(name, u.Model),
-		name:     name,
-		kind:     kind,
-		endpoint: endpoint,
-		model:    model,
-		apiKey:   u.APIKey,
-		effort:   strings.TrimSpace(u.Effort),
-		proxy:    proxy,
+		ref:       memberModelRef(name, u.Model),
+		name:      name,
+		kind:      kind,
+		endpoint:  endpoint,
+		model:     model,
+		apiKey:    u.APIKey,
+		effort:    strings.TrimSpace(u.Effort),
+		proxy:     proxy,
+		context1M: context1M,
 
 		// MCP Claude profiles use ANTHROPIC_AUTH_TOKEN for this route. Preserve
 		// that wire contract after importing the profile into a team AgentUser.
@@ -106,7 +109,7 @@ func (r *memberProviderResolver) Catalog() []provider.Descriptor {
 		Reasoning:     true,
 		DefaultEffort: r.effort,
 	}
-	if r.deepSeekAnthropic {
+	if r.context1M {
 		d.ContextWindow = 1_000_000
 	}
 	return []provider.Descriptor{d}
@@ -192,6 +195,11 @@ type memberBackendDeps struct {
 	tasks    *teamTaskService
 	events   chan memberEvent
 	base     func() boot.Options
+	// workspaceRoot is captured from the ambient controller when the team
+	// overlay opens. Member controllers may be created while the process CWD is
+	// elsewhere; they must still resolve project skills/configuration against
+	// this root rather than recomputing it from the session directory.
+	workspaceRoot string
 	// ambient reads the chat's own conversation for a leader's first member
 	// session (see leaderAmbientCarry). It is captured by reference at registry
 	// build time — nil by default, and never the bound member's own.
@@ -307,11 +315,18 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		}
 
 		opts := deps.base()
+		if strings.TrimSpace(deps.workspaceRoot) != "" {
+			opts.WorkspaceRoot = deps.workspaceRoot
+		}
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = memberSink(b.MemberID, deps.events)
+		skillRoot := opts.WorkspaceRoot
+		if strings.TrimSpace(skillRoot) == "" {
+			skillRoot = deps.workspaceRoot
+		}
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
-			teamRoleSkillPrompt(boot.ResolveWorkspaceRoot(opts.WorkspaceRoot), b.Leader)
+			teamRoleSkillPrompt(boot.ResolveTeamProjectRoot(skillRoot), b.Leader)
 		tasks := deps.tasks.forTeam(b.Team)
 		if b.Leader && deps.store != nil {
 			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)
@@ -329,6 +344,11 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			ctrl.Close()
 			return nil, err
 		}
+		// bindMemberSession may have resumed a transcript whose leading system
+		// message was assembled for an older role/proxy/skill configuration.
+		// Keep the durable conversation, but refresh only that leading message so
+		// the member identity and role skills remain correct after every reopen.
+		ctrl.SetSystemPromptPreservingHistory(ctrl.SystemPrompt())
 		// A leader's first (file-less) entry continues from the chat's context;
 		// anyone else starts or resumes its own. The seed loads straight from
 		// boot.Build's history, so the member identity survives verbatim.

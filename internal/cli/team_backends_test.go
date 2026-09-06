@@ -59,6 +59,30 @@ func TestTeamRoleSkillPromptResolvesEmptyWorkspaceRoot(t *testing.T) {
 	}
 }
 
+// TestTeamRoleSkillPromptFromUnrelatedDirectory covers the installed CLI
+// path: the process may start outside the repository, while the resolved team
+// project root still owns the role playbook that enters the member prompt.
+func TestTeamRoleSkillPromptFromUnrelatedDirectory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "team", "skills", "base", "leader", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\nname: leader\ndescription: team leader\n---\nleader cross-directory playbook"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	other := t.TempDir()
+	t.Chdir(other)
+	resolved := boot.ResolveTeamProjectRoot(root)
+	if resolved != root {
+		t.Fatalf("team project root = %q, want %q", resolved, root)
+	}
+	if got := teamRoleSkillPrompt(resolved, true); !strings.Contains(got, "leader cross-directory playbook") {
+		t.Fatalf("leader skill not loaded from project root outside cwd: %q", got)
+	}
+}
+
 // fakeBackend is a control.SessionAPI stand-in that only records teardown, so
 // registry lifetime can be asserted without assembling a real controller. id
 // distinguishes one assembled instance from another by identity, not value.

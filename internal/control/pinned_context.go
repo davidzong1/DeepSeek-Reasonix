@@ -46,6 +46,23 @@ func (c *Controller) ApplyExtensionSystemPrompt(prompt string) {
 	c.executor.SetSession(agent.NewSession(prompt))
 }
 
+// SetSystemPromptPreservingHistory updates the authoritative system prompt
+// while retaining the current transcript. This is used by hosts that build a
+// role-specific prompt before resuming a durable session: Resume replaces the
+// in-memory Session with the persisted transcript, whose first system message
+// may belong to an older role or skill set. Replacing only the leading system
+// message keeps the member's conversation history intact and makes the new
+// identity visible on the next request.
+func (c *Controller) SetSystemPromptPreservingHistory(prompt string) {
+	if c == nil || c.executor == nil {
+		return
+	}
+	c.mu.Lock()
+	c.prompt.base = prompt
+	c.mu.Unlock()
+	c.executor.Session().SetLeadingSystemPromptWithReason(prompt, "team_role_prompt_refresh")
+}
+
 func (c *Controller) basePrompt() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

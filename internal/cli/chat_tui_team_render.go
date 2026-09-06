@@ -116,6 +116,9 @@ func (p *teamPicker) renderTeamPool(width, listH int) string {
 	}
 	for i, u := range users {
 		label := u.UserID + " " + dim("("+providerModel(u)+")")
+		if _, enabled := team.ResolveAgentUserModel(u); enabled {
+			label += " " + accent("Context: 1M")
+		}
 		b.WriteString(rowLine(i == p.pool.focus, i+1, "", label, false) + "\n")
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter detail · a add user · e edit user · d delete user · Esc back"))
@@ -130,6 +133,7 @@ func (p *teamPicker) renderPoolDetail(w int, u team.AgentUser) string {
 	b.WriteString(dim("  Provider: ") + u.Provider + "\n")
 	b.WriteString(dim("  Base URL: ") + u.BaseURL + "\n")
 	b.WriteString(dim("  Model: ") + u.Model + "\n")
+	b.WriteString(dim("  Context: ") + agentUserContextLabel(u) + "\n")
 	b.WriteString(dim("  Effort: ") + u.Effort + "\n")
 	if u.Identity != "" {
 		b.WriteString(dim("  Identity: ") + u.Identity + "\n")
@@ -167,6 +171,7 @@ func (p *teamPicker) renderPoolEdit(w, listH int) string {
 	if p.pool.errMsg != "" {
 		b.WriteString(p.pool.errMsg + "\n")
 	}
+	b.WriteString(dim("  Context: ") + agentUserContextLabel(u) + "\n")
 	col := max((w-8)/2, 12)
 	preview := make([]string, len(poolEditFields))
 	for i, f := range poolEditFields {
@@ -256,6 +261,13 @@ func providerModel(u team.AgentUser) string {
 	default:
 		return u.Provider + " / " + u.Model
 	}
+}
+
+func agentUserContextLabel(u team.AgentUser) string {
+	if _, enabled := team.ResolveAgentUserModel(u); enabled {
+		return "1M"
+	}
+	return "default"
 }
 
 // renderInputState renders the add/delete prompts and reports whether one was

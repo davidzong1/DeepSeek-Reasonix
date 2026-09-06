@@ -314,7 +314,25 @@ func (p *teamPicker) applyMemberField(teamName, memberID, field string, draft te
 	case "status":
 		return p.store.SetMemberStatus(teamName, memberID, draft.Status)
 	case "proxy":
-		return p.store.SetMemberProxyOverride(teamName, memberID, draft.ProxyEnabled)
+		// A proxy change is baked into the member's provider transport. Refuse
+		// edits while that backend is actively running, then retire an idle
+		// instance after the durable write so the next bind reconstructs it with
+		// the new effective proxy instead of continuing to use stale transport.
+		if p.backends != nil {
+			if backend, ok := p.backends.bound(teamName, memberID); ok {
+				status := backend.RuntimeStatus()
+				if status.Running || status.PendingPrompt || status.BackgroundJobs > 0 {
+					return fmt.Errorf("team: finish or stop member %q before changing its proxy", memberID)
+				}
+			}
+		}
+		if err := p.store.SetMemberProxyOverride(teamName, memberID, draft.ProxyEnabled); err != nil {
+			return err
+		}
+		if p.backends != nil {
+			p.backends.release(teamName, memberID)
+		}
+		return nil
 	default:
 		if draft.AgentUserRef == "" {
 			return p.store.UnbindAgentUser(teamName, memberID)

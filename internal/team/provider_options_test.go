@@ -116,3 +116,25 @@ func TestResolveAgentUserProviderLongContextDeepSeekUsesAnthropic(t *testing.T) 
 		t.Fatalf("ordinary custom DeepSeek route = %q, want openai", kind)
 	}
 }
+
+func TestResolveAgentUserModelContextAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, model, wire string
+		enabled                     bool
+	}{
+		{name: "lower", provider: "deepseek", model: "deepseek-v4-flash[1m]", wire: "deepseek-v4-flash", enabled: true},
+		{name: "suffix case and space", provider: "deepseek", model: "  deepseek-v4-flash[1M]  ", wire: "deepseek-v4-flash", enabled: true},
+		{name: "space before alias", provider: "deepseek", model: " deepseek-v4-flash [1m] ", wire: "deepseek-v4-flash", enabled: true},
+		{name: "plain", provider: "deepseek", model: " deepseek-v4-flash ", wire: "deepseek-v4-flash"},
+		{name: "other provider", provider: "openai", model: "gpt-5.6-sol[1m]", wire: "gpt-5.6-sol", enabled: true},
+		{name: "provider-independent whitespace", provider: "openai", model: "  gpt-5.6-sol [1M]  ", wire: "gpt-5.6-sol", enabled: true},
+		{name: "empty wire model", provider: "deepseek", model: "[1m]", wire: "[1m]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, enabled := ResolveAgentUserModel(AgentUser{Provider: tc.provider, Model: tc.model})
+			if wire != tc.wire || enabled != tc.enabled {
+				t.Fatalf("ResolveAgentUserModel = %q, %v; want %q, %v", wire, enabled, tc.wire, tc.enabled)
+			}
+		})
+	}
+}

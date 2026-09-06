@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"reasonix/internal/boot"
 	"reasonix/internal/team"
 )
 
@@ -66,7 +67,7 @@ func teamImportCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1
 	}
-	roots, err := openTeamDataRoots(cwd)
+	roots, err := openTeamDataRoots(boot.ResolveTeamProjectRoot(cwd))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1

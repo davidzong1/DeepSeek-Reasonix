@@ -46,6 +46,26 @@ func TestPinnedContextNeverChangesBasePrompt(t *testing.T) {
 	}
 }
 
+func TestSetSystemPromptPreservingHistoryKeepsTranscript(t *testing.T) {
+	dir := t.TempDir()
+	initial := agent.NewSession("OLD PROMPT")
+	initial.Add(provider.Message{Role: provider.RoleUser, Content: "earlier turn"})
+	exec := agent.New(nil, nil, initial, agent.Options{}, event.Discard)
+	ctrl := New(Options{Runner: exec, Executor: exec, SystemPrompt: "OLD PROMPT", SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Sink: event.Discard})
+
+	ctrl.SetSystemPromptPreservingHistory("NEW PROMPT")
+	h := ctrl.History()
+	if got := controlSystemMessage(h); got != "NEW PROMPT" {
+		t.Fatalf("system prompt = %q, want NEW PROMPT", got)
+	}
+	if len(h) != 2 || h[1].Content != "earlier turn" {
+		t.Fatalf("history was not preserved: %#v", h)
+	}
+	if got := ctrl.SystemPrompt(); got != "NEW PROMPT" {
+		t.Fatalf("controller base prompt = %q, want NEW PROMPT", got)
+	}
+}
+
 func TestPinnedContextLoaderAppendsAtAdmittedTurns(t *testing.T) {
 	prov := &recordingProvider{streams: [][]provider.Chunk{
 		{{Type: provider.ChunkText, Text: "one"}, {Type: provider.ChunkDone}},

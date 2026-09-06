@@ -67,18 +67,36 @@ func ResolveProvider(provider, baseURL string) (kind, endpoint string, err error
 }
 
 // ResolveAgentUserProvider resolves the protocol for one complete pool entry.
-// The [1m] suffix is an Anthropic-route model alias used by Claude-compatible
-// gateways. Treating a custom DeepSeek URL ending in /v1 as OpenAI solely from
-// its path sends that alias to /chat/completions, where distributors reject it
-// as an unavailable model. The Anthropic adapter accepts either a root or /v1
-// URL and normalizes both to /v1/messages.
+// A DeepSeek [1m] entry uses the Anthropic-compatible route even when its
+// custom endpoint does not include "/anthropic". For other providers [1m] is
+// only a context-window alias and does not change the declared protocol.
 func ResolveAgentUserProvider(u AgentUser) (kind, endpoint string, err error) {
 	providerName := NormalizeProvider(strings.TrimSpace(u.Provider))
-	model := strings.ToLower(strings.TrimSpace(u.Model))
-	if providerName == ProviderDeepSeek && strings.TrimSpace(u.BaseURL) != "" && strings.HasSuffix(model, "[1m]") {
+	_, context1M := ResolveAgentUserModel(u)
+	if providerName == ProviderDeepSeek && context1M && strings.TrimSpace(u.BaseURL) != "" {
 		return "anthropic", strings.TrimSpace(u.BaseURL), nil
 	}
 	return ResolveProvider(providerName, strings.TrimSpace(u.BaseURL))
+}
+
+// ResolveAgentUserModel interprets the provider-independent [1m] model suffix. The
+// stored AgentUser keeps the user's spelling (including [1M]); this helper is
+// the single boundary that trims surrounding whitespace, matches the suffix
+// case-insensitively, and returns the model name suitable for the wire.
+func ResolveAgentUserModel(u AgentUser) (wireModel string, context1M bool) {
+	model := strings.TrimSpace(u.Model)
+	if len(model) < len("[1m]") {
+		return model, false
+	}
+	suffixAt := len(model) - len("[1m]")
+	if !strings.EqualFold(model[suffixAt:], "[1m]") {
+		return model, false
+	}
+	wireModel = strings.TrimSpace(model[:suffixAt])
+	if wireModel == "" {
+		return model, false
+	}
+	return wireModel, true
 }
 
 // routeOrDefault resolves a provider whose endpoint is its own official one

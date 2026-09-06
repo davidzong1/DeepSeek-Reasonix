@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,13 @@ const (
 // .reasonix/team or the user-global <state root>/team. A missing or
 // unreadable store returns nil: the team UI never depends on the board.
 func openTeamInbox(dir string) *teamInboxWire {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil
+	}
 	board, err := team.NewSQLiteStore(context.Background(), filepath.Join(dir, "board.db"))
 	if err != nil {
 		return nil

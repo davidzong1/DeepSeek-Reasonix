@@ -4,7 +4,8 @@ GIT_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
 	-X main.gitCommit=$(GIT_COMMIT) \
-	-X main.buildTimeUTC=$(BUILD_TIME_UTC)
+	-X main.buildTimeUTC=$(BUILD_TIME_UTC) \
+	-X reasonix/internal/boot.builtProjectRoot=$(CURDIR)
 GOEXE := $(shell go env GOEXE)
 # One pin for the Makefile and the CI lint job; see .github/workflows/ci.yml.
 GOLANGCI_VERSION := $(shell cat .golangci-version)

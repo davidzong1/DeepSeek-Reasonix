@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -338,6 +339,13 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	if m.memberBackendBase == nil || m.memberEvents == nil || users == nil {
 		return // seam not installed (tests, non-interactive hosts): no member backends
 	}
+	workspaceRoot := ""
+	if m.teamPick != nil {
+		workspaceRoot = m.teamPick.workspaceRoot
+	}
+	if strings.TrimSpace(workspaceRoot) == "" {
+		workspaceRoot = controllerWorkspaceRoot(m.ctrl)
+	}
 	bind := func(b team.MemberBinding) (control.SessionAPI, error) {
 		if m.teamBackends == nil {
 			return nil, team.ErrMemberNotFound
@@ -369,7 +377,8 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
 		tasks:  tasks,
 		events: m.memberEvents, base: m.memberBackendBase,
-		ambient: ambientCarrier,
+		workspaceRoot: workspaceRoot,
+		ambient:       ambientCarrier,
 		release: func(teamName, memberID string) {
 			if m.teamBackends != nil {
 				m.teamBackends.release(teamName, memberID)

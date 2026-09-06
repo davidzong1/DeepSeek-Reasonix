@@ -408,7 +408,9 @@ func applyPoolEditField(pool *poolState, field string) {
 // existing entry whose provider predates the canonical set skips the strict
 // whole-entry gate: the store applies the legacy-preserve exemption (the
 // provider is preserved until the user picks a legal option), and its refusal
-// still renders.
+// still renders. An edit bound by assembled members is refused while one is
+// mid-turn and retires their idle backends after the write, so the next bind
+// assembles the new provider/model (mirroring the member role/proxy gate).
 func (p *teamPicker) savePoolEdit() {
 	pool := &p.pool
 	if err := team.ValidateAgentUser(pool.draft); err != nil {
@@ -426,6 +428,17 @@ func (p *teamPicker) savePoolEdit() {
 		pool.errMsg = poolErrMsg(err)
 		return
 	}
+	// Editing the entry repoints what bound members dial, so refuse while one is
+	// mid-turn. Only a draft that changes a runtime field triggers the gate: an
+	// identity-only edit serves nothing a backend baked in at assembly.
+	runtimeChanged := !pool.adding && pool.focus < len(pool.users) &&
+		memberAgentUserFingerprint(pool.users[pool.focus]) != memberAgentUserFingerprint(pool.draft)
+	if runtimeChanged {
+		if busy := p.poolBusyReferrers(pool.draft.UserID); len(busy) > 0 {
+			pool.errMsg = "Finish or stop " + strings.Join(busy, ", ") + " before editing this agent user"
+			return
+		}
+	}
 	var err error
 	if pool.adding {
 		err = p.store.AddAgentUser(pool.draft)
@@ -435,6 +448,12 @@ func (p *teamPicker) savePoolEdit() {
 	if err != nil {
 		pool.errMsg = poolErrMsg(err)
 		return
+	}
+	// The write changed what bound members dial, so retire their now-idle
+	// backends: the next bind assembles the new identity (the [1m] window
+	// included) instead of keeping the pre-edit model until a later bind.
+	if runtimeChanged {
+		p.releasePoolReferrers(pool.draft.UserID)
 	}
 	pool.kind, pool.buf, pool.edit, pool.draft, pool.adding, pool.cur = poolInputNone, "", 0, team.AgentUser{}, false, 0
 	if err := p.reloadPool(); err != nil {
@@ -475,6 +494,69 @@ func (p *teamPicker) boundMembers(userID string) []string {
 		}
 	}
 	return out
+}
+
+// poolAgentUserBindings lists the bindings that resolve to a pool entry across
+// the registry as loaded, reusing the store's own override-else-default
+// resolution — an edit must also reach the members that inherit the team
+// default, which a slot-level check would miss.
+func (p *teamPicker) poolAgentUserBindings(userID string) []team.MemberBinding {
+	if p.store == nil {
+		return nil
+	}
+	var out []team.MemberBinding
+	for _, t := range p.doc.Teams {
+		bindings, err := p.store.Bindings(t.Name)
+		if err != nil {
+			continue
+		}
+		for _, b := range bindings {
+			if b.AgentUserRef == userID {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
+// poolBusyReferrers names the assembled referencing backends that are mid-turn
+// — running, waiting on a prompt, or executing background jobs. Closing one
+// under a save would kill a live turn (§4.5), so the pool editor refuses.
+func (p *teamPicker) poolBusyReferrers(userID string) []string {
+	if p.backends == nil {
+		return nil
+	}
+	var busy []string
+	for _, b := range p.poolAgentUserBindings(userID) {
+		backend, ok := p.backends.bound(b.Team, b.MemberID)
+		if !ok {
+			continue
+		}
+		if st := backend.RuntimeStatus(); st.Running || st.PendingPrompt || st.BackgroundJobs > 0 {
+			busy = append(busy, b.Team+"/"+b.MemberID)
+		}
+	}
+	return busy
+}
+
+// releasePoolReferrers retires the assembled backends of an edited entry that
+// are idle, so the next bind dials the new provider/model. A backend that
+// turned mid-turn since the save gate passed stays: closing it would cut that
+// turn short, and the fingerprint-aware bind rebuilds it once it idles.
+func (p *teamPicker) releasePoolReferrers(userID string) {
+	if p.backends == nil {
+		return
+	}
+	for _, b := range p.poolAgentUserBindings(userID) {
+		backend, ok := p.backends.bound(b.Team, b.MemberID)
+		if !ok {
+			continue
+		}
+		if st := backend.RuntimeStatus(); st.Running || st.PendingPrompt || st.BackgroundJobs > 0 {
+			continue
+		}
+		p.backends.release(b.Team, b.MemberID)
+	}
 }
 
 // movePoolFocus shifts the pool focus one step, clamped.

@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"reasonix/internal/boot"
 	"reasonix/internal/team"
 	"reasonix/internal/team/tui"
 )
@@ -121,27 +122,28 @@ const (
 // instead of placeholder data. store is the storage seam — every mutation goes
 // through team.TeamStore, so a legacy teams.json migrates on first write.
 type teamPicker struct {
-	model      *tui.Model
-	errMsg     string                 // unreadable registry; "" when healthy
-	refusal    string                 // transient operation refusal; the page stays up
-	store      *team.TeamStore        // storage seam; nil when the project root is unusable
-	sessions   *team.TeamSessionStore // session/context seam; nil when the project root is unusable
-	dataDir    string                 // team data dir backing store and board; "" when unknown
-	board      *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
-	backends   *teamBackends          // member Agent backends; nil when the seam is unavailable
-	hub        *teamHub               // member-prompt routing; nil when the store/backends are unavailable
-	sessionDir string                 // where member session files live; "" when unknown
-	doc        team.TeamDoc           // registry as last loaded, for lifecycle lookups
-	kind       teamInputKind          // transient write state; teamInputNone when idle
-	buf        string                 // team, member, or field value being typed
-	pool       poolState              // agent-user pool screen; active replaces the team list
-	binds      []string               // bind candidates (pool user ids), for teamInputBind
-	bind       int                    // candidate cursor for teamInputBind
-	leader     bool                   // leader mode; gates member and pool create/delete
-	memberEdit memberEditState        // member property editor; owns the detail screen
-	proxyEdit  teamProxyState         // team proxy settings editor; opens from the roster p
-	session    sessionState           // team session window; active replaces the roster
-	reset      leaderResetState       // k step-down confirmation; owns every key while active
+	model         *tui.Model
+	errMsg        string                 // unreadable registry; "" when healthy
+	refusal       string                 // transient operation refusal; the page stays up
+	store         *team.TeamStore        // storage seam; nil when the project root is unusable
+	sessions      *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	dataDir       string                 // team data dir backing store and board; "" when unknown
+	board         *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
+	backends      *teamBackends          // member Agent backends; nil when the seam is unavailable
+	hub           *teamHub               // member-prompt routing; nil when the store/backends are unavailable
+	sessionDir    string                 // where member session files live; "" when unknown
+	workspaceRoot string                 // project root used for skills and project-scoped context
+	doc           team.TeamDoc           // registry as last loaded, for lifecycle lookups
+	kind          teamInputKind          // transient write state; teamInputNone when idle
+	buf           string                 // team, member, or field value being typed
+	pool          poolState              // agent-user pool screen; active replaces the team list
+	binds         []string               // bind candidates (pool user ids), for teamInputBind
+	bind          int                    // candidate cursor for teamInputBind
+	leader        bool                   // leader mode; gates member and pool create/delete
+	memberEdit    memberEditState        // member property editor; owns the detail screen
+	proxyEdit     teamProxyState         // team proxy settings editor; opens from the roster p
+	session       sessionState           // team session window; active replaces the roster
+	reset         leaderResetState       // k step-down confirmation; owns every key while active
 }
 
 // onTeamButtonClick opens the team overlay on the focused team's leader
@@ -152,7 +154,12 @@ type teamPicker struct {
 func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	cwd, err := os.Getwd()
 	if err == nil {
-		roots, err := openTeamDataRoots(cwd)
+		workspaceRoot := cwd
+		if root := controllerWorkspaceRoot(m.ctrl); root != "" {
+			workspaceRoot = root
+		}
+		workspaceRoot = boot.ResolveTeamProjectRoot(workspaceRoot)
+		roots, err := openTeamDataRoots(workspaceRoot)
 		if err == nil {
 			if roots.note != "" {
 				m.notice("team: " + roots.note)
@@ -160,7 +167,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			// The board is the task service's dependency, and the registry — with
 			// its task service — is assembled inside bindTeamBackends; opening it
 			// after that froze the service on a nil board (D1).
-			p := &teamPicker{model: tui.New(nil), store: roots.store, sessions: roots.sessions, dataDir: roots.dataDir}
+			p := &teamPicker{model: tui.New(nil), store: roots.store, sessions: roots.sessions, dataDir: roots.dataDir, workspaceRoot: workspaceRoot}
 			if p.board = m.teamBackends.inbox(); p.board == nil {
 				p.board = openTeamInbox(roots.dataDir)
 			}

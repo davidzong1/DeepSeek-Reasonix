@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"strings"
 	"time"
 
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 
 	tea "charm.land/bubbletea/v2"
@@ -36,10 +38,22 @@ func (m *chatTUI) startControllerTurnWithQueue(displayed, restore, queued string
 		m.notice("the remote side is taking this session back; new input is disabled")
 		return nil
 	}
+	// A team overlay can be opened in a degraded state (for example when a
+	// member backend failed to assemble or a test/host intentionally has no
+	// controller). Treat submission as a recoverable refusal instead of calling
+	// Running/SendWithRaw on a nil controller and crashing the process.
+	if m.ctrl == nil {
+		m.notice("the active session is unavailable; reopen the team member or start a new session")
+		if m.input.Value() == "" {
+			m.input.SetValue(restore)
+			m.growInputToFit()
+		}
+		return nil
+	}
 	// The composer can read idle while the controller already runs a
 	// dispatched queued follow-up (TurnStarted not yet ingested): queue rather
 	// than race the admission guard's silent drop (#9575).
-	if m.ctrl != nil && m.ctrl.Running() {
+	if controllerRunning(m.ctrl) {
 		receipt, err := m.enqueueFollowup(displayed, queued)
 		if err != nil {
 			m.notice("queue: " + err.Error())
@@ -79,6 +93,35 @@ func (m *chatTUI) startControllerTurnWithQueue(displayed, restore, queued string
 	m.noteWatchdogRunning()
 	start()
 	return m.startRunningTicks()
+}
+
+// controllerRunning defensively probes a backend supplied through the
+// SessionAPI interface. A malformed host/test implementation may carry a
+// typed-nil embedded interface; invoking Running on it would panic in the
+// input loop. Treat that state as idle/unavailable and let the normal submit
+// path surface a recoverable refusal instead of terminating the TUI process.
+func controllerRunning(ctrl control.SessionAPI) (running bool) {
+	if ctrl == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			running = false
+		}
+	}()
+	return ctrl.Running()
+}
+
+func controllerWorkspaceRoot(ctrl control.SessionAPI) (root string) {
+	if ctrl == nil {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			root = ""
+		}
+	}()
+	return strings.TrimSpace(ctrl.WorkspaceRoot())
 }
 
 // confirmBubbleSent marks the already-echoed user bubble as really sent once a

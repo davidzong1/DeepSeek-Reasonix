@@ -26,6 +26,18 @@ func (c *runningQueueController) TryEnqueueFollowup(req control.InboxRequest) (s
 	return sessioninbox.InboxReceipt{ItemID: "queued-item"}, c.err
 }
 
+func TestControllerWorkspaceRootRejectsTypedNil(t *testing.T) {
+	var broken *runningQueueController
+	var ctrl control.SessionAPI = broken
+	if got := controllerWorkspaceRoot(ctrl); got != "" {
+		t.Fatalf("typed-nil workspace root = %q, want empty", got)
+	}
+	valid := control.New(control.Options{WorkspaceRoot: " /workspace "})
+	if got := controllerWorkspaceRoot(valid); got != "/workspace" {
+		t.Fatalf("workspace root = %q, want trimmed root", got)
+	}
+}
+
 // TestControllerDispatchedTurnStartedEntersRunning pins the #9575 fix: when
 // the controller auto-dispatches a queued follow-up, the TurnStarted event
 // flips the composer into running state so an Enter queues instead of racing

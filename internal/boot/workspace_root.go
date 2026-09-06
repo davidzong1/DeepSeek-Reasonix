@@ -6,11 +6,74 @@ import (
 	"strings"
 )
 
+// builtProjectRoot is populated by repository builds. It lets the installed
+// CLI locate repository-owned team resources when launched elsewhere. Empty
+// is valid for ordinary go test/go build calls.
+var builtProjectRoot string
+
 // ResolveWorkspaceRoot exposes Build's own project-root resolution. A host that
 // needs the root *before* Build — a team member's role playbook is read at
 // assembly — must call this instead of reading Options.WorkspaceRoot, which is
 // empty whenever --dir was not given and would silently disable the lookup.
 func ResolveWorkspaceRoot(explicit string) string { return resolveWorkspaceRoot(explicit) }
+
+// ResolveTeamProjectRoot locates the repository that owns team/skills. Team
+// state is user-global, but role playbooks and other repository-owned team
+// resources must not follow the process working directory. A development
+// binary under <repo>/bin or the build-time repository root keeps an installed
+// CLI attached to its source; an explicit root is only the fallback used by
+// ordinary go builds and tests that do not carry repository metadata.
+func ResolveTeamProjectRoot(explicit string) string {
+	if exe, err := osExecutable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		if root := nearestTeamProject(filepath.Dir(exe)); root != "" {
+			return root
+		}
+	}
+	if root := teamProjectCandidate(builtProjectRoot); root != "" {
+		return root
+	}
+	if root := teamProjectCandidate(explicit); root != "" {
+		return root
+	}
+	return resolveWorkspaceRoot(explicit)
+}
+
+var osExecutable = os.Executable
+
+func teamProjectCandidate(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	if fi, err := os.Stat(filepath.Join(abs, "team", "skills")); err == nil && fi.IsDir() {
+		return filepath.Clean(abs)
+	}
+	return ""
+}
+
+func nearestTeamProject(start string) string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return ""
+	}
+	for {
+		if root := teamProjectCandidate(dir); root != "" {
+			return root
+		}
+		next := filepath.Dir(dir)
+		if next == dir {
+			return ""
+		}
+		dir = next
+	}
+}
 
 func resolveWorkspaceRoot(explicit string) string {
 	if explicit != "" {

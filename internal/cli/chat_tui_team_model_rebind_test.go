@@ -83,7 +83,7 @@ func TestMemberProviderResolverRoutesLongContextDeepSeekViaAnthropic(t *testing.
 }
 
 func TestMemberProviderResolverLongContextDeepSeekWireContract(t *testing.T) {
-	const model = "deepseek/deepseek-v4-flash[1m]"
+	const model = "  deepseek/deepseek-v4-flash[1M]  "
 	var gotPath, gotQuery, gotAuth, gotAPIKey, gotBeta, gotModel string
 	srv := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		gotPath = req.URL.Path
