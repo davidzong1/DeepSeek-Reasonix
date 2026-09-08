@@ -106,7 +106,7 @@ func TestTeamBindEmptyPoolShowsHint(t *testing.T) {
 	}
 }
 
-func TestTeamDefaultAgentPickerAndSessionGate(t *testing.T) {
+func TestTeamSessionGateAndRosterPoolConfig(t *testing.T) {
 	teamFixture := fixtureTeam()
 	teamFixture.Template[0].Leader = true
 	writeTeamPoolFixture(t, []team.Team{teamFixture}, []team.AgentUser{
@@ -114,25 +114,27 @@ func TestTeamDefaultAgentPickerAndSessionGate(t *testing.T) {
 	})
 	m := openTeamOverlay(t)
 	if m.teamPick.session.active {
-		t.Fatal("session must not start without a team default agent user")
+		t.Fatal("session must not start without a team agent pool")
 	}
-	if !strings.Contains(ansi.Strip(m.renderTeamPicker()), "default agent user") {
-		t.Fatalf("missing default-agent refusal: %s", ansi.Strip(m.renderTeamPicker()))
+	if !strings.Contains(ansi.Strip(m.renderTeamPicker()), "press u") {
+		t.Fatalf("empty pool should gate with the press-u refusal: %s", ansi.Strip(m.renderTeamPicker()))
 	}
-	// Descend into the roster and choose the team default with g.
+	// Descend into the roster and configure the team pool with the roster u key:
+	// toggle the single candidate on, save, and the session gate opens.
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = teamKey(m, tea.KeyPressMsg{Code: 'g'})
-	if !strings.Contains(ansi.Strip(m.renderTeamPicker()), "Team default agent user") {
-		t.Fatalf("g should open the default picker: %s", ansi.Strip(m.renderTeamPicker()))
+	m = teamKey(m, tea.KeyPressMsg{Code: 'u'})
+	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Team agent pool: alpha") {
+		t.Fatalf("u should open the team-pool editor, got:\n%s", got)
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if got := readStoredTeamDoc(t).Teams[0].DefaultAgentUserRef; got != "au-1" {
-		t.Fatalf("default agent ref = %q, want au-1", got)
+	m = teamKey(m, tea.KeyPressMsg{Code: ' '}) // select au-1
+	m = teamKey(m, tea.KeyPressMsg{Code: 's'}) // save the pool
+	doc := readStoredTeamDoc(t)
+	if got := doc.Teams[0].AgentUserPool; len(got) != 1 || got[0] != "au-1" {
+		t.Fatalf("pool after save = %v, want [au-1]", got)
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
 	if !m.teamPick.session.active {
-		t.Fatalf("session should start after configuring the team default (mode=%q refusal=%q err=%q)", m.teamPick.model.Mode(), m.teamPick.refusal, m.teamPick.errMsg)
+		t.Fatalf("session should start after configuring the pool (mode=%q refusal=%q err=%q)", m.teamPick.model.Mode(), m.teamPick.refusal, m.teamPick.errMsg)
 	}
 }
 

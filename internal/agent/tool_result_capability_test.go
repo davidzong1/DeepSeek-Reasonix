@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -262,7 +263,7 @@ func TestSessionToolResultBindingDoesNotChangeUseCapabilitySchema(t *testing.T) 
 	}
 	inspectArgs := json.RawMessage(`{"action":"inspect","capability_id":"session:tool_result"}`)
 	inspect, err := proxy.Execute(context.Background(), inspectArgs)
-	if err != nil || !strings.Contains(inspect, `"limit_max": 24576`) {
+	if err != nil || !strings.Contains(inspect, fmt.Sprintf(`"limit_max": %d`, toolResultPageMaxBytes)) {
 		t.Fatalf("inspect result: err=%v out=%s", err, inspect)
 	}
 }
@@ -476,6 +477,26 @@ func TestSessionToolResultSHA256MatchesCompleteBody(t *testing.T) {
 	digest := sha256.Sum256([]byte(body))
 	if !bytes.Equal(mustDecodeHex(t, header.SHA256), digest[:]) {
 		t.Fatalf("sha256=%q does not match complete body", header.SHA256)
+	}
+}
+
+func TestSessionToolResultSingleReadDeliversMultiMegabytePage(t *testing.T) {
+	full := strings.Repeat("x界", 2*1024*1024)
+	if len(full) <= 24*1024 || len(full) > toolResultPageMaxBytes {
+		t.Fatalf("fixture bytes=%d, want one page above the former 24KiB cap", len(full))
+	}
+	session := &Session{Messages: []provider.Message{{Role: provider.RoleTool, Name: "read", ToolCallID: "big", Content: full}}}
+	_, proxy := newToolResultCapabilityAgent(t, session)
+	if target := proxy.currentToolResultTarget(); target == nil ||
+		!strings.Contains(string(target.Schema()), fmt.Sprintf(`"maximum":%d`, toolResultPageMaxBytes)) {
+		t.Fatal("session tool result schema does not advertise the 10MiB limit")
+	}
+	header, page, err := executeToolResultPage(t, proxy, "big", "", 0, toolResultPageMaxBytes)
+	if err != nil || !header.Complete || header.TotalBytes != len(full) || page != full {
+		t.Fatalf("single multi-megabyte read: complete=%v bytes=%d page=%d err=%v", header.Complete, header.TotalBytes, len(page), err)
+	}
+	if _, _, err := executeToolResultPage(t, proxy, "big", "", 0, toolResultPageMaxBytes+1); err == nil || !strings.Contains(err.Error(), "limit must be") {
+		t.Fatalf("over-cap limit error = %v", err)
 	}
 }
 

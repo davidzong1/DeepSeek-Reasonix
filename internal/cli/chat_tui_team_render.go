@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,9 @@ func (m chatTUI) renderTeamPicker() string {
 	}
 	if p.pool.active {
 		return p.renderTeamPool(m.width, optionListHeight(m.height))
+	}
+	if p.teamPool.active {
+		return p.renderTeamPoolSel(m.width)
 	}
 	if p.session.active {
 		if p.sessionPanelHidden() {
@@ -58,7 +62,7 @@ func (m chatTUI) renderTeamPicker() string {
 	case tui.ModeContext:
 		p.renderMemberEdit(view, &b, w, optionListHeight(m.height))
 	case tui.ModeQuit:
-		b.WriteString(dim("Leave team view? Esc cancels · Enter or q confirms"))
+		b.WriteString(dim("Leave team view? Esc cancels · Enter/Ctrl+C/q confirms"))
 	default:
 		if p.proxyEdit.kind != teamProxyNone {
 			b.WriteString(p.renderTeamProxy(w))
@@ -122,6 +126,44 @@ func (p *teamPicker) renderTeamPool(width, listH int) string {
 		b.WriteString(rowLine(i == p.pool.focus, i+1, "", label, false) + "\n")
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter detail · a add user · e edit user · d delete user · Esc back"))
+	return choicePanelStyle.Width(w).Render(b.String())
+}
+
+// renderTeamPoolSel renders the roster's team-pool editor: one candidate row
+// per registry entry, each chosen entry marked with its pool position, a live
+// order line, and the hint. The saved order is the toggle order, so the first
+// row of the order line is the member default.
+func (p *teamPicker) renderTeamPoolSel(w int) string {
+	var b strings.Builder
+	b.WriteString(accent("Team agent pool: "+p.model.Name()) + "\n")
+	if p.teamPool.errMsg != "" {
+		b.WriteString(p.teamPool.errMsg + "\n")
+		b.WriteString(dim("Esc cancel"))
+		return choicePanelStyle.Width(w).Render(b.String())
+	}
+	users := p.teamPool.users
+	if len(users) == 0 {
+		b.WriteString(dim("No agent users yet — u on the Teams list adds them") + "\n")
+		b.WriteString(dim("Esc back"))
+		return choicePanelStyle.Width(w).Render(b.String())
+	}
+	pos := make(map[string]int, len(p.teamPool.sel))
+	for i, id := range p.teamPool.sel {
+		pos[id] = i + 1
+	}
+	for i, u := range users {
+		label := u.UserID + " " + dim("("+providerModel(u)+")")
+		if n, on := pos[u.UserID]; on {
+			label = accent(u.UserID) + " " + accent("#"+strconv.Itoa(n)) + " " + dim("("+providerModel(u)+")")
+		}
+		b.WriteString(rowLine(i == p.teamPool.focus, i+1, "", label, false) + "\n")
+	}
+	if len(p.teamPool.sel) == 0 {
+		b.WriteString(dim("Order: (none — sessions gate until a pool is set)") + "\n")
+	} else {
+		b.WriteString(dim("Order: ") + accent(strings.Join(p.teamPool.sel, " → ")) + "\n")
+	}
+	b.WriteString(dim("↑/↓ move · Space toggle in click order · Enter/s save · Esc cancel"))
 	return choicePanelStyle.Width(w).Render(b.String())
 }
 
@@ -310,24 +352,6 @@ func (p *teamPicker) renderInputState(view *tui.Model, b *strings.Builder) (stri
 			}
 		}
 		b.WriteString(dim("↑/↓ candidate · Enter bind · Esc unbind/cancel"))
-	case teamInputDefaultAgent:
-		b.WriteString(dim("  Team default agent user:\n"))
-		if len(p.binds) == 0 {
-			b.WriteString(dim("    (no agent users yet — u opens the pool)\n"))
-		} else {
-			for i, id := range p.binds {
-				mark := "    "
-				if i == p.bind {
-					mark = "  > "
-				}
-				label := id
-				if label == "" {
-					label = "(none - sessions disabled)"
-				}
-				b.WriteString(mark + label + "\n")
-			}
-		}
-		b.WriteString(dim("↑/↓ candidate · Enter set default · Esc clear/cancel"))
 	default:
 		return "", false
 	}
@@ -348,13 +372,27 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 		label := t.Name + " " + dim("("+rosterSize(len(t.Members))+")")
 		b.WriteString(rowLine(i == view.TeamIndex(), i+1, "", label, false) + "\n")
 	}
-	b.WriteString(dim("↑/↓ navigate · Enter/Space open · a add team · d delete team · u agent users · Esc close · q quit"))
+	b.WriteString(dim("↑/↓ navigate · Enter/Space open · a add team · d delete team · u agent users · Esc/Ctrl+C close · q quit"))
 }
 
 // rosterHelp is the roster's single help block: one line while the panel is
-// wide enough, word-wrapped at the edge when it is not.
-const rosterHelp = "↑/↓ navigate · a add member · d delete member · g default agent · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
+// wide enough, word-wrapped at the edge when it is not. u edits the team's
+// ordered agent pool; g rewinds the focused member to its pool default (a
+// custom member back to its own pool head), clearing its failover state.
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · u agent pool · g reset pool · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
 	teamExitHint + " · q quit"
+
+// teamEffectivePool returns the focused team's ordered effective pool entries
+// as loaded — the roster header seeds from it.
+func (p *teamPicker) teamEffectivePool() []string {
+	name := p.model.Name()
+	for _, t := range p.doc.Teams {
+		if t.Name == name {
+			return t.EffectivePool()
+		}
+	}
+	return nil
+}
 
 // renderRoster renders the compact member list: one row per slot with the
 // member id and its role, leader marker, and lifecycle status. The agent
@@ -366,11 +404,14 @@ const rosterHelp = "↑/↓ navigate · a add member · d delete member · g def
 // session (leader only), e opens the member editor.
 func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 	members := view.Members()
-	defaultRef := p.defaultAgentUser()
-	if defaultRef == "" {
-		b.WriteString(dim("  Default agent: not configured") + "\n")
-	} else {
-		b.WriteString(dim("  Default agent: ") + accent(defaultRef) + "\n")
+	pool := p.teamEffectivePool()
+	switch len(pool) {
+	case 0:
+		b.WriteString(dim("  Team agent pool: not configured — press u to set it") + "\n")
+	case 1:
+		b.WriteString(dim("  Team agent pool: ") + accent(pool[0]) + "\n")
+	default:
+		b.WriteString(dim("  Team agent pool: ") + accent(pool[0]) + dim(fmt.Sprintf(" · %d more — u edits", len(pool)-1)) + "\n")
 	}
 	if len(members) == 0 {
 		b.WriteString(dim("No team members yet") + "\n")
@@ -379,6 +420,9 @@ func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 	}
 	for i, member := range members {
 		label := member.ID + " " + dim("("+compactMemberSummary(member, p.statusOf(member.ID))+")")
+		if slot, ok := p.slotOf(member.ID); ok && slot.IsCustomPool() {
+			label += dim(" · custom pool")
+		}
 		b.WriteString(rowLine(i == view.FocusIndex(), i+1, "", label, member.State == team.MemberStateWorking) + "\n")
 	}
 	b.WriteString(dim(ansi.Wrap(rosterHelp, w-1, "")))
@@ -397,119 +441,6 @@ func compactMemberSummary(member team.Member, status string) string {
 		parts = append(parts, "leader")
 	}
 	return strings.Join(append(parts, status), " · ")
-}
-
-// renderMemberEdit renders the member property editor (§5): the member id
-// header with its runtime state, the Role/Leader rows, and the
-// editable field list with its cursor on the left and a preview column of the
-// same draft on the right. Only s persists; esc returns with zero writes. The
-// agent fields stay backend-only — the editor's rows are the persisted
-// template properties, never launch configuration.
-func (p *teamPicker) renderMemberEdit(view *tui.Model, b *strings.Builder, w, listH int) {
-	member, ok := view.Focused()
-	if !ok {
-		return
-	}
-	me := &p.memberEdit
-	b.WriteString("  " + accent(member.ID) + "\n")
-	b.WriteString(dim("  State: ") + string(member.State) + "\n")
-	// Leader remains a separate assignment/step-down flow; Role is editable below.
-	role := "-"
-	if me.draft.Role != "" {
-		role = string(me.draft.Role)
-	}
-	leader := "off"
-	if me.draft.IsLeader() {
-		leader = "on"
-	}
-	b.WriteString(dim("  Role: ") + role + dim("   Leader: ") + leader + "\n")
-	if me.errMsg != "" {
-		b.WriteString(me.errMsg + "\n")
-	}
-	col := max((w-8)/2, 12)
-	preview := make([]string, len(memberEditFields))
-	for i, f := range memberEditFields {
-		preview[i] = memberFieldLabel(f) + ": " + memberFieldValue(me.draft, i)
-	}
-	for i, f := range memberEditFields {
-		val := memberFieldValue(me.draft, i)
-		if me.kind == memberEditFieldEdit && i == me.edit {
-			if f == "role" {
-				val = fieldCursorView(me.buf, me.cur)
-			} else {
-				val = me.list.currentLabel() + " ▏"
-			}
-		}
-		mark := "  "
-		if i == me.edit {
-			mark = "> "
-		}
-		left := mark + memberFieldLabel(f) + ": " + truncateCells(val, col-6)
-		b.WriteString(padColumn(left, col) + dim("│ "+truncateCells(preview[i], col)) + "\n")
-	}
-	if me.kind == memberEditFieldEdit {
-		if memberEditFields[me.edit] == "role" {
-			b.WriteString(dim("Type role · Enter confirm · Esc cancel"))
-		} else {
-			me.list.resize(listH - 3)
-			b.WriteString(me.list.view(w, listH))
-		}
-	} else {
-		b.WriteString(dim("↑/↓ field · Enter/Space edit · s save · 🌟 t Enter_session · a/d member") + "\n")
-		b.WriteString(dim("b bind · l leader-mode · Esc back · " + teamExitHint + " · q quit"))
-	}
-}
-
-// memberFieldLabel names a member property for the editor rows.
-func memberFieldLabel(f string) string {
-	switch f {
-	case "role":
-		return "Role"
-	case "leader":
-		return "Leader"
-	case "status":
-		return "Status"
-	case "proxy":
-		return "Proxy"
-	default:
-		return "Agent"
-	}
-}
-
-// memberFieldValue reads a member property from the editor draft by field id.
-func memberFieldValue(slot team.MemberSlot, i int) string {
-	switch memberEditFields[i] {
-	case "role":
-		if slot.Role == "" {
-			return "-"
-		}
-		return string(slot.Role)
-	case "leader":
-		if slot.IsLeader() {
-			return "on"
-		}
-		return "off"
-	case "status":
-		return string(slot.Status)
-	case "proxy":
-		return memberProxyLabel(slot.ProxyEnabled)
-	default:
-		if slot.AgentUserRef == "" {
-			return "team default"
-		}
-		return slot.AgentUserRef
-	}
-}
-
-// memberProxyLabel names a member's proxy override state.
-func memberProxyLabel(e *bool) string {
-	if e == nil {
-		return "inherit"
-	}
-	if *e {
-		return "on"
-	}
-	return "off"
 }
 
 // renderTeamProxy renders the team proxy settings editor: the enabled switch

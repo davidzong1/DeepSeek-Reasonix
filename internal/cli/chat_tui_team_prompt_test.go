@@ -29,9 +29,12 @@ func TestMemberPromptInboxRecordsAndClears(t *testing.T) {
 		t.Fatal("the session must arm a prompt inbox")
 	}
 
+	if _, err := m.teamPick.setMemberMode("alice", memberModeManual); err != nil {
+		t.Fatal(err)
+	}
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{
 		Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash"}}})
-	if got := m.teamPick.session.prompts["alice"]; got != (memberPrompt{kind: promptApproval, id: "a1"}) {
+	if got := m.teamPick.session.prompts["alice"]; got != (memberPrompt{kind: promptApproval, id: "a1", tool: "bash"}) {
 		t.Fatalf("recorded prompt = %+v, want approval a1", got)
 	}
 
@@ -96,6 +99,9 @@ func promptTestTUI(t *testing.T, approves *int) chatTUI {
 func TestMemberPromptKeyAnswersBackgroundApproval(t *testing.T) {
 	approves := 0
 	m := promptTestTUI(t, &approves)
+	if _, err := m.teamPick.setMemberMode("alice", memberModeManual); err != nil {
+		t.Fatal(err)
+	}
 
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{
 		Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "run tests"}}})

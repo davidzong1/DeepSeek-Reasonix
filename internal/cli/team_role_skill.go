@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -50,27 +51,58 @@ const teamRoleSkillBudget = 16 << 10
 // skillFileNames are the accepted skill spellings, canonical first.
 var skillFileNames = []string{"SKILL.md", "skill.md"}
 
+// teamRoleFrontmatterKey is the SKILL.md frontmatter key a skill uses to
+// declare the team role it belongs to. Keys are lowercased by the frontmatter
+// parser, so the const is already the canonical form.
+const teamRoleFrontmatterKey = "team_role"
+
+// teamRoleAllows reports whether one skill file's declared team_role admits
+// the loading role. Absent or blank declares both; a declared role admits only
+// itself (a leader skill never loads into a member's section and vice versa);
+// any other value is invalid — the file is dropped for both roles and the
+// warning records the skill path and the offending value.
+func teamRoleAllows(meta map[string]string, path string, role teamRole, warn io.Writer) bool {
+	decl := strings.TrimSpace(meta[teamRoleFrontmatterKey])
+	if decl == "" {
+		return true
+	}
+	if r, ok := parseTeamRole(decl); ok {
+		return r == role
+	}
+	fmt.Fprintf(warn, "team role skill %s: invalid team_role %q (want leader or member)\n", path, decl)
+	return false
+}
+
 // teamRoleSkillPrompt loads the role playbook at backend assembly time: the
 // base/<role> skill (historical by-name behaviour), then every skill under
 // team/skills/shared (role-neutral) and team/skills/special/<role>. Missing
-// playbooks are a no-op for workspaces that do not install them. roleSkillPrompt
-// carries the allowlist, confinement and budget guarantees.
-func teamRoleSkillPrompt(root string, leader bool) string {
-	return roleSkillPrompt(root, roleForLeader(leader))
+// playbooks are a no-op for workspaces that do not install them. warn, when
+// given, receives one line per skill dropped for an invalid team_role
+// declaration. roleSkillPrompt carries the allowlist, confinement and budget
+// guarantees.
+func teamRoleSkillPrompt(root string, leader bool, warn ...io.Writer) string {
+	return roleSkillPrompt(root, roleForLeader(leader), warn...)
 }
 
 // roleSkillPrompt assembles the <team-role-skill> section for one allowlisted
 // role. base is read by name through the skill store, so its whole package
 // (frontmatter + body) honours project skill semantics; shared and special are
 // read from disk so a same-named special skill is not shadowed by base and one
-// role's special never leaks into the other's prompt. The result is byte
-// reproducible for a given tree and stays under teamRoleSkillBudget.
-func roleSkillPrompt(root string, role teamRole) string {
+// role's special never leaks into the other's prompt. Every disk-scanned skill
+// is admitted by its own team_role declaration (teamRoleAllows); base is
+// name-scoped to the loading role already, so its declaration is never read.
+// The result is byte reproducible for a given tree and stays under
+// teamRoleSkillBudget. An absent warn writer keeps the historical silence.
+func roleSkillPrompt(root string, role teamRole, warn ...io.Writer) string {
 	if strings.TrimSpace(root) == "" {
 		return ""
 	}
 	if _, ok := parseTeamRole(string(role)); !ok {
 		return ""
+	}
+	w := io.Discard
+	if len(warn) > 0 && warn[0] != nil {
+		w = warn[0]
 	}
 	skillsDir := filepath.Join(root, "team", "skills")
 	sec := roleSkillSection{max: teamRoleSkillBudget}
@@ -79,8 +111,8 @@ func roleSkillPrompt(root string, role teamRole) string {
 			sec.add(string(role), body)
 		}
 	}
-	appendRoleSkillDir(&sec, skillsDir, filepath.Join(skillsDir, "shared"))
-	appendRoleSkillDir(&sec, skillsDir, filepath.Join(skillsDir, "special", string(role)))
+	appendRoleSkillDir(&sec, skillsDir, filepath.Join(skillsDir, "shared"), role, w)
+	appendRoleSkillDir(&sec, skillsDir, filepath.Join(skillsDir, "special", string(role)), role, w)
 	if sec.b.Len() == 0 {
 		return ""
 	}
@@ -109,15 +141,14 @@ func (s *roleSkillSection) add(heading, body string) {
 // skillsDir. When dir is itself a skill directory (special/<role>/SKILL.md)
 // that flat skill is appended; otherwise every real subdirectory skill under
 // dir is appended (shared/<name>/SKILL.md). os.ReadDir returns entries sorted
-// by name, so the appended order is stable.
-func appendRoleSkillDir(sec *roleSkillSection, skillsDir, dir string) {
+// by name, so the appended order is stable. Every file is admitted by its
+// team_role declaration against the loading role.
+func appendRoleSkillDir(sec *roleSkillSection, skillsDir, dir string, role teamRole, warn io.Writer) {
 	if !confinedSkillDir(skillsDir, dir) {
 		return
 	}
 	if skillPath := resolveSkillFile(dir); skillPath != "" {
-		if body := readSkillBody(skillPath); body != "" {
-			sec.add(filepath.Base(dir), body)
-		}
+		appendRoleSkillFile(sec, skillPath, filepath.Base(dir), role, warn)
 		return
 	}
 	entries, err := os.ReadDir(dir)
@@ -129,11 +160,26 @@ func appendRoleSkillDir(sec *roleSkillSection, skillsDir, dir string) {
 			continue // a symlinked entry is not reported as a directory
 		}
 		if skillPath := resolveSkillFile(filepath.Join(dir, e.Name())); skillPath != "" {
-			if body := readSkillBody(skillPath); body != "" {
-				sec.add(e.Name(), body)
-			}
+			appendRoleSkillFile(sec, skillPath, e.Name(), role, warn)
 		}
 	}
+}
+
+// appendRoleSkillFile appends one skill file when its team_role declaration
+// admits the loading role; an illegal declaration is dropped with a warning,
+// and a declaration for the other role is dropped silently — declarations
+// close skills the way a directory does.
+func appendRoleSkillFile(sec *roleSkillSection, path, heading string, role teamRole, warn io.Writer) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	meta, body := frontmatter.Split(string(b))
+	body = strings.TrimSpace(body)
+	if body == "" || !teamRoleAllows(meta, path, role, warn) {
+		return
+	}
+	sec.add(heading, body)
 }
 
 // confinedSkillDir verifies every component of dir below skillsDir is a real
@@ -177,17 +223,4 @@ func resolveSkillFile(dir string) string {
 		return p
 	}
 	return ""
-}
-
-// readSkillBody returns the frontmatter-stripped, trimmed body of a skill file,
-// empty on any read or commonsense parse failure. The leading YAML block is the
-// skill's metadata, not its playbook: only the body is injected into the role
-// prompt.
-func readSkillBody(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	_, body := frontmatter.Split(string(b))
-	return strings.TrimSpace(body)
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -29,6 +30,13 @@ type memberEventMsg memberEvent
 // right now — History() only carries committed messages, so without the buffer
 // an in-flight turn looked like an idle member. The pump re-arms either way.
 func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
+	// A background auto-mode member's ordinary approval never surfaces: the mode
+	// answers it immediately (audited). The bound member's own approvals stay on
+	// the modal — the window's operator decides those, whatever the mode.
+	if msg.member != m.boundMember() && msg.ev.Kind == event.ApprovalRequest &&
+		m.teamPick != nil && m.teamPick.autoGrantMemberApproval(msg.member, msg.ev) {
+		return waitForMemberEvent(m.memberEvents)
+	}
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
 		m.ingestEvent(msg.ev)
@@ -40,6 +48,13 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 			m.recordMemberPrompt(msg.member, msg.ev)
 			m.markMemberUnread(msg.member)
 		}
+	}
+	// A quota-failed turn switches the member to the next usable pool entry
+	// (P2), whether or not its transcript is currently visible. The failover
+	// path rebinds the visible controller only for the bound member; background
+	// members are rebuilt in place and keep their own session state.
+	if msg.ev.Kind == event.TurnDone && msg.ev.Err != nil {
+		m.failoverQuotaTurn(msg.member, msg.ev.Err)
 	}
 	return waitForMemberEvent(m.memberEvents)
 }
@@ -111,7 +126,7 @@ func (m *chatTUI) recordMemberPrompt(member string, ev event.Event) {
 	case event.TurnDone:
 		delete(m.teamPick.session.prompts, member)
 	case event.ApprovalRequest:
-		m.teamPick.session.prompts[member] = memberPrompt{kind: promptApproval, id: ev.Approval.ID}
+		m.teamPick.session.prompts[member] = memberPrompt{kind: promptApproval, id: ev.Approval.ID, tool: ev.Approval.Tool, subject: ev.Approval.Subject}
 	case event.AskRequest:
 		m.teamPick.session.prompts[member] = memberPrompt{kind: promptAsk, id: ev.Ask.ID}
 	}
@@ -184,6 +199,10 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	if err != nil {
 		return m.refuseTeamSession(pickerErrMsg(err))
 	}
+	// A member a quota switch moved (P2) resumes on that pool entry, not the
+	// nominal head: the durable failover ActiveRef folds onto the binding so a
+	// reopen or restart keeps serving the entry the runtime last chose.
+	binding = p.failoverBinding(binding)
 	backend, err := m.teamBackends.bind(binding)
 	if err != nil {
 		return m.refuseTeamSession("member unavailable: " + err.Error())
@@ -391,6 +410,13 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	// provider, model, base url or API key) changed, so a rebind never keeps
 	// serving the previous provider/credential.
 	m.teamBackends.setFingerprint(newMemberBackendFingerprint(memberDeps))
+	// The registry is the one place a live runtime is born for this host: a
+	// restart reattaches the board's interrupted rows here, exactly once.
+	if note, err := tasks.reattachAllTeams(context.Background()); err != nil {
+		m.notice("team task recovery: " + err.Error())
+	} else if note != "" {
+		m.notice("team task recovery: " + note)
+	}
 }
 
 // teamSessionBound reports whether the window is showing a team member's Agent.
@@ -495,6 +521,17 @@ func (m *chatTUI) answerMemberPrompt(allow bool) bool {
 	if !allow {
 		verb = "denied"
 	}
+	if p.store != nil {
+		if err := p.store.AppendAuthz(p.session.teamName, team.AuthzEntry{
+			TS: time.Now().Format(time.RFC3339), Member: member, Source: "leader", Allow: allow,
+			ID: prompt.id, Tool: prompt.tool, Subject: prompt.subject,
+		}); err != nil {
+			// The decision already reached the member's backend; an unrecorded one
+			// must surface loudly, never vanish into an empty ledger.
+			m.refuseTeamSession("answering " + member + " failed to record the authorization: " + err.Error())
+			return true
+		}
+	}
 	m.notice(verb + " " + member + "'s pending approval")
 	return true
 }
@@ -564,6 +601,11 @@ func (m *chatTUI) rebindMemberAgentUser(ref string) {
 	if err := p.store.BindAgentUser(p.model.Name(), member, ref); err != nil {
 		m.refuseTeamSession(pickerErrMsg(err))
 		return
+	}
+	// An explicit model choice is a fresh pin: drop any runtime failover state
+	// so the new override is not shadowed by an earlier quota switch.
+	if p.sessions != nil {
+		_ = p.sessions.ClearMemberFailover(p.model.Name(), member)
 	}
 	if err := p.reload(member); err != nil {
 		m.refuseTeamSession(pickerErrMsg(err))

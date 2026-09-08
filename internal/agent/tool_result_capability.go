@@ -17,7 +17,9 @@ import (
 const (
 	sessionToolResultCapabilityID = "session:tool_result"
 	toolResultPageDefaultBytes    = 16 * 1024
-	toolResultPageMaxBytes        = 24 * 1024
+	// Pages above the bounded-output cap are delivered whole: boundIncompleteReadAwareResult
+	// exempts session_tool_result evidence, so the cap only shapes the JSON schema.
+	toolResultPageMaxBytes = 10 * 1024 * 1024
 )
 
 type toolResultSessionBinder interface {
@@ -43,7 +45,7 @@ func (*sessionToolResultTool) Schema() json.RawMessage {
 			"tool_call_id":{"type":"string"},
 			"result_ref":{"type":"string"},
 			"offset":{"type":"integer","minimum":0},
-			"limit":{"type":"integer","minimum":1,"maximum":24576}
+			"limit":{"type":"integer","minimum":1,"maximum":10485760}
 		},
 		"required":["tool_call_id"]
 	}`)

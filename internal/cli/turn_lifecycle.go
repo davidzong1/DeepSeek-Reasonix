@@ -38,6 +38,17 @@ func (m *chatTUI) startControllerTurnWithQueue(displayed, restore, queued string
 		m.notice("the remote side is taking this session back; new input is disabled")
 		return nil
 	}
+	// A bound member whose whole agent pool hit quota (P2) is blocked from new
+	// thinking: the exhausted state gates the composer here with an explicit
+	// warning until the roster g reset clears it.
+	if reason := m.teamMemberPoolBlocked(); reason != "" {
+		m.notice(reason)
+		if m.input.Value() == "" {
+			m.input.SetValue(restore)
+			m.growInputToFit()
+		}
+		return nil
+	}
 	// A team overlay can be opened in a degraded state (for example when a
 	// member backend failed to assemble or a test/host intentionally has no
 	// controller). Treat submission as a recoverable refusal instead of calling

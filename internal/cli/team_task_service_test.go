@@ -23,6 +23,7 @@ func (s *taskBackendStub) SubmitUserTurnOrError(input, display string) error {
 	s.submits++
 	return nil
 }
+func (s *taskBackendStub) Cancel()                    {}
 func (s *taskBackendStub) Running() bool              { return false }
 func (s *taskBackendStub) Turn() int                  { return 0 }
 func (s *taskBackendStub) Compose(text string) string { return text }

@@ -326,7 +326,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			skillRoot = deps.workspaceRoot
 		}
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
-			teamRoleSkillPrompt(boot.ResolveTeamProjectRoot(skillRoot), b.Leader)
+			// Invalid team_role declarations warn through the assembly's own
+			// diagnostic writer (nil keeps the historical silence).
+			teamRoleSkillPrompt(boot.ResolveTeamProjectRoot(skillRoot), b.Leader, opts.Stderr)
 		tasks := deps.tasks.forTeam(b.Team)
 		if b.Leader && deps.store != nil {
 			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)

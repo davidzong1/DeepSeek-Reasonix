@@ -73,8 +73,10 @@ func (m *chatTUI) refreshTeamRoster() tea.Cmd {
 // roster can mark a question card that still needs switching. kind is the
 // decision surface; id correlates with the member's own backend's reply.
 type memberPrompt struct {
-	kind string // promptApproval | promptAsk
-	id   string
+	kind    string // promptApproval | promptAsk
+	id      string
+	tool    string // approval subject, for the authorization log
+	subject string
 }
 
 // The prompt surfaces: an approval answers by keybinding through the hub, while
@@ -84,6 +86,29 @@ const (
 	promptApproval = "approval"
 	promptAsk      = "ask"
 )
+
+// poolSessionRefusal is the empty-pool session gate: a session window dials a
+// team pool entry, so entering one on a team with no configured agent-user
+// pool parks here until the roster u editor sets one. The gate reads the
+// team's own pool — a member's pin or custom pool never substitutes — and
+// every session entry shares the hint so it cannot drift between enter,
+// restore, and open.
+const poolSessionRefusal = "No agent pool configured for this team — press u on the roster to configure one before opening a session"
+
+// teamPoolConfigured reports whether the focused team has at least one
+// agent-user pool entry — its own entries or the legacy default reference.
+// That is the session gate's subject: entry requires the team-level
+// configuration, so a member-only binding can never unlock a session on an
+// unconfigured team.
+func (p *teamPicker) teamPoolConfigured() bool {
+	name := p.model.Name()
+	for _, t := range p.doc.Teams {
+		if t.Name == name {
+			return t.DefaultRef() != ""
+		}
+	}
+	return false
+}
 
 type sessionState struct {
 	active   bool
@@ -152,8 +177,8 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 			return nil
 		}
 	}
-	if p.defaultAgentUser() == "" {
-		p.refusal = "Set a team default agent user before starting a team session (press g)"
+	if !p.teamPoolConfigured() {
+		p.refusal = poolSessionRefusal
 		return nil
 	}
 	p.errMsg = ""
@@ -189,10 +214,6 @@ func (p *teamPicker) restoreSession() (string, bool) {
 		p.refusal = "Only the leader can start a team session"
 		return "", false
 	}
-	if p.defaultAgentUser() == "" {
-		p.refusal = "Set a team default agent user before starting a team session (press g)"
-		return "", false
-	}
 	if p.sessions != nil {
 		if teamName := p.model.Name(); teamName != "" {
 			if sel, err := p.sessions.ReadSelection(teamName); err == nil {
@@ -200,10 +221,20 @@ func (p *teamPicker) restoreSession() (string, bool) {
 					return "", true
 				}
 				if slot, ok := p.slotOf(sel.MemberID); ok && slot.IsLeader() {
+					// The session will open on this member: the team's configured
+					// pool — never the member's own binding — is the gate.
+					if !p.teamPoolConfigured() {
+						p.refusal = poolSessionRefusal
+						return "", false
+					}
 					return p.openSession(sel.MemberID), false
 				}
 			}
 		}
+	}
+	if !p.teamPoolConfigured() {
+		p.refusal = poolSessionRefusal
+		return "", false
 	}
 	return p.openSession(""), false
 }
@@ -221,10 +252,6 @@ func (p *teamPicker) openSession(initial string) string {
 		p.refusal = "Only the leader can start a team session"
 		return ""
 	}
-	if p.defaultAgentUser() == "" {
-		p.refusal = "Set a team default agent user before starting a team session (press g)"
-		return ""
-	}
 	teamName := p.model.Name()
 	if teamName == "" {
 		return ""
@@ -234,6 +261,13 @@ func (p *teamPicker) openSession(initial string) string {
 		current = p.firstLeader()
 	}
 	if current == "" {
+		return ""
+	}
+	// The team's configured pool is the dialing gate: a session belongs to the
+	// team's pool, so no member-level binding opens a window on an unconfigured
+	// team.
+	if !p.teamPoolConfigured() {
+		p.refusal = poolSessionRefusal
 		return ""
 	}
 	session := newSessionState(teamName, current)

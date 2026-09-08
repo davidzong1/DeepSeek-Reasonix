@@ -293,6 +293,25 @@ func (r *Runtime) Complete(taskID team.TaskID, summary string) error {
 	return nil
 }
 
+// CancelTask cancels a durable live task whose backend is not actually running
+// it (scheduler.Executor's Cancel is reserved for a driven task). A restart or
+// a refused dispatch leaves an assigned row nothing drives; the leader's cancel
+// converges that row to canceled without touching any live task.
+func (r *Runtime) CancelTask(ctx context.Context, task team.Task) error {
+	if err := team.TransitionTask(task.Status, team.TaskStatusCanceled); err != nil {
+		return err
+	}
+	task.Status = team.TaskStatusCanceled
+	if r.store != nil {
+		if err := r.store.SaveTask(ctx, task); err != nil {
+			return err
+		}
+	}
+	r.record(task, "canceled", "leader cancel")
+	r.wakeAll("task " + string(task.ID) + " canceled")
+	return nil
+}
+
 // Drain fetches one inbox batch for a member and acknowledges it only after
 // every item was processed (write-before-commit: a mid-batch failure leaves
 // the watermark behind, so the failed items replay idempotently). This is

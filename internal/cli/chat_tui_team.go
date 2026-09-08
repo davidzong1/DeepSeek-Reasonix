@@ -111,7 +111,6 @@ const (
 	teamInputAddMember                  // typing a new member id
 	teamInputDeleteMember               // confirming deletion of the focused member
 	teamInputBind                       // cycling candidate pool entries to bind
-	teamInputDefaultAgent               // choosing the team's default agent user
 )
 
 // teamPicker is the team management overlay opened by the TEAM button. It owns
@@ -137,6 +136,7 @@ type teamPicker struct {
 	kind          teamInputKind          // transient write state; teamInputNone when idle
 	buf           string                 // team, member, or field value being typed
 	pool          poolState              // agent-user pool screen; active replaces the team list
+	teamPool      teamPoolSelState       // roster team-pool editor; active owns the roster keys
 	binds         []string               // bind candidates (pool user ids), for teamInputBind
 	bind          int                    // candidate cursor for teamInputBind
 	leader        bool                   // leader mode; gates member and pool create/delete
@@ -154,12 +154,15 @@ type teamPicker struct {
 func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	cwd, err := os.Getwd()
 	if err == nil {
-		workspaceRoot := cwd
-		if root := controllerWorkspaceRoot(m.ctrl); root != "" {
-			workspaceRoot = root
-		}
-		workspaceRoot = boot.ResolveTeamProjectRoot(workspaceRoot)
-		roots, err := openTeamDataRoots(workspaceRoot)
+		workspaceRoot, projectRoot := teamLaunchRoots(cwd, controllerWorkspaceRoot(m.ctrl))
+		// Keep the ambient session's workspace root for member controllers. It is
+		// the directory the user actually launched Reasonix in and drives file
+		// references, sandbox writes, and status reporting. Team-owned resources
+		// (skills plus legacy .reasonix adoption) resolve independently from the
+		// executable/build project root, so opening the overlay from elsewhere
+		// still finds the current project's team tree without relabelling the
+		// member session as if it lived there.
+		roots, err := openTeamDataRoots(projectRoot)
 		if err == nil {
 			if roots.note != "" {
 				m.notice("team: " + roots.note)
@@ -209,6 +212,22 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	return nil
 }
 
+// teamLaunchRoots keeps the process/controller workspace (the directory the
+// user opened Reasonix in) separate from the repository that owns team assets.
+// Installed binaries may carry a build-time project root for skills, while
+// member sessions must retain the launch workspace for file references,
+// sandboxing, and status display.
+func teamLaunchRoots(cwd, controllerRoot string) (workspaceRoot, projectRoot string) {
+	workspaceRoot = strings.TrimSpace(controllerRoot)
+	if workspaceRoot == "" {
+		workspaceRoot = strings.TrimSpace(cwd)
+	}
+	if workspaceRoot == "" {
+		return "", ""
+	}
+	return workspaceRoot, boot.ResolveTeamProjectRoot(workspaceRoot)
+}
+
 // firstLeader returns the focused team's first leader slot id, or "".
 func (p *teamPicker) firstLeader() string {
 	name := p.model.Name()
@@ -225,24 +244,11 @@ func (p *teamPicker) firstLeader() string {
 	return ""
 }
 
-// defaultAgentUser returns the focused team's configured pool reference.
-func (p *teamPicker) defaultAgentUser() string {
-	name := p.model.Name()
-	for _, t := range p.doc.Teams {
-		if t.Name == name {
-			return strings.TrimSpace(t.DefaultAgentUserRef)
-		}
-	}
-	return ""
-}
-
 // pickerErrMsg maps a load or mutation error onto the overlay message, keeping
 // the refusals readable and distinct from anything else (corrupt document,
 // schema mismatch, I/O), which reads as "unavailable".
 func pickerErrMsg(err error) string {
 	switch {
-	case errors.Is(err, team.ErrLastTeam):
-		return "Cannot delete the last team — at least one team must remain"
 	case errors.Is(err, team.ErrTeamExists):
 		return "A team with that name already exists"
 	case errors.Is(err, team.ErrMemberExists):
@@ -257,6 +263,16 @@ func pickerErrMsg(err error) string {
 		return "Invalid proxy configuration"
 	case errors.Is(err, team.ErrLeaderOnly):
 		return "Leader-only operation — press l to enable leader mode"
+	case errors.Is(err, team.ErrInvalidMemberPool):
+		return "Unknown agent pool mode"
+	case errors.Is(err, team.ErrMemberPoolEmpty):
+		return "A custom member pool needs at least one entry — toggle entries on with Space"
+	case errors.Is(err, team.ErrMemberPoolNonEmpty):
+		return "An inheriting member carries no pool entries — switch to custom first"
+	case errors.Is(err, team.ErrMemberPoolPin):
+		return "Unbind this member's pinned agent user first (Agent row → team default, or press g)"
+	case errors.Is(err, team.ErrMemberPoolBind):
+		return "Set this member's pool row to inherit first — a custom pool binds its own head"
 	default:
 		return "Team data unavailable: " + err.Error()
 	}
@@ -336,8 +352,8 @@ func (p *teamPicker) addTeam(name string) error {
 	return p.reload(name)
 }
 
-// deleteTeam removes the focused team. Deleting the last team is refused by the
-// store (ErrLastTeam), which the overlay renders as a readable message. Member
+// deleteTeam removes the focused team, last one included — the registry may end
+// empty, which reload renders as the empty state with the create hint. Member
 // runtimes stop before the destructive op (§11.6), so none can keep writing
 // context while the team's contexts disappear.
 func (p *teamPicker) deleteTeam() error {
@@ -409,13 +425,13 @@ func (p *teamPicker) slotOf(id string) (team.MemberSlot, bool) {
 }
 
 // handleTeamPickerKey maps keypresses onto tui events and the cli write
-// states. Esc closes from the team list and steps back from a roster or the
-// member editor; q enters the quit confirmation; a/d act on the screen's own
-// subject; s saves the member editor's draft; t opens the team session from
-// the roster (leader only); k arms the leader step-down; x exits every team
-// session and parks the next [TEAM] click on the management page. Write
-// states feed every key first, so Enter confirms and q cancels a delete,
-// never accelerates it.
+// states. Esc and ctrl+c close from the team list (esc also steps back from a
+// roster or the member editor); q enters the quit confirmation; a/d act on
+// the screen's own subject; s saves the member editor's draft; t opens the
+// team session from the roster (leader only); k arms the leader step-down; x
+// exits every team session and parks the next [TEAM] click on the management
+// page. Write states feed every key first, so Enter confirms and q cancels a
+// delete, never accelerates it.
 func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	p := m.teamPick
 	if p == nil {
@@ -424,10 +440,10 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if teamPasteKey(p, msg) {
 		return m, pasteClipboardText()
 	}
-	// The pool screen, the session window, and an armed step-down confirmation
-	// each own every key while active (§5, §6) — their keys never reach the
-	// team-list handler.
-	if p.pool.active && handlePoolKey(p, msg) {
+	// The pool screen, the roster's team-pool editor, the session window, and an
+	// armed step-down confirmation each own every key while active (§5, §6) —
+	// their keys never reach the team-list handler.
+	if teamSubscreenKey(p, msg) {
 		return m, nil
 	}
 	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
@@ -438,11 +454,9 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	view := p.model
-	// An open member field owns every key while it is being edited (§5): "s"
-	// and "t" are letters there. The field-list screen owns its own keys —
-	// cursor, open, save, session, step-down.
-	if view.Mode() == tui.ModeContext && p.memberEdit.kind == memberEditFieldEdit &&
-		handleMemberFieldKey(p, msg) {
+	// An open member sub-editor owns every key while it is up: the pool row's
+	// ordered multi-select and the field edit, where "s"/"t" are letters.
+	if view.Mode() == tui.ModeContext && memberEditOwnsKey(p, msg) {
 		return m, nil
 	}
 	if handleMemberEditNavKey(p, view, msg) {
@@ -451,9 +465,6 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The bind cycle owns its keys (up/down candidates, enter bind, esc
 	// unbind-or-cancel); the field editor owns provider/baseURL/model/effort.
 	if bindKey(p, msg) {
-		return m, nil
-	}
-	if defaultAgentKey(p, msg) {
 		return m, nil
 	}
 	if (p.kind == teamInputAdd || p.kind == teamInputAddMember) && typeIntoTeamBuffer(p, msg) {
@@ -470,7 +481,7 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "a", "d":
 		startTeamKey(p, view, msg.String())
 	case "g":
-		startDefaultAgentKey(p, view)
+		restoreMemberToPoolHead(p, view)
 	case "t":
 		if memberListKeyAllowed(view, p) {
 			cmd = m.enterTeamSession()
@@ -538,9 +549,9 @@ func spaceTeamKey(p *teamPicker, view *tui.Model) {
 }
 
 // handleTeamSharedKey routes the screen-agnostic keys — enter confirms a
-// write state or descends, esc cancels or steps back, q and ctrl+c manage the
-// quit confirmation, backspace edits the name buffer — and reports whether
-// the overlay closed.
+// write state or descends, esc cancels or steps back, q enters the quit
+// confirmation, ctrl+c closes from the team list and confirms a pending quit,
+// backspace edits the name buffer — and reports whether the overlay closed.
 func handleTeamSharedKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg) (closed bool) {
 	switch msg.String() {
 	case "enter":
@@ -550,7 +561,7 @@ func handleTeamSharedKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg) (c
 	case "q":
 		return quitTeamKey(p, view)
 	case "ctrl+c":
-		ctrlCTeamKey(p, view)
+		return ctrlCTeamKey(p, view)
 	case "backspace":
 		backspaceTeamKey(p)
 	}
@@ -558,18 +569,21 @@ func handleTeamSharedKey(p *teamPicker, view *tui.Model, msg tea.KeyPressMsg) (c
 }
 
 // configTeamKey routes the member-config keys to their editors and reports
-// whether the key was consumed: u opens the agent-user pool from the team
-// list, e descends from the compact roster into the member editor, b arms the
-// bind cycle, p opens the team proxy settings from the roster (the member
-// editor owns each member's proxy override field), and l assigns the focused
-// member as leader on the roster — refused with the holder's id when the team
-// already has one, leaders step down through k — or toggles leader mode on the
-// detail screen.
+// whether the key was consumed: u opens the agent-user pool from the team list
+// or the ordered team-pool editor from the roster, e descends from the compact
+// roster into the member editor, b arms the bind cycle, p opens the team proxy
+// settings from the roster (the member editor owns each member's proxy override
+// field), and l assigns the focused member as leader on the roster — refused
+// with the holder's id when the team already has one, leaders step down through
+// k — or toggles leader mode on the detail screen.
 func configTeamKey(p *teamPicker, view *tui.Model, key string) bool {
 	switch key {
 	case "u":
-		if view.Mode() == tui.ModeTeams {
+		switch view.Mode() {
+		case tui.ModeTeams:
 			p.enterTeamPool()
+		case tui.ModeList:
+			p.openTeamPoolSel()
 		}
 	case "e":
 		if view.Mode() == tui.ModeList {
@@ -679,6 +693,10 @@ func escTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 		p.buf = ""
 		return false
 	}
+	if view.Mode() == tui.ModeContext && p.memberEdit.kind == memberEditPoolSel {
+		p.cancelMemberPoolSel() // the row's Esc restores the draft it opened on
+		return false
+	}
 	if view.Mode() == tui.ModeContext && p.memberEdit.kind == memberEditFieldEdit {
 		p.memberEdit.kind = memberEditFieldList
 		p.memberEdit.list = optionList{}
@@ -713,15 +731,21 @@ func quitTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 	return false
 }
 
-// ctrlCTeamKey cancels a write state (hard exit would drop typed input) or
-// enters the quit confirmation.
-func ctrlCTeamKey(p *teamPicker, view *tui.Model) {
+// ctrlCTeamKey cancels a write state (a hard exit would drop typed input),
+// closes from the team list and the quit confirmation — ctrl+c is the
+// terminal's abort chord, so on the list it behaves like Esc — or enters the
+// confirmation from a roster or a member view.
+func ctrlCTeamKey(p *teamPicker, view *tui.Model) (closed bool) {
 	if p.kind != teamInputNone {
 		p.kind = teamInputNone
 		p.buf = ""
-		return
+		return false
+	}
+	if view.Mode() == tui.ModeTeams || view.Mode() == tui.ModeQuit {
+		return true
 	}
 	view.Handle(tui.EventQuit)
+	return false
 }
 
 // startTeamKey arms the write state for a/d or applies the status cycle for s,

@@ -4,10 +4,15 @@ import "fmt"
 
 // LeaderAddMember creates a member slot on behalf of a named leader. Agent
 // facing management commands should use this API so authorization and storage
-// semantics stay identical to the TUI path.
+// semantics stay identical to the TUI path. The leader property is leader-only
+// and never creatable here — the Leader flag and its legacy role encoding are
+// refused, so an agent-facing call can never mint a leader.
 func (s *TeamStore) LeaderAddMember(teamName, leaderID string, slot MemberSlot) error {
 	if err := s.requireLeader(teamName, leaderID); err != nil {
 		return err
+	}
+	if slot.Leader || slot.Role == RoleLeader {
+		return fmt.Errorf("team: the leader property is not creatable through LeaderAddMember")
 	}
 	return s.addMember(teamName, slot)
 }

@@ -114,6 +114,16 @@ func poolErrMsg(err error) string {
 	}
 }
 
+// teamSubscreenKey reports whether the active team subscreen — the agent-user
+// pool manager or the roster's team-pool editor — consumed the key. Only one is
+// active at a time; both own every key while up (§6.2).
+func teamSubscreenKey(p *teamPicker, msg tea.KeyPressMsg) bool {
+	if p.pool.active && handlePoolKey(p, msg) {
+		return true
+	}
+	return p.teamPool.active && handleTeamPoolSelKey(p, msg)
+}
+
 // handlePoolKey routes a keypress on the pool screen and reports whether it
 // consumed the key: up/down move the focus, a arms the field-list editor on an
 // empty draft, d arms the delete confirmation, e arms the editor on the focused
@@ -556,6 +566,106 @@ func (p *teamPicker) releasePoolReferrers(userID string) {
 			continue
 		}
 		p.backends.release(b.Team, b.MemberID)
+	}
+}
+
+// teamPoolSelState is the roster's ordered team-pool editor (§3.1): one row per
+// registry entry, with the chosen pool entries selected in the order the user
+// toggled them on — the saved pool order is the click order, never the registry
+// order. active replaces the roster; nothing persists until Enter/s.
+type teamPoolSelState struct {
+	active bool
+	users  []team.AgentUser // candidate rows, registry order
+	sel    []string         // ordered selected ids — the pool being edited
+	focus  int              // row cursor into users
+	errMsg string
+}
+
+// openTeamPoolSel arms the team-pool editor from the roster u key: every
+// registry entry is a candidate, and the team's current effective pool seeds
+// the selection in pool order. Candidates absent from the registry (a dangling
+// pool reference) drop out — the next save rewrites the pool from reality.
+func (p *teamPicker) openTeamPoolSel() {
+	if p.kind != teamInputNone || p.errMsg != "" {
+		return
+	}
+	st := teamPoolSelState{active: true}
+	users, err := p.store.ListAgentUsers()
+	if err != nil {
+		p.errMsg = pickerErrMsg(err)
+		return
+	}
+	st.users = users
+	present := make(map[string]bool, len(users))
+	for _, u := range users {
+		present[u.UserID] = true
+	}
+	if eff, err := p.store.EffectiveTeamPool(p.model.Name()); err == nil {
+		for _, id := range eff {
+			if present[id] {
+				st.sel = append(st.sel, id)
+			}
+		}
+	}
+	p.teamPool = st
+}
+
+// handleTeamPoolSelKey owns every key while the team-pool editor is active:
+// up/down move the cursor, space toggles the focused entry on (appending it to
+// the selection tail — click order) or off, Enter/s publish the ordered pool,
+// and esc cancels with zero writes.
+func handleTeamPoolSelKey(p *teamPicker, msg tea.KeyPressMsg) bool {
+	st := &p.teamPool
+	switch msg.String() {
+	case "up", "k":
+		if n := len(st.users); n > 0 {
+			st.focus = (st.focus + n - 1) % n
+		}
+	case "down", "j":
+		if n := len(st.users); n > 0 {
+			st.focus = (st.focus + 1) % n
+		}
+	case "space":
+		p.toggleTeamPoolSelRow()
+	case "enter", "s":
+		p.commitTeamPoolSel()
+	case "esc", "ctrl+c", "q":
+		p.teamPool = teamPoolSelState{}
+	}
+	return true
+}
+
+// toggleTeamPoolSelRow flips the focused entry in the pool being edited: off
+// removes it from the selection, on appends it to the selection tail, so the
+// saved order is the order the user clicked entries on.
+func (p *teamPicker) toggleTeamPoolSelRow() {
+	st := &p.teamPool
+	if st.focus >= len(st.users) {
+		return
+	}
+	id := st.users[st.focus].UserID
+	for i, sel := range st.sel {
+		if sel == id {
+			st.sel = append(st.sel[:i], st.sel[i+1:]...)
+			return
+		}
+	}
+	st.sel = append(st.sel, id)
+}
+
+// commitTeamPoolSel is the Enter/s key: it publishes the ordered pool through
+// the store's validated, order-preserving write and returns to the roster.
+// Saving an empty selection clears the team's default, which gates sessions
+// until a pool is configured again (the roster's u is the way back in).
+func (p *teamPicker) commitTeamPoolSel() {
+	st := &p.teamPool
+	if err := p.store.SetTeamAgentUserPool(p.model.Name(), st.sel); err != nil {
+		st.errMsg = poolErrMsg(err)
+		return
+	}
+	p.teamPool = teamPoolSelState{}
+	if err := p.reload(""); err != nil {
+		p.errMsg = pickerErrMsg(err)
 	}
 }
 

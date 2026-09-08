@@ -1,6 +1,6 @@
 ---
 name: member
-description: Only member use.Execute one durable Reasonix team subtask within its assigned scope, verify the result, and formally report it to the leader.
+description: Member-only skill. Execute one durable Reasonix team subtask within its assigned scope, verify the result, and formally report it to the leader.
 ---
 
 # Team Member

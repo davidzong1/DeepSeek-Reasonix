@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// Registry errors. ErrLastTeam refuses deleting the final team so the registry
-// can never be emptied by accident; ErrMigrateRefused guards the primary file.
+// Registry errors. ErrMigrateRefused guards the primary file.
 var (
 	ErrTeamNotFound   = errors.New("team: no such team")
 	ErrTeamExists     = errors.New("team: team already exists")
@@ -17,7 +16,6 @@ var (
 	ErrMemberNotFound = errors.New("team: no such member")
 	ErrMemberExists   = errors.New("team: member already exists")
 	ErrInvalidMember  = errors.New("team: member id must not be empty")
-	ErrLastTeam       = errors.New("team: refusing to delete the last team")
 	ErrInvalidStatus  = errors.New("team: invalid member status")
 	ErrMigrateRefused = errors.New("team: migration refused")
 	ErrLeaderOnly     = errors.New("team: member create/delete restricted to the leader")
@@ -78,8 +76,10 @@ func NewTeamStoreAt(anchor, dataDir string) (*TeamStore, error) {
 	return ts, nil
 }
 
-// agentUserInUse reports whether any team references the pool entry, as a
-// member override or the team default; an absent registry references nothing.
+// agentUserInUse reports whether any team references the pool entry — as a
+// member override, a member custom-pool entry, the team default, or a team pool
+// entry — so a deletion can never leave a dangling reference; an absent registry
+// references nothing.
 func (s *TeamStore) agentUserInUse(id string) (bool, error) {
 	doc, _, err := s.Load()
 	if err != nil {
@@ -92,9 +92,19 @@ func (s *TeamStore) agentUserInUse(id string) (bool, error) {
 		if doc.Teams[i].DefaultAgentUserRef == id {
 			return true, nil
 		}
+		for _, ref := range doc.Teams[i].AgentUserPool {
+			if ref == id {
+				return true, nil
+			}
+		}
 		for j := range doc.Teams[i].Template {
 			if doc.Teams[i].Template[j].AgentUserRef == id {
 				return true, nil
+			}
+			for _, ref := range doc.Teams[i].Template[j].AgentUserPool {
+				if ref == id {
+					return true, nil
+				}
 			}
 		}
 	}
@@ -172,15 +182,13 @@ func (s *TeamStore) AddTeam(t Team) error {
 	})
 }
 
-// DeleteTeam removes the team by name; deleting the last team is refused.
+// DeleteTeam removes the team by name. The registry may end empty — the empty
+// state every layer already models, which the UI renders as the create hint.
 func (s *TeamStore) DeleteTeam(name string) error {
 	return s.update(func(doc *TeamDoc) error {
 		i := teamIndex(doc, name)
 		if i < 0 {
 			return ErrTeamNotFound
-		}
-		if len(doc.Teams) == 1 {
-			return ErrLastTeam
 		}
 		doc.Teams = append(doc.Teams[:i], doc.Teams[i+1:]...)
 		return nil
@@ -188,8 +196,11 @@ func (s *TeamStore) DeleteTeam(name string) error {
 }
 
 // AddMember appends a member slot to the named team; duplicate and empty
-// member ids are refused, as is an invalid role. Under MemberWriteLeaderOnly
-// the add is refused before any read or write.
+// member ids are refused, as is an invalid role. Optional attributes on the
+// slot are validated and canonicalized under the same rules as the
+// per-attribute setters, so a created member can never persist an invalid
+// configuration. Under MemberWriteLeaderOnly the add is refused before any
+// read or write.
 func (s *TeamStore) AddMember(teamName string, slot MemberSlot) error {
 	if s.memberPolicy == MemberWriteLeaderOnly {
 		return ErrLeaderOnly
@@ -202,6 +213,10 @@ func (s *TeamStore) addMember(teamName string, slot MemberSlot) error {
 		return ErrInvalidMember
 	}
 	if err := ValidateRole(string(slot.Role)); err != nil {
+		return err
+	}
+	slot, err := s.normalizeNewMember(slot)
+	if err != nil {
 		return err
 	}
 	return s.update(func(doc *TeamDoc) error {
@@ -217,6 +232,60 @@ func (s *TeamStore) addMember(teamName string, slot MemberSlot) error {
 		doc.Teams[i].Template = append(doc.Teams[i].Template, slot)
 		return nil
 	})
+}
+
+// normalizeNewMember validates and canonicalizes a member-to-be's optional
+// attributes before its first write — the same rules the per-attribute setters
+// apply to an existing slot, so creation and editing cannot drift. Empty fields
+// stay empty (the inherit encodings: unbound members inherit the team pool
+// head); a pin and a custom pool are mutually exclusive and every reference
+// must name a pool entry.
+func (s *TeamStore) normalizeNewMember(slot MemberSlot) (MemberSlot, error) {
+	if slot.AgentType != "" {
+		if err := validateAgentType(slot.AgentType); err != nil {
+			return slot, err
+		}
+	}
+	switch slot.ApprovalMode {
+	case "", ApprovalModeAuto:
+		slot.ApprovalMode = ""
+	case ApprovalModeManual:
+	default:
+		return slot, ErrInvalidApprovalMode
+	}
+	ids := cleanPoolRefs(slot.AgentUserPool)
+	switch strings.TrimSpace(slot.PoolMode) {
+	case "":
+		if len(ids) > 0 {
+			return slot, ErrMemberPoolNonEmpty
+		}
+		slot.PoolMode, slot.AgentUserPool = "", nil
+	case MemberPoolCustom:
+		if len(ids) == 0 {
+			return slot, ErrMemberPoolEmpty
+		}
+		if slot.AgentUserRef != "" {
+			return slot, ErrMemberPoolPin
+		}
+		for _, id := range ids {
+			if _, ok, err := s.agentUsers.GetAgentUser(id); err != nil {
+				return slot, err
+			} else if !ok {
+				return slot, fmt.Errorf("%w: %q", ErrAgentUserNotFound, id)
+			}
+		}
+		slot.AgentUserPool = ids
+	default:
+		return slot, ErrInvalidMemberPool
+	}
+	if slot.AgentUserRef != "" {
+		if _, ok, err := s.agentUsers.GetAgentUser(slot.AgentUserRef); err != nil {
+			return slot, err
+		} else if !ok {
+			return slot, fmt.Errorf("%w: %q", ErrAgentUserNotFound, slot.AgentUserRef)
+		}
+	}
+	return slot, nil
 }
 
 // DeleteMember removes a member slot from the named team. Under
@@ -348,7 +417,9 @@ func cloneDoc(doc TeamDoc) TeamDoc {
 	for i := range doc.Teams {
 		cp.Teams[i] = doc.Teams[i]
 		cp.Teams[i].Template = append([]MemberSlot(nil), doc.Teams[i].Template...)
+		cp.Teams[i].AgentUserPool = append([]string(nil), doc.Teams[i].AgentUserPool...)
 		for j := range doc.Teams[i].Template {
+			cp.Teams[i].Template[j].AgentUserPool = append([]string(nil), doc.Teams[i].Template[j].AgentUserPool...)
 			if enabled := doc.Teams[i].Template[j].ProxyEnabled; enabled != nil {
 				v := *enabled
 				cp.Teams[i].Template[j].ProxyEnabled = &v

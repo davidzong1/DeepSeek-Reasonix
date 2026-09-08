@@ -74,6 +74,7 @@ const (
 	TeamsLegacyFile = "teams.json" // v1-era name: read-only fallback, migration source
 	AgentUsersFile  = "agent_users.json"
 	BlackboardDir   = "blackboard" // rev-N.json revision files
+	AuthzDir        = "authz"      // per-team authorization ledgers (<team>.jsonl)
 	MemoryFile      = "memory.json"
 )
 

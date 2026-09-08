@@ -6,9 +6,9 @@ import (
 )
 
 // Agent-user pool errors. ErrLastAgentUser refuses emptying the pool by
-// accident, mirroring ErrLastTeam; ErrAgentUserInUse refuses deleting an
-// entry any team still references (§2.1), so a removal can never orphan a
-// binding.
+// accident, keeping a bindable default for teams that inherit it; ErrAgentUserInUse
+// refuses deleting an entry any team still references (§2.1), so a removal can
+// never orphan a binding.
 var (
 	ErrAgentUserExists   = errors.New("team: agent user already exists")
 	ErrAgentUserNotFound = errors.New("team: no such agent user")

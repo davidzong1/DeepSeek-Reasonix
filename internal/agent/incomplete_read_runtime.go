@@ -69,6 +69,11 @@ func (a *Agent) boundIncompleteReadAwareResult(plan *toolCallPlan, result string
 			_, readObserver = plan.execTool.(tool.ModelTextObserver)
 		}
 	}
+	if plan.evidenceName == "session_tool_result" {
+		// The page is already bounded and self-describing (offset/next_offset/complete
+		// live in its header); a head/tail snip would tear pages over maxToolOutputBytes.
+		return result, "", "", false
+	}
 	body, truncMsg, original = a.boundProviderVisibleResult(result, plan.call.Name, plan.call.ID)
 	return body, truncMsg, original, readObserver
 }

@@ -125,26 +125,29 @@ func TestTeamPickerDeleteTeamPersistsAndShowsNext(t *testing.T) {
 	}
 }
 
-// TestTeamPickerDeleteLastTeamRefused pins ErrLastTeam: deleting the final team
-// is refused with a readable message and the registry stays untouched.
-func TestTeamPickerDeleteLastTeamRefused(t *testing.T) {
+// TestTeamPickerDeleteLastTeamShowsEmptyState pins deleting the final team: it
+// persists to an empty registry that renders as the create hint (the same empty
+// state a fresh project shows) and stays usable — a new team can be added back.
+func TestTeamPickerDeleteLastTeamShowsEmptyState(t *testing.T) {
 	writeTeamFixture(t, team.Team{Name: "Solo", Template: []team.MemberSlot{
 		{MemberID: "a1", Role: team.RoleCoder, Status: team.MemberStatusActive},
 	}})
-	before := storedTeamBytes(t)
 	m := openTeamOverlay(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: 'd'})
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	got := ansi.Strip(m.renderTeamPicker())
-	if !strings.Contains(got, "Cannot delete the last team") {
-		t.Fatalf("deleting the last team should explain the refusal, got:\n%s", got)
+	if !strings.Contains(got, "No team yet") || strings.Contains(got, "Cannot delete the last team") {
+		t.Fatalf("deleting the last team should land on the empty-state hint, got:\n%s", got)
 	}
-	if data := storedTeamBytes(t); string(data) != string(before) {
-		t.Fatal("refused last-team delete must not write team.json")
+	if doc := readStoredTeamDoc(t); len(doc.Teams) != 0 {
+		t.Fatalf("registry should be empty after deleting the last team, got %+v", doc.Teams)
 	}
-	if doc := readStoredTeamDoc(t); len(doc.Teams) != 1 || doc.Teams[0].Name != "Solo" {
-		t.Fatalf("registry should still hold Solo, got %+v", doc.Teams)
+	m = teamKey(m, tea.KeyPressMsg{Code: 'a'})
+	m = typeTeamName(m, "Fresh")
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if doc := readStoredTeamDoc(t); len(doc.Teams) != 1 || doc.Teams[0].Name != "Fresh" {
+		t.Fatalf("empty registry must still accept a new team, got %+v", doc.Teams)
 	}
 }
 

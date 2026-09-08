@@ -320,3 +320,107 @@ func TestTeamRestoreResumesPersistedLeaderSelection(t *testing.T) {
 		})
 	}
 }
+
+// emptyPoolTeam returns one leader-backed team with no agent-user references
+// at any level, so no pool head exists to dial — the state every session entry
+// must refuse (§11.4). Written through writeTeamDoc, not writeTeamFixture,
+// because the fixture injects a default agent-user reference.
+func emptyPoolTeam() team.Team {
+	return team.Team{Name: "alpha", Template: []team.MemberSlot{
+		{MemberID: "lead", Role: team.RoleCoder, Leader: true, Status: team.MemberStatusActive},
+	}}
+}
+
+// TestTeamSessionEmptyPoolRefusesEntry pins the empty-pool session gate on the
+// t entry: a team with no agent-user references parks on the pool hint instead
+// of opening a window — no session state is armed.
+func TestTeamSessionEmptyPoolRefusesEntry(t *testing.T) {
+	writeTeamDoc(t, team.TeamFile, emptyPoolTeam())
+	m := openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+	if m.teamPick.session.active {
+		t.Fatal("t on an empty pool must not open a session window")
+	}
+	if got := m.teamPick.refusal; got != poolSessionRefusal {
+		t.Fatalf("refusal = %q, want the pool hint %q", got, poolSessionRefusal)
+	}
+	got := ansi.Strip(m.renderTeamPicker())
+	if !strings.Contains(got, "No agent pool configured") {
+		t.Fatalf("the roster should render the pool hint, got:\n%s", got)
+	}
+}
+
+// TestTeamSessionEmptyPoolRefusesRestore pins the empty-pool gate on the
+// [TEAM]-click restore entry: a persisted leader selection cannot reopen a
+// session window once no pool head exists, and an absent selection lands on
+// the same hint — never a silent window.
+func TestTeamSessionEmptyPoolRefusesRestore(t *testing.T) {
+	writeTeamDoc(t, team.TeamFile, emptyPoolTeam())
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(chatTUI)
+	m.onTeamButtonClick() // first open, no selection: the fallback gate refuses
+	if m.teamPick.session.active {
+		t.Fatal("an empty pool must refuse the auto-restored window")
+	}
+	if err := m.teamPick.sessions.WriteSelection("alpha", team.SessionSelection{Team: "alpha", MemberID: "lead"}); err != nil {
+		t.Fatal(err)
+	}
+	m.onTeamButtonClick() // reopen: the persisted leader selection stays gated
+	if m.teamPick.session.active {
+		t.Fatal("a persisted selection must not bypass the empty-pool gate")
+	}
+	if got := m.teamPick.refusal; got != poolSessionRefusal {
+		t.Fatalf("refusal = %q, want the pool hint %q", got, poolSessionRefusal)
+	}
+}
+
+// TestTeamSessionEmptyPoolRefusesMemberBindings pins the acceptance gate on
+// the t and [TEAM] entries: a team whose own pool is empty refuses even when
+// the leader member carries its own agent-user binding — a pin or a custom
+// pool. The gate reads the team's configured pool, so a member-only binding
+// never substitutes for an unconfigured team.
+func TestTeamSessionEmptyPoolRefusesMemberBindings(t *testing.T) {
+	pinned := emptyPoolTeam()
+	pinned.Template[0].AgentUserRef = "au-1"
+	custom := emptyPoolTeam()
+	custom.Template[0].PoolMode = team.MemberPoolCustom
+	custom.Template[0].AgentUserPool = []string{"au-1"}
+	for _, tc := range []struct {
+		name string
+		team team.Team
+	}{
+		{"pinned leader", pinned},
+		{"custom-pool leader", custom},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeTeamDoc(t, team.TeamFile, tc.team)
+			m := openRoster(t)
+			m = teamKey(m, tea.KeyPressMsg{Code: 't'})
+			if m.teamPick.session.active {
+				t.Fatal("t must not open a session on an empty team pool")
+			}
+			if got := m.teamPick.refusal; got != poolSessionRefusal {
+				t.Fatalf("t refusal = %q, want the pool hint %q", got, poolSessionRefusal)
+			}
+			// The [TEAM] restore entry is gated the same way: a persisted leader
+			// selection cannot reopen a window through its member-level binding.
+			ctrl := control.New(control.Options{})
+			m = newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			m = next.(chatTUI)
+			m.onTeamButtonClick()
+			if err := m.teamPick.sessions.WriteSelection("alpha", team.SessionSelection{Team: "alpha", MemberID: "lead"}); err != nil {
+				t.Fatal(err)
+			}
+			m.onTeamButtonClick()
+			if m.teamPick.session.active {
+				t.Fatal("the [TEAM] restore must not bypass the empty team-pool gate")
+			}
+			if got := m.teamPick.refusal; got != poolSessionRefusal {
+				t.Fatalf("restore refusal = %q, want the pool hint %q", got, poolSessionRefusal)
+			}
+		})
+	}
+}

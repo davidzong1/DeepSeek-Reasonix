@@ -506,6 +506,54 @@ func (s *teamTaskService) memberTask(memberID string) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
+// setApprovalMode persists a member's own approval mode. The tool layer binds
+// the member id, so a member can never switch another slot; the store refuses
+// the leader and validates the mode before any write.
+func (s *teamTaskService) setApprovalMode(memberID, mode string) (string, error) {
+	if s == nil || s.teamStore == nil {
+		return "", fmt.Errorf("team task runtime is unavailable")
+	}
+	if strings.TrimSpace(memberID) == "" {
+		return "", fmt.Errorf("member id must not be empty")
+	}
+	if err := s.teamStore.SetMemberApprovalMode(s.teamName, strings.TrimSpace(memberID), strings.TrimSpace(mode)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("member %q approval mode is now %q", strings.TrimSpace(memberID), strings.TrimSpace(mode)), nil
+}
+
+// authzLog renders the team's recorded authorization decisions, newest first,
+// bounded by the store's read page. A team without decisions reports none.
+func (s *teamTaskService) authzLog(limit int) (string, error) {
+	if s == nil || s.teamStore == nil {
+		return "", fmt.Errorf("team task runtime is unavailable")
+	}
+	entries, err := s.teamStore.AuthzEntries(s.teamName, limit)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 0 {
+		return "no authorization decisions recorded", nil
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		outcome := "deny"
+		if e.Allow {
+			outcome = "allow"
+		}
+		line := fmt.Sprintf("%s %s %s %s %s", e.TS, e.Member, e.Source, outcome, e.ID)
+		if e.Tool != "" {
+			line += " [" + e.Tool
+			if e.Subject != "" {
+				line += " " + e.Subject
+			}
+			line += "]"
+		}
+		lines = append(lines, line)
+	}
+	return "authorization log for team " + s.teamName + " (newest first):\n" + strings.Join(lines, "\n"), nil
+}
+
 func (s *teamTaskService) checkStatus(memberID string) (string, error) {
 	if s == nil || s.teamStore == nil || s.board == nil {
 		return "", fmt.Errorf("team task runtime is unavailable")
@@ -601,52 +649,92 @@ func (s *teamTaskService) report(memberID, taskID, result string) (string, error
 	if target == nil {
 		return fmt.Sprintf("member %q has no unfinished task to report", memberID), nil
 	}
+	// Complete can lose the registry to a concurrent close; the durable row
+	// then picks the member's answer, never the raw runtime refusal.
 	if err := s.runtime.Complete(target.ID, strings.TrimSpace(result)); err != nil {
-		return "", err
+		return "", s.translateCompleteError(target, err)
 	}
 	s.captureTurn(memberID, result)
 	return fmt.Sprintf("task %s reported to leader", target.ID), nil
 }
 
-// pickReportTarget resolves which of a member's live tasks a report closes. The
-// runtime drives at most one task per member, so the driving one is what the
-// member actually executed — that is the answer whenever a queued or
-// undispatched row would otherwise make the choice ambiguous. Only a genuinely
-// undecidable set is refused, with the ids, rather than closing whichever task
-// LoadLiveTasks happened to return first. A nil task with a nil error means the
-// member owns none.
+// pickReportTarget resolves which of a member's live tasks a report closes. A
+// task is reportable only while the runtime is actually executing it — the
+// durable row alone cannot prove the member ran the task, and completing an
+// undriven row used to leak agentruntime.ErrTaskUnknown raw into the member's
+// tool. The runtime drives at most one task per member, so the driving one is
+// the answer whenever an undispatched row would otherwise make the choice
+// ambiguous. An explicit id is honoured only when that task is driving; an id
+// the member does not own stays an explicit refusal. A nil task with a nil
+// error means the member owns none.
 func pickReportTarget(memberID, taskID string, owned []team.Task, driving func(team.TaskID) bool) (*team.Task, error) {
 	if taskID != "" {
 		for i := range owned {
-			if string(owned[i].ID) == taskID {
-				return &owned[i], nil
+			if string(owned[i].ID) != taskID {
+				continue
 			}
+			if driving != nil && !driving(owned[i].ID) {
+				return nil, undrivenTaskError(&owned[i])
+			}
+			return &owned[i], nil
 		}
 		return nil, fmt.Errorf("task %q is not an unfinished task of member %q", taskID, memberID)
 	}
 	if len(owned) == 0 {
 		return nil, nil
 	}
+	var live []*team.Task
 	if driving != nil {
-		var live []*team.Task
 		for i := range owned {
 			if driving(owned[i].ID) {
 				live = append(live, &owned[i])
 			}
 		}
-		if len(live) == 1 {
-			return live[0], nil
+		if len(live) > 0 {
+			if len(live) == 1 {
+				return live[0], nil
+			}
+			// The runtime drives at most one task per member; several live
+			// entries mean the registry drifted, and only the member can say.
+			return nil, fmt.Errorf("member %q has %d running tasks (%s): pass task_id to say which one this report closes",
+				memberID, len(live), taskIDs(owned))
 		}
+		return nil, undrivenTasksError(memberID, owned)
 	}
 	if len(owned) == 1 {
 		return &owned[0], nil
 	}
-	ids := make([]string, 0, len(owned))
-	for _, task := range owned {
+	return nil, fmt.Errorf("member %q has %d unfinished tasks (%s) and none is currently running: pass task_id to say which one this report closes",
+		memberID, len(owned), taskIDs(owned))
+}
+
+func taskIDs(tasks []team.Task) string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
 		ids = append(ids, string(task.ID))
 	}
-	return nil, fmt.Errorf("member %q has %d unfinished tasks (%s) and none is currently running: pass task_id to say which one this report closes",
-		memberID, len(owned), strings.Join(ids, ", "))
+	return strings.Join(ids, ", ")
+}
+
+// undrivenTaskError refuses a report whose target no runtime is executing. The
+// member cannot have completed work nothing drove; the durable status alone
+// (assigned after a refused dispatch, running after a dead runtime) would have
+// sent the completion into claimTerminal's unknown-task refusal. The fix is
+// the leader's: retry the dispatch or reassign.
+func undrivenTaskError(task *team.Task) error {
+	return fmt.Errorf("task %s is not executing (recorded %s, nothing is driving it): ask the leader to retry or reassign it, then report", task.ID, task.Status)
+}
+
+// undrivenTasksError is the multi-row form of undrivenTaskError: every owned
+// task is listed with its durable status so the member can tell the leader
+// which one to retry, instead of guessing between rows nothing drives.
+func undrivenTasksError(memberID string, owned []team.Task) error {
+	states := make([]string, 0, len(owned))
+	for _, task := range owned {
+		states = append(states, fmt.Sprintf("%s (recorded %s)", task.ID, task.Status))
+	}
+	return fmt.Errorf("member %q has %d unfinished tasks but none is executing (%s): ask the leader to retry or reassign one before reporting",
+		memberID, len(owned), strings.Join(states, ", "))
 }
 
 func parseRoles(raw string) []string {

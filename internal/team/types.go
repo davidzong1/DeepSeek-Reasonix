@@ -122,15 +122,30 @@ type ProxyConfig struct {
 // business role. Documents written before the split encoded the leader as
 // Role "leader"; those load unchanged (IsLeader) but new writes never use it.
 type MemberSlot struct {
-	MemberID     string
-	Role         RoleID
-	AgentUserRef string
-	Status       MemberStatus
-	Temporary    bool   // temporary member, outside the archived topology
-	Leader       bool   `json:"leader,omitempty"`        // standalone leader property; empty = regular member
-	AgentType    string `json:"agent_type,omitempty"`    // launch-type override; empty = inherit team default
-	ProxyEnabled *bool  `json:"proxy_enabled,omitempty"` // nil = inherit; true = force on; false = force off
+	MemberID      string
+	Role          RoleID
+	AgentUserRef  string
+	Status        MemberStatus
+	Temporary     bool     // temporary member, outside the archived topology
+	Leader        bool     `json:"leader,omitempty"`          // standalone leader property; empty = regular member
+	AgentType     string   `json:"agent_type,omitempty"`      // launch-type override; empty = inherit team default
+	ProxyEnabled  *bool    `json:"proxy_enabled,omitempty"`   // nil = inherit; true = force on; false = force off
+	PoolMode      string   `json:"pool_mode,omitempty"`       // "custom" walks AgentUserPool; empty = inherit the team pool
+	AgentUserPool []string `json:"agent_user_pool,omitempty"` // ordered member-level pool entries; read only while PoolMode is custom
+	ApprovalMode  string   `json:"approval_mode,omitempty"`   // "manual" raises approvals to the leader; empty = auto (EffectiveApprovalMode)
 }
+
+// MemberPoolCustom is the explicit pool-mode value; any other value — the
+// empty string included — means inherit. The empty mode and an empty custom
+// pool stay distinguishable in storage and UI: the write path refuses an empty
+// custom pool, so one appears only in a hand-edited document, which reads
+// resolve defensively to the team pool (SlotEffectivePool) while the stored
+// mode keeps saying custom.
+const MemberPoolCustom = "custom"
+
+// IsCustomPool reports whether the slot walks its own pool instead of the
+// team's. The empty mode is the default: inherit.
+func (s MemberSlot) IsCustomPool() bool { return s.PoolMode == MemberPoolCustom }
 
 // IsLeader reports the slot's leader property, honoring both encodings: the
 // explicit Leader field and the legacy Role value "leader" written before the
@@ -140,14 +155,38 @@ func (s MemberSlot) IsLeader() bool {
 }
 
 // Team is the fixed-topology container (§2.5): the member template and the
-// team-default AgentUser reference for credential fallback. The message feed,
-// blackboard, and memory stores are team-keyed data, not nested fields.
+// ordered agent-user pool whose head is the team default for credential
+// fallback. The message feed, blackboard, and memory stores are team-keyed
+// data, not nested fields.
 type Team struct {
 	Name                string
 	Template            []MemberSlot
-	DefaultAgentUserRef string       // team default credential (§3.1)
-	AgentType           string       `json:"agent_type,omitempty"` // team default launch type; empty = legacy behavior
-	Proxy               *ProxyConfig `json:"proxy,omitempty"`      // team default proxy; nil = off (legacy behavior)
+	DefaultAgentUserRef string       // legacy team default credential (§3.1); folded into the pool on the first explicit pool write
+	AgentUserPool       []string     `json:"agent_user_pool,omitempty"` // ordered pool entry ids; head is the team default (§3.1)
+	AgentType           string       `json:"agent_type,omitempty"`      // team default launch type; empty = legacy behavior
+	Proxy               *ProxyConfig `json:"proxy,omitempty"`           // team default proxy; nil = off (legacy behavior)
+}
+
+// EffectivePool returns the team's ordered pool entries as configured: the
+// explicit pool, or the legacy default reference as a one-entry pool. Read-only
+// — it never rewrites the legacy field, so a plain load cannot dirty team.json.
+func (t Team) EffectivePool() []string {
+	if len(t.AgentUserPool) > 0 {
+		return t.AgentUserPool
+	}
+	if t.DefaultAgentUserRef != "" {
+		return []string{t.DefaultAgentUserRef}
+	}
+	return nil
+}
+
+// DefaultRef returns the entry a member without an explicit override inherits:
+// the pool head, else the legacy default reference. Read-only.
+func (t Team) DefaultRef() string {
+	if p := t.EffectivePool(); len(p) > 0 {
+		return p[0]
+	}
+	return ""
 }
 
 // TaskID names a dispatch unit (§2.6).

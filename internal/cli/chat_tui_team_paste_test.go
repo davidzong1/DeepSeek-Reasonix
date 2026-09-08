@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -207,7 +208,7 @@ func TestTeamPasteInertOnMemberPickerRows(t *testing.T) {
 	m = next.(chatTUI)
 	got := m.teamPick.memberEdit
 	if got.kind != before.kind || got.edit != before.edit || got.errMsg != before.errMsg ||
-		got.draft != before.draft || got.list.kind != before.list.kind ||
+		!reflect.DeepEqual(got.draft, before.draft) || got.list.kind != before.list.kind ||
 		got.list.cursor != before.list.cursor || got.list.offset != before.list.offset ||
 		len(got.list.options) != len(before.list.options) ||
 		len(got.list.selected) != len(before.list.selected) {

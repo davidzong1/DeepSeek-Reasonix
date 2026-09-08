@@ -1,6 +1,6 @@
 ---
 name: leader
-description: Only leader use.Lead a Reasonix team by checking checkpoint and roster state, splitting complex work, assigning durable subtasks, and integrating verified member reports.
+description: Leader-only skill. Lead a Reasonix team by checking checkpoint and roster state, splitting complex work into durable subtasks, assigning them, and integrating verified member reports. Non-leader agents must not use this skill.
 ---
 
 # Team Leader

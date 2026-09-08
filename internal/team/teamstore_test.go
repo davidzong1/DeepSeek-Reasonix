@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -144,6 +145,9 @@ func TestTeamStoreAddTeam(t *testing.T) {
 	}
 }
 
+// TestTeamStoreDeleteTeam pins deletion to empty: the final team is removable,
+// the emptied registry reloads with no teams and still accepts a fresh AddTeam,
+// and deleting from the empty registry is ErrTeamNotFound like a fresh project.
 func TestTeamStoreDeleteTeam(t *testing.T) {
 	ts, _ := newTeamStore(t)
 	doc := validDoc()
@@ -157,15 +161,24 @@ func TestTeamStoreDeleteTeam(t *testing.T) {
 	if err := ts.DeleteTeam("gamma"); !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("missing team: err = %v, want ErrTeamNotFound", err)
 	}
-	if err := ts.DeleteTeam("alpha"); !errors.Is(err, ErrLastTeam) {
-		t.Fatalf("last team: err = %v, want ErrLastTeam", err)
+	if err := ts.DeleteTeam("alpha"); err != nil {
+		t.Fatalf("last team: err = %v, want the delete to succeed", err)
 	}
 	got, _, err := ts.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Teams) != 1 || got.Teams[0].Name != "alpha" {
-		t.Fatalf("registry changed after refused delete: %+v", got.Teams)
+	if len(got.Teams) != 0 {
+		t.Fatalf("registry after deleting the last team: %+v, want empty", got.Teams)
+	}
+	if err := ts.DeleteTeam("alpha"); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("empty registry: err = %v, want ErrTeamNotFound", err)
+	}
+	if err := ts.AddTeam(Team{Name: "fresh"}); err != nil {
+		t.Fatalf("re-create from an emptied registry: %v", err)
+	}
+	if got, _, err := ts.Load(); err != nil || len(got.Teams) != 1 || got.Teams[0].Name != "fresh" {
+		t.Fatalf("registry after re-create: %+v err=%v, want fresh", got.Teams, err)
 	}
 }
 
@@ -466,5 +479,92 @@ func TestTeamStoreDeleteAgentUserAbsentRegistry(t *testing.T) {
 	}
 	if err := ts.DeleteAgentUser("a"); err != nil {
 		t.Fatalf("delete without a team registry must pass: %v", err)
+	}
+}
+
+// TestTeamStoreAddMemberValidatesOptionalAttributes pins the creation-time
+// chokepoint: optional slot attributes pass only under the same rules the
+// per-attribute setters apply — a custom pool names existing pool entries and
+// excludes a pin, an inheriting slot carries no pool, and agent-type and
+// approval-mode values are legal — so a created member can never persist an
+// invalid configuration. Every refusal leaves the registry untouched.
+func TestTeamStoreAddMemberValidatesOptionalAttributes(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	if err := ts.Save(validDoc()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.AddAgentUser(AgentUser{UserID: "au-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		slot MemberSlot
+		want error
+	}{
+		{"custom pool must name entries", MemberSlot{MemberID: "z1", Role: RoleCoder, Status: MemberStatusActive, PoolMode: MemberPoolCustom}, ErrMemberPoolEmpty},
+		{"custom pool entries must exist", MemberSlot{MemberID: "z2", Role: RoleCoder, Status: MemberStatusActive, PoolMode: MemberPoolCustom, AgentUserPool: []string{"ghost"}}, ErrAgentUserNotFound},
+		{"custom pool excludes a pin", MemberSlot{MemberID: "z3", Role: RoleCoder, Status: MemberStatusActive, AgentUserRef: "au-1", PoolMode: MemberPoolCustom, AgentUserPool: []string{"au-1"}}, ErrMemberPoolPin},
+		{"inheriting member carries no pool", MemberSlot{MemberID: "z4", Role: RoleCoder, Status: MemberStatusActive, AgentUserPool: []string{"au-1"}}, ErrMemberPoolNonEmpty},
+		{"pin must name a pool entry", MemberSlot{MemberID: "z5", Role: RoleCoder, Status: MemberStatusActive, AgentUserRef: "ghost"}, ErrAgentUserNotFound},
+		{"agent type must be legal", MemberSlot{MemberID: "z6", Role: RoleCoder, Status: MemberStatusActive, AgentType: "bad agent!"}, ErrInvalidAgent},
+		{"approval mode must be legal", MemberSlot{MemberID: "z7", Role: RoleCoder, Status: MemberStatusActive, ApprovalMode: "boss"}, ErrInvalidApprovalMode},
+	} {
+		if err := ts.AddMember("alpha", tc.slot); !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	doc, _, err := ts.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(doc.Teams[0].Template); got != 1 {
+		t.Fatalf("refused adds must not write: template size = %d, want 1", got)
+	}
+
+	// A fully configured add passes and canonicalizes: the custom pool is
+	// cleaned of blanks and duplicates, and auto approval mode stores empty.
+	slot := MemberSlot{MemberID: "m9", Role: RoleCoder, Status: MemberStatusActive,
+		AgentType: AgentTypeClaude, ApprovalMode: ApprovalModeAuto,
+		PoolMode: MemberPoolCustom, AgentUserPool: []string{"au-1", "au-1", " ", "au-1"}}
+	if err := ts.AddMember("alpha", slot); err != nil {
+		t.Fatalf("fully configured add: %v", err)
+	}
+	doc, _, err = ts.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := doc.Teams[0].Template[1]
+	if got.MemberID != "m9" || got.AgentType != AgentTypeClaude || got.ApprovalMode != "" || got.PoolMode != MemberPoolCustom {
+		t.Fatalf("stored slot wrong: %+v", got)
+	}
+	if len(got.AgentUserPool) != 1 || got.AgentUserPool[0] != "au-1" {
+		t.Fatalf("custom pool not canonicalized: %+v", got.AgentUserPool)
+	}
+}
+
+// TestTeamStoreLeaderAddMemberRefusesLeaderProperty pins the leader-only
+// boundary on the agent-facing create surface: neither the Leader flag nor its
+// legacy role encoding can be created through LeaderAddMember — members are
+// created regular, and leadership is granted separately.
+func TestTeamStoreLeaderAddMemberRefusesLeaderProperty(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	doc := validDoc()
+	doc.Teams[0].Template = append(doc.Teams[0].Template, MemberSlot{MemberID: "lead", Role: RoleCoder, Status: MemberStatusActive, Leader: true})
+	if err := ts.Save(doc); err != nil {
+		t.Fatal(err)
+	}
+	for name, slot := range map[string]MemberSlot{
+		"leader flag":          {MemberID: "m9", Role: RoleCoder, Status: MemberStatusActive, Leader: true},
+		"legacy role encoding": {MemberID: "m9", Role: RoleLeader, Status: MemberStatusActive},
+	} {
+		if err := ts.LeaderAddMember("alpha", "lead", slot); err == nil || !strings.Contains(err.Error(), "leader property") {
+			t.Fatalf("%s: err = %v, want the leader-property refusal", name, err)
+		}
+	}
+	if err := ts.LeaderAddMember("alpha", "lead", MemberSlot{MemberID: "m9", Role: RoleCoder, Status: MemberStatusActive}); err != nil {
+		t.Fatalf("regular add by the leader: %v", err)
+	}
+	if got, _, err := ts.Load(); err != nil || len(got.Teams[0].Template) != 3 {
+		t.Fatalf("template after adds: %d members, err = %v, want 3", len(got.Teams[0].Template), err)
 	}
 }

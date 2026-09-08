@@ -110,7 +110,7 @@ the read-only `session:tool_result` capability. It pages the complete local copy
 of one tool result by UTF-8 byte offset without adding a top-level schema. Calls
 require `tool_call_id`; new truncation markers also provide a stable
 `result_ref`, which is required to disambiguate repeated call IDs. `offset`
-defaults to 0, `limit` defaults to 16KiB and is capped at 24KiB. Each response
+defaults to 0, `limit` defaults to 16KiB and is capped at 10MiB. Each response
 starts with `result_ref`, actual offset, `next_offset`, `total_bytes`, full
 SHA-256, and `complete`, followed by the raw page. The reader is bound to the
 current Agent session and is not inherited from a parent when a capability

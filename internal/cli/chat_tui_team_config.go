@@ -42,32 +42,65 @@ func bindKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 	return true
 }
 
-// defaultAgentKey owns the team-default agent picker. The empty candidate
-// deliberately remains available so a team can disable sessions again.
-func defaultAgentKey(p *teamPicker, msg tea.KeyPressMsg) bool {
-	if p.kind != teamInputDefaultAgent {
-		return false
+// restoreMemberToPoolHead is the roster g key: it rewinds the focused member's
+// agent-user binding to its pool default and clears its durable failover state,
+// leaving every other member untouched. The member's own pool wins — a custom
+// member keeps its pool configuration and g only resets the runtime back to
+// that pool's head, never touching the team document. An inheriting member's
+// legacy pin folds away through UnbindAgentUser (clearing the pin falls back to
+// the pool head — the same terminal state BindAgentUser(head) produced, without
+// leaving a redundant pin on the document). With no pool configured the action
+// is refused, so the roster u editor is where the team's defaults are set. The
+// write is P1 — no runtime seam re-points an assembled mid-turn backend from the
+// management page, so a busy member keeps its in-flight entry and the
+// fingerprint-aware bind rebuilds it once idle. P2 adds the runtime half: g also
+// clears the member's durable failover state and retires an idle backend moved
+// by a quota switch, so the next bind walks the pool head again
+// (resetMemberFailover).
+func restoreMemberToPoolHead(p *teamPicker, view *tui.Model) {
+	if p.kind != teamInputNone || p.errMsg != "" || view.Mode() != tui.ModeList {
+		return
 	}
-	switch msg.String() {
-	case "up":
-		stepBind(p, -1)
-	case "down", "j":
-		stepBind(p, +1)
-	case "enter":
-		if len(p.binds) > 0 {
-			ref := p.binds[p.bind]
-			p.confirm(func() error {
-				if err := p.store.SetTeamDefaultAgentUser(p.model.Name(), ref); err != nil {
-					return err
-				}
-				return p.reload("")
-			})
-			p.binds = nil
+	member, ok := view.Focused()
+	if !ok {
+		return
+	}
+	name := p.model.Name()
+	slot, ok := p.slotOf(member.ID)
+	if !ok {
+		return
+	}
+	if slot.IsCustomPool() {
+		// A custom member owns its pool: g only rewinds the runtime to its head,
+		// never the document — the member editor's pool row edits the config.
+		if msg := p.resetMemberFailover(name, member.ID); msg != "" {
+			p.errMsg = msg
 		}
-	case "esc", "ctrl+c", "q":
-		p.kind, p.binds = teamInputNone, nil
+		return
 	}
-	return true
+	eff, err := p.store.EffectiveTeamPool(name)
+	if err != nil {
+		p.errMsg = pickerErrMsg(err)
+		return
+	}
+	if len(eff) == 0 {
+		p.refusal = poolSessionRefusal
+		return
+	}
+	if msg := p.resetMemberFailover(name, member.ID); msg != "" {
+		p.errMsg = msg
+		return
+	}
+	if slot.AgentUserRef == "" {
+		return // already inheriting the pool head — nothing to restore
+	}
+	if err := p.store.UnbindAgentUser(name, member.ID); err != nil {
+		p.errMsg = pickerErrMsg(err)
+		return
+	}
+	if err := p.reload(""); err != nil {
+		p.errMsg = pickerErrMsg(err)
+	}
 }
 
 // startBindKey arms the bind cycle on the focused member, listing every pool
@@ -91,31 +124,6 @@ func startBindKey(p *teamPicker, view *tui.Model) {
 	}
 	p.bind = 0
 	p.kind = teamInputBind
-}
-
-// startDefaultAgentKey opens the team-level default Agent user picker from
-// the member roster.
-func startDefaultAgentKey(p *teamPicker, view *tui.Model) {
-	if p.kind != teamInputNone || p.errMsg != "" || view.Mode() != tui.ModeList {
-		return
-	}
-	users, err := p.store.ListAgentUsers()
-	if err != nil {
-		p.errMsg = pickerErrMsg(err)
-		return
-	}
-	p.binds = []string{""} // clear default / disable team sessions
-	for _, u := range users {
-		p.binds = append(p.binds, u.UserID)
-	}
-	p.bind = 0
-	for i, id := range p.binds {
-		if id == p.defaultAgentUser() {
-			p.bind = i
-			break
-		}
-	}
-	p.kind = teamInputDefaultAgent
 }
 
 // stepBind cycles the candidate cursor, wrapping so every candidate stays

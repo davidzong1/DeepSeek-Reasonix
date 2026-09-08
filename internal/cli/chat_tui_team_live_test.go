@@ -81,7 +81,13 @@ func TestMemberLiveBufferIsBounded(t *testing.T) {
 // re-emitting an approval/ask on bind, so buffering them too would raise the
 // same decision card twice on one switch.
 func TestMemberPromptEventsStayOutOfLiveBuffer(t *testing.T) {
-	m := promptTestTUI(t, nil)
+	approves := 0
+	m := promptTestTUI(t, &approves)
+	// Manual mode keeps the approval on the leader surface so this test pins the
+	// buffer exclusion seam (auto mode would grant it before buffering).
+	if _, err := m.teamPick.setMemberMode("alice", memberModeManual); err != nil {
+		t.Fatal(err)
+	}
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{
 		Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1"}}})
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{

@@ -16,6 +16,22 @@ import (
 	"reasonix/internal/team/tui"
 )
 
+func TestTeamLaunchRootsPreservesLaunchWorkspace(t *testing.T) {
+	launch := filepath.Join(t.TempDir(), "launch")
+	controller := filepath.Join(t.TempDir(), "controller")
+	workspace, project := teamLaunchRoots(launch, controller)
+	if workspace != controller {
+		t.Fatalf("workspace root = %q, want controller launch root %q", workspace, controller)
+	}
+	if project == "" {
+		t.Fatal("project root must still resolve independently for team assets")
+	}
+	workspace, _ = teamLaunchRoots(launch, "")
+	if workspace != launch {
+		t.Fatalf("workspace root without controller = %q, want cwd %q", workspace, launch)
+	}
+}
+
 // writeTeamDoc saves a registry document at rel through team.FileStore and
 // chdirs into the fixture root, so the [ TEAM ] overlay loads real data. The
 // user-global default team root is pinned to the fixture root's .reasonix, so
@@ -327,10 +343,41 @@ func TestTeamPickerQuitChain(t *testing.T) {
 		t.Fatal("Enter should confirm the quit and close the team view")
 	}
 
+	// ctrl+c is the terminal's abort chord: on the team list it closes outright
+	// (Esc's twin) and confirms a pending quit; from a roster it raises the
+	// confirmation instead, and in a write state it only cancels the input.
 	m.onTeamButtonClick()
 	m = teamKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	if m.teamPick != nil {
+		t.Fatal("ctrl+c on the team list should close the team view")
+	}
+
+	m.onTeamButtonClick()
+	m = teamKey(m, tea.KeyPressMsg{Code: 'q'}) // open the quit confirmation
 	if m.teamPick == nil || m.teamPick.model.Mode() != tui.ModeQuit {
-		t.Fatal("ctrl+c should enter the quit confirmation inside the team view")
+		t.Fatal("q should still enter the quit confirmation")
+	}
+	m = teamKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	if m.teamPick != nil {
+		t.Fatal("ctrl+c in the quit confirmation should confirm and close")
+	}
+
+	writeTeamFixture(t, leaderTeam())
+	m = openRoster(t)
+	m = teamKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	if m.teamPick == nil || m.teamPick.model.Mode() != tui.ModeQuit {
+		t.Fatal("ctrl+c from a roster should raise the quit confirmation")
+	}
+	m = teamKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	if m.teamPick != nil {
+		t.Fatal("a second ctrl+c inside the confirmation should confirm and close")
+	}
+	m = openTeamOverlay(t)
+	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // bound session -> team list
+	m = teamKey(m, tea.KeyPressMsg{Code: 'a'})        // arm the add-team input
+	m = teamKey(m, tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'})
+	if m.teamPick == nil || m.teamPick.kind != teamInputNone || m.teamPick.model.Mode() != tui.ModeTeams {
+		t.Fatal("ctrl+c in a write state must cancel the input and keep the overlay")
 	}
 }
 
