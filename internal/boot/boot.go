@@ -50,7 +50,6 @@ import (
 	"reasonix/internal/lsp"
 	"reasonix/internal/mcplaunch"
 	"reasonix/internal/memory"
-	"reasonix/internal/migration"
 	"reasonix/internal/netclient"
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
@@ -506,69 +505,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 	}
 
-	if migErr != nil {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
-	} else if migrated != nil {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
-	}
-	emitUserConfigUpgradeNotice(sink, cfg, deepSeekProtocolMigrated, deepSeekProtocolMigErr)
-	if stepLimitsMigrated || cfg.IgnoredLegacyAgentStepLimits() {
-		level := event.LevelInfo
-		text := "Deprecated agent step limits were removed."
-		detail := "[agent].max_steps and planner_max_steps are no longer used; Reasonix now manages interactive progress automatically. " +
-			"Use the CLI --max-steps flag for a one-off run or [bot].max_steps for unattended bot sessions."
-		if stepLimitMigErr != nil {
-			level = event.LevelWarn
-			text = "Deprecated agent step limits were ignored."
-			detail += " The old keys were ignored but could not be removed: " + stepLimitMigErr.Error()
-		}
-		sink.Emit(event.Event{
-			Kind:   event.Notice,
-			Level:  level,
-			Text:   text,
-			Detail: detail,
-		})
-	} else if stepLimitMigErr != nil {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Deprecated agent step-limit migration did not complete.", Detail: stepLimitMigErr.Error()})
-	}
-	if redactToolOutputMigrated || redactToolOutputMigErr != nil {
-		level := event.LevelInfo
-		text := "Deprecated redact_tool_output setting was removed."
-		detail := "[secrets].redact_tool_output no longer has any effect: ordinary model/tool content and local session/job artifacts now preserve their original text. Explicit diagnostics and reasonix doctor redact-sessions still redact credential values."
-		if redactToolOutputMigErr != nil {
-			level = event.LevelWarn
-			text = "Deprecated redact_tool_output setting was ignored."
-			detail += " The old key could not be removed: " + redactToolOutputMigErr.Error()
-		}
-		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text, Detail: detail})
-	}
-	if memoryCompilerMigrated || memoryCompilerMigErr != nil {
-		level := event.LevelInfo
-		text := "Deprecated memory_compiler setting was removed."
-		detail := "The Memory v5 execution compiler has been removed from Reasonix: [agent].memory_compiler no longer has any effect, user turns are never replaced by compiled execution contracts, and no compiler state is written. Old transcripts containing compiled turns still display normally."
-		if memoryCompilerMigErr != nil {
-			level = event.LevelWarn
-			text = "Deprecated memory_compiler setting was ignored."
-			detail += " The old key could not be removed: " + memoryCompilerMigErr.Error()
-		}
-		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text, Detail: detail})
-	}
-	if multiThresholdMigrated || multiThresholdMigErr != nil {
-		level := event.LevelInfo
-		text := "上下文维护已简化为单一自动压缩阈值。"
-		detail := "Context maintenance now uses a single automatic compact_ratio (default 0.80). soft_compact_ratio, tool_result_snip_ratio, compact_force_ratio, cold_resume_prune, and context_editing were removed from config."
-		if multiThresholdMigErr != nil {
-			level = event.LevelWarn
-			text = "Deprecated multi-threshold compaction keys were ignored."
-			detail += " The old keys could not be removed: " + multiThresholdMigErr.Error()
-		}
-		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text, Detail: detail})
-	}
-	migration.MigrateLegacyMemorySources(sink)
-	migration.MigrateLegacySessionSources(sink)
-	if ignored := cfg.IgnoredProjectDefaultModel(); ignored != "" {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Ignored the project config's default_model.", Detail: fmt.Sprintf("./reasonix.toml sets default_model = %q but no configured provider serves it; using %q from your user config instead. Edit or remove that default_model line to silence this notice.", ignored, cfg.DefaultModel)})
-	}
+	emitLegacyMigrationNotices(sink, cfg, legacyMigrations{
+		configResult:     migrated,
+		configErr:        migErr,
+		deepSeekProtocol: legacyMigration{migrated: deepSeekProtocolMigrated, err: deepSeekProtocolMigErr},
+		stepLimits:       legacyMigration{migrated: stepLimitsMigrated, err: stepLimitMigErr},
+		redactToolOutput: legacyMigration{migrated: redactToolOutputMigrated, err: redactToolOutputMigErr},
+		memoryCompiler:   legacyMigration{migrated: memoryCompilerMigrated, err: memoryCompilerMigErr},
+		multiThreshold:   legacyMigration{migrated: multiThresholdMigrated, err: multiThresholdMigErr},
+	})
 
 	// Surface a missing credential up front when the UI remains reachable.
 	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
