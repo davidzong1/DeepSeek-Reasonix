@@ -33,15 +33,25 @@ levels declares them there; the built-in scale for a known endpoint is not
 consulted in addition. An empty or absent list means the endpoint offers no
 depth control at all, and every level is refused.
 
-Two paths keep a stored value instead of refusing it. Both apply only to what is
-already on disk, never to a selection just made:
+Declared levels are lowercase. The TOML loader folds and de-duplicates the list,
+and a selection is then matched against it exactly; a raw list assembled by hand,
+bypassing that normalization, is not supported input.
+
+One path keeps a stored value instead of refusing it, and it applies only to what
+is already on disk, never to a selection just made:
 
 - A saved DeepSeek `medium`/`xhigh` on an entry with no declared vocabulary keeps
   its historical `high` wire value (`migrateStoredDeepSeekEffort`). The same
   alias typed at `/effort` is refused.
-- The generic OpenAI-compatible scale still maps a stored `max` to its `high`
-  ceiling when the switch is reached with validation short-circuited by
-  `thinking = "disabled"`.
+
+The adapter additionally skips its own construction-time check for two settings
+that declare no depth control: `thinking = "disabled"` and
+`reasoning_protocol = "none"`. Neither skip rescues a stored level, because
+provider assembly validates it first against that entry's vocabulary — empty for
+`none`, `disabled`-only for `disabled` — so a stored `max` on either is refused
+there rather than mapped. Both skips matter only to a caller that constructs the
+adapter without provider assembly, and neither widens what a fresh selection may
+pick.
 
 The ACP per-session override drops to `auto` (`""`) when the selected model
 cannot express it. That is the contract's meaning of "inherit the provider
