@@ -240,10 +240,9 @@ type memberBackendDeps struct {
 	tasks    *teamTaskService
 	events   chan memberEvent
 	base     func() boot.Options
-	// workspaceRoot is captured from the ambient controller when the team
-	// overlay opens. Member controllers may be created while the process CWD is
-	// elsewhere; they must still resolve project skills/configuration against
-	// this root rather than recomputing it from the session directory.
+	// workspaceRoot is captured from the ambient controller when the overlay
+	// opens: members created while the process CWD is elsewhere must still
+	// resolve project skills against this root, not the session directory.
 	workspaceRoot string
 	// ambient reads the chat's own conversation for a leader's first member
 	// session (see leaderAmbientCarry). It is captured by reference at registry
@@ -392,10 +391,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			ctrl.Close()
 			return nil, err
 		}
-		// bindMemberSession may have resumed a transcript whose leading system
-		// message was assembled for an older role/proxy/skill configuration.
-		// Keep the durable conversation, but refresh only that leading message so
-		// the member identity and role skills remain correct after every reopen.
+		// bindMemberSession may resume a transcript whose leading system message
+		// was assembled for an older role/proxy/skill configuration: keep the
+		// conversation, refresh only that message, so identity stays correct.
 		ctrl.SetSystemPromptPreservingHistory(ctrl.SystemPrompt())
 		// A leader's first (file-less) entry continues from the chat's context;
 		// anyone else starts or resumes its own. The seed loads straight from

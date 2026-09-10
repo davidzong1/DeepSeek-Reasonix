@@ -1,21 +1,8 @@
 package cli
 
-// Plan-mode Bash admission regression tests. These pin the shared declaration
-// classifier that every plan-mode Bash gate reads:
-//
-//   - the permission gate reclassifies bash as read-only when
-//     shellsafe.ClassifyBash(...).IsPermissionReader() returns true
-//   - internal/runtimepolicy guard.go's PlanGuard / ConstraintGuard hard-deny
-//     any Bash call whose evidence profile MutatesState()
-//   - readOnlyBash (agent/task.go) refuses, at Execute time, any call that
-//     BashCommandIsReadOnly() rejects (foreground requirement included)
-//
-// None of these gates treat a user command's own exit status as a denial: a
-// read-only probe that happens to exit 1 (e.g. grep with no match) is a plain
-// command result, never a "blocked" event.
-//
-// The verdicts are leader/member-symmetric: PlanGuard/ConstraintGuard key on
-// the shared EffectProfile, so both produce exactly the same outcome.
+// Plan-mode Bash admission regression tests. They pin the shared declaration
+// classifier every plan-mode gate reads, and that a command's own exit status
+// is never a denial: leader and member stay symmetric through EffectProfile.
 
 import (
 	"encoding/json"

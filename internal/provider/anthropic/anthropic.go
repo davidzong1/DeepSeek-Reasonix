@@ -74,16 +74,9 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	// Anthropic's API surface is at {root}/v1/messages, so c.baseURL stores
-	// the *root* -- without any trailing /v1. The setup wizard, however, lets
-	// users paste a full OpenAI-compatible URL (e.g.
-	// "https://proxy.example.com/v1") because that's what /models probes
-	// expect. Stripping the trailing /v1 here makes both forms land on the
-	// same endpoint without forcing users to remember Anthropic's quirky
-	// root-vs-versioned split. Without this, a user pasting
-	// "https://proxy.example.com/v1" would probe /v1/models successfully
-	// but get the chat client concatenating onto
-	// "https://proxy.example.com/v1/v1/messages" -- a 404.
+	// Anthropic's API is at {root}/v1/messages, so baseURL stores the root, while
+	// the wizard lets users paste a full ".../v1" OpenAI-style URL. Stripping the
+	// trailing /v1 lands both on one endpoint instead of ".../v1/v1/messages".
 	root := strings.TrimRight(baseURL, "/")
 	root = strings.TrimSuffix(root, "/v1")
 	if root == "" {
@@ -160,23 +153,24 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
 	return &client{
-		identityHeaders:  provider.NewClientIdentityHeaders(),
-		reasoning:        ReasoningForConfig(cfg),
-		name:             name,
-		identity:         provider.RequestIdentity{Provider: name, DisplayName: cfg.DisplayName, Protocol: cfg.Protocol},
-		apiKey:           cfg.APIKey,
-		keyEnv:           keyEnv,
-		keySource:        keySource,
-		baseURL:          root,
-		requestURL:       requestURL,
-		model:            cfg.Model,
-		nativeAnthropic:  strings.EqualFold(root, defaultBaseURL),
+		identityHeaders: provider.NewClientIdentityHeaders(),
+		reasoning:       ReasoningForConfig(cfg),
+		name:            name,
+		identity:        provider.RequestIdentity{Provider: name, DisplayName: cfg.DisplayName, Protocol: cfg.Protocol},
+		apiKey:          cfg.APIKey,
+		keyOrigin:       keyOrigin{env: keyEnv, source: keySource},
+		baseURL:         root,
+		requestURL:      requestURL,
+		model:           cfg.Model,
+		endpoint: endpointDialect{
+			native: strings.EqualFold(root, defaultBaseURL),
+			mimo:   provider.IsMiMoEndpoint(root),
+		},
 		deepseek:         deepSeekReplay,
 		thinking:         thinking,
 		effort:           effort,
 		vision:           vision,
 		modelInfo:        modelInfo,
-		mimo:             provider.IsMiMoEndpoint(root),
 		search:           provider.SearchPolicy{NativeEnabled: webSearch, ClientEnabled: clientWebSearch},
 		headers:          cleanCustomHeaders(headers),
 		authHeader:       authHeader,
@@ -200,24 +194,39 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 	})
 }
 
+// endpointDialect is the wire dialect the resolved root selects. native marks
+// the first-party endpoint (documented default-5m cache-write pricing applies),
+// mimo a MiMo gateway (legacy tuple schemas upgrade to Draft 2020-12). Unlike
+// deepseek, which reasoning_protocol can override, both are pure functions of
+// the root URL.
+type endpointDialect struct {
+	native bool
+	mimo   bool
+}
+
+// keyOrigin is the API key's provenance, read together when an auth error is
+// rendered so the message can name both the env var and who supplied it.
+type keyOrigin struct {
+	env    string
+	source string
+}
+
 type client struct {
 	identityHeaders  http.Header
 	reasoning        provider.ReasoningCapability
 	name             string
 	identity         provider.RequestIdentity
 	apiKey           string
-	keyEnv           string // api_key_env name, surfaced in auth errors
-	keySource        string // source of keyEnv, surfaced in auth errors
+	keyOrigin        keyOrigin
 	baseURL          string
 	requestURL       string
 	model            string
-	nativeAnthropic  bool   // first-party endpoint: documented default-5m cache-write pricing applies
+	endpoint         endpointDialect
 	deepseek         bool   // official DeepSeek Anthropic endpoint: unsigned reasoning replay + automatic cache
 	thinking         string // "adaptive" enables extended thinking; "" = off (config-driven)
 	effort           string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
 	vision           bool   // model accepts image input — embed attached images as base64 image blocks
 	modelInfo        provider.ModelInfo
-	mimo             bool // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
 	search           provider.SearchPolicy
 	headers          map[string]string
 	authHeader       bool // send Authorization: Bearer instead of Anthropic's x-api-key header
@@ -282,8 +291,8 @@ func (c *client) sendOpts() provider.SendOptions {
 		Provider:            c.name,
 		ProviderDisplayName: c.identity.DisplayName,
 		Protocol:            c.identity.Protocol,
-		KeyEnv:              c.keyEnv,
-		KeySource:           c.keySource,
+		KeyEnv:              c.keyOrigin.env,
+		KeySource:           c.keyOrigin.source,
 		KeyPresent:          c.apiKey != "",
 		RetryAuth:           c.authed.Load(),
 	}
@@ -634,7 +643,7 @@ finalize:
 	}
 	if haveUsage {
 		cacheWriteBilledTokens := 0.0
-		if cacheCreate > 0 && c.nativeAnthropic {
+		if cacheCreate > 0 && c.endpoint.native {
 			cacheWriteBilledTokens = float64(cacheCreate) * cacheWrite5MinuteInputMultiplier
 		}
 		usage := &provider.Usage{

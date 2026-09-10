@@ -7,9 +7,8 @@ import (
 )
 
 // The team overlay's property editors keep each open field's value in a plain
-// string plus a rune cursor into it. Cursor arithmetic is rune-based so a
-// left/right across a CJK or emoji rune moves by one visible character, and
-// edits insert and delete at the cursor instead of only appending.
+// string plus a rune cursor. Cursor arithmetic is rune-based so left/right
+// across a CJK or emoji rune moves one visible character.
 
 // fieldRuneCount returns the rune length of s — the valid range of a rune
 // cursor (0..n).

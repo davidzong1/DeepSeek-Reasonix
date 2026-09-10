@@ -21,7 +21,7 @@ func (c *client) replayReasoningBlock(m provider.Message) (contentBlock, bool) {
 	if !c.deepseek && c.replaysReceivedThinking() && m.ReasoningSignature != "" {
 		return contentBlock{Type: "thinking", Thinking: m.ReasoningContent, Signature: m.ReasoningSignature}, true
 	}
-	if !c.nativeAnthropic && !c.deepseek && c.replaysReceivedThinking() && m.ReasoningContent != "" {
+	if !c.endpoint.native && !c.deepseek && c.replaysReceivedThinking() && m.ReasoningContent != "" {
 		return contentBlock{Type: "thinking", Thinking: m.ReasoningContent}, true
 	}
 	return contentBlock{}, false
@@ -85,7 +85,7 @@ func (c *client) ReasoningReplayCapabilities() provider.ReasoningReplayCapabilit
 	if c.deepseek {
 		return provider.ReasoningReplayCapabilities{Format: "anthropic-thinking"}
 	}
-	return provider.ReasoningReplayCapabilities{Format: "anthropic-thinking", RequireSignature: c.nativeAnthropic}
+	return provider.ReasoningReplayCapabilities{Format: "anthropic-thinking", RequireSignature: c.endpoint.native}
 }
 
 func (c *client) replayReasoningBlocks(m provider.Message) []contentBlock {
@@ -121,9 +121,9 @@ func thinkingSignature(b *provider.ThinkingBlock, delta string) string {
 }
 
 func (c *client) replaysSignedThinking() bool {
-	return c.thinking == "adaptive" || (c.nativeAnthropic && c.thinking == "enabled")
+	return c.thinking == "adaptive" || (c.endpoint.native && c.thinking == "enabled")
 }
 
 func (c *client) replaysReceivedThinking() bool {
-	return c.replaysSignedThinking() || (!c.nativeAnthropic && c.thinking == "enabled" && c.effort != "disabled")
+	return c.replaysSignedThinking() || (!c.endpoint.native && c.thinking == "enabled" && c.effort != "disabled")
 }

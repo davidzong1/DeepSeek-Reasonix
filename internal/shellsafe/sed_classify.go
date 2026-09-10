@@ -15,98 +15,132 @@ import (
 // or label never trips the denial.
 func classifySed(args []string) CommandEffect {
 	family := "sed"
-	var scripts []string
+	var st sedArgState
 	expectedScript := false
-	operands := 0
-	probe := false
-	noPrint := false
-	for i := 0; i < len(args); i++ {
+	// The index is advanced by the option handlers (an -e consumes its script),
+	// so it stays a plain variable rather than a range-over-len loop.
+	i := 0
+	for i < len(args) {
 		a := args[i]
 		if a == "--" {
-			if !expectedScript && len(scripts) == 0 && operands == 0 && i+1 < len(args) {
-				scripts = append(scripts, args[i+1])
+			if !expectedScript && len(st.scripts) == 0 && st.operands == 0 && i+1 < len(args) {
+				st.scripts = append(st.scripts, args[i+1])
 			}
 			break
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
-			if !expectedScript && len(scripts) == 0 && operands == 0 {
+			if !expectedScript && len(st.scripts) == 0 && st.operands == 0 {
 				// First non-option argument is the script when no -e/-f appears.
-				scripts = append(scripts, a)
+				st.scripts = append(st.scripts, a)
 			} else {
-				operands++
+				st.operands++
 			}
+			i++
 			continue
 		}
 		if strings.HasPrefix(a, "--") {
-			switch {
-			case a == "--expression":
-				i++
-				if i >= len(args) {
-					return unknownEffect(family, "missing sed expression")
-				}
-				noPrint = true // -e is explicit; the script itself is checked below
-				scripts = append(scripts, args[i])
-			case strings.HasPrefix(a, "--expression="):
-				noPrint = true
-				scripts = append(scripts, strings.TrimPrefix(a, "--expression="))
-			case a == "--file" || strings.HasPrefix(a, "--file="):
-				return unknownEffect(family, "sed script file effects are not statically known")
-			case a == "--in-place" || strings.HasPrefix(a, "--in-place="):
-				return sedInPlaceWriter()
-			case a == "--quiet" || a == "--silent":
-				noPrint = true
-			case a == "--posix" || a == "--regexp-extended" || a == "--separate" ||
-				a == "--unbuffered" || a == "--null-data" || a == "--help" || a == "--version":
-				probe = probe || a == "--help" || a == "--version"
-			default:
-				return unknownEffect(family, "unknown sed option")
+			effect, decided := sedConsumeLongOption(args, &i, &st)
+			if decided {
+				return effect
 			}
+			i++
 			continue
 		}
 		// Bundled short options, e.g. -ne 'expr' or -i.bak.
-		for k := 1; k < len(a); k++ {
-			switch a[k] {
-			case 'n':
-				noPrint = true
-			case 'E', 'r', 's', 'u', 'z':
-				// Read-only mode flags.
-			case 'e':
-				noPrint = true // -e is explicit; the script itself is checked below
-				if k+1 < len(a) {
-					scripts = append(scripts, a[k+1:])
-					k = len(a)
-				} else {
-					i++
-					if i >= len(args) {
-						return unknownEffect(family, "missing sed expression")
-					}
-					scripts = append(scripts, args[i])
-				}
-			case 'f':
-				return unknownEffect(family, "sed script file effects are not statically known")
-			case 'i', 'I':
-				return sedInPlaceWriter()
-			default:
-				return unknownEffect(family, "unknown sed option")
-			}
+		if effect, decided := sedConsumeShortOptions(args, &i, a, &st); decided {
+			return effect
 		}
+		i++
 	}
-	if probe && len(scripts) == 0 {
+	if st.probe && len(st.scripts) == 0 {
 		return knownReader(family)
 	}
-	if len(scripts) == 0 {
+	if len(st.scripts) == 0 {
 		return unknownEffect(family, "no sed script")
 	}
-	for _, script := range scripts {
+	for _, script := range st.scripts {
 		effect, ok := sedScriptClean(script)
 		if !ok {
 			return effect
 		}
 	}
-	if !noPrint {
+	if !st.noPrint {
 		return unknownEffect(family, "sed without -n not provably read-only")
 	}
 	return knownReader(family)
+}
+
+// sedArgState is what one sed argv scan accumulates: the scripts to inspect, how
+// many operands followed them, and the two flags the final verdict reads.
+type sedArgState struct {
+	scripts  []string
+	operands int
+	probe    bool
+	noPrint  bool
+}
+
+// sedConsumeLongOption applies the "--" option at *i to st. It reports decided
+// when the option is itself the verdict (in-place edit, script file, unknown),
+// in which case the caller returns that effect unchanged.
+func sedConsumeLongOption(args []string, i *int, st *sedArgState) (CommandEffect, bool) {
+	a := args[*i]
+	switch {
+	case a == "--expression":
+		(*i)++
+		if *i >= len(args) {
+			return unknownEffect("sed", "missing sed expression"), true
+		}
+		st.noPrint = true // -e is explicit; the script itself is checked below
+		st.scripts = append(st.scripts, args[*i])
+	case strings.HasPrefix(a, "--expression="):
+		st.noPrint = true
+		st.scripts = append(st.scripts, strings.TrimPrefix(a, "--expression="))
+	case a == "--file" || strings.HasPrefix(a, "--file="):
+		return unknownEffect("sed", "sed script file effects are not statically known"), true
+	case a == "--in-place" || strings.HasPrefix(a, "--in-place="):
+		return sedInPlaceWriter(), true
+	case a == "--quiet" || a == "--silent":
+		st.noPrint = true
+	case a == "--posix" || a == "--regexp-extended" || a == "--separate" ||
+		a == "--unbuffered" || a == "--null-data" || a == "--help" || a == "--version":
+		st.probe = st.probe || a == "--help" || a == "--version"
+	default:
+		return unknownEffect("sed", "unknown sed option"), true
+	}
+	return CommandEffect{}, false
+}
+
+// sedConsumeShortOptions applies one bundled short-option argument ("-ne",
+// "-i.bak"), walking its letters in order so a trailing -e takes the rest of the
+// bundle, or the next argv, as its script.
+func sedConsumeShortOptions(args []string, i *int, a string, st *sedArgState) (CommandEffect, bool) {
+	for k := 1; k < len(a); k++ {
+		switch a[k] {
+		case 'n':
+			st.noPrint = true
+		case 'E', 'r', 's', 'u', 'z':
+			// Read-only mode flags.
+		case 'e':
+			st.noPrint = true // -e is explicit; the script itself is checked below
+			if k+1 < len(a) {
+				st.scripts = append(st.scripts, a[k+1:])
+				k = len(a)
+			} else {
+				(*i)++
+				if *i >= len(args) {
+					return unknownEffect("sed", "missing sed expression"), true
+				}
+				st.scripts = append(st.scripts, args[*i])
+			}
+		case 'f':
+			return unknownEffect("sed", "sed script file effects are not statically known"), true
+		case 'i', 'I':
+			return sedInPlaceWriter(), true
+		default:
+			return unknownEffect("sed", "unknown sed option"), true
+		}
+	}
+	return CommandEffect{}, false
 }
 
 func sedInPlaceWriter() CommandEffect {

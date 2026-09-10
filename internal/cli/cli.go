@@ -82,10 +82,9 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	if cmd == "--acp" {
 		cmd = "acp"
 	}
-	// -p/--print is one-shot print mode. reasonix has no interactive -p, so a
-	// print flag anywhere in a leading flag run (no explicit subcommand) routes
-	// the whole set to `run --print` — `reasonix --model X -p "task"` works, not
-	// only `reasonix -p ...`.
+	// -p/--print is one-shot print mode, so a print flag anywhere in a leading
+	// flag run (no explicit subcommand) routes the whole set to `run --print`:
+	// `reasonix --model X -p "task"` works, not only `reasonix -p ...`.
 	if cmd == "-p" || cmd == "--print" || (isDefaultInteractiveFlag(cmd) && hasLeadingPrintFlag(args)) {
 		args = append([]string{"run", "--print"}, stripLeadingPrintFlag(args)...)
 		cmd = "run"
@@ -560,10 +559,9 @@ func runAgent(args []string, version string) int {
 		}
 	}
 
-	// Resolve the resume target up front so --copy and the session lease can be
-	// handled before any heavy assembly. --resume takes precedence over
-	// --continue, matching the Resume call below. Accept file paths, branch
-	// IDs, preview text, and opaque machine session IDs (#7429).
+	// Resolve the resume target up front so --copy and the session lease land
+	// before any heavy assembly. --resume wins over --continue, and a path,
+	// branch ID, preview text, or opaque machine session ID all work (#7429).
 	resumePath := strings.TrimSpace(*resume)
 	if resumePath != "" {
 		resolved, err := resolveSessionQuery(resolveCLISessionDir(), resumePath)
@@ -668,16 +666,9 @@ func runAgent(args []string, version string) int {
 	if strings.TrimSpace(*effort) != "" {
 		effortOverride = effort
 	}
-	// `reasonix run` is headless: there is no key loop to answer approval or ask
-	// prompts, and the approval timeout defaults to infinite. Installing the
-	// interactive approver/asker here would let an Ask rule, the `ask` tool, or a
-	// sandbox/config approval wedge the run forever. Map the mode onto a
-	// non-blocking headless gate instead — passed into boot.Build so every
-	// headless-only gate it constructs (task/read_only_task, writer-capable
-	// skill sub-agents, the planner runner) gets the same contract as the parent
-	// executor, not just the top-level one. Default/ask fails closed because no
-	// UI can answer; unattended writes require explicit --auto/-y,
-	// --permission-mode auto, or yolo.
+	// `reasonix run` is headless with an infinite approval timeout, so an
+	// interactive approver would let an Ask rule wedge it forever. Pass a
+	// non-blocking gate into boot.Build: default fails closed, writes need -y.
 	overrides := cliBuildOverrides{
 		Preset:               deprecatedMode,
 		Effort:               effortOverride,
@@ -705,10 +696,9 @@ func runAgent(args []string, version string) int {
 	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 	ctrl.ApplyHeadlessApprovalMode(permissions.approval)
 
-	// --resume: load a specific session file (non-interactive, meant for
-	// MCP/API callers that manage their own per-project session). Takes
-	// precedence over --continue.
-	// --continue: resume the most recent saved session.
+	// --resume: load a specific session file (non-interactive, for MCP/API
+	// callers managing their own per-project session); beats --continue, which
+	// resumes the most recent saved session.
 	if err := commitResumedSession(takeoverBinding, takeoverManager, ctrl, resumeSession, resumePath); err != nil {
 		return cliTakeoverFailure(takeoverBinding, leases, takeoverManager, err)
 	}
@@ -1074,9 +1064,8 @@ func chatREPL(args []string, version string) int {
 	})
 
 	// Own the active session file for the TUI's lifetime; in-TUI switches
-	// (/resume, /switch, /new, ...) move the lease with the active path.
-	// Refusing a held resume target up front is what keeps a desktop window
-	// and this chat from silently double-writing one transcript.
+	// (/resume, /switch, /new) move the lease with the active path. Refusing a
+	// held target up front stops a desktop window double-writing a transcript.
 	leases := control.NewSessionLeaseKeeper()
 	defer leases.Release()
 	takeoverManager := newCLITakeoverManager(nil, leases)
@@ -1118,9 +1107,8 @@ func chatREPL(args []string, version string) int {
 	}
 
 	// Plumb the controller's typed event stream through a channel so each event
-	// can become a tea.Msg inside the TUI's update loop. Buffered generously:
-	// streaming bursts (tool results, long answers) shouldn't backpressure the
-	// agent goroutine.
+	// becomes a tea.Msg in the TUI loop. Buffered generously so streaming
+	// bursts (tool results, long answers) never backpressure the agent.
 	eventCh := make(chan event.Event, 1024)
 
 	var sink event.Sink = &eventSink{ch: eventCh}
@@ -1178,12 +1166,9 @@ func chatREPL(args []string, version string) int {
 	}
 	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
-	// Surface a missing-key warning inside the TUI banner so the first message
-	// failing is at least pre-announced; the user can still enter chat.
-	// resolveModelForCLI transparently falls through a keyless default to the
-	// next configured provider (issue #6996). Validating the final ref is a
-	// no-op for that configured fallback and preserves the warning when every
-	// eligible chat provider is still keyless.
+	// Surface a missing-key warning in the TUI banner so the first failure is
+	// pre-announced. resolveModelForCLI falls through a keyless default to the
+	// next provider (#6996), so validating the final ref must stay a no-op.
 	missing := ""
 	if cfg, loadErr := config.Load(); loadErr == nil {
 		name, _, err := resolveModelForCLI(*model, cfg)
@@ -1236,10 +1221,9 @@ func chatREPL(args []string, version string) int {
 		m.cfg = cfg
 	}
 
-	// /model support: a pure builder the TUI calls to rebuild on a different
-	// model (carrying the conversation). It must NOT touch the running model —
-	// runModelSubcommand performs the swap on the live copy. The same stable sink
-	// feeds the new controller, so events keep flowing to this TUI.
+	// /model support: a pure builder the TUI calls to rebuild on another model,
+	// carrying the conversation. It must NOT touch the running model (that swap
+	// is runModelSubcommand's) and shares this TUI's sink.
 	m.buildController = func(spec controllerBuildSpec, carry []provider.Message, resumePath string, oldCtrl control.SessionAPI) (*control.Controller, error) {
 		effectiveOverrides := overrides
 		if spec.EffortOverride != nil {
@@ -1269,12 +1253,9 @@ func chatREPL(args []string, version string) int {
 		}
 		return c, nil
 	}
-	// /reload support: rebuild the runtime through boot.Rebuild so tools,
-	// skills, commands, hooks, MCP servers, and providers are discovered fresh
-	// while the boot layer migrates the session (history, approval grants,
-	// goal/recovery state, lifecycle). Same construction inputs as
-	// buildController so the replacement matches this session's launch wiring;
-	// the CLI holds no SharedHost, so each rebuild owns its plugin host.
+	// /reload support: rebuild through boot.Rebuild so tools, skills, hooks,
+	// MCP servers, and providers are rediscovered while boot migrates the
+	// session. Same inputs as buildController; each rebuild owns its host.
 	m.bindRuntimeRebuilder(*maxSteps, sink, *yolo, overrides, cliProfileBuildOptions)
 	m.bindTeamBackendSeam(*maxSteps, overrides)
 	if effortOverride != nil {
@@ -1316,9 +1297,7 @@ func chatREPL(args []string, version string) int {
 	}
 	// Close the active controller plus any retired ones from /model switches.
 	// Retired controllers were stashed rather than closed at switch time
-	// because Controller.Close() runs SessionEnd hooks and kills plugin
-	// subprocesses — operations that corrupt bubbletea's terminal raw mode
-	// when executed while the TUI is alive.
+	// because Close() runs SessionEnd hooks that corrupt bubbletea's raw mode.
 	handoff := closeAfterTUI(final, ctrl, reporter)
 	launchWeb := handoff.launch
 	launchWebPath := handoff.path
@@ -1332,11 +1311,9 @@ func chatREPL(args []string, version string) int {
 		return 1
 	}
 	if launchWeb {
-		// The Web runtime resumes a materialized TUI transcript or binds the exact
-		// reserved identity for a never-used session. Release the TUI lease before
-		// rebuilding the controller or the handoff would correctly reject its own
-		// session as already in use. The deferred Release remains as a harmless
-		// final guard for every other return path.
+		// The Web runtime resumes a materialized TUI transcript or binds a reserved
+		// identity. Release the TUI lease before rebuilding the controller, or the
+		// handoff rejects its own session; the deferred Release still guards.
 		leases.Release()
 		return runWebCommand(webHandoffArgs(launchWebPath, launchWebSessionID, launchWebModelRef))
 	}
@@ -1365,9 +1342,8 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry 
 		c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
 	}
 	// Persist the adopted history now: the splice above only refreshed the new
-	// controller's memory and nothing saves again until the next turn ends, so
-	// quitting right after the switch and resuming would otherwise revive the
-	// outgoing profile's contract from disk.
+	// controller's memory, so quitting right after the switch and resuming
+	// would otherwise revive the outgoing profile's contract from disk.
 	if path != "" {
 		if err := c.Snapshot(); err != nil {
 			return fmt.Errorf("snapshot after runtime switch: %w", err)

@@ -49,10 +49,9 @@ func (m *chatTUI) startControllerTurnWithQueue(displayed, restore, queued string
 		}
 		return nil
 	}
-	// A team overlay can be opened in a degraded state (for example when a
-	// member backend failed to assemble or a test/host intentionally has no
-	// controller). Treat submission as a recoverable refusal instead of calling
-	// Running/SendWithRaw on a nil controller and crashing the process.
+	// A team overlay can open degraded (a member backend failed to assemble, or
+	// a test/host has no controller). Treat submission as a recoverable refusal
+	// rather than calling Running/SendWithRaw on nil and crashing.
 	if m.ctrl == nil {
 		m.notice("the active session is unavailable; reopen the team member or start a new session")
 		if m.input.Value() == "" {

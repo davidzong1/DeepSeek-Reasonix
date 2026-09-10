@@ -1,9 +1,8 @@
 package cli
 
 // 1M context regression, CLI level: the [1m] alias strips from the wire model
-// and advertises a one-million-token window. DeepSeek additionally routes to
-// Anthropic with its protocol flags; the wire contract lives in
-// chat_tui_team_model_rebind_test.go, while this file pins resolver behavior.
+// and advertises a one-million-token window. The wire contract lives in
+// chat_tui_team_model_rebind_test.go; this file pins resolver behavior.
 
 import (
 	"strings"

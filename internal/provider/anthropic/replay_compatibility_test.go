@@ -11,7 +11,7 @@ import (
 )
 
 func TestAnthropicCompatibilityPrecedesRecovery(t *testing.T) {
-	native := &client{nativeAnthropic: true, thinking: "adaptive"}
+	native := &client{endpoint: endpointDialect{native: true}, thinking: "adaptive"}
 	gateway := &client{model: "deepseek-v4-flash", thinking: "adaptive"}
 	deepseek := &client{deepseek: true, thinking: "enabled"}
 	plain := provider.Message{Role: provider.RoleAssistant, Content: "answer", ReasoningContent: "observed thought", ReasoningState: provider.ReasoningComplete}
@@ -52,7 +52,7 @@ func TestAnthropicCompatibilityPrecedesRecovery(t *testing.T) {
 }
 
 func TestNativeUnsignedTextConversionPreservesCanonicalHistory(t *testing.T) {
-	c := &client{nativeAnthropic: true, thinking: "adaptive"}
+	c := &client{endpoint: endpointDialect{native: true}, thinking: "adaptive"}
 	raw := []provider.Message{{Role: provider.RoleAssistant, Content: "answer", ReasoningContent: "one two", ReasoningState: provider.ReasoningComplete, ThinkingBlocks: []provider.ThinkingBlock{{Type: "thinking", Thinking: "one"}, {Type: "thinking", Thinking: "two"}}}}
 	before, _ := json.Marshal(raw)
 	projected, changed := provider.ProjectReplaySafeMessages(c, raw)
@@ -94,7 +94,7 @@ func TestGatewayReplayPreservesActualBlocksWithoutFabricatingSignature(t *testin
 }
 
 func TestSignedAndRedactedHistoryNeverUsesTextConversion(t *testing.T) {
-	c := &client{nativeAnthropic: true, thinking: "adaptive"}
+	c := &client{endpoint: endpointDialect{native: true}, thinking: "adaptive"}
 	blocks := []provider.ThinkingBlock{{Type: "thinking", Signature: "proof"}, {Type: "redacted_thinking", Data: "opaque"}}
 	raw := []provider.Message{{Role: provider.RoleAssistant, ThinkingBlocks: blocks}}
 	projected, changed := provider.ProjectReplaySafeMessages(c, raw)

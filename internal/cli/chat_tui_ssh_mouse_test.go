@@ -233,10 +233,9 @@ func TestSSHRemoteClipboardKeepsWorking(t *testing.T) {
 		t.Fatal("mouseCaptureOffByDefault() must return true over SSH")
 	}
 
-	// Verify mouseCaptureOff gating: the clipboard path must still work.
-	// copyToClipboardWithStatus is the central clipboard dispatch; over SSH
-	// it forces OSC 52 regardless of mouseCaptureOff. Verifying the flag
-	// didn't corrupt the dispatch contract is sufficient.
+	// Verify mouseCaptureOff gating: over SSH copyToClipboardWithStatus, the
+	// central clipboard dispatch, must still force OSC 52 regardless of the
+	// flag — the dispatch contract surviving is what matters.
 	if got := mouseCaptureOffByDefault(); !got {
 		t.Fatal("mouseCaptureOff must default to true over SSH")
 	}

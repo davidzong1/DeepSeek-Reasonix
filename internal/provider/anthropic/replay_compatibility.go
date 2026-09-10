@@ -20,7 +20,7 @@ func (c *client) requiresReceivedReasoning(m provider.Message) bool {
 	default:
 		unsafe = true
 	}
-	if !c.nativeAnthropic {
+	if !c.endpoint.native {
 		// Receiving the Anthropic envelope is not evidence that a gateway
 		// requires Claude signatures. Preserve its actual blocks instead.
 		return observed || unsafe
@@ -33,7 +33,7 @@ func (c *client) requiresReceivedReasoning(m provider.Message) bool {
 // only for complete, unsigned, non-tool history. Tool continuations still need
 // their original proof; DeepSeek and unknown gateways keep their own blocks.
 func (c *client) ConvertReasoningReplay(m provider.Message) (provider.Message, bool) {
-	if !c.nativeAnthropic || c.deepseek || !c.replaysSignedThinking() ||
+	if !c.endpoint.native || c.deepseek || !c.replaysSignedThinking() ||
 		m.Role != provider.RoleAssistant || len(m.ToolCalls) > 0 || len(m.ServerSearch) > 0 ||
 		m.ReasoningSignature != "" || len(m.ResponsesItems) > 0 {
 		return m, false

@@ -188,10 +188,9 @@ func loadForRoot(root string, opts loadForRootOptions) (*Config, error) {
 	// CLI telemetry is an explicit user-global privacy choice. Project config
 	// cannot opt a user in or out, including when the global value is absent.
 	cfg.Telemetry, cfg.Agent.LegacyAnchorSafetyGate = globalTelemetry, globalLegacyAnchorSafetyGate
-	// TOML decoding replaces [[plugins]] wholesale, so cfg.Plugins now holds
-	// only the last file's. Re-merge by name across all sources (later wins) so a
-	// project reasonix.toml doesn't drop the global config's MCP servers.
-	// mergeTOMLPlugins only reads files; it does not run on-disk migrations.
+	// TOML decoding replaces [[plugins]] wholesale, so cfg.Plugins holds only the
+	// last file's. Re-merge by name across sources (later wins) so a project
+	// reasonix.toml doesn't drop global MCP servers. mergeTOMLPlugins is read-only.
 	plugins, err := mergeTOMLPlugins(tomlSources)
 	if err != nil {
 		cfg.addLoadWarning(fmt.Sprintf("plugin configuration could not be merged (%v); continuing without those entries", err))
@@ -213,8 +212,7 @@ func loadForRoot(root string, opts loadForRootOptions) (*Config, error) {
 
 	// Claude Code's .mcp.json (project root) is read last and merged into
 	// [[plugins]], so a server configured for Claude works here unchanged.
-	// Project reasonix.toml wins on a name collision; project .mcp.json wins
-	// over a same-name user-global entry (see mergeMCPJSON).
+	// Project reasonix.toml wins a collision, then project .mcp.json.
 	mcpFile := mcpJSONFile
 	if root != "." {
 		mcpFile = filepath.Join(root, mcpJSONFile)
@@ -227,9 +225,8 @@ func loadForRoot(root string, opts loadForRootOptions) (*Config, error) {
 	}
 
 	// Lowest priority before the one-time v1.9.1 MCP migration: the v0.x
-	// ~/.reasonix/config.json's mcpServers. Once the migration marker exists, the
-	// current config is authoritative even when it is empty; reading the legacy
-	// source again would resurrect servers the user removed from current config.
+	// ~/.reasonix/config.json mcpServers. Once the marker exists the current
+	// config is authoritative even when empty; re-reading resurrects removals.
 	if !mcpGlobalMigrationComplete() {
 		cfg.mergeMCPJSON(loadLegacyMCP(legacyConfigPath()))
 	}

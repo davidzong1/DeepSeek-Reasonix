@@ -1,18 +1,8 @@
 package cli
 
-// Plan-mode sed admission regression tests for the granularity directive: safe
-// sed stream reads admitted, sed -i and the e/w/W/r/R write/execute/read-file
-// forms rejected. Admission verdicts come from the shared declaration
-// classifier (shellsafe.ClassifyBash(...).IsPermissionReader()) mirrored by the
-// permission-layer reader fallback (permission.BashCommandIsReadOnly), exactly
-// the two decisions a plan-mode Bash gate makes.
-//
-// Current state of classifySed (sed_classify.go): flag-position in-place edits
-// (-i/--in-place, including bundled -ni) reject correctly; -f/--file reject
-// correctly; the script lexer inspects the sed command body for e/w/W/r/R and
-// static analysis succeeds for pure -e expressions and bare-position scripts.
-// -n with a pure-print script admits. The free-form tests account for the
-// admit gap: -e with a pure script is legitimately admitted, -f stays denied.
+// Plan-mode sed admission regression tests: safe stream reads admit, while -i
+// and the e/w/W/r/R forms reject. Verdicts come from the same declaration
+// classifier the permission-layer fallback mirrors; -f stays denied.
 
 import (
 	"encoding/json"

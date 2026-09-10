@@ -16,7 +16,7 @@ func encodeAnthTools(c *client, req provider.Request) []anthTool {
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
-		if c.mimo {
+		if c.endpoint.mimo {
 			schema = provider.NormalizeLegacyTupleItemsForDraft202012(schema)
 		}
 		item := anthTool{Name: t.Name, Description: t.Description, InputSchema: schema}

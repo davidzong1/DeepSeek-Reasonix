@@ -49,10 +49,9 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 			m.markMemberUnread(msg.member)
 		}
 	}
-	// A quota-failed turn switches the member to the next usable pool entry
-	// (P2), whether or not its transcript is currently visible. The failover
-	// path rebinds the visible controller only for the bound member; background
-	// members are rebuilt in place and keep their own session state.
+	// A quota-failed turn switches the member to the next usable pool entry,
+	// whether or not its transcript is visible. Only the bound member rebinds
+	// its controller; background members are rebuilt in place.
 	if msg.ev.Kind == event.TurnDone && msg.ev.Err != nil {
 		m.failoverQuotaTurn(msg.member, msg.ev.Err)
 	}
@@ -301,10 +300,9 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 	m.pendingApproval = nil
 	m.bubblePending = false
 	m.turnDiscarded = false
-	// The footer working line reads m.state/turnPhase/elapsed/turnTokens of the
-	// previously bound member; without clearing them a switch to an idle member
-	// would keep showing the outgoing member's "working" status. The incoming
-	// member's own events restore its real phase on replay.
+	// The footer working line reads these from the previously bound member, so
+	// without clearing them a switch to an idle member keeps showing the
+	// outgoing one's status. Replay restores the incoming member's real phase.
 	m.state = tuiIdle
 	m.turnPhase = ""
 	m.elapsed = 0

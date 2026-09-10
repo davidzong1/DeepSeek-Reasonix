@@ -1,19 +1,8 @@
 package cli
 
-// Footer state isolation tests for team member switching. These tests pin the
-// contract that the footer "working" status (m.turnPhase → runningWorkingLine)
-// is scoped per member and properly cleared/reset on switch.
-//
-// bindBackend (chat_tui_team_switch.go) already clears the outgoing member's
-// footer state (state=tuiIdle, turnPhase="", elapsed, turnTokens) on every
-// switch, and switchTeamMember replays the incoming member's live buffer after
-// binding, so a running member's phase is restored from its own events — never
-// from the previous member's. All assertions below exercise current behavior.
-//
-// Tests check m.turnPhase directly (the internal state that drives the footer
-// rendering) rather than runningWorkingLine, which requires a fully wired
-// backend implementing InboxSnapshot. turnPhase is the source of truth:
-// runningWorkingLine renders it through turnPhaseStatusLabel.
+// Footer state isolation tests for team member switching: the "working" status
+// (m.turnPhase) is per member and cleared on switch. Tests read turnPhase
+// directly — it is the source of truth runningWorkingLine renders.
 
 import (
 	"testing"
