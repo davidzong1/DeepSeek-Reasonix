@@ -58,6 +58,11 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 	if len(cap.Options) == 0 {
 		return EffortCapability{}
 	}
+	if cap.Locked {
+		// The vocabulary names the entry's fixed mode, so auto is the only
+		// selection; listing the mode itself would advertise a refusal.
+		return EffortCapability{Supported: true, Levels: []string{"auto"}, Default: cap.Default}
+	}
 	def := cap.Default
 	if def == "" {
 		def = "auto"
@@ -78,15 +83,37 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("usage: /effort auto|<level>")
 	}
+	if err := ValidateEffortSelection(e, raw); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// ValidateEffortSelection is the explicit-selection verdict shared by /effort,
+// --effort and the resolution path, so a level the adapter would refuse at
+// construction is refused here instead of being stored first. The inherit
+// spellings (empty, auto) are not selections. A locked vocabulary is the one
+// case Validate alone cannot settle: it admits its ID for stored values, while
+// no selection may pick it.
+func ValidateEffortSelection(e *ProviderEntry, raw string) error {
+	if raw == "" || raw == "auto" {
+		return nil
+	}
 	cap := ReasoningCapabilityForEntry(e)
 	model := ""
 	if e != nil {
 		model = e.Model
 	}
 	if err := cap.Validate(model, raw); err != nil {
-		return "", err
+		return err
 	}
-	return raw, nil
+	if !cap.Locked {
+		return nil
+	}
+	return &provider.UnsupportedReasoningEffort{
+		Model: model, Effort: raw, Supported: cap.IDs(),
+		Reason: "thinking is disabled by configuration for this provider entry, which fixes its level; clear the entry's thinking setting to select one",
+	}
 }
 
 // EffortDisplay returns the selected /effort level, using "auto" for provider

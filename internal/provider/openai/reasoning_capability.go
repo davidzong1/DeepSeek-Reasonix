@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"slices"
+
 	"reasonix/internal/provider"
 )
 
@@ -33,6 +35,7 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 	default:
 		cap = provider.ReasoningOptions("")
 	}
+	endpointScale := cap.IDs()
 	cap = provider.DeclaredReasoning(cfg, cap)
 	if protocol == "glm" || (protocol == "" && (IsZhipu(cfg.BaseURL) || IsLongCat(cfg.BaseURL))) {
 		cap = provider.RestrictReasoning(cap, "enabled", "disabled")
@@ -41,7 +44,11 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 		cap = provider.RestrictReasoning(cap, "adaptive", "disabled")
 	}
 	if configuredThinkingType(cfg) == "disabled" {
-		return provider.ReasoningOptions("disabled", "disabled")
+		pinned := provider.ReasoningOptions("disabled", "disabled")
+		// An endpoint scale that already carries disabled sends it as an effort; without one the
+		// pin is the endpoint's fixed mode, and selecting it would only reach the constructor refusal.
+		pinned.Locked = !slices.Contains(cap.IDs(), "disabled") && !slices.Contains(endpointScale, "disabled")
+		return pinned
 	}
 	return cap
 }

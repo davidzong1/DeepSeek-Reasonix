@@ -105,4 +105,16 @@ func TestUnsupportedEffortErrorNamesTheConfigKey(t *testing.T) {
 	if declared == undeclared {
 		t.Fatal("an empty vocabulary needs its own advice")
 	}
+	// A locked vocabulary needs neither advice: its ID is listed and no
+	// supported_efforts edit makes it selectable, so the reason replaces them.
+	locked := (&provider.UnsupportedReasoningEffort{
+		Model: "m", Effort: "disabled", Supported: []string{"disabled"},
+		Reason: "thinking is disabled by configuration",
+	}).Error()
+	if !strings.Contains(locked, "UNSUPPORTED_REASONING_EFFORT") || !strings.Contains(locked, "thinking is disabled by configuration") {
+		t.Fatalf("locked error %q lacks the contract prefix or its reason", locked)
+	}
+	if strings.Contains(locked, "supported_efforts") {
+		t.Fatalf("locked error %q sends the caller to supported_efforts", locked)
+	}
 }

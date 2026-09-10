@@ -133,6 +133,10 @@ func preflightRoleReasoning(cfg *config.Config, opts Options, resolver provider.
 			}
 		}
 		if selection.effort != nil {
+			if err := config.ValidateEffortSelection(&copy, *selection.effort); err != nil {
+				supported := config.ReasoningCapabilityForEntry(&copy).IDs()
+				return &RoleReasoningError{selection.role, resolved, *selection.effort, selection.source, copy.Kind, supported, err}
+			}
 			copy.Effort, source = *selection.effort, selection.source
 			if copy.Kind == "anthropic" && copy.Effort != "" && copy.Thinking == "" {
 				copy.Thinking = "adaptive"

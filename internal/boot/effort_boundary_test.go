@@ -116,6 +116,35 @@ func TestUndeclaredEffortIsRefusedNotClamped(t *testing.T) {
 	}
 }
 
+// The pinned thinking mode is refused where the level is selected, so the
+// store and the adapter's constructor are never the first to see it: --effort
+// reaches the resolver and the role preflight before assembly.
+func TestPinnedThinkingSelectionRefusedBeforeAssembly(t *testing.T) {
+	entry := config.ProviderEntry{Name: "gateway", Kind: "openai", BaseURL: "https://gateway.example.invalid/v1", Model: "custom", Models: []string{"custom"}, Thinking: "disabled"}
+	cfg := &config.Config{Providers: []config.ProviderEntry{entry}}
+	disabled := "disabled"
+
+	resolver := NewLocalProviderResolver(cfg, netclient.ProxySpec{})
+	_, err := resolver.Resolve(provider.Selection{Ref: "gateway/custom", Effort: &disabled})
+	var unsupported *provider.UnsupportedReasoningEffort
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("--effort disabled resolved with %v, want a typed refusal", err)
+	}
+	if strings.Contains(err.Error(), "must be low, medium, or high") {
+		t.Fatalf("the adapter's constructor error leaked into selection: %v", err)
+	}
+	cfg.DefaultModel = "gateway/custom"
+	roleErr := preflightRoleReasoning(cfg, Options{EffortOverride: &disabled}, nil, false)
+	var role *RoleReasoningError
+	if !errors.As(roleErr, &role) || role.Role != "execution" || !errors.As(roleErr, &unsupported) {
+		t.Fatalf("preflight = %v, want the typed role/adapter refusal", roleErr)
+	}
+	// The inherit spelling still clears the override on the same entry.
+	if err := config.ValidateEffortSelection(&entry, "auto"); err != nil {
+		t.Fatalf("auto = %v, want no verdict", err)
+	}
+}
+
 // The CLI --effort flag and the ACP per-session override both arrive as a
 // provider.Selection.Effort, which the resolver normalizes before the adapter
 // is constructed. A level the adapter would refuse must fail there instead of

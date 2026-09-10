@@ -18,6 +18,8 @@ type ReasoningOption struct {
 type ReasoningCapability struct {
 	Options []ReasoningOption `json:"options"`
 	Default string            `json:"default,omitempty"`
+	// Locked marks a vocabulary naming the endpoint's fixed mode: it validates what is stored, but offers no selectable level.
+	Locked bool `json:"-"`
 }
 
 type ReasoningProvider interface{ ReasoningCapability() ReasoningCapability }
@@ -30,12 +32,17 @@ type ReasoningProvider interface{ ReasoningCapability() ReasoningCapability }
 type UnsupportedReasoningEffort struct {
 	Model, Effort string
 	Supported     []string
+	// Reason replaces the supported_efforts advice when the vocabulary is not a menu the caller can extend.
+	Reason string
 }
 
 // Error names supported_efforts because that provider-entry key is what decides
 // the vocabulary. An empty list is a different fix from a short one: the first
 // declares the levels, the second only extends them.
 func (e *UnsupportedReasoningEffort) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("UNSUPPORTED_REASONING_EFFORT: model %q does not support %q; %s", e.Model, e.Effort, e.Reason)
+	}
 	msg := fmt.Sprintf("UNSUPPORTED_REASONING_EFFORT: model %q does not support %q (supported: %v)", e.Model, e.Effort, e.Supported)
 	if len(e.Supported) == 0 {
 		return msg + "; set supported_efforts on the provider entry to declare this endpoint's levels"
