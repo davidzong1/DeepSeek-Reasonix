@@ -67,6 +67,9 @@ func (m *chatTUI) skillList() {
 		return
 	}
 	m.commitLine(renderSkillList(m.width, sortedSkills(skills), m.disabledSkillNames()))
+	if msg := m.teamSkillGapDiagnostic(); msg != "" {
+		m.notice(msg)
+	}
 }
 
 func (m *chatTUI) skillShow(name string) {
@@ -286,7 +289,71 @@ func (m *chatTUI) skillStore() *skill.Store {
 		pluginAgentPaths = cfg.PluginPackageAgentOwners()
 		maxDepth = cfg.SkillMaxDepth()
 	}
-	return skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, PluginPaths: pluginPaths, PluginAgentPaths: pluginAgentPaths, ExcludedPaths: excluded, MaxDepth: maxDepth})
+	root, teamRole := cwd, ""
+	teamSkillsRoot := ""
+	if wsRoot, skRoot, role, ok := m.teamSkillStoreScope(); ok {
+		root, teamSkillsRoot, teamRole = wsRoot, skRoot, role
+	}
+	return skill.New(skill.Options{ProjectRoot: root, TeamSkillsRoot: teamSkillsRoot, TeamRole: teamRole, CustomPaths: custom, PluginPaths: pluginPaths, PluginAgentPaths: pluginAgentPaths, ExcludedPaths: excluded, MaxDepth: maxDepth})
+}
+
+// teamSkillStoreScope reports the scoped store identity to mirror while the
+// window shows a bound team member — its project root, the user-global team
+// skills root, and its role. False outside a bound team session.
+func (m *chatTUI) teamSkillStoreScope() (projectRoot, teamSkillsRoot, teamRole string, ok bool) {
+	if !m.memberSessionBound() {
+		return "", "", "", false
+	}
+	// A picker whose store never opened has no binding to mirror; skillStore's
+	// cwd-rooted store is the only answer left.
+	if m.teamPick.store == nil {
+		return "", "", "", false
+	}
+	binding, err := m.teamPick.store.Binding(m.teamPick.session.teamName, m.boundMember())
+	if err != nil {
+		return "", "", "", false
+	}
+	// An unresolvable project root stays empty — the member backend scoped no
+	// project conventions either. The manager's cwd is never a fallback: that
+	// coupling is what the user-global team root exists to break.
+	projectRoot = strings.TrimSpace(controllerWorkspaceRoot(m.ctrl))
+	if projectRoot == "" {
+		projectRoot = strings.TrimSpace(m.teamPick.workspaceRoot)
+	}
+	return projectRoot, teamSkillsBase(), string(roleForLeader(binding.Leader)), true
+}
+
+// teamSkillGapDiagnostic names the user-global team tree when a bound member's
+// role has no loadable playbook there, so a manager asking /skills sees why no
+// team skill appears. Existence alone cannot answer that: a skeleton left by an
+// interrupted install, or a tree holding only the other role's branch, reads as
+// installed while loading nothing. Empty outside a bound session and once a
+// playbook actually loads.
+func (m *chatTUI) teamSkillGapDiagnostic() string {
+	if !m.memberSessionBound() {
+		return ""
+	}
+	tree := teamSkillsTreeDir()
+	if tree == "" {
+		return "team skills: no Reasonix user state directory is resolvable, so the team skills tree cannot be read (set REASONIX_HOME or REASONIX_STATE_HOME)"
+	}
+	if len(m.skillStore().TeamRoleSkills()) > 0 {
+		return ""
+	}
+	return fmt.Sprintf("team skills: none loadable under %s for this member's role — member skills are read only from that user-global tree and it is not installed; install it with 'make install-team-skills'", tree)
+}
+
+// memberSessionBound reports whether the window is bound inside a team member
+// session — the one state in which the manager's skill surfaces must read the
+// bound controller's live scoped catalog instead of a cwd-rooted store of their
+// own: an unscoped store would admit every role's tree and close special/<role>,
+// dropping the bound member's skills and offering the other role's.
+func (m *chatTUI) memberSessionBound() bool {
+	if m == nil || m.teamPick == nil || m.ctrl == nil {
+		return false
+	}
+	s := &m.teamPick.session
+	return s.active && s.teamName != "" && s.current != ""
 }
 
 func (m *chatTUI) runHooksSubcommand(input string) {

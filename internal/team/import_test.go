@@ -412,3 +412,43 @@ func TestImportFromMCPPreservesMemberProxyOverride(t *testing.T) {
 		t.Fatalf("absent/inherit override must stay nil, got inher=%v inherit_mode=%v", got["inher"], got["inherit_mode"])
 	}
 }
+
+// TestImportFromMCPRecordsNoSkillRoot pins the new contract: the importer
+// writes no skill root — team skills are user-global now, so a root carried on
+// the source or kept from an older document must neither be written nor
+// cleared. The field stays JSON-compatible for documents that still have one.
+func TestImportFromMCPRecordsNoSkillRoot(t *testing.T) {
+	ts, _ := newTeamStore(t)
+	if _, err := ts.ImportFromMCP(writeMCPSource(t, mcpFixture), ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, err := ts.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, team := range doc.Teams {
+		if team.WorkspaceRoot != "" {
+			t.Fatalf("an imported team must record no skill root, got %q", team.WorkspaceRoot)
+		}
+	}
+
+	// An existing record keeps whatever it had: the import neither overwrites
+	// nor clears a legacy value it no longer consumes.
+	ts2, _ := newTeamStore(t)
+	doc2 := validDoc()
+	stale := filepath.Join(t.TempDir(), "legacy")
+	doc2.Teams[0].WorkspaceRoot = stale
+	if err := ts2.Save(doc2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts2.ImportFromMCP(writeMCPSource(t, mcpFixture), ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got2, _, err := ts2.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Teams[0].WorkspaceRoot != stale {
+		t.Fatalf("a legacy record must survive untouched, got %q", got2.Teams[0].WorkspaceRoot)
+	}
+}

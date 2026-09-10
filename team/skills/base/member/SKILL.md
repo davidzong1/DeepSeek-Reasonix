@@ -1,5 +1,6 @@
 ---
 name: member
+team_role: member
 description: Member-only skill. Execute one durable Reasonix team subtask within its assigned scope, verify the result, and formally report it to the leader.
 ---
 
@@ -24,6 +25,14 @@ team task, reassign yourself, or act as the leader.
 
 - Change only the assigned files and behavior. Preserve unrelated user or team
   edits and avoid destructive Git operations.
+- Team components are available in every task mode, including a read-only,
+  plan, or audit task whose text forbids mutation. The team's coordination
+  state is separate from user workspace state: `member_report_result`'s report
+  operation, shared blackboard/results writes, team knowledge writes, and the
+  other `member_*` capabilities stay reachable so a member can always close
+  out its task. The read-only boundary still blocks ordinary workspace file,
+  shell, and MCP writes, and every team call still enforces leader identity,
+  task ownership, generation, session lease, and explicit publish checks.
 - Keep the current role dynamic: after a role or Agent-user change, discard
   assumptions from the old context, reread the assignment, and use the newly
   injected system prompt.

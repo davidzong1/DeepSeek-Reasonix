@@ -124,8 +124,8 @@ type teamPicker struct {
 	model         *tui.Model
 	errMsg        string                 // unreadable registry; "" when healthy
 	refusal       string                 // transient operation refusal; the page stays up
-	store         *team.TeamStore        // storage seam; nil when the project root is unusable
-	sessions      *team.TeamSessionStore // session/context seam; nil when the project root is unusable
+	store         *team.TeamStore        // storage seam; nil when no team data root opened
+	sessions      *team.TeamSessionStore // session/context seam; nil when no team data root opened
 	dataDir       string                 // team data dir backing store and board; "" when unknown
 	board         *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
 	backends      *teamBackends          // member Agent backends; nil when the seam is unavailable
@@ -155,13 +155,9 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 	cwd, err := os.Getwd()
 	if err == nil {
 		workspaceRoot, projectRoot := teamLaunchRoots(cwd, controllerWorkspaceRoot(m.ctrl))
-		// Keep the ambient session's workspace root for member controllers. It is
-		// the directory the user actually launched Reasonix in and drives file
-		// references, sandbox writes, and status reporting. Team-owned resources
-		// (skills plus legacy .reasonix adoption) resolve independently from the
-		// executable/build project root, so opening the overlay from elsewhere
-		// still finds the current project's team tree without relabelling the
-		// member session as if it lived there.
+		// Member controllers keep the ambient workspace root — where the user
+		// launched Reasonix — for file references, sandboxing and status. Role
+		// playbooks are user-global; only legacy project team data follows the repository root.
 		roots, err := openTeamDataRoots(projectRoot)
 		if err == nil {
 			if roots.note != "" {
@@ -213,10 +209,12 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 }
 
 // teamLaunchRoots keeps the process/controller workspace (the directory the
-// user opened Reasonix in) separate from the repository that owns team assets.
-// Installed binaries may carry a build-time project root for skills, while
-// member sessions must retain the launch workspace for file references,
-// sandboxing, and status display.
+// user opened Reasonix in) separate from the repository owning the team assets
+// a checkout provides: the team/skills source `make install-team-skills` copies
+// from, and the project's legacy .reasonix/team that adoption reads. Member
+// sessions retain the launch workspace for file references, sandboxing, and
+// status display; the installed role playbooks live in the user state root, so
+// neither root can steer them.
 func teamLaunchRoots(cwd, controllerRoot string) (workspaceRoot, projectRoot string) {
 	workspaceRoot = strings.TrimSpace(controllerRoot)
 	if workspaceRoot == "" {

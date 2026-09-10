@@ -40,6 +40,10 @@ func (t *leaderMemberTool) Description() string     { return t.desc }
 func (t *leaderMemberTool) Schema() json.RawMessage { return t.schema }
 func (t *leaderMemberTool) ReadOnly() bool          { return false }
 func (t *leaderMemberTool) PlanModeSafe() bool      { return false }
+
+// TeamLifecycleStateWriter: roster mutations land in the team store, never the
+// user's workspace, so read-only/plan boundaries must not strand them.
+func (t *leaderMemberTool) TeamLifecycleStateWriter() bool { return true }
 func (t *leaderMemberTool) Execute(context.Context, json.RawMessage) (string, error) {
 	return "", fmt.Errorf("%s: unsupported operation", t.name)
 }
@@ -111,6 +115,14 @@ type teamTaskTool struct {
 func (t *teamTaskTool) Name() string            { return t.name }
 func (t *teamTaskTool) Description() string     { return t.desc }
 func (t *teamTaskTool) Schema() json.RawMessage { return t.schema }
+
+// TeamLifecycleStateWriter marks the whole team task surface (leader and
+// member): every write lands in team task/result/knowledge state, never the
+// user's workspace. Read-only and plan boundaries therefore keep these tools
+// reachable instead of blocking a member's report or the leader's dispatch;
+// identity, ownership, generation and lease gates still apply per call.
+func (t *teamTaskTool) TeamLifecycleStateWriter() bool { return true }
+
 func (t *teamTaskTool) ReadOnly() bool {
 	return t.name == "leader_list_team" || t.name == "leader_select_task_members" || t.name == "leader_check_member_status" || t.name == "leader_authz_log" || t.name == "member_get_my_task" || t.name == "team_knowledge_recall"
 }

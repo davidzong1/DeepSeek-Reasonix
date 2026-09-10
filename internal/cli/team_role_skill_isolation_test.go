@@ -46,7 +46,7 @@ func TestRoleSkillPromptRefusesNonAllowlistRole(t *testing.T) {
 			t.Errorf("roleSkillPrompt(root, %q) = %q; want empty (no branch to load)", bad, got)
 		}
 	}
-	if got := roleSkillPrompt(root, teamRoleLeader); !strings.Contains(got, "LEADER-SPECIAL") {
+	if got := roleSkillPrompt(root, roleForLeader(true)); !strings.Contains(got, "LEADER-SPECIAL") {
 		t.Errorf("allowlisted leader must load special from the same tree, got:\n%s", got)
 	}
 }

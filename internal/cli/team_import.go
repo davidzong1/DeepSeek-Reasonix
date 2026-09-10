@@ -67,7 +67,8 @@ func teamImportCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1
 	}
-	roots, err := openTeamDataRoots(boot.ResolveTeamProjectRoot(cwd))
+	projectRoot := boot.ResolveTeamProjectRoot(cwd)
+	roots, err := openTeamDataRoots(projectRoot)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "team import:", err)
 		return 1
@@ -77,7 +78,9 @@ func teamImportCommand(args []string) int {
 	}
 	store := roots.store
 
-	report, err := store.ImportFromMCP(*from, team.ImportOptions{ImportCredentials: confirmed})
+	report, err := store.ImportFromMCP(*from, team.ImportOptions{
+		ImportCredentials: confirmed,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

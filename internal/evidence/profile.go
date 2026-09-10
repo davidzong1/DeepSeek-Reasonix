@@ -17,6 +17,7 @@ const (
 	ReasonHintReadOnly    EffectReason = "annotation_read_only"
 	ReasonHintDestructive EffectReason = "annotation_destructive"
 	ReasonScratch         EffectReason = "scratch_write"
+	ReasonTeamState       EffectReason = "team_state_write"
 )
 
 // TargetKind classifies one concrete action target.
@@ -74,13 +75,16 @@ type EffectProfile struct {
 	RepoMetadata   bool
 	HostState      bool
 	ExternalState  bool
-	Destructive    bool
-	Irreversible   bool
-	Privileged     bool
-	ExecutesCode   bool
-	UsesNetwork    bool
-	Targets        []Target
-	Reason         EffectReason
+	// TeamState: durable team-coordination write; read-only/plan guards exempt
+	// it while MutatesState still reports it.
+	TeamState    bool
+	Destructive  bool
+	Irreversible bool
+	Privileged   bool
+	ExecutesCode bool
+	UsesNetwork  bool
+	Targets      []Target
+	Reason       EffectReason
 }
 
 // Clone copies Targets so callers cannot share a mutable slice.
@@ -91,12 +95,14 @@ func (p EffectProfile) Clone() EffectProfile {
 	return p
 }
 
-// MutatesState reports whether the call can change durable state.
+// MutatesState reports whether the call can change durable state. TeamState
+// counts: the write persists even though it targets team coordination state,
+// so receipts and dependency tracking still see it as a write.
 func (p EffectProfile) MutatesState() bool {
 	if !p.Known {
 		return true
 	}
-	return p.WorkspaceWrite || p.RepoMetadata || p.HostState || p.ExternalState
+	return p.WorkspaceWrite || p.RepoMetadata || p.HostState || p.ExternalState || p.TeamState
 }
 
 // OpaqueWriter reports a write-capable call whose effects are not proven.
@@ -142,6 +148,8 @@ func (p EffectProfile) displayReason() string {
 		return "opaque writer"
 	case ReasonDestructive:
 		return "destructive write"
+	case ReasonTeamState:
+		return "team state write"
 	case ReasonScratch:
 		return "scratch write"
 	case ReasonUnknown:
@@ -160,7 +168,9 @@ type CallHint struct {
 	Privileged   bool
 	UsesNetwork  bool
 	ExecutesCode bool
-	Targets      []string
+	// TeamState is asserted from the tool's TeamLifecycleStateWriter contract.
+	TeamState bool
+	Targets   []string
 }
 
 // EffectInput is one concrete invocation to classify.

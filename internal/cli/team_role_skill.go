@@ -17,30 +17,24 @@ import (
 // role skills.
 type teamRole string
 
-const (
-	teamRoleLeader teamRole = "leader"
-	teamRoleMember teamRole = "member"
-)
-
 // parseTeamRole accepts exactly the allowlisted roles. Empty, unknown and
 // traversal-shaped values are refused: none has a branch to load, and refusing
 // here keeps an unvalidated string one join away from walking out of
 // team/skills.
 func parseTeamRole(s string) (teamRole, bool) {
-	switch teamRole(s) {
-	case teamRoleLeader, teamRoleMember:
-		return teamRole(s), true
-	default:
+	r, ok := skill.ParseTeamRole(s)
+	if !ok {
 		return "", false
 	}
+	return teamRole(r), true
 }
 
 // roleForLeader maps the backend's leader flag onto the allowlist.
 func roleForLeader(leader bool) teamRole {
 	if leader {
-		return teamRoleLeader
+		return teamRole(skill.TeamRoleLeader)
 	}
-	return teamRoleMember
+	return teamRole(skill.TeamRoleMember)
 }
 
 // teamRoleSkillBudget caps the assembled <team-role-skill> section. 16 KiB
@@ -57,20 +51,18 @@ var skillFileNames = []string{"SKILL.md", "skill.md"}
 const teamRoleFrontmatterKey = "team_role"
 
 // teamRoleAllows reports whether one skill file's declared team_role admits
-// the loading role. Absent or blank declares both; a declared role admits only
-// itself (a leader skill never loads into a member's section and vice versa);
-// any other value is invalid — the file is dropped for both roles and the
-// warning records the skill path and the offending value.
+// the loading role; the admission rule lives in the skill package so the
+// prompt loader and the session skill store never disagree about a shared
+// skill. Absent or blank declares both; a declared role admits only itself; a
+// non-allowlisted value is invalid — the file is dropped for both roles and
+// the warning records the skill path and the offending value.
 func teamRoleAllows(meta map[string]string, path string, role teamRole, warn io.Writer) bool {
-	decl := strings.TrimSpace(meta[teamRoleFrontmatterKey])
-	if decl == "" {
-		return true
+	declared := strings.TrimSpace(meta[teamRoleFrontmatterKey])
+	admit, invalid := skill.TeamRoleAllows(declared, string(role))
+	if invalid {
+		fmt.Fprintf(warn, "team role skill %s: invalid team_role %q (want leader or member)\n", path, declared)
 	}
-	if r, ok := parseTeamRole(decl); ok {
-		return r == role
-	}
-	fmt.Fprintf(warn, "team role skill %s: invalid team_role %q (want leader or member)\n", path, decl)
-	return false
+	return admit
 }
 
 // teamRoleSkillPrompt loads the role playbook at backend assembly time: the

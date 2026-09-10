@@ -6,9 +6,10 @@ import (
 	"strings"
 )
 
-// builtProjectRoot is populated by repository builds. It lets the installed
-// CLI locate repository-owned team resources when launched elsewhere. Empty
-// is valid for ordinary go test/go build calls.
+// builtProjectRoot is populated by repository builds. It lets an installed CLI
+// find the checkout owning the repository's team assets — the team/skills
+// source the install target copies from, never the tree a session reads, which
+// is user-global. Empty is valid for ordinary go test/go build calls.
 var builtProjectRoot string
 
 // ResolveWorkspaceRoot exposes Build's own project-root resolution. A host that
@@ -17,12 +18,15 @@ var builtProjectRoot string
 // empty whenever --dir was not given and would silently disable the lookup.
 func ResolveWorkspaceRoot(explicit string) string { return resolveWorkspaceRoot(explicit) }
 
-// ResolveTeamProjectRoot locates the repository that owns team/skills. Team
-// state is user-global, but role playbooks and other repository-owned team
-// resources must not follow the process working directory. A development
-// binary under <repo>/bin or the build-time repository root keeps an installed
-// CLI attached to its source; an explicit root is only the fallback used by
-// ordinary go builds and tests that do not carry repository metadata.
+// ResolveTeamProjectRoot locates the repository owning a checkout's team
+// assets: the team/skills source tree (its presence is the marker) and the
+// project's legacy .reasonix/team, which adoption reads. Both are repository
+// data, so neither follows the process working directory; the runtime role
+// playbooks are user-global state and this root never addresses them. A
+// development binary under <repo>/bin or the build-time repository root keeps
+// an installed CLI attached to its source; an explicit root is only the
+// fallback used by ordinary go builds and tests that do not carry repository
+// metadata.
 func ResolveTeamProjectRoot(explicit string) string {
 	if exe, err := osExecutable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {

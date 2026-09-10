@@ -140,6 +140,14 @@ type Options struct {
 	// team/member/role) into the cache-stable prefix once at assembly; it must
 	// stay constant for the session. Empty inserts nothing.
 	SystemPromptIdentity string
+	// TeamRole scopes the team skills tree to one role (leader|member): a team
+	// backend's /skills and skill invocation see only its role's playbook, the
+	// shared skills that admit it, and its special/<role> skills. Empty unscoped.
+	TeamRole string
+	// TeamSkillsRoot is the user-global root owning the team skills tree
+	// (<root>/team/skills) this build reads; empty leaves the team tree unread.
+	// The workspace root keeps driving project skills, config, memory and hooks.
+	TeamSkillsRoot string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -229,6 +237,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		stderr = os.Stderr
 	}
 	root := resolveWorkspaceRoot(opts.WorkspaceRoot)
+	teamSkillsRoot := strings.TrimSpace(opts.TeamSkillsRoot)
 	additionalDirs, err := normalizeAdditionalDirs(root, opts.AdditionalDirs)
 	if err != nil {
 		return nil, err
@@ -666,20 +675,20 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if canReuseSkills {
 		skills = opts.ReuseAssembly.Skills
 		allSkills = skills
-		skillStore = skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard})
+		skillStore = skill.New(skill.Options{ProjectRoot: root, TeamSkillsRoot: teamSkillsRoot, TeamRole: opts.TeamRole, Stderr: io.Discard})
 		allSkillStore = skillStore
 		if s := strings.TrimSpace(opts.ReuseAssembly.SystemPrompt); s != "" {
 			sysPrompt = s
 		}
 	} else {
 		skillStore = skill.New(skill.Options{
-			ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(),
+			ProjectRoot: root, TeamSkillsRoot: teamSkillsRoot, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(),
 			PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(),
-			DisabledNames: cfg.DisabledSkillNames(), MaxDepth: cfg.SkillMaxDepth(), Stderr: opts.Stderr,
+			DisabledNames: cfg.DisabledSkillNames(), MaxDepth: cfg.SkillMaxDepth(), TeamRole: opts.TeamRole, Stderr: opts.Stderr,
 		})
 		skillStore.ConfigureInvocationPolicy("", nil)
 		skills = skillStore.List()
-		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
+		allSkillStore = skill.New(skill.Options{ProjectRoot: root, TeamSkillsRoot: teamSkillsRoot, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), PluginAgentPaths: cfg.PluginPackageAgentOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), TeamRole: opts.TeamRole, Stderr: io.Discard})
 		allSkills = allSkillStore.List()
 		if implicitSkillInvocation {
 			sysPrompt += "\n\n" + skill.InvocationPolicyBlock()

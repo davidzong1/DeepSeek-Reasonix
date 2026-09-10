@@ -84,6 +84,9 @@ func (m *chatTUI) openSkillPicker() {
 		enabled:         enabled,
 		originalEnabled: original,
 	}
+	if msg := m.teamSkillGapDiagnostic(); msg != "" {
+		m.notice(msg)
+	}
 }
 
 func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -347,7 +350,15 @@ func (m *chatTUI) rescanSkills() {
 func (m *chatTUI) refreshSkillPickerData() {
 	st := m.skillStore()
 	skills := st.List()
-	m.skills = skills
+	// A rescan inside a bound member session must keep reading the controller's
+	// live scoped catalog — a store of its own would close special/<role> and
+	// admit the other role's tree. Outside a team session the cwd store stays.
+	if m.memberSessionBound() {
+		skills = m.ctrl.AllSkills()
+		m.skills = m.ctrl.SlashSkills()
+	} else {
+		m.skills = skills
+	}
 	m.invalidateSlashCatalog()
 	if m.skillPick != nil {
 		sorted := sortedSkills(skills)

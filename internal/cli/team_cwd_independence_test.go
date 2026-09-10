@@ -11,17 +11,27 @@ import (
 	"reasonix/internal/team"
 )
 
-func TestMemberBackendLoadsProjectSkillsOutsideCWD(t *testing.T) {
-	project := t.TempDir()
-	skillPath := filepath.Join(project, "team", "skills", "base", "leader", "SKILL.md")
+// TestMemberBackendLoadsTeamSkillsFromUserRootOutsideCWD pins the boundary the
+// team skill root protects: the member's playbook comes from the user state
+// root's team/skills tree whatever the launch workspace and the process cwd
+// say, while the workspace root keeps driving files, sandbox and status. The
+// launch workspace owns a same-shaped tree of its own, so a session that still
+// rooted the tree at the workspace could not pass this.
+func TestMemberBackendLoadsTeamSkillsFromUserRootOutsideCWD(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("REASONIX_STATE_HOME", state)
+	t.Setenv("REASONIX_HOME", "")
+	skillPath := filepath.Join(state, "team", "skills", "base", "leader", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const marker = "CROSS-DIRECTORY-LEADER-SKILL"
+	const marker = "USER-ROOT-LEADER-SKILL"
 	if err := os.WriteFile(skillPath, []byte("---\nname: leader\ndescription: team leader\n---\n"+marker), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	project := t.TempDir()
+	writeManagerSkillWorkspace(t, project)
 	t.Chdir(t.TempDir())
 	sessionDir := t.TempDir()
 	build := newMemberBackendBuilder(memberBackendDeps{
@@ -50,8 +60,12 @@ func TestMemberBackendLoadsProjectSkillsOutsideCWD(t *testing.T) {
 	if got := backend.WorkspaceRoot(); got != project {
 		t.Fatalf("member workspace root = %q, want project root %q", got, project)
 	}
-	if got := backend.SystemPrompt(); !strings.Contains(got, marker) {
-		t.Fatalf("member system prompt did not load the project skill outside cwd")
+	prompt := backend.SystemPrompt()
+	if !strings.Contains(prompt, marker) {
+		t.Fatalf("member system prompt did not load the user-global team skill")
+	}
+	if strings.Contains(prompt, "LDR-BASE") {
+		t.Fatal("the launch workspace's own team tree must not serve the member prompt")
 	}
 }
 

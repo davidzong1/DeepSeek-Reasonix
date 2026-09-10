@@ -10,10 +10,13 @@ import (
 )
 
 // PlanGuard hard-blocks writes while Plan mode is active, including YOLO.
+// TeamState writes (team task/result/knowledge lifecycle) are exempt: plan
+// mode scopes to user workspace state, and a planning/read-only member must
+// still be able to report or persist team coordination state.
 type PlanGuard struct{}
 
 func (PlanGuard) BeforeTool(ctx CallContext) GuardDecision {
-	if !ctx.PlanReadOnly || !ctx.Profile.MutatesState() {
+	if !ctx.PlanReadOnly || !ctx.Profile.MutatesState() || ctx.Profile.TeamState {
 		return GuardDecision{Action: GuardAbstain}
 	}
 	return GuardDecision{
@@ -25,12 +28,16 @@ func (PlanGuard) BeforeTool(ctx CallContext) GuardDecision {
 func (PlanGuard) AfterTool(ResultContext) []evidence.Receipt { return nil }
 func (PlanGuard) BeforeStop(StopContext) StopDecision        { return StopDecision{} }
 
-// ConstraintGuard applies explicit user/host limits only.
+// ConstraintGuard applies explicit user/host limits only. ForbidMutation and
+// PlanModeReadOnly scope to user state: a TeamState write (team lifecycle —
+// task completion, shared results, knowledge) is coordination state, not a
+// user-state mutation, so it stays reachable for a member under a read-only or
+// plan task. External, verification and destructive limits still apply to it.
 type ConstraintGuard struct{ Constraints Constraints }
 
 func (g ConstraintGuard) BeforeTool(ctx CallContext) GuardDecision {
 	c := g.Constraints
-	if ctx.Profile.MutatesState() && !c.AllowsMutation() {
+	if ctx.Profile.MutatesState() && !ctx.Profile.TeamState && !c.AllowsMutation() {
 		return GuardDecision{
 			Action:  GuardDeny,
 			Reasons: []taskcontract.ReasonCode{taskcontract.ReasonUserConstraint},

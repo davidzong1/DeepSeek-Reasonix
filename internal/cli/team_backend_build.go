@@ -318,17 +318,18 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		if strings.TrimSpace(deps.workspaceRoot) != "" {
 			opts.WorkspaceRoot = deps.workspaceRoot
 		}
+		// Team playbooks are user-global: the member's role tree is read from
+		// the user state root, so it resolves from any launching directory and
+		// a team's recorded workspace cannot steer it.
+		opts.TeamSkillsRoot = teamSkillsBase()
+		opts.TeamRole = string(roleForLeader(b.Leader))
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = memberSink(b.MemberID, deps.events)
-		skillRoot := opts.WorkspaceRoot
-		if strings.TrimSpace(skillRoot) == "" {
-			skillRoot = deps.workspaceRoot
-		}
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
 			// Invalid team_role declarations warn through the assembly's own
 			// diagnostic writer (nil keeps the historical silence).
-			teamRoleSkillPrompt(boot.ResolveTeamProjectRoot(skillRoot), b.Leader, opts.Stderr)
+			teamRoleSkillPrompt(opts.TeamSkillsRoot, b.Leader, opts.Stderr)
 		tasks := deps.tasks.forTeam(b.Team)
 		if b.Leader && deps.store != nil {
 			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)

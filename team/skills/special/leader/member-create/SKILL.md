@@ -1,6 +1,6 @@
 ---
 name: member-create
-team role: leader
+team_role: leader
 description: Add members to a Reasonix team with leader_add_member, the leader-only member-create tool. A member is created with the full non-leader attribute set; agent-user credentials follow the binding strategy (pin a pool entry, assign a custom pool, or inherit the team pool head). The leader property is never creatable.
 ---
 

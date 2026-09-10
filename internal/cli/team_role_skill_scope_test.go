@@ -98,15 +98,20 @@ func TestRoleSkillsCanonicalSpellingUppercaseWins(t *testing.T) {
 	}
 }
 
-// TestAmbientStoreCurrentlyDiscoversSharedAndSpecial pins that the ambient
-// store currently discovers all skills under the project convention dirs —
-// shared AND special — because no role-scoped exclusion exists yet. When the
-// production seam is added this test must be updated to assert the exclusion.
-func TestAmbientStoreCurrentlyDiscoversSharedAndSpecial(t *testing.T) {
+// TestAmbientStoreDiscoversSharedAndKeepsSpecialClosed pins the unscoped
+// ambient store's view of the project convention dirs: shared/ skills are
+// discovered, and the special/ branch stays out of discovery entirely — in
+// both its flat (special/<role>/SKILL.md) and subdir (special/<role>/<name>/)
+// forms. The scan skip-list closes it for every non-team session; a team
+// session's role-scoped store opens only its own special/<role> (pinned in the
+// skill package's role-scope tests), so the role prompt and the catalog read
+// the same branch.
+func TestAmbientStoreDiscoversSharedAndKeepsSpecialClosed(t *testing.T) {
 	root := t.TempDir()
 	writeRoleSkillTree(t, root, map[string]string{
-		"team/skills/shared/team/SKILL.md":    "---\nname: team\ndescription: shared\n---\nSHARED-AMBIENT",
-		"team/skills/special/leader/SKILL.md": "---\nname: leader\ndescription: role\n---\nLEADER-AMBIENT",
+		"team/skills/shared/team/SKILL.md":          "---\nname: team\ndescription: shared\n---\nSHARED-AMBIENT",
+		"team/skills/special/leader/SKILL.md":       "---\nname: leader\ndescription: role\n---\nLEADER-AMBIENT",
+		"team/skills/special/member/ltool/SKILL.md": "---\nname: ltool\ndescription: subdir special\n---\nLTOOL-AMBIENT",
 	})
 	s := skill.New(skill.Options{ProjectRoot: root, HomeDir: t.TempDir(), Stderr: os.Stderr, MaxDepth: 3})
 	if s == nil {
@@ -116,10 +121,9 @@ func TestAmbientStoreCurrentlyDiscoversSharedAndSpecial(t *testing.T) {
 	if !contains(names, "team") {
 		t.Errorf("ambient store must discover shared/ skills, got %v", names)
 	}
-	if !contains(names, "leader") {
-		t.Log("NOTE: ambient store still discovers special/ — no exclusion seam yet")
+	if contains(names, "leader") || contains(names, "ltool") {
+		t.Errorf("ambient store must keep special/ closed, got %v", names)
 	}
-	t.Logf("ambient names: %v", names)
 }
 
 // storeSkillNames lists the resolved names of a store.

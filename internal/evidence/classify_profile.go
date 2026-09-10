@@ -20,6 +20,11 @@ func ClassifyEffect(in EffectInput) EffectProfile {
 	if in.StaticReadOnly || IsNonMutationMetaTool(in.ToolName) {
 		return readOnlyProfile(targetsFrom(in, nil), ReasonReadOnly)
 	}
+	if in.Hint.Present && in.Hint.TeamState && !in.Hint.ReadOnly {
+		profile := EffectProfile{Known: true, TeamState: true, Reason: ReasonTeamState}
+		applyCallHint(&profile, in.Hint)
+		return profile
+	}
 	switch name {
 	case "ask", "todo_write", "complete_step", "bash_output", "wait":
 		return readOnlyProfile(nil, ReasonReadOnly)

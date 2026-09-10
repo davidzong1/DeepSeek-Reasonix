@@ -205,7 +205,8 @@ func (imp *importer) mergeTeams(doc *TeamDoc) {
 		src := imp.src.Teams[name]
 		i := teamIndex(doc, name)
 		if i < 0 {
-			doc.Teams = append(doc.Teams, imp.buildTeam(name, src))
+			t := imp.buildTeam(name, src)
+			doc.Teams = append(doc.Teams, t)
 			imp.report.TeamsCreated++
 			continue
 		}

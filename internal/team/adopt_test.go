@@ -279,3 +279,39 @@ func TestNewTeamSessionStoreDirRootsContextUnderDataDir(t *testing.T) {
 		t.Fatalf("history not under data dir: %v", err)
 	}
 }
+
+// TestAdoptProjectIntoRecordsNoSkillRoot pins the adopted document: adoption
+// records no skill root for the teams it folds in — team skills are user-global
+// now — while a legacy value an older document carried travels untouched,
+// since nothing writes or reads it.
+func TestAdoptProjectIntoRecordsNoSkillRoot(t *testing.T) {
+	projRoot := t.TempDir()
+	projTeam := filepath.Join(projRoot, ".reasonix", "team")
+	if err := os.MkdirAll(projTeam, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcRoot := filepath.Join(t.TempDir(), "elsewhere")
+	doc := TeamDoc{Document: Document{SchemaVersion: SchemaVersion}, Teams: []Team{
+		{Name: "plain"},
+		{Name: "recorded", WorkspaceRoot: srcRoot},
+	}}
+	writeDocFile(t, projTeam, &doc)
+	userTeam := filepath.Join(t.TempDir(), "team")
+	if _, err := AdoptProjectInto(userTeam, projTeam, AdoptOptions{AllowLegacy: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTeamDocAt(userTeam)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]string{}
+	for _, tm := range got.Teams {
+		byName[tm.Name] = tm.WorkspaceRoot
+	}
+	if byName["plain"] != "" {
+		t.Fatalf("an adopted legacy team must record no skill root, got %q", byName["plain"])
+	}
+	if byName["recorded"] != srcRoot {
+		t.Fatalf("an existing source record must travel untouched, got %q", byName["recorded"])
+	}
+}

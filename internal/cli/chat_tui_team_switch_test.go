@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,20 +29,33 @@ func twoMemberTeam() team.Team {
 // test does not expect fails loudly instead of passing silently.
 type stubBackend struct {
 	control.SessionAPI
-	label   string
-	history []provider.Message
-	closed  *int                  // nil when the test does not care about teardown
-	status  control.RuntimeStatus // injected busy state; zero = idle
-	replays *int                  // nil when the test does not assert prompt replay
+	label    string
+	history  []provider.Message
+	skills   []skill.Skill         // slash catalog bindBackend snapshots; nil for catalog-less stubs
+	all      []skill.Skill         // AllSkills catalog the picker lists; nil for catalog-less stubs
+	disabled []string              // names DisabledSkills reports against all
+	closed   *int                  // nil when the test does not care about teardown
+	status   control.RuntimeStatus // injected busy state; zero = idle
+	replays  *int                  // nil when the test does not assert prompt replay
 }
 
 func (s stubBackend) Label() string               { return s.label }
 func (s stubBackend) ModelRef() string            { return s.label + "/model" }
 func (s stubBackend) History() []provider.Message { return s.history }
 func (s stubBackend) Commands() []command.Command { return nil }
-func (s stubBackend) SlashSkills() []skill.Skill  { return nil }
-func (s stubBackend) Host() *plugin.Host          { return nil }
-func (s stubBackend) SessionPath() string         { return "" }
+func (s stubBackend) SlashSkills() []skill.Skill  { return s.skills }
+func (s stubBackend) AllSkills() []skill.Skill    { return s.all }
+func (s stubBackend) DisabledSkills() []skill.Skill {
+	var out []skill.Skill
+	for _, sk := range s.all {
+		if slices.Contains(s.disabled, sk.Name) {
+			out = append(out, sk)
+		}
+	}
+	return out
+}
+func (s stubBackend) Host() *plugin.Host  { return nil }
+func (s stubBackend) SessionPath() string { return "" }
 
 // SessionDir is read when the overlay reopens over an already-bound member, so a
 // stub standing in for that member's backend has to answer it.
@@ -144,6 +158,51 @@ func TestSwitchTeamMemberRefusesUnknownMember(t *testing.T) {
 	}
 	if got := m.teamPick.session.current; got != "lead" {
 		t.Errorf("current member = %q, want the still-bound lead", got)
+	}
+}
+
+// TestSwitchTeamMemberRefreshesSkillSnapshot pins the manager-side refresh
+// contract: every bind rebases the window's skill snapshot (completion and
+// builtin-docs recognition) on the incoming backend's own SlashSkills — a
+// role-scoped controller in production — so a switch can never leave the
+// previous member's catalog behind, and unbinding restores the ambient one.
+// The live /skills panel and run_skill read the bound controller directly, so
+// a long-lived window is the only way panel and snapshot can diverge: a rebind
+// or reopen refreshes both. This is the diagnostic for a "missing team skills"
+// report on a live window — rebind, then compare /skills against the member's
+// own session before touching production code.
+func TestSwitchTeamMemberRefreshesSkillSnapshot(t *testing.T) {
+	writeTeamFixture(t, twoMemberTeam())
+	m := openTeamOverlay(t)
+	m.memberEvents = make(chan memberEvent, 8)
+	skills := map[string][]skill.Skill{
+		"lead":  {{Name: "locked-leader", Description: "leader-scoped"}},
+		"alice": {{Name: "special-member", Description: "member-scoped"}},
+	}
+	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		return stubBackend{label: b.MemberID, skills: skills[b.MemberID]}, nil
+	}, 4)
+	m.teamPick.backends = m.teamBackends
+	m.teamPick.hub = newTeamHub(m.teamPick.store, m.teamBackends, "alpha")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(chatTUI)
+
+	if cmd := m.switchTeamMember("alice"); cmd == nil {
+		t.Fatal("switching to alice must bind its backend")
+	}
+	if len(m.skills) != 1 || m.skills[0].Name != "special-member" {
+		t.Fatalf("after binding alice the snapshot = %v, want only alice's catalog", m.skills)
+	}
+	if cmd := m.switchTeamMember("lead"); cmd == nil {
+		t.Fatal("switching to lead must bind its backend")
+	}
+	if len(m.skills) != 1 || m.skills[0].Name != "locked-leader" {
+		t.Fatalf("after binding lead the snapshot = %v, want only lead's catalog", m.skills)
+	}
+
+	m.unbindTeamMember()
+	if len(m.skills) != 0 {
+		t.Fatalf("unbinding must restore the ambient host catalog, got %v", m.skills)
 	}
 }
 

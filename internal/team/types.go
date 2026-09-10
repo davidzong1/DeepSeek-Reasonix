@@ -165,6 +165,10 @@ type Team struct {
 	AgentUserPool       []string     `json:"agent_user_pool,omitempty"` // ordered pool entry ids; head is the team default (§3.1)
 	AgentType           string       `json:"agent_type,omitempty"`      // team default launch type; empty = legacy behavior
 	Proxy               *ProxyConfig `json:"proxy,omitempty"`           // team default proxy; nil = off (legacy behavior)
+	// WorkspaceRoot is a legacy field kept so older documents still decode;
+	// nothing writes or reads it, and skill discovery is user-global, so a
+	// stale value cannot steer a team's playbooks.
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
 }
 
 // EffectivePool returns the team's ordered pool entries as configured: the

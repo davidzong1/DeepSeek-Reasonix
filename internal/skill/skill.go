@@ -26,7 +26,6 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/frontmatter"
 	"reasonix/internal/tool"
 )
 
@@ -140,10 +139,18 @@ type Options struct {
 	CustomPaths      []string
 	PluginPaths      map[string][]string // canonical custom root -> installed plugin package names
 	PluginAgentPaths map[string][]string // plugin roots whose flat Markdown files are Claude agents
-	ExcludedPaths    []string
-	DisabledNames    []string
-	MaxDepth         int
-	DisableBuiltins  bool // suppress shipped built-ins (test-only knob)
+	// TeamRole scopes the team convention tree (team/skills) to one role's
+	// branches: base/<role>, the shared skills its declaration admits, and
+	// special/<role>. Empty leaves discovery unscoped and special closed.
+	TeamRole string
+	// TeamSkillsRoot is the user-global root owning the team tree
+	// (<root>/team/skills) a role-scoped store reads; without it a scoped store
+	// reads none. ProjectRoot still drives every non-team scope.
+	TeamSkillsRoot  string
+	ExcludedPaths   []string
+	DisabledNames   []string
+	MaxDepth        int
+	DisableBuiltins bool // suppress shipped built-ins (test-only knob)
 	// DisableDiscovery returns an empty store without probing project, custom,
 	// global, plugin, or built-in skill sources. It is a test-only isolation knob.
 	DisableDiscovery bool
@@ -161,6 +168,10 @@ type Store struct {
 	customPaths      []string
 	pluginPaths      map[string][]string
 	pluginAgentPaths map[string][]string
+	// teamRole scopes team/skills discovery (Options.TeamRole); empty unscoped.
+	teamRole string
+	// teamSkillsRoot is the user-global base owning the team tree, "" for none.
+	teamSkillsRoot   string
 	excludedPaths    map[string]bool
 	disabled         map[string]bool
 	maxDepth         int
@@ -195,6 +206,7 @@ func New(opts Options) *Store {
 			root = abs
 		}
 	}
+	teamRoot := resolveTeamSkillsRoot(opts.TeamSkillsRoot)
 	base := root
 	if base == "" {
 		if wd, err := os.Getwd(); err == nil {
@@ -208,9 +220,20 @@ func New(opts Options) *Store {
 	for _, p := range dedupePaths(resolveCustomPaths(opts.ExcludedPaths, base, home)) {
 		excluded[config.CanonicalSkillPath(p)] = true
 	}
+	teamRole := ""
+	if role, ok := ParseTeamRole(opts.TeamRole); ok {
+		teamRole = role
+	} else if strings.TrimSpace(opts.TeamRole) != "" {
+		if dir := teamTreeExclusion(teamRoot, root); dir != "" {
+			excluded[config.CanonicalSkillPath(dir)] = true
+		}
+	}
 	stderr := opts.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
+	}
+	if teamRole == "" && strings.TrimSpace(opts.TeamRole) != "" {
+		fmt.Fprintf(stderr, "warning: team role %q is not leader or member; team/skills stays closed\n", strings.TrimSpace(opts.TeamRole))
 	}
 	return &Store{
 		homeDir:          home,
@@ -219,6 +242,8 @@ func New(opts Options) *Store {
 		customPaths:      custom,
 		pluginPaths:      pluginPaths,
 		pluginAgentPaths: pluginAgentPaths,
+		teamRole:         teamRole,
+		teamSkillsRoot:   teamRoot,
 		excludedPaths:    excluded,
 		disabled:         disabledNameSet(opts.DisabledNames),
 		maxDepth:         normalizeMaxDepth(opts.MaxDepth),
@@ -446,10 +471,10 @@ type discoveryRoot struct {
 	forceSubagent     bool
 }
 
-// roots returns the discovery directories, highest priority first: the
-// convention dirs (config.ConventionDirs: team / .reasonix / .agents / .agent /
-// .claude) under the project root → custom paths → the Reasonix home skills dir →
-// other home-dir convention dirs. A later root never overrides an earlier one.
+// roots returns the discovery directories, highest priority first: the team
+// tree (user-global when the store has one, else the project's own), the other
+// convention dirs under the project root, custom paths, then the home scopes.
+// A later root never overrides an earlier one.
 func (s *Store) roots() []discoveryRoot {
 	if s == nil || s.disableDiscovery {
 		return nil
@@ -460,8 +485,14 @@ func (s *Store) roots() []discoveryRoot {
 		requireFlatMarker bool
 	}
 	var dirs []de
+	if tree := s.teamSkillsDir(); tree != "" {
+		dirs = append(dirs, de{tree, ScopeProject, false})
+	}
 	if s.projectRoot != "" {
 		for _, c := range config.ConventionDirs {
+			if c == "team" {
+				continue // added above, from its own base
+			}
 			dirs = append(dirs, de{filepath.Join(s.projectRoot, c, SkillsDirname), ScopeProject, c == ".claude"})
 		}
 	}
@@ -471,7 +502,10 @@ func (s *Store) roots() []discoveryRoot {
 	if s.reasonixHomeDir != "" {
 		dirs = append(dirs, de{filepath.Join(s.reasonixHomeDir, SkillsDirname), ScopeGlobal, false})
 	}
-	if config.IsolatedHomeDir() == "" {
+	// A home directory that could not be resolved contributes no roots: joining
+	// a convention dir onto "" yields a relative path, which discovery would
+	// resolve against the working directory.
+	if s.homeDir != "" && config.IsolatedHomeDir() == "" {
 		for _, c := range config.ConventionDirs {
 			dir := filepath.Join(s.homeDir, c, SkillsDirname)
 			if s.reasonixHomeDir != "" && config.CanonicalSkillPath(filepath.Dir(dir)) == config.CanonicalSkillPath(s.reasonixHomeDir) {
@@ -758,6 +792,12 @@ func (s *Store) scanDir(dir string, scope Scope, requireFlatMarker bool, depth i
 		return
 	}
 	for _, e := range entries {
+		if s.teamRole != "" && e.Name() != s.teamRole {
+			d := filepath.Clean(dir)
+			if d == s.teamBaseDir() || d == s.teamSpecialBranchDir() {
+				continue // the sibling role's base and special branches stay closed
+			}
+		}
 		sk, ok := s.readEntry(dir, scope, requireFlatMarker, e)
 		if ok {
 			if depth == 1 || strings.TrimSpace(sk.Description) != "" {
@@ -774,7 +814,7 @@ func (s *Store) scanDir(dir string, scope Scope, requireFlatMarker bool, depth i
 
 func (s *Store) canScanChildDir(dir string, e os.DirEntry) bool {
 	name := e.Name()
-	if shouldSkipScanDir(name) {
+	if shouldSkipScanDir(name) && !s.opensTeamSpecialBranch(dir, name) {
 		return false
 	}
 	if e.IsDir() {
@@ -871,6 +911,9 @@ func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker bo
 	if requireSkillMarker && !hasSkillMarker(content, fm) {
 		return Skill{}, false
 	}
+	if !s.admitsTeamSkill(path, fm) {
+		return Skill{}, false
+	}
 
 	name := stem
 	if v := fm[skillFrontmatterName]; v != "" && IsValidName(v) {
@@ -943,85 +986,6 @@ func mapClaudeAgentTools(in []string) []string {
 		}
 	}
 	return out
-}
-
-const (
-	skillFrontmatterDescription      = "description"
-	skillFrontmatterName             = "name"
-	skillFrontmatterRunAs            = "runas"
-	skillFrontmatterContext          = "context"
-	skillFrontmatterAgent            = "agent"
-	skillFrontmatterAllowedTools     = "allowed-tools"
-	skillFrontmatterModel            = "model"
-	skillFrontmatterEffort           = "effort"
-	skillFrontmatterReadOnly         = "read-only"
-	skillFrontmatterTriggers         = "triggers"
-	skillFrontmatterNegativeTriggers = "negative-triggers"
-	skillFrontmatterAutoUse          = "auto-use"
-	skillFrontmatterNeedsFreshData   = "needs-fresh-data"
-	skillFrontmatterCost             = "cost"
-	skillFrontmatterColor            = "color"
-	skillFrontmatterInvocation       = "invocation"
-	skillFrontmatterRequires         = "requires"
-	skillFrontmatterProfiles         = "profiles"
-)
-
-var skillMarkerFrontmatterKeys = []string{
-	skillFrontmatterDescription,
-	skillFrontmatterName,
-	skillFrontmatterRunAs,
-	skillFrontmatterContext,
-	skillFrontmatterAgent,
-	skillFrontmatterAllowedTools,
-	skillFrontmatterModel,
-	skillFrontmatterEffort,
-	skillFrontmatterReadOnly,
-	skillFrontmatterTriggers,
-	skillFrontmatterNegativeTriggers,
-	skillFrontmatterAutoUse,
-	skillFrontmatterNeedsFreshData,
-	skillFrontmatterCost,
-	skillFrontmatterColor,
-	skillFrontmatterInvocation,
-	skillFrontmatterRequires,
-	skillFrontmatterProfiles,
-}
-
-func hasSkillMarker(content string, fm map[string]string) bool {
-	for _, key := range skillMarkerFrontmatterKeys {
-		if strings.TrimSpace(fm[key]) != "" {
-			return true
-		}
-	}
-	return frontmatterHasSkillMarkerKey(content)
-}
-
-func frontmatterHasSkillMarkerKey(content string) bool {
-	lines := strings.Split(content, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return false
-	}
-	end := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			end = i
-			break
-		}
-	}
-	if end < 0 {
-		return false
-	}
-	for _, line := range lines[1:end] {
-		key, _, ok := strings.Cut(line, ":")
-		if ok && isSkillMarkerFrontmatterKey(strings.ToLower(strings.TrimSpace(key))) {
-			return true
-		}
-	}
-	return false
-}
-
-func isSkillMarkerFrontmatterKey(key string) bool {
-	return slices.Contains(skillMarkerFrontmatterKeys, key)
 }
 
 // Create scaffolds a new skill stub at the chosen scope. Refuses to overwrite.
@@ -1271,107 +1235,6 @@ func isScriptExt(ext string) bool {
 	}
 }
 
-// parseAllowedTools splits a comma-separated `allowed-tools` value into trimmed,
-// non-empty tool names; nil when absent.
-func parseAllowedTools(raw string) []string {
-	return parseCSVFrontmatter(raw)
-}
-
-// parseCSVFrontmatter splits simple comma-separated frontmatter values. Full
-// YAML lists are intentionally out of scope for the existing frontmatter parser.
-func parseCSVFrontmatter(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
-		raw = strings.TrimSpace(raw[1 : len(raw)-1])
-	}
-	var out []string
-	for p := range strings.SplitSeq(raw, ",") {
-		if t := strings.Trim(strings.TrimSpace(p), `"'`); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func parseAutoUse(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "off", "suggest", "prefer", "require":
-		return strings.ToLower(strings.TrimSpace(raw))
-	default:
-		return ""
-	}
-}
-
-// parseProfilesFrontmatter keeps only economy|balanced|delivery values and
-// returns the rejected ones separately so doctor can surface typos instead of
-// the parser hiding them.
-func parseProfilesFrontmatter(raw string) (valid, invalid []string) {
-	seen := map[string]bool{}
-	for _, p := range parseCSVFrontmatter(raw) {
-		p = strings.ToLower(strings.TrimSpace(p))
-		switch p {
-		case "economy", "balanced", "delivery":
-			if !seen[p] {
-				seen[p] = true
-				valid = append(valid, p)
-			}
-		case "":
-		default:
-			if !seen[p] {
-				seen[p] = true
-				invalid = append(invalid, p)
-			}
-		}
-	}
-	return valid, invalid
-}
-
-func parseBoolFrontmatter(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "true", "yes", "1", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-func parseCost(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "low", "medium", "high":
-		return strings.ToLower(strings.TrimSpace(raw))
-	default:
-		return ""
-	}
-}
-
-// parseInvocation maps frontmatter to an invocation mode. Anything other than
-// "manual" (including absent) is "auto" — the existing, universal behavior.
-func parseInvocation(raw string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "manual") {
-		return "manual"
-	}
-	return "auto"
-}
-
-// parseRunAs maps frontmatter to a run mode. An unknown value defaults to the
-// safe (non-spawning) inline mode; a `context: fork` or a non-empty `agent:`
-// field (cross-tool conventions) signals subagent isolation.
-func parseRunAs(runAs, context, agent string) RunAs {
-	if strings.TrimSpace(runAs) == "subagent" {
-		return RunSubagent
-	}
-	if strings.EqualFold(strings.TrimSpace(context), "fork") {
-		return RunSubagent
-	}
-	if strings.TrimSpace(agent) != "" {
-		return RunSubagent
-	}
-	return RunInline
-}
-
 // stubBody is the scaffold written by `/skill new` — minimal frontmatter plus
 // guidance the author fills in.
 func stubBody(name string) string {
@@ -1421,10 +1284,4 @@ func dedupePaths(paths []string) []string {
 		out = append(out, p)
 	}
 	return out
-}
-
-// splitFrontmatter is a thin wrapper kept for internal use; the real parser
-// lives in internal/frontmatter.
-func splitFrontmatter(s string) (map[string]string, string) {
-	return frontmatter.Split(s)
 }
