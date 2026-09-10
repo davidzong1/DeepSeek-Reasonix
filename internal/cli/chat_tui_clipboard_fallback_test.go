@@ -286,3 +286,57 @@ func TestCtrlVEmptyImageProbeWithNoTextSurfacesNotice(t *testing.T) {
 		})
 	}
 }
+
+// The failure text is clipboard-process output, which carries the terminal
+// controls those processes write to stdout, so the notice must sanitize it.
+func TestCtrlVTextFallbackFailureSanitizesNotice(t *testing.T) {
+	setLocalClipboardSession(t)
+	stubEmptyImageClipboard(t, "")
+	readNativeClipboardText = func() (string, error) {
+		return "", errors.New("wl-paste failed \x1b]52;c;owned\a")
+	}
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	m.input.SetValue("before ")
+	next, cmd := m.Update(imagePasteKey())
+	m = next.(chatTUI)
+	next, cmd = m.Update(cmd())
+	m = next.(chatTUI)
+
+	result := clipboardTextPasteResultFromCmd(t, cmd)
+	if result.err == nil {
+		t.Fatalf("fallback result = %+v, want the text read failure", result)
+	}
+	next, _ = m.Update(result)
+	m = next.(chatTUI)
+
+	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "wl-paste failed") {
+		t.Fatalf("clipboard text failure lost its notice:\n%s", got)
+	} else if strings.ContainsAny(got, "\x1b\a") {
+		t.Fatalf("clipboard text failure rendered terminal controls: %q", got)
+	}
+	if got := m.input.Value(); got != "before " {
+		t.Fatalf("clipboard text failure changed the composer: %q", got)
+	}
+}
+
+// Right-click reads the clipboard with no image probe behind it, so its empty
+// result stays silent: the empty-probe notice belongs to the keyboard fallback.
+func TestRightClickEmptyClipboardPasteStaysSilent(t *testing.T) {
+	setLocalClipboardSession(t)
+	stubEmptyImageClipboard(t, "")
+
+	m := newComposerMouseTestTUI(t, 60, 16)
+	m.input.SetValue("before ")
+	next, cmd := m.Update(tea.MouseClickMsg{Button: tea.MouseRight})
+	m = next.(chatTUI)
+	next, _ = m.Update(clipboardTextPasteResultFromCmd(t, cmd))
+	m = next.(chatTUI)
+
+	if got := m.input.Value(); got != "before " {
+		t.Fatalf("empty right-click paste changed the composer: %q", got)
+	}
+	if got := strings.Join(m.transcript, "\n"); strings.Contains(got, i18n.M.ClipboardPasteEmptyNotice) {
+		t.Fatalf("empty right-click paste surfaced the keyboard fallback notice:\n%s", got)
+	}
+}
