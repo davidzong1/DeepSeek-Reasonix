@@ -10,16 +10,24 @@ import (
 )
 
 type RecoveryLineageMember struct {
-	Path           string `json:"path"`
-	Role           string `json:"role"`
-	Canonical      bool   `json:"canonical"`
-	Turns          int    `json:"turns"`
-	Open           bool   `json:"open"`
-	Running        bool   `json:"running"`
-	VersionNote    string `json:"versionNote,omitempty"`
-	Preview        string `json:"preview,omitempty"`
-	CreatedAt      int64  `json:"createdAt,omitempty"`
-	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
+	Path            string `json:"path"`
+	VersionKind     string `json:"versionKind,omitempty"`
+	VersionState    string `json:"versionState,omitempty"`
+	ParentVersionID string `json:"parentVersionId,omitempty"`
+	Role            string `json:"role"`
+	Canonical       bool   `json:"canonical"`
+	Turns           int    `json:"turns"`
+	Open            bool   `json:"open"`
+	Running         bool   `json:"running"`
+	VersionNote     string `json:"versionNote,omitempty"`
+	Preview         string `json:"preview,omitempty"`
+	CreatedAt       int64  `json:"createdAt,omitempty"`
+	LastActivityAt  int64  `json:"lastActivityAt,omitempty"`
+	// Head fields are set when the version is a head inside one schema-2 log.
+	HeadID   string `json:"headId,omitempty"`
+	HeadKind string `json:"headKind,omitempty"`
+	HeadName string `json:"headName,omitempty"`
+	Selected bool   `json:"selected,omitempty"`
 }
 
 type RecoveryLineageView struct {
@@ -29,6 +37,172 @@ type RecoveryLineageView struct {
 	Unresolved      int                     `json:"unresolved"`
 	CleanupEligible int                     `json:"cleanupEligible"`
 	Members         []RecoveryLineageMember `json:"members"`
+}
+
+type SessionVersionStateView struct {
+	ConversationID    string              `json:"conversationId,omitempty"`
+	ActiveVersionID   string              `json:"activeVersionId,omitempty"`
+	ActivePath        string              `json:"activePath,omitempty"`
+	RecoveryVersionID string              `json:"recoveryVersionId,omitempty"`
+	CanContinue       bool                `json:"canContinue"`
+	RequiresChoice    bool                `json:"requiresChoice"`
+	Lineage           RecoveryLineageView `json:"lineage"`
+}
+
+// GetSessionVersionState exposes the logical conversation and its physical
+// recovery versions without making the physical paths ordinary sessions.
+func (a *App) GetSessionVersionState(key ProjectTopicKey) SessionVersionStateView {
+	view := a.GetRecoveryLineage(key)
+	if view.Members == nil {
+		view.Members = []RecoveryLineageMember{}
+	}
+	out := SessionVersionStateView{Lineage: view, CanContinue: true}
+	out.ConversationID = key.TopicID
+	for _, member := range view.Members {
+		if member.Canonical {
+			out.ActivePath = member.Path
+			out.ActiveVersionID = agent.BranchID(member.Path)
+			if member.HeadID != "" {
+				out.ActiveVersionID = member.HeadID
+			}
+			break
+		}
+	}
+	if key.Path != "" {
+		out.ActivePath = key.Path
+		if view.State != sessionHeadLineageState {
+			out.ActiveVersionID = agent.BranchID(key.Path)
+		}
+	}
+	out.RequiresChoice = view.State == "diverged" && view.Unresolved > 0
+	if out.ActivePath != "" {
+		for _, member := range view.Members {
+			if sameRecoveryLineagePath(member.Path, out.ActivePath) && member.Role == sessioncatalog.RecoveryRoleDiverged {
+				out.RecoveryVersionID = agent.BranchID(member.Path)
+			}
+		}
+	}
+	return out
+}
+
+// ReconcileRecoveryVersions refreshes one logical conversation and applies the
+// existing covered-copy sweep. It is idempotent and keeps diverged content.
+func (a *App) ReconcileRecoveryVersions(key ProjectTopicKey) error {
+	catalog := a.sessionCatalog.Load()
+	if catalog == nil {
+		return errors.New("session catalog is unavailable")
+	}
+	topic, ok, err := catalog.GetTopic(a.bootContext(), sessioncatalog.TopicKey{Scope: key.Scope, WorkspaceRoot: key.WorkspaceRoot, TopicID: key.TopicID})
+	if err != nil || !ok {
+		return errors.New("session version lineage is unavailable")
+	}
+	_, dir, ok := recoveryLineageSelection(topic, key.Path)
+	if !ok {
+		return nil
+	}
+	target := sessioncatalog.DirectoryTarget{Path: dir, Scope: key.Scope, WorkspaceRoot: key.WorkspaceRoot}
+	if err := catalog.ReconcileDirectory(a.bootContext(), target); err != nil {
+		return err
+	}
+	a.sweepExcessRecoveryCopies(catalog, target)
+	a.emitProjectTreeChangedForSessionDirs(dir)
+	return nil
+}
+
+// SetActiveSessionVersion selects and opens a recovery version on the existing
+// topic tab. It rejects subagent transcripts and preserves the logical topic.
+func (a *App) SetActiveSessionVersion(req RecoveryPreferenceRequest) error {
+	a.sessionVersionActivationMu.Lock()
+	defer a.sessionVersionActivationMu.Unlock()
+	if req.HeadID != "" {
+		if err := a.chooseSessionHead(req); err != nil {
+			return err
+		}
+		a.emitRuntimeEvent("session:active-version-changed", sessionRecoveryEvent{
+			ConversationID: req.TopicID, ActiveVersionID: req.HeadID, RecoveryVersionID: req.HeadID,
+			Scope: req.Scope, WorkspaceRoot: req.WorkspaceRoot, TopicID: req.TopicID, CanContinue: true,
+		})
+		return nil
+	}
+	meta, ok, err := agent.LoadBranchMeta(req.Path)
+	if err != nil || !ok {
+		return errors.New("session version is unavailable")
+	}
+	if meta.EffectiveVersionKind() == agent.VersionSubagent {
+		return errors.New("subagent transcripts cannot become the active conversation version")
+	}
+	catalog := a.sessionCatalog.Load()
+	if catalog == nil {
+		return errors.New("session catalog is unavailable")
+	}
+	topic, ok, err := catalog.GetTopic(a.bootContext(), sessioncatalog.TopicKey{Scope: req.Scope, WorkspaceRoot: req.WorkspaceRoot, TopicID: req.TopicID})
+	if err != nil || !ok {
+		return errors.New("recovery lineage is unavailable")
+	}
+	groupID, _, ok := recoveryLineageSelection(topic, req.Path)
+	if !ok || groupID == "" {
+		return errors.New("selected version is outside the recovery lineage")
+	}
+	memberFound := false
+	for _, member := range topic.Sessions {
+		if recoveryRecordBelongsToGroup(member, groupID) && sameRecoveryLineagePath(member.Path, req.Path) && member.RecoveryRole != sessioncatalog.RecoveryRoleCoveredCopy {
+			memberFound = true
+			break
+		}
+	}
+	if !memberFound {
+		return errors.New("selected version is outside the recovery lineage")
+	}
+	a.mu.RLock()
+	var tabID string
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab == nil || tab.TopicID != req.TopicID || tab.Scope != req.Scope ||
+			(req.Scope == "project" && tab.WorkspaceRoot != req.WorkspaceRoot) {
+			continue
+		}
+		tabID = tab.ID
+		break
+	}
+	a.mu.RUnlock()
+	if tabID != "" {
+		if _, err := a.ResumeSessionForTab(tabID, req.Path); err != nil {
+			return err
+		}
+	}
+	if err := a.ChooseRecoveryBranch(req); err != nil {
+		return err
+	}
+	a.emitRuntimeEvent("session:active-version-changed", sessionRecoveryEvent{
+		ConversationID: req.TopicID, ActiveVersionID: agent.BranchID(req.Path),
+		RecoveryVersionID: agent.BranchID(req.Path), Scope: req.Scope,
+		WorkspaceRoot: req.WorkspaceRoot, TopicID: req.TopicID,
+		CanContinue: true, RequiresChoice: false,
+	})
+	return nil
+}
+
+// RetrySessionRecovery re-arms a pending recovery version after its lease
+// owner has gone away, then routes through the same validated activation path.
+func (a *App) RetrySessionRecovery(req RecoveryPreferenceRequest) error {
+	meta, ok, err := agent.LoadBranchMeta(req.Path)
+	if err != nil || !ok || meta.EffectiveVersionKind() != agent.VersionRecovery {
+		return errors.New("session recovery version is unavailable")
+	}
+	if err := agent.UpdateBranchMeta(req.Path, false, func(next *agent.BranchMeta) error {
+		next.VersionKind = agent.VersionRecovery
+		next.VersionState = agent.VersionActive
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := a.SetActiveSessionVersion(req); err != nil {
+		_ = agent.UpdateBranchMeta(req.Path, false, func(next *agent.BranchMeta) error {
+			next.VersionState = agent.VersionPending
+			return nil
+		})
+		return err
+	}
+	return nil
 }
 
 type RecoveryCleanupRequest struct {
@@ -43,10 +217,12 @@ type RecoveryPreferenceRequest struct {
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId"`
 	Path          string `json:"path"`
+	HeadID        string `json:"headId,omitempty"` // a head of the schema-2 log at Path
 }
 
 type RecoveryCleanupItem struct {
 	Path   string `json:"path"`
+	HeadID string `json:"headId,omitempty"`
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
@@ -60,6 +236,9 @@ type RecoveryCleanupResult struct {
 	Items    []RecoveryCleanupItem `json:"items"`
 }
 
+// GetRecoveryLineage lists a conversation's versions: the heads of its
+// schema-2 log, the schema-1 recovery copies of its lineage, or both for a
+// family whose root was upgraded after copies had been made.
 func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	out := RecoveryLineageView{Members: []RecoveryLineageMember{}}
 	if a.catalogRebuilding.Load() {
@@ -74,7 +253,19 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	if err != nil || !ok {
 		return out
 	}
-	groupID, directory, ok := recoveryLineageSelection(topic, key.Path)
+	out = a.fileRecoveryLineage(catalog, topic, key.Path)
+	if heads, ok := a.sessionHeadLineage(topic, key.Path); ok {
+		out = mergeHeadLineage(out, heads)
+	}
+	if key.RecordClassification {
+		recordRecoveryLineageClassification(key.Path, out)
+	}
+	return out
+}
+
+func (a *App) fileRecoveryLineage(catalog *sessioncatalog.Catalog, topic sessioncatalog.TopicRecord, selectedPath string) RecoveryLineageView {
+	out := RecoveryLineageView{Members: []RecoveryLineageMember{}}
+	groupID, directory, ok := recoveryLineageSelection(topic, selectedPath)
 	if !ok {
 		return out
 	}
@@ -108,15 +299,22 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 		}
 		overlay := overlays[sessionRuntimeKey(record.Path)]
 		versionNote := record.CustomTitle
+		versionKind := "recovery"
+		versionState := "active"
+		parentVersionID := record.ParentID
 		if meta, ok, err := agent.LoadBranchMeta(record.Path); err == nil && ok {
 			versionNote = meta.CustomTitle
+			versionKind = string(meta.EffectiveVersionKind())
+			versionState = string(meta.EffectiveVersionState())
+			parentVersionID = meta.ParentVersionID
 		}
 		canonical := record.RecoveryCanonical
 		if representativeInGroup {
 			canonical = sameRecoveryLineagePath(record.Path, topic.RepresentativePath)
 		}
 		out.Members = append(out.Members, RecoveryLineageMember{
-			Path: record.Path, Role: record.RecoveryRole, Canonical: canonical,
+			Path: record.Path, VersionKind: versionKind, VersionState: versionState,
+			ParentVersionID: parentVersionID, Role: record.RecoveryRole, Canonical: canonical,
 			Turns: record.Turns, Open: overlay.open, Running: overlay.running,
 			VersionNote: versionNote, Preview: record.Preview,
 			CreatedAt: record.CreatedAt, LastActivityAt: record.LastActivityAt,
@@ -140,9 +338,6 @@ func (a *App) GetRecoveryLineage(key ProjectTopicKey) RecoveryLineageView {
 	// recovery notifications without polling forever.
 	if recoveryLineageIsCovered(out) {
 		out.State = "covered"
-	}
-	if key.RecordClassification {
-		recordRecoveryLineageClassification(key.Path, out)
 	}
 	return out
 }
@@ -236,6 +431,9 @@ func recoveryLineageIsCovered(view RecoveryLineageView) bool {
 // ChooseRecoveryBranch changes only the default open target. Diverged content
 // remains on disk and is never made cleanup-eligible by this choice.
 func (a *App) ChooseRecoveryBranch(req RecoveryPreferenceRequest) error {
+	if req.HeadID != "" {
+		return a.chooseSessionHead(req)
+	}
 	catalog := a.sessionCatalog.Load()
 	if catalog == nil {
 		return errors.New("session catalog is unavailable")
@@ -276,12 +474,17 @@ func (a *App) ChooseRecoveryBranch(req RecoveryPreferenceRequest) error {
 	if chosen == "" {
 		return errors.New("selected branch is outside the recovery lineage")
 	}
-	defer a.lockRuntimeMutation("choose-recovery-branch")()
-	a.sessionRemovalMu.Lock()
-	defer a.sessionRemovalMu.Unlock()
-	if err := agent.SetRecoveryPreferred(paths, chosen); err != nil {
+	if err := func() error {
+		defer a.lockRuntimeMutation("choose-recovery-branch")()
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
+		return agent.SetRecoveryPreferred(paths, chosen)
+	}(); err != nil {
 		return errors.New("could not save the recovery branch choice")
 	}
+	// The rescan reads session files and rewrites only the catalog projection,
+	// so it needs neither barrier; only the preference write above must stay
+	// atomic with respect to session removal.
 	if err := catalog.ReconcileDirectory(a.bootContext(), sessioncatalog.DirectoryTarget{Path: dir, Scope: req.Scope, WorkspaceRoot: req.WorkspaceRoot}); err != nil {
 		return errors.New("the branch choice was saved but the session catalog could not refresh")
 	}
@@ -301,15 +504,10 @@ func (a *App) CleanRecoveryLineage(req RecoveryCleanupRequest) RecoveryCleanupRe
 	if err != nil || !ok {
 		return result
 	}
-	canonical := ""
-	rootID := ""
-	for _, record := range topic.Sessions {
-		if record.RecoveryCanonical && (record.RecoveryRole == sessioncatalog.RecoveryRoleAdopted || record.RecoveryRole == sessioncatalog.RecoveryRolePreferred) {
-			canonical = record.Path
-			rootID = record.RecoveryGroupID
-			break
-		}
+	if heads, ok := a.cleanTopicHeads(req, topic); ok {
+		return heads
 	}
+	canonical, rootID := recoveryCleanupCanonical(topic)
 	if canonical == "" || rootID == "" {
 		return result
 	}
@@ -387,4 +585,13 @@ func (a *App) CleanRecoveryLineage(req RecoveryCleanupRequest) RecoveryCleanupRe
 		a.invalidatePromptHistoryCache()
 	}
 	return result
+}
+
+func recoveryCleanupCanonical(topic sessioncatalog.TopicRecord) (canonical, rootID string) {
+	for _, record := range topic.Sessions {
+		if record.RecoveryCanonical && (record.RecoveryRole == sessioncatalog.RecoveryRoleAdopted || record.RecoveryRole == sessioncatalog.RecoveryRolePreferred) {
+			return record.Path, record.RecoveryGroupID
+		}
+	}
+	return "", ""
 }

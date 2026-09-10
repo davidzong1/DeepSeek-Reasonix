@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
-import { createRoot } from "react-dom/client";
-import { ProviderEditor, ProviderEditorModelPicker } from "../components/SettingsPanel";
+
+
 import { ModelImageInputControl } from "../components/ModelImageInputControl";
 import { LocaleProvider } from "../lib/i18n";
 import { imageInputHardBlocked, imageInputState, mergeImageInputModes } from "../lib/providerImageInput";
 import type { AppBindings } from "../lib/bridge";
 import type { ProviderModelCapabilityView, ProviderView } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/", pretendToBeVisual: true });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, Event: dom.window.Event, CustomEvent: dom.window.CustomEvent, MouseEvent: dom.window.MouseEvent, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, IS_REACT_ACT_ENVIRONMENT: true });
@@ -15,6 +16,10 @@ Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 window.scrollTo = () => {};
+window.HTMLDialogElement.prototype.showModal = function() { this.setAttribute("open", ""); };
+const { createRoot } = await import("react-dom/client");
+await import("../components/ProviderModelDialog");
+const { ProviderEditor, ProviderEditorModelPicker } = await import("../components/SettingsPanel");
 const el = document.getElementById("root")!;
 const root = createRoot(el);
 const unknown: ProviderModelCapabilityView = { model: "relay-model", state: "unknown", source: "adapter", inputModalities: [], automaticState: "unknown", automaticSource: "adapter", imageInputEnableAllowed: true };
@@ -24,28 +29,30 @@ let cancelled = 0;
 const render = async (node: React.ReactNode) => { await act(async () => { root.render(<LocaleProvider>{node}</LocaleProvider>); }); };
 const editor = (key: string) => <ProviderEditor key={key} initial={initial} kinds={["openai"]} busy={false} onSave={(p) => { saved.push(p); }} onCancel={() => { cancelled++; }} />;
 const modeInput = (mode: string) => el.querySelector<HTMLInputElement>(`[role="radiogroup"][aria-label="Image input mode for relay-model"] input[value="${mode}"]`)!;
-const choose = async (mode: string) => { await act(async () => { const input = modeInput(mode); assert(input && !input.disabled); input.click(); }); };
-const click = async (label: string) => { await act(async () => { const b = [...el.querySelectorAll("button")].find((b) => b.textContent?.trim() === label); assert(b, `missing button ${label}`); b.click(); }); };
+const openModel = async () => { await act(async()=>{(el.querySelector('.provider-model-draft__option button') as HTMLButtonElement).click(); await new Promise(r=>setTimeout(r,30));}); };
+const choose = async (mode: string) => {
+ await openModel();
+ const d=document.querySelector('dialog')!;
+ await act(async()=>{
+  if(mode === 'auto') (d.querySelector('aside > button') as HTMLButtonElement).click();
+  else { const input=d.querySelector<HTMLInputElement>('aside input[type="checkbox"]:not(:disabled)')!; assert(input); if(input.checked !== (mode === 'on')) input.click(); }
+ });
+ await act(async()=>d.querySelector('form')!.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
+};
+const click = async (label: string) => { await act(async () => { const b = [...el.querySelectorAll("button")].find((b) => (b.textContent?.trim() === label || b.getAttribute("aria-label") === label)); assert(b, `missing button ${label}`); b.click(); }); };
 
 await render(editor("first"));
 assert(el.textContent?.includes("Image capability unknown"));
-assert(el.querySelector('[role="radiogroup"]')?.classList.contains("set-seg"), "image policy must reuse the settings segmented control");
-assert(modeInput("auto").closest("label")?.classList.contains("set-seg__btn--on"), "selected mode must use the shared settings selected state");
+assert.equal(el.querySelector('[role="radiogroup"]'),null,"model details stay in the dialog");
 await choose("on");
-assert(el.textContent?.includes("Manually enabled"));
+assert(el.textContent?.includes("Image input"));
 assert.equal(saved.length, 0, "draft must not write config");
-// Toggle enablement without losing this editor's image choice.
-const modelCheckbox = el.querySelector<HTMLInputElement>('.provider-model-draft__model input')!;
-await act(async () => modelCheckbox.click());
-assert(modeInput("auto").disabled && modeInput("on").disabled && modeInput("off").disabled);
-await act(async () => modelCheckbox.click());
-assert(modeInput("on").checked);
-await click("Save");
+await click("Save changes");
 assert.equal(saved[0].modelOverrides?.[0].vision, true);
 assert.equal(saved[0].modelOverrides?.[0].contextWindow, 123456);
 assert.equal(saved[0].modelOverrides?.[0].maxOutputTokens, 4321);
 await choose("auto");
-await click("Save");
+await click("Save changes");
 assert.equal(saved[1].modelOverrides?.[0].vision, null);
 assert.equal(saved[1].modelOverrides?.[0].reasoningProtocol, "openai");
 await choose("off");
@@ -60,27 +67,30 @@ assert(el.textContent?.includes("Image capability unknown"), "auto must not reus
 // A controlled Promise completes only after unmount. It must not modify the
 // replacement editor or enable a model from the previous provider request.
 let complete!: (v: ProviderModelCapabilityView[]) => void;
-window.go = { main: { App: { FetchProviderModelCatalog: () => new Promise((resolve) => { complete = resolve; }) } as Partial<AppBindings> as AppBindings } };
+installDesktopHostStub(({ main: { App: { FetchProviderModelCatalog: () => new Promise((resolve) => { complete = resolve; }) } as Partial<AppBindings> as AppBindings } }).main.App);
 await render(editor("fetching"));
-await click("Test and fetch models");
+await click("Refresh models");
 await render(editor("replacement"));
 await act(async () => { complete([{ ...unknown, model: "stale-model", state: "supported" }]); });
 assert(!el.textContent?.includes("stale-model"));
-assert(modeInput("auto").checked);
+assert(!el.textContent?.includes("stale-model"));
 
 await render(<ModelImageInputControl model="relay-model" mode="auto" capability={{ ...unknown, state: "unsupported", automaticState: "unsupported", imageInputEnableAllowed: false, imageInputBlockReason: "official_deepseek_text_model" }} disabled={false} onChange={() => {}} />);
 assert(modeInput("on").disabled);
 assert(!modeInput("off").disabled);
 assert.equal(imageInputState("auto", { ...unknown, automaticState: undefined, source: "override", state: "supported" }), "unknown", "old backend must not fabricate automatic support");
 assert.equal(imageInputState("on", { ...unknown, imageInputEnableAllowed: false }), "unsupported");
-assert(imageInputHardBlocked("https://api.deepseek.com", "deepseek-v4-flash"));
-assert(imageInputHardBlocked("https://eu.deepseek.com/anthropic", "future-vision"));
-assert(!imageInputHardBlocked("https://api.deepseek.com.relay.test", "deepseek-v4-flash"));
+assert(imageInputHardBlocked("https://api.deepseek.com", "deepseek-v4-pro"));
+assert(!imageInputHardBlocked("https://eu.deepseek.com/anthropic", "future-vision"));
+assert(!imageInputHardBlocked("https://api.deepseek.com.relay.test", "deepseek-v4-pro"));
+assert(!imageInputHardBlocked("https://api.deepseek.com", "deepseek-v4-flash"));
 assert(!imageInputHardBlocked("https://api.deepseek.com", "deepseek-v4-flash-vision-exp"));
-assert.equal(mergeImageInputModes(initial.modelOverrides, initial.models, { "RELAY-MODEL": "off" })[0].vision, false);
+assert.equal(mergeImageInputModes(initial.modelOverrides, initial.models, { "RELAY-MODEL": "off" })[0].vision, null);
 
-await render(<ProviderEditorModelPicker candidates={["relay-model"]} selectedModels={["relay-model"]} visionModels={[]} modelCapabilities={[unknown]} imageModes={{ "relay-model": "on" }} onImageInputChange={() => {}} contextWindows={{}} disabled={false} onToggleModel={() => {}} onContextWindowChange={() => {}} onSelectAll={() => {}} onClear={() => {}} />);
-assert(el.textContent?.includes("Manually enabled"));
+// The real dialog enforces a backend hard block as well as the primitive control.
+await render(<ProviderEditor key="blocked" initial={{...initial,modelCapabilities:[{...unknown,imageInputEnableAllowed:false,state:"unsupported"}]}} kinds={["openai"]} busy={false} onSave={()=>{}} onCancel={()=>{}}/>);
+await openModel();
+assert.equal(document.querySelectorAll('dialog aside input:disabled').length,5,"blocked image input cannot be enabled");
 await act(async () => root.unmount());
 dom.window.close();
 console.log("PASS provider image input: draft/save/auto/cancel/disabled/hard-limit/stale discovery");

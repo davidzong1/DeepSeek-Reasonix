@@ -28,10 +28,9 @@ import (
 const remoteProviderReloadTimeout = jobs.DefaultTeardownGrace + 15*time.Second
 
 // SwitchCredentialProxyModel stages an immutable desktop proxy route and a
-// matching remote provider credential, then asks Serve to perform its ordinary
-// active-work-gated controller switch. The outgoing controller keeps its old
-// virtual token and route throughout; if Serve refuses or cannot rebuild, the
-// on-disk provider is rolled back and the live controller remains coherent.
+// a complete resolver bundle, then asks a capable Serve to publish it at the
+// existing active-work/session boundary. An unknown outcome is read back; the
+// write is never replayed or rolled back against a possibly newer controller.
 func (m *desktopRemoteManager) SwitchCredentialProxyModel(ctx context.Context, hostID, workspace, currentRef, nextRef, expectedPath string) error {
 	hostID, workspace = strings.TrimSpace(hostID), strings.TrimSpace(workspace)
 	currentRef, nextRef = strings.TrimSpace(currentRef), strings.TrimSpace(nextRef)
@@ -60,53 +59,66 @@ func (m *desktopRemoteManager) SwitchCredentialProxyModel(ctx context.Context, h
 	if !ok || app == nil {
 		return fmt.Errorf("credential proxy: app unavailable")
 	}
-	oldRoute, err := app.applyCredentialProxyModel(hostID, workspace, currentRef)
+	client, err := newServeHTTPClient(serve.view.LocalURL)
 	if err != nil {
 		return err
 	}
-	newRoute, err := app.applyCredentialProxyModel(hostID, workspace, nextRef)
+	if err := serveHandshake(ctx, client, serve.view.LocalURL, serve.token); err != nil {
+		return err
+	}
+	status, err := remoteModelSettingsRequest(ctx, client, serve.view.LocalURL, expectedPath, nil)
 	if err != nil {
 		return err
 	}
-	remotePort, err := ensureCredentialProxyForward(mh.client, hostID, newRoute.port)
+	cfg, err := config.LoadModelRuntimeSnapshot(".")
+	if err != nil {
+		return err
+	}
+	port, err := app.credentialProxyPort()
+	if err != nil {
+		return err
+	}
+	if !m.pinModelSettingsOwnership(app, hostID, workspace, mh, status) {
+		return fmt.Errorf("remote Serve must support ordered model settings ownership")
+	}
+	remotePort, err := ensureCredentialProxyForward(mh.client, hostID, port)
 	if err != nil {
 		return fmt.Errorf("credential proxy: reverse tunnel: %w", err)
 	}
-	oldOptions := credentialProxyBootstrapOptions(workspace, remotePort, oldRoute)
-	newOptions := credentialProxyBootstrapOptions(workspace, remotePort, newRoute)
-	if _, err := bootstrap.EnsureCredentialProvider(ctx, mh.client, newOptions); err != nil {
+	bundle, remoteRef, err := app.buildRemoteModelSettings(hostID, workspace, nextRef, remotePort, cfg)
+	if err != nil {
 		return err
 	}
-	rollback := func(cause error) error {
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_, rollbackErr := bootstrap.EnsureCredentialProvider(rollbackCtx, mh.client, oldOptions)
-		if rollbackErr != nil {
-			return errors.Join(cause, fmt.Errorf("restore previous credential proxy model: %w", rollbackErr))
-		}
-		return cause
-	}
-	client, err := newServeHTTPClient(serve.view.LocalURL)
+	_, err = app.installRemoteModelSettingsSnapshot(ctx, client, serve.view.LocalURL, hostID, workspace, expectedPath, remoteRef, bundle, status)
 	if err != nil {
-		return rollback(err)
+		return err
 	}
-	if err := serveHandshake(ctx, client, serve.view.LocalURL, serve.token); err != nil {
-		return rollback(err)
+	if !m.isCurrent(hostID, mh) {
+		return fmt.Errorf("remote connection changed while applying model settings")
 	}
-	body, _ := json.Marshal(map[string]string{"ref": newOptions.Provider + "/" + newOptions.Model})
-	if err := servePostForSession(ctx, client, serveURL(serve.view.LocalURL, "/model"), body, expectedPath); err != nil {
-		return rollback(err)
+	app.remoteTabMu.Lock()
+	for _, tab := range app.remoteTabs {
+		if tab != nil && tab.ref.HostID == hostID && tab.ref.Workspace == workspace && tab.routing.currentPath == expectedPath {
+			tab.settings.revision = bundle.Revision
+			tab.settings.failure = ""
+			tab.settings.generation = tab.gen
+			tab.settings.sessionPath = expectedPath
+		}
 	}
+	app.remoteTabMu.Unlock()
 	return nil
 }
 
 func credentialProxyBootstrapOptions(workspace string, remotePort int, info credentialProxyRouteInfo) *bootstrap.CredentialProxyOptions {
 	slug := store.RemoteWorkspaceSlug(workspace)
 	suffix := slug[len(slug)-16:]
+	if info.revision != "" {
+		suffix += "-" + info.revision[:16]
+	}
 	return &bootstrap.CredentialProxyOptions{
 		BaseURL:  fmt.Sprintf("http://127.0.0.1:%d", remotePort),
 		Token:    info.token,
-		TokenEnv: "REASONIX_PROXY_TOKEN_" + strings.ToUpper(suffix),
+		TokenEnv: "REASONIX_PROXY_TOKEN_" + strings.ToUpper(strings.ReplaceAll(suffix, "-", "_")),
 		Provider: credentialProxyProviderName + "-" + suffix,
 		Model:    info.model,
 		Kind:     info.kind,
@@ -183,6 +195,7 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		FetchBinary:     m.fetchRemoteBinary,
 		MinVersion:      bootstrap.MinServeVersion,
 		CredentialProxy: credOpts,
+		BrowserBroker:   m.browserBrokerCallback(c, hostID, mh),
 		Progress: func(step, detail string) {
 			view := RemoteServerView{HostID: hostID, Workspace: workspace, State: step, Message: detail}
 			m.publishServerIfCurrent(hostID, mh, view, "", "")
@@ -202,6 +215,9 @@ func (m *desktopRemoteManager) EnsureServer(ctx context.Context, hostID, workspa
 		if !m.publishServerIfCurrent(hostID, mh, previousServer, res.Token, res.State.Addr) {
 			return RemoteServerView{}, "", fmt.Errorf("host %q connection was replaced", hostID)
 		}
+		// A reused process still carries the previous generation's broker
+		// environment; rotate the route and rebind it to this connection.
+		m.rebindBrowserBrokerBestEffort(opCtx, c, mh, hostID, previousServer, res.Token)
 		return m.finishCredentialServe(opCtx, c, mh, hostID, workspace, previousServer, res.Token, res, entry.CredentialProxyEnabled())
 	}
 	// Start the replacement before retiring the old tunnel. If binding fails,
@@ -367,6 +383,9 @@ func (m *desktopRemoteManager) StopServer(hostID, workspace string) error {
 	}
 	// Tear down the local serve tunnel so a stale forward can't linger.
 	_ = c.Forwards().Remove(serveForwardName(workspace))
+	// A stopped serve keeps its broker environment; drop the host's route so
+	// the token dies with the process that held it.
+	m.revokeBrowserBroker(hostID)
 	view := RemoteServerView{HostID: hostID, Workspace: workspace, State: "stopped"}
 	m.publishServerIfCurrent(hostID, mh, view, "", "")
 	return nil
@@ -453,16 +472,7 @@ func (m *desktopRemoteManager) credentialProxySetup(c desktopSSHClient, hostID, 
 	if err != nil {
 		return nil, fmt.Errorf("credential proxy: reverse tunnel: %w", err)
 	}
-	slug := store.RemoteWorkspaceSlug(workspace)
-	suffix := slug[len(slug)-16:]
-	return &bootstrap.CredentialProxyOptions{
-		BaseURL:  fmt.Sprintf("http://127.0.0.1:%d", remotePort),
-		Token:    info.token,
-		TokenEnv: "REASONIX_PROXY_TOKEN_" + strings.ToUpper(suffix),
-		Provider: credentialProxyProviderName + "-" + suffix,
-		Model:    info.model,
-		Kind:     info.kind,
-	}, nil
+	return credentialProxyBootstrapOptions(workspace, remotePort, info), nil
 }
 
 func (m *desktopRemoteManager) registerTrackedCredentialRoutes(app *App, hostID, workspace string) (credentialProxyRouteInfo, error) {

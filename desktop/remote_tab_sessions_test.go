@@ -92,7 +92,7 @@ func TestMigrateBlankRemoteSessionTitleOverride(t *testing.T) {
 	}
 }
 
-func TestRemoteProxyModelCatalogCannotCrossProviderProtocols(t *testing.T) {
+func TestRemoteProxyModelCatalogOffersProtocolsForSnapshotSwitch(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "OPENAI_TEST_KEY", "sk-openai")
 	setDesktopTestCredential(t, "ANTHROPIC_TEST_KEY", "sk-anthropic")
@@ -112,11 +112,11 @@ func TestRemoteProxyModelCatalogCannotCrossProviderProtocols(t *testing.T) {
 		"remote": {id: "remote", ref: RemoteTabRef{HostID: "box", Workspace: "~/app"}, state: "ready", model: "chat/gpt-test"},
 	}}
 	models := a.ModelsForTab("remote")
-	if len(models) != 2 || slices.ContainsFunc(models, func(model ModelInfo) bool { return model.Provider == "claude" }) {
-		t.Fatalf("local-proxy catalog crossed protocols: %+v", models)
+	if len(models) != 3 || !slices.ContainsFunc(models, func(model ModelInfo) bool { return model.Provider == "claude" }) {
+		t.Fatalf("local-proxy catalog omitted an available protocol: %+v", models)
 	}
 	err := a.SetRemoteTabModel("remote", "claude/claude-test")
-	if err == nil || !strings.Contains(err.Error(), "must be restarted to change protocol") {
+	if err == nil || !strings.Contains(err.Error(), "not connected") {
 		t.Fatalf("cross-protocol switch error = %v", err)
 	}
 }
@@ -276,34 +276,37 @@ func TestRemoteTabCommandSurfacesServeErrorBody(t *testing.T) {
 	}
 }
 
-// TestCloseRemoteTabIsIdempotent: closing removes the registry entry, stops
-// the pump, and a second close is a no-op.
-func TestCloseRemoteTabIsIdempotent(t *testing.T) {
+// TestCloseRemoteTabRefusesTheSoleSurface: the one-surface policy keeps the
+// last visible surface occupied, so closing it is refused — and a repeated
+// attempt must change nothing, rather than tearing the tab down half way.
+// Closing a surface that is not the last one is covered by the host-removal
+// path, which closes the final surface and hands the slot to a blank local.
+func TestCloseRemoteTabRefusesTheSoleSurface(t *testing.T) {
 	fs := newFakeServe(t, "s3cret", nil)
 	kernel := &fakeRemoteKernel{
 		statuses:    []RemoteConnectionStatusView{{HostID: "box", State: "connected"}},
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	seedClassicBridgeTestHost(t, "box")
+	seedBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
 
-	if err := a.CloseRemoteTab(meta.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.CloseRemoteTab(meta.ID); err != nil {
-		t.Fatalf("second close: %v", err)
+	for attempt := 1; attempt <= 2; attempt += 1 {
+		err := a.CloseRemoteTab(meta.ID)
+		if err == nil || !strings.Contains(err.Error(), "cannot close the last tab") {
+			t.Fatalf("close attempt %d = %v, want the last-surface refusal", attempt, err)
+		}
 	}
 	a.remoteTabMu.Lock()
 	_, present := a.remoteTabs[meta.ID]
 	a.remoteTabMu.Unlock()
-	if present {
-		t.Fatal("closed tab still in the registry")
+	if !present {
+		t.Fatal("a refused close must leave the tab in the registry")
 	}
-	if err := a.SubmitRemoteTab(meta.ID, "hi"); err == nil {
-		t.Fatal("commands on a closed tab must fail")
+	if err := a.SubmitRemoteTab(meta.ID, "hi"); err != nil {
+		t.Fatalf("a refused close must leave the tab usable: %v", err)
 	}
 }
 
@@ -411,7 +414,7 @@ func TestListTabsIncludesRemoteEntries(t *testing.T) {
 		ensureView:  RemoteServerView{HostID: "box", State: "ready", LocalURL: fs.server.URL},
 		ensureToken: "s3cret",
 	}
-	seedClassicBridgeTestHost(t, "box")
+	seedBridgeTestHost(t, "box")
 	a := &App{remoteRuntime: kernel}
 	cleanupRemoteTabPumps(t, a)
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{NewSession: true})
@@ -443,14 +446,17 @@ func TestListTabsIncludesRemoteEntries(t *testing.T) {
 	if active != meta.ID {
 		t.Fatalf("remoteActiveTabID = %q, want %q", active, meta.ID)
 	}
-	if err := a.CloseTabWithPolicy(meta.ID, "keep_running"); err != nil {
-		t.Fatalf("CloseTabWithPolicy(remote): %v", err)
+	// It is the sole visible surface, so the one-surface policy refuses to
+	// remove it and the entry stays listed.
+	err := a.CloseTabWithPolicy(meta.ID, "keep_running")
+	if err == nil || !strings.Contains(err.Error(), "cannot close the last tab") {
+		t.Fatalf("CloseTabWithPolicy(remote) = %v, want the last-surface refusal", err)
 	}
 	a.remoteTabMu.Lock()
 	_, present := a.remoteTabs[meta.ID]
 	a.remoteTabMu.Unlock()
-	if present {
-		t.Fatal("CloseTabWithPolicy left the remote tab registered")
+	if !present {
+		t.Fatal("a refused CloseTabWithPolicy must leave the remote tab registered")
 	}
 }
 

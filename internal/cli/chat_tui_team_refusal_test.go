@@ -68,9 +68,11 @@ func TestDryRunPoolEntryUsesTheAdapterAsAuthority(t *testing.T) {
 		want  string // substring; "" = must pass
 		store bool   // whether the store gate also refuses it
 	}{
-		{"typo effort", with(func(u *team.AgentUser) { u.Effort = "hight" }), `effort "hight"`, false},
+		{"typo effort", with(func(u *team.AgentUser) { u.Effort = "hight" }), `does not support "hight"`, false},
 		{"legal effort", with(func(u *team.AgentUser) { u.Effort = "high" }), "", false},
-		{"legacy max alias", with(func(u *team.AgentUser) { u.Effort = "max" }), "", false},
+		// max is not on OpenAI's reasoning_effort scale; the adapter's vocabulary
+		// is the only authority, so a pool entry cannot name a level it lacks.
+		{"max is not an OpenAI level", with(func(u *team.AgentUser) { u.Effort = "max" }), `does not support "max"`, false},
 		{"empty effort", base, "", false},
 		{"no model yet", with(func(u *team.AgentUser) { u.Model = "" }), "", false},
 		{"no provider yet", with(func(u *team.AgentUser) { u.Provider = "" }), "", false},
@@ -111,7 +113,7 @@ func TestSavePoolEditRefusesUnusableEntryZeroWrite(t *testing.T) {
 
 	p.savePoolEdit()
 
-	if !strings.Contains(p.pool.errMsg, `effort "hight"`) {
+	if !strings.Contains(p.pool.errMsg, `does not support "hight"`) {
 		t.Fatalf("the editor must show the adapter's reason, got %q", p.pool.errMsg)
 	}
 	if !p.pool.adding {

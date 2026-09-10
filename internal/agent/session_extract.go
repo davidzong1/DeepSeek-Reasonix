@@ -313,9 +313,8 @@ func (a *Agent) extractFragmentResilient(ctx context.Context, chunk []provider.M
 	if err == nil {
 		return strings.TrimSpace(res.Text), nil
 	}
-	retriable := errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, ErrCompactionRequired)
 	leftChunk, rightChunk, splittable := splitExtractFragment(chunk)
-	if !retriable || !splittable {
+	if !summarySizeFailure(err) || !splittable {
 		return "", err
 	}
 	report(true)
@@ -332,6 +331,13 @@ func (a *Agent) extractFragmentResilient(ctx context.Context, chunk []provider.M
 		return "", fmt.Errorf("merge split fragments: %w", err)
 	}
 	return merged, nil
+}
+
+// summarySizeFailure reports a failure that a smaller summarizer input fixes:
+// output truncation, local admission, or the provider's own overflow reply.
+func summarySizeFailure(err error) bool {
+	return errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, ErrCompactionRequired) ||
+		provider.AsContextLimitError(err) != nil
 }
 
 func splitExtractFragment(chunk []provider.Message) (left, right []provider.Message, ok bool) {
@@ -352,7 +358,7 @@ func (a *Agent) mergeInputBudget() int {
 	if window <= 0 {
 		return math.MaxInt
 	}
-	return max(minMergeInputTokens, (window-a.summaryOutputBudget()-protocolReserveTokens)/2)
+	return max(minMergeInputTokens, (window-a.summaryOutputBudget()-summaryPlanReserve(window))/2)
 }
 
 // mergeGroup merges one group of fragment briefings. A group that cannot be
@@ -365,8 +371,7 @@ func (a *Agent) mergeGroup(ctx context.Context, group []string, instructions str
 		return strings.TrimSpace(merged.Text), nil
 	}
 	mergeErr := err
-	retriable := errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, ErrCompactionRequired)
-	if !retriable || len(group) < 2 {
+	if !summarySizeFailure(err) || len(group) < 2 {
 		return "", err
 	}
 	if depth >= maxChunkedMergeDepth {

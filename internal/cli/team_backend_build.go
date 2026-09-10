@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"reasonix/internal/boot"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -38,6 +39,7 @@ type memberProviderResolver struct {
 	model                 string
 	apiKey                string
 	effort                string
+	reasoningProtocol     string
 	proxy                 netclient.ProxySpec
 	context1M             bool
 	deepSeekAnthropic     bool
@@ -67,15 +69,16 @@ func newMemberProviderResolver(u team.AgentUser, proxy netclient.ProxySpec) (*me
 		model = wireModel
 	}
 	return &memberProviderResolver{
-		ref:       memberModelRef(name, u.Model),
-		name:      name,
-		kind:      kind,
-		endpoint:  endpoint,
-		model:     model,
-		apiKey:    u.APIKey,
-		effort:    strings.TrimSpace(u.Effort),
-		proxy:     proxy,
-		context1M: context1M,
+		ref:               memberModelRef(name, u.Model),
+		name:              name,
+		kind:              kind,
+		endpoint:          endpoint,
+		model:             model,
+		apiKey:            u.APIKey,
+		effort:            strings.TrimSpace(u.Effort),
+		reasoningProtocol: memberReasoningProtocol(providerName, kind, endpoint, model),
+		proxy:             proxy,
+		context1M:         context1M,
 
 		// MCP Claude profiles use ANTHROPIC_AUTH_TOKEN for this route. Preserve
 		// that wire contract after importing the profile into a team AgentUser.
@@ -91,6 +94,27 @@ func memberModelRef(name, model string) string {
 		return name
 	}
 	return name + "/" + model
+}
+
+// memberReasoningProtocol names the adapter protocol a pool entry's effort
+// vocabulary is read from; the adapter owns that vocabulary, so an undeclared
+// one would reject every level a member sets. The endpoint-derived protocol wins
+// so a re-pointed gateway keeps its own contract; the entry's declared provider
+// is the fallback for endpoints the config table cannot classify. Empty leaves
+// the adapter default, which is permissive.
+func memberReasoningProtocol(providerName, kind, endpoint, model string) string {
+	if protocol := config.ReasoningProtocolForEntry(&config.ProviderEntry{
+		Kind: kind, BaseURL: endpoint, Model: model,
+	}); protocol != "" {
+		return protocol
+	}
+	switch providerName {
+	case team.ProviderDeepSeek:
+		return config.ReasoningProtocolDeepSeek
+	case team.ProviderOpenAI:
+		return config.ReasoningProtocolOpenAI
+	}
+	return ""
 }
 
 // Ref is the model ref boot.Options.Model must carry for this member.
@@ -126,8 +150,11 @@ func (r *memberProviderResolver) Resolve(sel provider.Selection) (provider.Provi
 		"effort":     effort,
 		"proxy_spec": r.proxy,
 	}
+	if r.reasoningProtocol != "" {
+		extra["reasoning_protocol"] = r.reasoningProtocol
+	}
 	if r.deepSeekAnthropic {
-		extra["reasoning_protocol"] = "deepseek"
+		extra["reasoning_protocol"] = config.ReasoningProtocolDeepSeek
 		extra["thinking"] = "enabled"
 		extra["anthropic_beta"] = "context-1m-2025-08-07"
 	}

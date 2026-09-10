@@ -16,7 +16,7 @@ func TestMemberResolverEntryNeverTriggersGlobalKeyNotice(t *testing.T) {
 	r := &provider.StaticResolver{Descriptors: []provider.Descriptor{{
 		Ref: "u1/gpt-5.6", DisplayName: "u1", Model: "gpt-5.6", Tools: true,
 	}}}
-	entry, _, err := resolveModelEntry(r, nil, "u1/gpt-5.6")
+	entry, _, err := resolveModelEntry(r, &config.Config{}, "u1/gpt-5.6")
 	if err != nil {
 		t.Fatal(err)
 	}

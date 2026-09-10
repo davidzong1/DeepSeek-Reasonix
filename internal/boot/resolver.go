@@ -48,6 +48,9 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
 				entry = *selected
 			}
 			ref := modelRefFromEntry(&entry)
+			if resolved, ok := r.cfg.ResolveModel(ref); ok {
+				entry = *resolved
+			}
 			capability := config.ResolvedModelCapability{State: config.CapabilityUnknown}
 			if r.capabilities != nil {
 				capability = r.capabilities.Resolve(&entry)
@@ -70,8 +73,8 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
 				d.InputPerMillion = price.Input
 				d.OutputPerMillion = price.Output
 			}
-			if len(entry.SupportedEfforts) > 0 {
-				d.Efforts = append([]string(nil), entry.SupportedEfforts...)
+			if reasoning := config.ReasoningCapabilityForEntry(&entry); len(reasoning.Options) > 0 {
+				d.Efforts = reasoning.IDs()
 				d.Reasoning = true
 			}
 			if config.ReasoningProtocolForEntry(&entry) == config.ReasoningProtocolDeepSeek {
@@ -97,6 +100,11 @@ func (r *LocalProviderResolver) Resolve(selection provider.Selection) (provider.
 		return nil, fmt.Errorf("%w %q", ErrUnknownModel, ref)
 	}
 	if selection.Effort != nil {
+		if *selection.Effort != "" {
+			if _, err := config.NormalizeEffort(entry, *selection.Effort); err != nil {
+				return nil, err
+			}
+		}
 		entry.Effort = *selection.Effort
 	}
 	var modelInfo *provider.ModelInfo
@@ -179,6 +187,9 @@ func modelRefFromEntry(e *config.ProviderEntry) string {
 // ref. The unknown-model error names every ref the session could have used,
 // including plugin-namespaced refs a merged extension resolver serves.
 func resolveModelEntry(resolver provider.Resolver, cfg *config.Config, modelName string) (*config.ProviderEntry, string, error) {
+	if err := cfg.ModelReferenceError(modelName); err != nil {
+		return nil, "", err
+	}
 	if resolver != nil {
 		entry := syntheticEntryFromResolver(resolver, modelName)
 		if strings.TrimSpace(entry.Name) != "" {

@@ -72,6 +72,7 @@ func LoadUserConfigReadOnly() (*Config, error) {
 		}
 	}
 	normalizeConfigForEdit(cfg)
+	cfg.loadOpenCodeGoJournal(userConfigLoadPath())
 	return cfg, nil
 }
 
@@ -233,7 +234,7 @@ func loadForRoot(root string, opts loadForRootOptions) (*Config, error) {
 		cfg.mergeMCPJSON(loadLegacyMCP(legacyConfigPath()))
 	}
 	_ = mergeInstalledPluginPackages(cfg, root)
-	if err := normalizeLoadedConfig(cfg); err != nil {
+	if err := normalizeRuntimeConfigWithMigrationJournal(cfg); err != nil {
 		return nil, err
 	}
 	if userDefaultModelExplicit {
@@ -332,27 +333,6 @@ func tomlFileDefinesKey(path string, key ...string) bool {
 		return false
 	}
 	return meta.IsDefined(key...)
-}
-
-// ConfigFileDefinesCompactRatio reports whether path explicitly overrides the
-// automatic compaction threshold. It is used by config surfaces that need to
-// explain whether the effective value came from defaults, user config, or the
-// current project.
-func ConfigFileDefinesCompactRatio(path string) bool {
-	return tomlFileDefinesKey(path, "agent", "compact_ratio")
-}
-
-// ConfigFileDefinesSkillKey reports whether a project or user TOML file
-// explicitly owns one of the supported [skills] settings. Desktop settings use
-// this narrow provenance check to edit the file that wins at runtime instead
-// of persisting a shadowed value to the global config.
-func ConfigFileDefinesSkillKey(path, key string) bool {
-	switch strings.TrimSpace(key) {
-	case "paths", "excluded_paths", "disabled_skills", "disable_implicit_invocation", "max_depth":
-		return tomlFileDefinesKey(path, "skills", key)
-	default:
-		return false
-	}
 }
 
 // backfillDeepSeekPro restores deepseek-pro for configs the pre-fix setup wizard
@@ -770,6 +750,7 @@ func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*C
 	}
 	markExplicitDefaultProjectSkillKeys(cfg, path, meta)
 	changed := normalizeConfigForEdit(cfg)
+	cfg.loadOpenCodeGoJournal(path)
 	if persistMigrations && changed && strings.TrimSpace(path) != "" {
 		if _, err := os.Stat(path); err == nil {
 			if err := cfg.SaveTo(path); err != nil {
@@ -1166,6 +1147,19 @@ func stripLegacyMultiThresholdCompactionLines(raw string) (string, bool) {
 func migrateLegacyMCPTiersFile(path string) error {
 	_, err := migrateRetiredConfigKeysFile(path, stripLegacyMCPTierLines)
 	return err
+}
+
+// MigrateLegacyMCPTiersForRoot keeps boot's historical on-disk migration
+// separate from immutable snapshots, whose freshness checks must be read-only.
+func MigrateLegacyMCPTiersForRoot(root string) {
+	for _, path := range []string{userConfigLoadPath(), filepath.Join(resolveRoot(root), "reasonix.toml")} {
+		if path == "" {
+			continue
+		}
+		if err := migrateLegacyMCPTiersFile(path); err != nil {
+			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
+		}
+	}
 }
 
 func stripLegacyMCPTierLines(raw string) (string, bool) {
@@ -1822,6 +1816,7 @@ func legacyMimoConfigRefs(c *Config) []string {
 		c.DefaultModel,
 		c.Agent.PlannerModel,
 		c.Agent.VisionModel,
+		c.Agent.WebSearchModel,
 		c.Agent.SubagentModel,
 		c.Bot.Model,
 	}
@@ -1983,6 +1978,7 @@ func NormalizeLegacyDesktopProviderAccess(c *Config) {
 	addRef(c.DefaultModel)
 	addRef(c.Agent.PlannerModel)
 	addRef(c.Agent.VisionModel)
+	addRef(c.Agent.WebSearchModel)
 	addRef(c.Agent.SubagentModel)
 	for _, ref := range c.Agent.SubagentModels {
 		addRef(ref)
@@ -2499,7 +2495,7 @@ func mergeProviderModelOverride(dst *ProviderModelOverride, src ProviderModelOve
 
 func mergeModelLists(primary, extra []string) []string {
 	seen := map[string]bool{}
-	out := make([]string, 0, len(primary)+len(extra))
+	out := make([]string, 0, len(primary))
 	for _, list := range [][]string{primary, extra} {
 		for _, model := range list {
 			model = strings.TrimSpace(model)

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { applySessionExperience } from "./sessionExperience";
 
 export type ReasoningDisplayMode = "hidden" | "summary" | "auto" | "expanded";
 export type ResolvedReasoningDisplayMode = ReasoningDisplayMode | "legacy-collapsed" | "pending";
@@ -51,9 +52,15 @@ export function setReasoningDisplayPending(): void {
   emit();
 }
 
-/** Hydrates the frontend mirror from the authoritative Wails startup payload. */
+/** Hydrates the frontend mirror from the authoritative desktop startup payload. */
 export function hydrateReasoningDisplayMode(configuredMode: unknown, explicit = false): void {
   const next = resolveReasoningDisplayMode(configuredMode, explicit);
+  // Compatibility callers still participate in the canonical two-state
+  // model. Historical configuration is intentionally normalized to Standard;
+  // only an explicit legacy "expanded" selection maps to Deep.
+  if (explicit) {
+    applySessionExperience(next === "expanded" ? "deep" : "standard");
+  }
   if (next === currentMode && currentModeExplicit === explicit) return;
   currentMode = next;
   currentModeExplicit = explicit;
@@ -62,6 +69,7 @@ export function hydrateReasoningDisplayMode(configuredMode: unknown, explicit = 
 
 /** Applies a successfully persisted user selection and completes legacy migration. */
 export function applyReasoningDisplayMode(mode: ReasoningDisplayMode): void {
+  applySessionExperience(mode === "expanded" ? "deep" : "standard");
   if (typeof localStorage !== "undefined") localStorage.removeItem(LEGACY_SUMMARY_KEY);
   if (mode === currentMode && currentModeExplicit) return;
   currentMode = mode;

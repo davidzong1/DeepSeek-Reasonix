@@ -49,26 +49,26 @@
   right: 0;
   height: 32px;
   z-index: 3;
-  --wails-draggable: drag;
+  --reasonix-draggable: drag;
   user-select: none;
 }
 
 /* 列表/详情内容区保持可交互，不参与窗口拖拽 */
 .heartbeat-split__left,
 .heartbeat-split__right {
-  --wails-draggable: no-drag;
+  --reasonix-draggable: no-drag;
 }
 
 /* 自定义滚动条可拖拽滑块不参与窗口拖拽 */
 .heartbeat-scrollbar,
 .heartbeat-scrollbar__thumb {
-  --wails-draggable: no-drag;
+  --reasonix-draggable: no-drag;
 }
 
 /* 分割线本身必须 no-drag——否则继承 .heartbeat-split 的 drag，
-   鼠标按下会被 Wails 当成拖窗口，React 收不到 mousedown 无法拖动分栏 */
+   鼠标按下会被桌面壳当成拖窗口，React 收不到 mousedown 无法拖动分栏 */
 .heartbeat-split__divider {
-  --wails-draggable: no-drag;
+  --reasonix-draggable: no-drag;
 }
 
 .heartbeat-split__left {
@@ -838,18 +838,18 @@
 
 /* ── 状态筛选 tab（全部/已开启/已暂停） ────────────────────────── */
 
-/* 列表区与详情区头部支持拖拽窗口（Wails --wails-draggable），
+/* 列表区与详情区头部支持拖拽窗口（--reasonix-draggable 标记），
    交互元素（按钮/输入框）保持 no-drag 可点击 */
 .heartbeat-toolbar,
 .heartbeat-editor__header {
-  --wails-draggable: drag;
+  --reasonix-draggable: drag;
   user-select: none;
 }
 
 .heartbeat-toolbar button,
 .heartbeat-toolbar input,
 .heartbeat-editor__header button {
-  --wails-draggable: no-drag;
+  --reasonix-draggable: no-drag;
 }
 
 .heartbeat-status-tabs {
@@ -1894,73 +1894,29 @@
   color: var(--danger);
 }
 
-/* Shared automation shell: it owns the collapsed-sidebar recovery control and
-   a native drag-safe title strip without changing Heartbeat's task state. */
-.automation-surface {
-  position: relative;
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+/* Management surfaces retain their own list/detail layout at every theme. */
+.management-screen .heartbeat-page { flex: 1; min-height: 0; }
+.management-screen .heartbeat-split { background: var(--bg); }
+.management-screen .heartbeat-split__left { min-width: 280px; }
+.management-screen .heartbeat-page[data-detail="true"] .heartbeat-split__left { max-width: calc(100% - 425px); }
+.management-screen .heartbeat-split__right { min-width: 420px; display: flex; flex-direction: column; min-height: 0; }
+.management-screen .heartbeat-toolbar { flex-wrap: wrap; gap: 8px; }
+.management-screen .heartbeat-editor { flex: 1; min-height: 0; }
+.automation-fields { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.automation-fields[hidden], .heartbeat-run-history[hidden] { display: none; }
+.heartbeat-detail-tabs { display: flex; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--border); }
+.heartbeat-detail-tabs button { border: 0; padding: 8px 12px; background: transparent; color: var(--fg-dim); border-radius: 8px; cursor: pointer; }
+.heartbeat-detail-tabs button[aria-selected="true"] { background: var(--bg-soft); color: var(--fg); }
+.automation-draft-list { display: flex; flex-direction: column; gap: 4px; padding: 8px 16px; }
+.automation-draft-list h3 { font-size: 12px; color: var(--fg-dim); }
+.automation-draft-list button { justify-content: space-between; white-space: normal; text-align: left; }
+.automation-dirty { color: var(--fg-dim); font-weight: normal; }
+@media (max-width: 959px) {
+ .management-screen .heartbeat-page[data-detail="true"] .heartbeat-split__left, .management-screen .heartbeat-split__divider { display: none; }
+ .management-screen .heartbeat-split__right { min-width: 0; width: 100%; flex: 1; }
+ .management-screen .heartbeat-split__left { min-width: 0; width: 100%; }
 }
+.automation-task-select { background: transparent; border: 0; color: inherit; padding: 0; text-align: left; font: inherit; cursor: pointer; }
+.automation-task-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.app--automation .skip-to-composer {
-  display: none;
-}
-
-.automation-surface > .heartbeat-page {
-  flex: 1;
-  width: 100%;
-}
-
-.layout--sidebar-collapsed .automation-surface {
-  padding-top: 44px;
-}
-
-.automation-surface__drag-region {
-  display: none;
-}
-
-.layout--sidebar-collapsed .automation-surface__drag-region {
-  --wails-draggable: drag;
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: var(--z-app-chrome);
-  display: block;
-  height: 44px;
-  user-select: none;
-}
-
-.automation-sidebar-toggle {
-  --wails-draggable: no-drag;
-  position: absolute;
-  top: 8px;
-  left: 10px;
-  z-index: var(--z-dock);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--fg-faint);
-}
-
-.layout--sidebar-collapsed .automation-sidebar-toggle {
-  display: inline-flex;
-}
-
-.automation-sidebar-toggle:hover,
-.automation-sidebar-toggle:focus-visible {
-  border-color: var(--border-soft);
-  background: var(--sidebar-hover);
-  color: var(--fg);
-}
-
-.app--darwin .automation-sidebar-toggle {
-  left: 96px;
-}
+.automation-save-status { margin-right: auto; color: var(--fg-dim); font-size: 12px; }

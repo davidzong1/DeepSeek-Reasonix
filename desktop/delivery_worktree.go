@@ -27,12 +27,15 @@ var (
 // IsolatedWorktreeOpenResult is returned after an isolated Git workspace has
 // been created and opened as a normal Reasonix project.
 type IsolatedWorktreeOpenResult struct {
-	WorkspaceRoot string  `json:"workspaceRoot"`
-	WorktreeRoot  string  `json:"worktreeRoot"`
-	SourceRoot    string  `json:"sourceRoot"`
-	Branch        string  `json:"branch"`
-	SourceDirty   bool    `json:"sourceDirty"`
-	Tab           TabMeta `json:"tab"`
+	WorkspaceRoot  string  `json:"workspaceRoot"`
+	WorktreeRoot   string  `json:"worktreeRoot"`
+	SourceRoot     string  `json:"sourceRoot"`
+	Branch         string  `json:"branch"`
+	SourceDirty    bool    `json:"sourceDirty"`
+	SourceRevision string  `json:"sourceRevision,omitempty"`
+	TaskID         string  `json:"taskId,omitempty"`
+	ConversationID string  `json:"conversationId,omitempty"`
+	Tab            TabMeta `json:"tab"`
 }
 
 // DeliveryWorktreeOpenResult is the deprecated alias of
@@ -64,22 +67,20 @@ func (a *App) CreateIsolatedWorktree(workspaceRoot string) (IsolatedWorktreeOpen
 		return IsolatedWorktreeOpenResult{}, err
 	}
 
-	var tab TabMeta
-	if a.singleSurfaceLayoutEnabled() {
-		tab, err = a.ensureBlankSurface("project", created.WorkspaceRoot)
-	} else {
-		tab, err = a.ensureBlankTab("project", created.WorkspaceRoot)
-	}
+	tab, err := a.ensureBlankSurface("project", created.WorkspaceRoot)
 	if err != nil {
 		return IsolatedWorktreeOpenResult{}, fmt.Errorf("isolated worktree was created at %s but Reasonix could not open it: %w", created.WorktreeRoot, err)
 	}
 	return IsolatedWorktreeOpenResult{
-		WorkspaceRoot: created.WorkspaceRoot,
-		WorktreeRoot:  created.WorktreeRoot,
-		SourceRoot:    created.SourceRoot,
-		Branch:        created.Branch,
-		SourceDirty:   created.SourceDirty,
-		Tab:           tab,
+		WorkspaceRoot:  created.WorkspaceRoot,
+		WorktreeRoot:   created.WorktreeRoot,
+		SourceRoot:     created.SourceRoot,
+		Branch:         created.Branch,
+		SourceDirty:    created.SourceDirty,
+		SourceRevision: created.Head,
+		TaskID:         tab.ID,
+		ConversationID: tab.TopicID,
+		Tab:            tab,
 	}, nil
 }
 
@@ -148,6 +149,19 @@ func (a *App) InspectWorktreeMerge(tabID string) (worktree.MergeInspection, erro
 		inspection.Blockers = append(inspection.Blockers, blockers...)
 	}
 	return inspection, nil
+}
+
+// GetWorktreeStatus is the stable status-query name for new clients. It keeps
+// the existing inspection implementation as the single owner of merge guards.
+func (a *App) GetWorktreeStatus(tabID string) (worktree.MergeInspection, error) {
+	return a.InspectWorktreeMerge(tabID)
+}
+
+// PrepareWorktreeMerge performs the same fresh inspection used immediately
+// before a merge request. The request is intentionally small so clients cannot
+// smuggle stale paths or identities across the Wails boundary.
+func (a *App) PrepareWorktreeMerge(tabID string) (worktree.MergeInspection, error) {
+	return a.InspectWorktreeMerge(tabID)
 }
 
 // MergeWorktreeBack merges only after active-work and dual-workspace lease
@@ -548,48 +562,13 @@ func (a *App) reserveWorktreeMergeRuntime(sourceRoot, worktreeRoot string) (func
 }
 
 func holdWorktreeMergeLeases(parent context.Context, roots ...string) (func(), error) {
-	type leaseRoot struct{ canonical, root string }
-	unique := map[string]string{}
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		canonical, err := workspacelease.CanonicalWorkspace(root)
-		if err != nil {
-			return nil, fmt.Errorf("resolve merge workspace lease: %w", err)
-		}
-		unique[canonical] = root
-	}
-	ordered := make([]leaseRoot, 0, len(unique))
-	for canonical, root := range unique {
-		ordered = append(ordered, leaseRoot{canonical: canonical, root: root})
-	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].canonical < ordered[j].canonical })
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-	releases := make([]func(), 0, len(ordered))
-	for _, item := range ordered {
-		owner, err := workspacelease.New(item.root, config.WorkspaceLeaseDir(), nil)
-		if err != nil {
-			cancel()
-			runReleasesReverse(releases)
-			return nil, fmt.Errorf("create merge workspace lease: %w", err)
-		}
-		release, err := owner.HoldWrite(ctx)
-		if err != nil {
-			cancel()
-			runReleasesReverse(releases)
-			return nil, fmt.Errorf("wait for merge workspace lease: %w", err)
-		}
-		releases = append(releases, release)
+	release, err := workspacelease.HoldWriteRoots(ctx, config.WorkspaceLeaseDir(), roots...)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("wait for merge workspace lease: %w", err)
 	}
-	return func() { runReleasesReverse(releases); cancel() }, nil
-}
-
-func runReleasesReverse(releases []func()) {
-	for _, release := range slices.Backward(releases) {
-		release()
-	}
+	return func() { release(); cancel() }, nil
 }
 
 func (a *App) worktreeRuntimeReferenced(worktreeRoot string) bool {
@@ -600,19 +579,6 @@ func (a *App) worktreeRuntimeReferenced(worktreeRoot string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.runtimeReferencesCanonicalLocked(key)
-}
-
-func pathWithinWorktree(path, worktreeRoot string) bool {
-	pathKey := canonicalRuntimeRoot(path)
-	rootKey := canonicalRuntimeRoot(worktreeRoot)
-	if pathKey == "" || rootKey == "" {
-		return false
-	}
-	if pathKey == rootKey {
-		return true
-	}
-	rel, err := filepath.Rel(rootKey, pathKey)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func canonicalRuntimeRoot(root string) string {

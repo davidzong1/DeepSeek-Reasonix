@@ -217,20 +217,7 @@ func (a *App) stopRemoteRuntime() {
 	if rt != nil {
 		_ = rt.Close()
 	}
-	a.closeCredentialProxy()
-}
-
-// emitRemoteEvent bridges a kernel callback to the frontend through the async
-// emitter so a slow webview never blocks the kernel.
-func (a *App) emitRemoteEvent(name string, payload any) {
-	if a.remoteEventHook != nil {
-		a.remoteEventHook(name, payload)
-	}
-	ctx := a.bootContext()
-	if ctx == nil {
-		return
-	}
-	a.runtimeEvents.Emit(ctx, name, payload)
+	a.closeRemoteBrokers()
 }
 
 // remoteEventSink implementation on *App.

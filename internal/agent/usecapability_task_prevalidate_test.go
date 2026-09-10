@@ -192,8 +192,10 @@ func TestMCPToolNestedJSONStringArgumentsRefused(t *testing.T) {
 	if out.errMsg == "" {
 		t.Fatalf("a nested JSON string must be refused, outcome=%+v", out)
 	}
-	if !strings.Contains(out.errMsg, "must be a JSON object") {
-		t.Fatalf("the refusal must name the contract, errMsg=%q", out.errMsg)
+	// errMsg is the stable argument_validation signature; the contract the model
+	// reads (and the schema pointer to fix) is in output.
+	if !strings.Contains(out.output, "/arguments: type; expected object") {
+		t.Fatalf("the refusal must name the contract, output=%q", out.output)
 	}
 	if calls != 0 || out.executed {
 		t.Fatalf("a refused call must not execute, calls=%d executed=%v", calls, out.executed)

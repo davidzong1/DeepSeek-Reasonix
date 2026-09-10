@@ -105,7 +105,7 @@ var (
 	kimiCodingModels    = []string{"kimi-for-coding"}
 
 	longCat20Models              = []string{"LongCat-2.0"}
-	deepSeekOfficialModels       = []string{"deepseek-v4-flash", "deepseek-v4-pro", openai.OfficialDeepSeekVisionModel}
+	deepSeekOfficialModels       = []string{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", openai.OfficialDeepSeekVisionModel}
 	deepSeekOfficialVisionModels = []string{openai.OfficialDeepSeekVisionModel}
 	tokenRhythmModels            = []string{
 		"deepseek-v4-flash", "deepseek-v4-pro", "glm-5", "glm-5.1",

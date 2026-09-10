@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { app } from "../lib/bridge";
+import { app, onSessionRecoveryFailed } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import type { ProjectTopicKey } from "../lib/sessionCatalogTypes";
 import { bindSessionVersionInspector } from "../lib/sessionRecoveryVersionHostBridge";
@@ -59,6 +59,16 @@ export function SessionRecoveryVersionsHost({ sessions, onResumeSession, onRecov
     };
   }, []);
 
+  useEffect(() => onSessionRecoveryFailed((event) => {
+    showToast(event.recoveryPending ? t("recovery.failedPending") : t("recovery.failed"), "error", event.recoveryPending && event.recoveryPath && event.topicId ? {
+      actionLabel: t("recovery.retry"),
+      onAction: () => { void app.RetrySessionRecovery({
+        scope: event.workspaceRoot ? "project" : "global", workspaceRoot: event.workspaceRoot,
+        topicId: event.topicId!, path: event.recoveryPath!,
+      }).catch((error) => showToast(error instanceof Error ? error.message : String(error), "error")); },
+    } : undefined);
+  }), [showToast, t]);
+
   const inspectVersions = useCallback((session: SessionMeta, view: RecoveryLineageView) => {
     if (!session.topicId) return;
     void showVersions({
@@ -73,6 +83,9 @@ export function SessionRecoveryVersionsHost({ sessions, onResumeSession, onRecov
   const openVersion = useCallback(async (member: RecoveryLineageMember) => {
     const topic = state?.topic;
     if (!topic) return;
+    // A head lives inside the session's own log: selecting it moves the open
+    // tab in place, and resuming the path afterwards lands on it when closed.
+    if (member.headId && !member.selected) await app.ChooseRecoveryBranch({ ...topic, path: member.path, headId: member.headId });
     const known = sessions?.find((session) => session.path === member.path);
     await onResumeSession(known ?? sessionFromVersion(topic, member));
   }, [onResumeSession, sessions, state?.topic]);

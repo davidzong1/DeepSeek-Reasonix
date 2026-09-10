@@ -55,6 +55,7 @@ const (
 	SummaryInputExtensionRewritten = "extension_rewritten"
 	SummaryInputNonPrefix          = "non_prefix"
 	SummaryInputChunked            = "chunked"
+	SummaryInputSlim               = "slim"
 )
 
 // ContextProjection is the model-visible view of a session. The canonical
@@ -90,7 +91,7 @@ type ContextProjection struct {
 type ContextMaintenanceReceipt struct {
 	OperationID         string    `json:"operation_id,omitempty"`
 	Status              string    `json:"status,omitempty"` // planned|applied|noop|blocked|failed
-	Action              string    `json:"action,omitempty"` // snip|prune|summary|native_tool_clear|noop
+	Action              string    `json:"action,omitempty"` // snip|prune|summary|truncate|native_tool_clear|noop
 	Trigger             string    `json:"trigger,omitempty"`
 	SourceProjection    uint64    `json:"source_projection,omitempty"`
 	ProjectionVersion   uint64    `json:"projection_version,omitempty"`
@@ -427,6 +428,7 @@ func providerVisibleFingerprint(msgs []provider.Message) string {
 		ToolCallID         string                      `json:"tid,omitempty"`
 		Name               string                      `json:"n,omitempty"`
 		ToolCalls          []wireCall                  `json:"tc,omitempty"`
+		ThinkingBlocks     []provider.ThinkingBlock    `json:"tb,omitempty"`
 		ResponsesItems     []json.RawMessage           `json:"ri,omitempty"`
 		ServerSearch       []provider.ServerSearchCall `json:"ss,omitempty"`
 	}
@@ -440,6 +442,7 @@ func providerVisibleFingerprint(msgs []provider.Message) string {
 			ReasoningID:        m.ReasoningID,
 			ReasoningStatus:    m.ReasoningStatus,
 			ReasoningSignature: m.ReasoningSignature,
+			ThinkingBlocks:     m.ThinkingBlocks,
 			ToolCallID:         m.ToolCallID,
 			Name:               m.Name,
 		}

@@ -9,64 +9,12 @@ import (
 	"reasonix/internal/provider"
 )
 
-// Event is the JSON-friendly form shared by event frontends.
-// externalizable:"true" marks large string payloads the Remote protocol may
-// offload via content refs without changing provider-visible semantics.
-type Event struct {
-	Kind            string              `json:"kind"`
-	TurnID          string              `json:"turnId,omitempty"`
-	Sequence        uint64              `json:"seq,omitempty"`
-	Status          string              `json:"status,omitempty"`
-	Text            string              `json:"text,omitempty" externalizable:"true"`
-	Detail          string              `json:"detail,omitempty" externalizable:"true"`
-	Code            string              `json:"code,omitempty"`
-	Reasoning       string              `json:"reasoning,omitempty" externalizable:"true"`
-	MemoryCitations []MemoryCitation    `json:"memoryCitations,omitempty"`
-	Level           string              `json:"level,omitempty"`
-	Tool            *Tool               `json:"tool,omitempty"`
-	Usage           *Usage              `json:"usage,omitempty"`
-	Approval        *Approval           `json:"approval,omitempty"`
-	Ask             *Ask                `json:"ask,omitempty"`
-	MCPInteraction  *MCPInteraction     `json:"mcpInteraction,omitempty"`
-	Compaction      *Compaction         `json:"compaction,omitempty"`
-	Maintenance     *ContextMaintenance `json:"maintenance,omitempty"`
-	Guardian        *Guardian           `json:"guardian,omitempty"`
-	DecisionReceipt *DecisionReceipt    `json:"decisionReceipt,omitempty"`
-	Extension       *ExtensionSurface   `json:"extension,omitempty"`
-	Err             string              `json:"err,omitempty" externalizable:"true"`
-	Outcome         string              `json:"outcome,omitempty"`
-	Readiness       *FinalReadiness     `json:"readiness,omitempty"`
-	Receipt         *CompletionReceipt  `json:"receipt,omitempty"`
-	CheckpointTurn  *int                `json:"checkpointTurn,omitempty"`
-	RetryAttempt    int                 `json:"retryAttempt,omitempty"`
-	RetryMax        int                 `json:"retryMax,omitempty"`
-	RetryScope      string              `json:"retryScope,omitempty"` // "headers" | "stream" | "protocol"; omit for older clients
-	StreamAttempt   *StreamAttempt      `json:"streamAttempt,omitempty"`
-	// ItemID correlates Steer / TurnDone / unapplied-steer with a durable
-	// session-inbox entry. Empty for legacy text-only guidance.
-	ItemID string `json:"itemId,omitempty"`
-	// SessionPath routes frames emitted by detached Serve controllers. Older
-	// clients ignore the omitted/unknown field and keep single-session behavior.
-	SessionPath string `json:"sessionPath,omitempty"`
-	// SessionCurrent is set by Serve at publication time for frames belonging
-	// to its foreground controller. It lets all-session clients adopt an
-	// externally selected/recovered foreground without polling on every token.
-	SessionCurrent bool `json:"sessionCurrent,omitempty"`
-	// SessionReset distinguishes a fresh /new or /clear target from a resumed
-	// durable session when a different client rotates the foreground.
-	SessionReset bool              `json:"sessionReset,omitempty"`
-	Workspace    *WorkspaceChanged `json:"workspace,omitempty"`
-	// Phase is set on turn_phase events: working | checking | verifying | reviewing.
-	Phase string `json:"phase,omitempty"`
-	// Completion is set on completion_summary events (content-free quality summary).
-	Completion *CompletionSummary `json:"completion,omitempty"`
-}
-
 // CompletionSummary is the JSON form of event.CompletionSummaryInfo.
 type CompletionSummary struct {
 	Preset             string   `json:"preset"` // deprecated; pinned compat value
 	Verdict            string   `json:"verdict"`
 	Mutations          int      `json:"mutations"`
+	ChangedFiles       int      `json:"changed_files,omitempty"`
 	ChecksPassed       int      `json:"checks_passed"`
 	ChecksFailed       int      `json:"checks_failed"`
 	ChecksSuppressed   int      `json:"checks_suppressed"`
@@ -85,6 +33,7 @@ func toWireCompletionSummary(c *event.CompletionSummaryInfo) *CompletionSummary 
 		Preset:             c.Preset,
 		Verdict:            c.Verdict,
 		Mutations:          c.Mutations,
+		ChangedFiles:       c.ChangedFiles,
 		ChecksPassed:       c.ChecksPassed,
 		ChecksFailed:       c.ChecksFailed,
 		ChecksSuppressed:   c.ChecksSuppressed,
@@ -129,34 +78,40 @@ type StreamAttempt struct {
 
 // ToWire converts a typed runtime event into the shared frontend JSON contract.
 func ToWire(e event.Event) Event {
-	w := Event{Kind: kindNames[e.Kind], TurnID: e.TurnID, Sequence: e.Sequence, Status: string(e.Status), Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning, ItemID: e.ItemID, SessionPath: e.SessionPath, SessionReset: e.SessionReset}
+	w := Event{Kind: kindNames[e.Kind], PromptKind: e.PromptKind, TurnID: e.TurnID, Sequence: e.Sequence, Status: string(e.Status), Text: e.Text, Detail: e.Detail, Reasoning: e.Reasoning, ItemID: e.ItemID, SessionPath: e.SessionPath, SessionReset: e.SessionReset}
+	if e.ItemID != "" {
+		promptEvent := false
+		switch e.Kind {
+		case event.AskRequest:
+			promptEvent = true
+			w.PromptKind = "ask"
+		case event.ApprovalRequest:
+			promptEvent = true
+			w.PromptKind = e.Approval.Kind
+			if w.PromptKind == "" {
+				w.PromptKind = "approval"
+			}
+		case event.MCPInteractionRequest:
+			promptEvent = true
+			w.PromptKind = "mcp"
+		case event.PromptAnswered:
+			promptEvent = true
+		}
+		if promptEvent {
+			w.PromptID = e.ItemID
+			w.PromptLegacy = e.TurnID == ""
+		}
+	}
 	if len(e.MemoryCitations) > 0 {
 		w.MemoryCitations = ToWireMemoryCitations(e.MemoryCitations)
 	}
 	switch e.Kind {
 	case event.Notice:
 		w.applyNotice(e)
-	case event.ToolDispatch, event.ToolResult, event.ToolProgress, event.ToolResultPreview:
-		wt := &Tool{
-			ID: e.Tool.ID, Name: e.Tool.Name, Args: e.Tool.Args,
-			ResolvedName: e.Tool.ResolvedName, CapabilityID: e.Tool.CapabilityID,
-			Output: e.Tool.Output, Err: e.Tool.Err,
-			ReadOnly: e.Tool.ReadOnly, Truncated: e.Tool.Truncated,
-			DurationMs: e.Tool.DurationMs, Partial: e.Tool.Partial,
-			StartedAt: e.Tool.StartedAt, EndedAt: e.Tool.EndedAt,
-			ArgChars: e.Tool.ArgChars, Refreshed: e.Tool.Refreshed,
-			ParentID: e.Tool.ParentID, AttemptID: e.Tool.AttemptID,
-			Diff: e.Tool.Diff, Added: e.Tool.Added, Removed: e.Tool.Removed,
-			SubagentRef: e.Tool.SubagentRef, SubagentStatus: e.Tool.SubagentStatus,
-			SubagentErrorCode: e.Tool.SubagentErrorCode, SubagentRetryable: e.Tool.SubagentRetryable,
-		}
-		if e.Tool.Profile != nil {
-			wt.Profile = &Profile{Model: e.Tool.Profile.Model, Effort: e.Tool.Profile.Effort}
-		}
-		if e.Tool.Execution != nil {
-			wt.Execution = toWireShellExecution(e.Tool.Execution)
-		}
-		w.Tool = wt
+	case event.ReadStatus:
+		w.ReadStatus = toWireReadStatus(e.ReadStatus)
+	case event.ToolDispatch, event.ToolStarted, event.ToolResult, event.ToolProgress, event.ToolResultPreview:
+		w.Tool = toWireTool(e.Tool)
 	case event.WorkspaceChanged:
 		ws := e.Workspace
 		if ws == nil {
@@ -199,9 +154,13 @@ func ToWire(e event.Event) Event {
 	case event.ExtensionSurface, event.ExtensionStatus:
 		w.Extension = ToWireExtensionSurface(e.Extension)
 	case event.TurnDone:
+		w.Recovery = e.Recovery
 		w.Outcome = e.Outcome
+		w.ReadPause = e.ReadPause
 		w.CheckpointTurn = e.CheckpointTurn
 		w.Receipt = completionReceiptWire(e.Receipt)
+		w.ProtocolRecovery = e.ProtocolRecovery
+		w.Diagnostic = e.Diagnostic
 		if e.Readiness != nil {
 			w.Readiness = &FinalReadiness{Attempts: e.Readiness.Attempts, Missing: append([]string(nil), e.Readiness.Missing...)}
 		}
@@ -209,6 +168,7 @@ func ToWire(e event.Event) Event {
 			w.Err = e.Err.Error()
 		}
 	case event.Retrying:
+		w.Recovery = e.Recovery
 		w.RetryAttempt = e.RetryAttempt
 		w.RetryMax = e.RetryMax
 		if e.RetryScope != "" {
@@ -352,6 +312,7 @@ type AskQuestion struct {
 type Ask struct {
 	ID        string        `json:"id"`
 	Questions []AskQuestion `json:"questions"`
+	TurnID    string        `json:"turnId,omitempty"`
 }
 
 // MCPInteraction is the JSON form of an event.MCPInteraction: one
@@ -366,6 +327,7 @@ type MCPInteraction struct {
 	RequestedSchema json.RawMessage `json:"requestedSchema,omitempty"`
 	URL             string          `json:"url,omitempty"`
 	ElicitationID   string          `json:"elicitationId,omitempty"`
+	TurnID          string          `json:"turnId,omitempty"`
 }
 
 // applyNotice fills the Notice-specific wire fields.
@@ -385,7 +347,7 @@ func (w *Event) applyNotice(e event.Event) {
 func ToWireMCPInteraction(i event.MCPInteraction) *MCPInteraction {
 	return &MCPInteraction{
 		ID: i.ID, Server: i.Server, Mode: i.Mode, Message: i.Message,
-		RequestedSchema: i.RequestedSchema, URL: i.URL, ElicitationID: i.ElicitationID,
+		RequestedSchema: i.RequestedSchema, URL: i.URL, ElicitationID: i.ElicitationID, TurnID: i.TurnID,
 	}
 }
 
@@ -393,36 +355,6 @@ func ToWireMCPInteraction(i event.MCPInteraction) *MCPInteraction {
 type Profile struct {
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
-}
-
-// Tool is the JSON form of an event.Tool.
-type Tool struct {
-	ID                string          `json:"id,omitempty"`
-	Name              string          `json:"name"`
-	Args              string          `json:"args,omitempty" externalizable:"true"`
-	ResolvedName      string          `json:"resolvedName,omitempty"`
-	CapabilityID      string          `json:"capabilityId,omitempty"`
-	Output            string          `json:"output,omitempty" externalizable:"true"`
-	Err               string          `json:"err,omitempty" externalizable:"true"`
-	ReadOnly          bool            `json:"readOnly"`
-	Truncated         bool            `json:"truncated,omitempty"`
-	DurationMs        int64           `json:"durationMs,omitempty"`
-	StartedAt         int64           `json:"startedAt,omitempty"` // unix ms; zero when the call never ran
-	EndedAt           int64           `json:"endedAt,omitempty"`
-	Partial           bool            `json:"partial,omitempty"`
-	ArgChars          int             `json:"argChars,omitempty"`
-	Refreshed         bool            `json:"refreshed,omitempty"`
-	ParentID          string          `json:"parentId,omitempty"`
-	AttemptID         string          `json:"attemptId,omitempty"` // host-local stream_attempt id for speculative partials
-	SubagentRef       string          `json:"subagentRef,omitempty"`
-	SubagentStatus    string          `json:"subagentStatus,omitempty"`
-	SubagentErrorCode string          `json:"subagentErrorCode,omitempty"`
-	SubagentRetryable bool            `json:"subagentRetryable,omitempty"`
-	Diff              string          `json:"diff,omitempty" externalizable:"true"`
-	Added             int             `json:"added,omitempty"`
-	Removed           int             `json:"removed,omitempty"`
-	Profile           *Profile        `json:"profile,omitempty"`
-	Execution         *ShellExecution `json:"execution,omitempty"`
 }
 
 // ShellExecution is the JSON form of event.ShellExecution (local UI metadata).
@@ -567,7 +499,7 @@ func ToWireAsk(a event.Ask) *Ask {
 		}
 		qs[i] = AskQuestion{ID: q.ID, Header: q.Header, Prompt: q.Prompt, Options: opts, Multi: q.Multi}
 	}
-	return &Ask{ID: a.ID, Questions: qs}
+	return &Ask{ID: a.ID, Questions: qs, TurnID: a.TurnID}
 }
 
 // ToWireCacheDiagnostics converts cache diagnostics into their JSON wire form.
@@ -623,6 +555,7 @@ var kindNames = map[event.Kind]string{
 	event.Text:                    "text",
 	event.Message:                 "message",
 	event.ToolDispatch:            "tool_dispatch",
+	event.ToolStarted:             "tool_started",
 	event.ToolResult:              "tool_result",
 	event.Usage:                   "usage",
 	event.Notice:                  "notice",
@@ -649,6 +582,7 @@ var kindNames = map[event.Kind]string{
 	event.MCPInteractionRequest:   "mcp_interaction",
 	event.PromptAnswered:          "prompt_answered",
 	event.SessionChanged:          "session_changed",
+	event.ReadStatus:              "read_status",
 }
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.

@@ -211,6 +211,10 @@ func OpenCodeGoModelInfo(kind, baseURL, model string) (ModelInfo, bool) {
 		return ModelInfo{}, false
 	}
 	info := ModelInfo{ID: strings.TrimSpace(model), InputModalities: []ModelModality{ModalityText}}
+	if model == "deepseek-v4-flash-vision-exp" {
+		info.InputModalities = []ModelModality{ModalityText, ModalityImage}
+		return info, true
+	}
 	vision := map[string]map[string]bool{
 		OpenCodeGoRouteChat:      {"kimi-k3": true},
 		OpenCodeGoRouteAnthropic: {"qwen3.8-max": true, "qwen3.7-plus": true, "qwen3.6-plus": true},
@@ -235,10 +239,10 @@ func BuiltinModelInfo(kind, baseURL, model string) (ModelInfo, bool) {
 		u, err := url.Parse(strings.TrimSpace(baseURL))
 		if err == nil && strings.EqualFold(u.Scheme, "https") && strings.EqualFold(u.Hostname(), "api.deepseek.com") {
 			id := strings.TrimSpace(model)
-			if id == "deepseek-v4-flash-vision-exp" {
+			if IsOfficialDeepSeekImageModel(id) {
 				return ModelInfo{ID: id, InputModalities: []ModelModality{ModalityText, ModalityImage}}, true
 			}
-			if id == "deepseek-v4-flash" || id == "deepseek-v4-pro" {
+			if IsOfficialDeepSeekTextModel(id) {
 				return ModelInfo{ID: id, InputModalities: []ModelModality{ModalityText}}, true
 			}
 		}

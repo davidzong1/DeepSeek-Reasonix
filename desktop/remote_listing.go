@@ -100,15 +100,16 @@ func servePost(ctx context.Context, client *http.Client, url string, body []byte
 }
 
 const expectedSessionPathHeader = "X-Reasonix-Expected-Session-Path"
+const expectedModelSettingsHeader = "X-Reasonix-Expected-Model-Settings"
 
 // servePostForSession fences a foreground mutation to the session the Desktop
 // tab displayed when the command was issued. Older Serve binaries ignore the
 // optional header and retain their single-session behavior.
-func servePostForSession(ctx context.Context, client *http.Client, url string, body []byte, expectedPath string) error {
+func servePostForSession(ctx context.Context, client *http.Client, url string, body []byte, expectedPath string, modelRevision ...string) error {
 	if body == nil {
 		body = []byte("{}")
 	}
-	resp, err := serveDoForSession(ctx, client, http.MethodPost, url, body, expectedPath)
+	resp, err := serveDoForSession(ctx, client, http.MethodPost, url, body, expectedPath, modelRevision...)
 	if err != nil {
 		return err
 	}
@@ -152,35 +153,56 @@ func serveDo(ctx context.Context, client *http.Client, method, url string, body 
 	return serveDoForSession(ctx, client, method, url, body, "")
 }
 
-func serveDoForSession(ctx context.Context, client *http.Client, method, url string, body []byte, expectedPath string) (*http.Response, error) {
+func serveDoForSession(ctx context.Context, client *http.Client, method, url string, body []byte, expectedPath string, modelRevision ...string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if len(modelRevision) > 0 && modelRevision[0] != "" {
+		req.Header.Set(expectedModelSettingsHeader, modelRevision[0])
+	}
 	if expectedPath = strings.TrimSpace(expectedPath); expectedPath != "" {
 		req.Header.Set(expectedSessionPathHeader, expectedPath)
 	}
 	return client.Do(req)
 }
 
-// serveHandshake exchanges the pre-shared token for the session cookie.
-// Serve replies 204 on success; the cookie lands in client's jar.
-func serveHandshake(ctx context.Context, client *http.Client, base, token string) error {
+// serveCapabilitiesHeader carries the comma-joined capability tokens a serve
+// advertises on a successful token handshake (e.g. "browser").
+const serveCapabilitiesHeader = "X-Reasonix-Serve-Capabilities"
+
+// serveHandshakeCapabilities exchanges the pre-shared token for the session
+// cookie and returns the serve's advertised capabilities; older serves omit
+// the header and yield nil, which callers must read as "no capabilities".
+func serveHandshakeCapabilities(ctx context.Context, client *http.Client, base, token string) ([]string, error) {
 	body, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := serveDo(ctx, client, http.MethodPost, serveURL(base, "/auth/token"), body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
+	if resp.StatusCode != http.StatusNoContent {
+		return nil, fmt.Errorf("serve auth handshake: status %d", resp.StatusCode)
 	}
-	return fmt.Errorf("serve auth handshake: status %d", resp.StatusCode)
+	var caps []string
+	for cap := range strings.SplitSeq(resp.Header.Get(serveCapabilitiesHeader), ",") {
+		if cap = strings.TrimSpace(cap); cap != "" {
+			caps = append(caps, cap)
+		}
+	}
+	return caps, nil
+}
+
+// serveHandshake exchanges the pre-shared token for the session cookie.
+// Serve replies 204 on success; the cookie lands in client's jar.
+func serveHandshake(ctx context.Context, client *http.Client, base, token string) error {
+	_, err := serveHandshakeCapabilities(ctx, client, base, token)
+	return err
 }
 
 // serveSessions lists the serve's sessions.

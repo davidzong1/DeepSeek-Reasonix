@@ -3,10 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 
-	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
 
@@ -36,7 +34,7 @@ func modelInputMessages(msgs []provider.Message) []provider.Message {
 // replay so their cacheable prefix has the same role projection and metadata
 // cleanup. Interceptors deliberately remain outside this helper.
 func (a *Agent) normalizeModelRequestMessages(msgs []provider.Message) []provider.Message {
-	requestMessages := a.providerProjectionMessages(modelInputMessages(msgs))
+	requestMessages := a.providerProjectionMessages(modelInputMessages(provider.RepairRejectedArguments(msgs)))
 	// ModelMessages intentionally has a zero-copy fast path for clean input.
 	// Detach before removing local metadata from the request-only representation.
 	requestMessages = append([]provider.Message(nil), requestMessages...)
@@ -50,9 +48,12 @@ func (a *Agent) normalizeModelRequestMessages(msgs []provider.Message) []provide
 }
 
 func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	if err := provider.ValidateModelTranscript(req.Messages); err != nil {
+		return nil, err
+	}
 	ch, err := a.svc.prov.Stream(ctx, req)
 	if err != nil {
-		if limit := provider.AsOutputLimitError(err); limit != nil && req.MaxTokens > limit.MaxOutputTokens {
+		if limit := provider.AsOutputLimitError(err); !provider.ManagedRecovery(ctx) && limit != nil && req.MaxTokens > limit.MaxOutputTokens {
 			a.learnOutputBudget(limit.MaxOutputTokens)
 			retryReq := req
 			retryReq.MaxTokens = limit.MaxOutputTokens
@@ -64,41 +65,6 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 	// created by SendWithRetry. Preserve the original channel directly so
 	// cancellation and live chunk timing remain unchanged.
 	return ch, nil
-}
-
-func (a *Agent) handleSamplingError(
-	ctx context.Context,
-	attemptID string,
-	attempt int,
-	streamSink *deferredStreamSink,
-	frozen *samplingRequest,
-	result, last streamedTurn,
-	billable *provider.Usage,
-) (retry bool, terminal streamedTurn) {
-	retryableEmpty := errors.Is(result.err, provider.ErrEmptyResponse)
-	if (provider.IsStreamInterrupted(result.err) || retryableEmpty) && attempt < maxSamplingAttempts {
-		if streamSink != nil {
-			streamSink.Discard()
-		}
-		reason := provider.StreamInterruptReason(result.err)
-		if retryableEmpty {
-			reason = "empty_response"
-		}
-		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err)
-		a.svc.sink.Emit(event.Event{
-			Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries,
-			RetryScope: event.RetryScopeStream,
-		})
-		if !streamRetrySleep(ctx, attempt) {
-			return false, streamedTurn{usage: finalizeSamplingUsage(billable, result.usage), interrupted: true, err: ctx.Err()}
-		}
-		return true, streamedTurn{}
-	}
-	// Exhausted retries or non-retryable error: leave the last speculative UI
-	// visible (no discard) so LocalOnly can mirror it.
-	streamSink.Flush()
-	last.usage = finalizeSamplingUsage(billable, result.usage)
-	return false, last
 }
 
 // prepareSamplingRequest freezes one model-round request (preflight + interceptors).
@@ -170,6 +136,9 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 	if err != nil {
 		return samplingRequest{}, err
 	}
+	if err := provider.ValidateModelTranscript(req.Messages); err != nil {
+		return samplingRequest{}, err
+	}
 	return samplingRequest{req: req}, nil
 }
 
@@ -190,7 +159,7 @@ func (a *Agent) providerProjectionMessages(msgs []provider.Message) []provider.M
 			resolvedCutoff := resolveReasoningReplayPrefix(msgs, strongCutoff, a.sess.reasoningReplayStrongProjectionAnchor)
 			if resolvedCutoff > 0 {
 				if repaired, changed := provider.ProjectReasoningStrippedMessagesPrefix(a.svc.prov, msgs, resolvedCutoff); changed {
-					msgs = repaired
+					msgs = a.replayRecoveryFacts(msgs[:resolvedCutoff], repaired)
 				}
 			} else {
 				// The canonical shape no longer contains the repair anchor
@@ -218,6 +187,7 @@ func freezeProviderRequest(req provider.Request) provider.Request {
 	if len(req.Messages) > 0 {
 		out.Messages = append([]provider.Message(nil), req.Messages...)
 		for i := range out.Messages {
+			out.Messages[i].ThinkingBlocks = append([]provider.ThinkingBlock(nil), out.Messages[i].ThinkingBlocks...)
 			if len(out.Messages[i].ToolCalls) > 0 {
 				out.Messages[i].ToolCalls = append([]provider.ToolCall(nil), out.Messages[i].ToolCalls...)
 			}

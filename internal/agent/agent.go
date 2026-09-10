@@ -21,6 +21,7 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/i18n"
+	"reasonix/internal/imageinput"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcpinteraction"
@@ -47,8 +48,8 @@ var deprecatedContextRetentionWarning sync.Once
 const maxEmptyFinalBlocks = 3
 
 // maxStreamRecoveries is the number of body-phase stream retries after the
-// initial sampling attempt (Codex-aligned default: 1 + 5 = 6 attempts total).
-const maxStreamRecoveries = 5
+// initial sampling attempt (Pi-style default: 1 + 3 = 4 attempts total).
+const maxStreamRecoveries = 3
 const maxSamplingAttempts = maxStreamRecoveries + 1
 const maxExecutorHandoffNudges = 1
 
@@ -281,7 +282,12 @@ type ToolHooks interface {
 // Agent drives a single task: a Provider, a tool Registry, and a Session wired
 // into the main loop.
 type Agent struct {
+	imageInput agentImageInput
 	agentConfig
+	// reads groups the run-scoped read registry and its generation: both are
+	// replaced at each run start so cursors from an earlier run never continue.
+	reads      readState
+	stragglers runStragglers
 	// svc are the collaborators this agent talks to; see services.go.
 	svc agentServices
 	// sess is the state one conversation owns; SetSession restarts it. See
@@ -850,7 +856,8 @@ func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
 
 // Options configures an Agent.
 type Options struct {
-	MaxSteps int
+	ImageInput *imageinput.Config
+	MaxSteps   int
 	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
 	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
@@ -1037,6 +1044,9 @@ type Options struct {
 	// delete_range to the pre-fingerprint full-file fresh-read requirement.
 	// It never enters provider-visible prompts or tool schemas.
 	LegacyAnchorSafetyGate bool
+	// ReadPipeline carries the internal read-pipeline rollout switches; both are
+	// off by default, fixed per run, and never enter provider bytes.
+	ReadPipeline ReadPipelineOptions
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1090,28 +1100,32 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		reasoningByteLimit = defaultReasoningByteLimit
 	}
 	a := &Agent{
+		imageInput: newImageInput(opts.ImageInput, prov),
 		svc: newAgentServices(prov, tools, sink, gate, planModeReadOnlyTrust,
 			sandboxEscapeApprover, configWriteApprover, hooks, opts),
+		reads: readState{gates: !opts.ReadPipeline.LegacyEvidenceGates},
 		agentConfig: agentConfig{
-			maxSteps:               opts.MaxSteps,
-			maxStepsKey:            maxStepsKey,
-			reasoningByteLimit:     reasoningByteLimit,
-			maxOutputTokens:        opts.MaxOutputTokens,
-			temperature:            opts.Temperature,
-			usageSource:            usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-			modelRef:               strings.TrimSpace(opts.ModelRef),
-			workspaceID:            strings.TrimSpace(opts.WorkspaceID),
-			classifierTaskText:     opts.ClassifierTaskText,
-			writeWorkspaceRoot:     strings.TrimSpace(opts.WriteWorkspaceRoot),
-			subagentDepth:          subagentDepth,
-			maxSubagentDepth:       maxSubagentDepth,
-			contextWindow:          opts.ContextWindow,
-			compactRatio:           opts.CompactRatio,
-			visibleWindowTokens:    opts.VisibleWindowTokens,
-			cacheAwareCompaction:   opts.CacheAwareCompaction,
-			recentKeep:             opts.RecentKeep,
-			archiveDir:             opts.ArchiveDir,
-			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,
+			maxSteps:                opts.MaxSteps,
+			maxStepsKey:             maxStepsKey,
+			reasoningByteLimit:      reasoningByteLimit,
+			maxOutputTokens:         opts.MaxOutputTokens,
+			temperature:             opts.Temperature,
+			usageSource:             usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+			modelRef:                strings.TrimSpace(opts.ModelRef),
+			workspaceID:             strings.TrimSpace(opts.WorkspaceID),
+			classifierTaskText:      opts.ClassifierTaskText,
+			writeWorkspaceRoot:      strings.TrimSpace(opts.WriteWorkspaceRoot),
+			subagentDepth:           subagentDepth,
+			maxSubagentDepth:        maxSubagentDepth,
+			contextWindow:           opts.ContextWindow,
+			compactRatio:            opts.CompactRatio,
+			visibleWindowTokens:     opts.VisibleWindowTokens,
+			cacheAwareCompaction:    opts.CacheAwareCompaction,
+			recentKeep:              opts.RecentKeep,
+			archiveDir:              opts.ArchiveDir,
+			legacyAnchorSafetyGate:  opts.LegacyAnchorSafetyGate,
+			readCoordinatorShadow:   !opts.ReadPipeline.LegacyCoordinator,
+			legacyImplicitFullReads: opts.ReadPipeline.LegacyImplicitFullReads,
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -1235,11 +1249,16 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // adaptive stop is the no-progress ladder rather than a round count. Turn policy
 // lives in beginRunTurn / runToolLoop / handleFinalResponse / handleToolRound.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	defer a.finishRunRecovery(&runErr)
+	if err := a.prepareProtocolRecovery(ctx); err != nil {
+		return err
+	}
+	a.restoreProtocolProjection()
+	ctx = a.withProviderCacheSession(ctx)
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	a.recovery.runSeq.Add(1)
-	// All role settings participate in the workspace lease for the run; write
-	// locks are acquired per mutating tool and released when that tool ends.
+	// Participate in the run lease; per-tool write leases end with execution.
 	if a.svc.workspaceLease != nil {
 		a.svc.workspaceLease.BeginRun()
 		defer a.svc.workspaceLease.EndRun()
@@ -1775,14 +1794,12 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	transformReasoning := a.svc.hooks != nil && a.svc.hooks.HasPostLLMCall()
 
 	var text, reasoning strings.Builder
-	var signature string                    // provider-issued proof for the reasoning (Anthropic thinking)
-	var reasoningID, reasoningStatus string // Responses reasoning item id/status (meta chunk)
+	meta := reasoningStreamMeta{complete: true}
 	var calls []provider.ToolCall
 	var responsesItems []json.RawMessage
 	search := newSearchTurn()
 	var partialCalls []provider.ToolCall
 	var usage *provider.Usage
-	reasoningComplete := true
 	var partialToolStarted bool
 	var maxArgChars int
 	var lastArgProgress time.Time
@@ -1790,8 +1807,9 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	// finishReasoning output that becomes the round-tripped reasoning.
 	collect := func(stored string, err error) streamedTurn {
 		return streamedTurn{
-			text: text.String(), reasoning: stored, signature: signature,
-			reasoningID: reasoningID, reasoningStatus: reasoningStatus, reasoningComplete: reasoningComplete,
+			text: text.String(), reasoning: stored, signature: meta.signature,
+			reasoningID: meta.id, reasoningStatus: meta.status, reasoningComplete: meta.complete,
+			reasoningState: meta.state, thinkingBlocks: meta.blocks,
 			calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 			partialToolStarted: partialToolStarted, partialCalls: partialCalls,
 			maxArgChars: maxArgChars, err: err,
@@ -1807,7 +1825,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			}
 		}
 		stored = display
-		if a.preserveRawReasoning(original, signature, reasoningID, reasoningStatus, calls, search.calls) {
+		if a.preserveRawReasoning(original, meta.signature, meta.id, meta.status, calls, search.calls) {
 			stored = original
 		}
 		return stored, display
@@ -1833,17 +1851,19 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// response before it is persisted. A replacement becomes the
 				// visible assistant turn (the user's transcript); a block fails
 				// the turn.
-				providerSignature := signature
-				finalText, finalReasoning, signature, calls, usage, err := a.interceptProviderResponse(
-					ctx, text.String(), stored, signature, calls, usage)
+				providerSignature := meta.signature
+				finalText, finalReasoning, finalSignature, calls, usage, err := a.interceptProviderResponse(
+					ctx, text.String(), stored, meta.signature, calls, usage)
 				if err != nil {
 					return streamedTurn{partialToolStarted: partialToolStarted, partialCalls: partialCalls, maxArgChars: maxArgChars, err: err}
 				}
 				// Responses reasoning IDs/status and Anthropic signatures are
 				// provider-bound metadata. Never attach the provider's metadata
 				// to reasoning that an extension replaced.
-				if finalReasoning != stored || signature != providerSignature {
-					reasoningID, reasoningStatus = "", ""
+				if finalReasoning != stored || finalSignature != providerSignature {
+					meta.id, meta.status = "", ""
+					meta.blocks = nil
+					responsesItems = provider.WithoutResponsesReasoning(responsesItems)
 				}
 				if finalReasoning != stored {
 					// The extension replaced the reasoning: what is persisted
@@ -1861,10 +1881,11 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// A clean terminal never reports partialToolStarted: the calls
 				// slice is now authoritative and the partial cards were merged.
 				return streamedTurn{
-					text: finalText, reasoning: finalReasoning, signature: signature,
-					reasoningID: reasoningID, reasoningStatus: reasoningStatus,
-					reasoningComplete: reasoningComplete,
-					calls:             calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
+					text: finalText, reasoning: finalReasoning, signature: finalSignature,
+					reasoningID: meta.id, reasoningStatus: meta.status,
+					reasoningComplete: meta.complete,
+					reasoningState:    meta.state, thinkingBlocks: meta.blocks,
+					calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 					partialCalls: partialCalls, maxArgChars: maxArgChars,
 				}
 			}
@@ -1872,25 +1893,10 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		switch chunk.Type {
 		case provider.ChunkReasoning:
-			reasoning.WriteString(chunk.Text)
-			if chunk.Signature != "" {
-				signature = chunk.Signature
-			}
-			// 元数据 chunk（空 Text）：reasoning item id/status 贯通
-			// SSE → session → 下一轮回传（评审 #7234 第 1 点）。
-			if chunk.ReasoningID != "" {
-				reasoningID = chunk.ReasoningID
-			}
-			if chunk.ReasoningStatus != "" {
-				reasoningStatus = chunk.ReasoningStatus
-			}
+			meta.ingest(chunk, &reasoning, a.reasoningByteLimit)
 			if chunk.Text != "" && !transformReasoning {
 				sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
-			// Bound stored hidden reasoning only. Do not cancel the provider
-			// stream: official DeepSeek bills this output and still needs to
-			// emit the visible answer or tool calls.
-			reasoningComplete = boundReasoningReplay(&reasoning, chunk.Text, a.reasoningByteLimit, reasoningComplete)
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
 			sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
@@ -1932,9 +1938,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				}
 			}
 		case provider.ChunkResponsesItem:
-			if len(chunk.ResponsesItem) > 0 {
-				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
-			}
+			responsesItems = meta.ingestResponsesItem(responsesItems, chunk.ResponsesItem, a.reasoningByteLimit)
 		case provider.ChunkServerSearch:
 			search.onChunk(sink, chunk, attemptID)
 		case provider.ChunkUsage:
@@ -1975,6 +1979,7 @@ func bestEffortStreamUsage(current *provider.Usage, textBytes, reasoningBytes in
 		return nil
 	}
 	var usage provider.Usage
+	usage.Unknown = current == nil
 	if current != nil {
 		usage = *current
 	}
@@ -2023,9 +2028,10 @@ func upsertPartialToolCall(calls []provider.ToolCall, call provider.ToolCall) []
 	return append(calls, call)
 }
 
-func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provider.ToolCall, pending bool, workDurationMs int64) {
+func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provider.ToolCall, pending bool, terminalErr error, workDurationMs int64) {
 	displayCalls := make([]provider.ToolCall, 0, len(calls))
 	interrupted := make([]string, 0, len(calls))
+	notStarted := make([]provider.InterruptedToolSummary, 0, len(calls))
 	seen := make(map[string]struct{}, len(calls))
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
@@ -2037,7 +2043,14 @@ func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provide
 		displayCalls = append(displayCalls, provider.ToolCall{ID: call.ID, Name: name})
 		if name != "" {
 			interrupted = append(interrupted, name)
+			notStarted = append(notStarted, provider.InterruptedToolSummary{ID: call.ID, Name: name})
 		}
+	}
+	terminalStatus := "interrupted"
+	var failureDiagnostic *provider.FailureDiagnostic
+	if terminalErr != nil && !errors.Is(terminalErr, context.Canceled) {
+		terminalStatus = "failed"
+		failureDiagnostic = provider.DiagnoseFailure(terminalErr)
 	}
 	a.sess.conversation.Add(provider.Message{
 		Role:             provider.RoleTool,
@@ -2049,8 +2062,11 @@ func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provide
 		WorkDurationMs:   workDurationMs,
 		LocalOnly:        true,
 		InterruptedTurn: &provider.InterruptedTurnRecovery{
+			TerminalStatus:          terminalStatus,
+			FailureDiagnostic:       failureDiagnostic,
 			Pending:                 pending,
 			InterruptedTools:        interrupted,
+			NotStartedTools:         notStarted,
 			DroppedPartialText:      strings.TrimSpace(text) != "",
 			DroppedPartialReasoning: strings.TrimSpace(reasoning) != "",
 		},
@@ -2129,7 +2145,7 @@ func toProviderToolExecution(in *tool.ShellExecution) *provider.ToolExecution {
 func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) error {
 	t, _, ambiguous := a.svc.tools.ResolveCall(c.Name)
 	ok := t != nil && len(ambiguous) == 0
-	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed}
+	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed, RunState: provider.ToolRunPending}
 	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
 	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
 		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(c.Arguments)); ok {

@@ -14,8 +14,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -25,6 +23,7 @@ import (
 	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
+	"reasonix/internal/pathidentity"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )
@@ -82,10 +81,11 @@ var (
 const SessionRecoveryMaxDepth = 3
 
 type sessionPersistState struct {
-	path     string
-	digest   [sha256.Size]byte
-	version  uint64
-	revision int64
+	projectionPending bool
+	path              string
+	digest            [sha256.Size]byte
+	version           uint64
+	revision          int64
 	// revisionKnown marks revision as a real ledger value. It is false when
 	// the baseline was established while the meta sidecar was unreadable
 	// (torn or corrupt): the session must still open, but revision 0 must not
@@ -110,6 +110,7 @@ const (
 	sessionSaveSnapshot sessionSaveMode = iota
 	sessionSaveRewrite
 	sessionSaveRewriteCompact
+	sessionSaveToolCheckpoint
 )
 
 type snapshotWriteDecision struct {
@@ -178,6 +179,8 @@ type RecoveryBranchOptions struct {
 	Name         string
 	Reason       string
 	BranchMeta   BranchMeta
+	BaseRevision int64
+	DiskRevision int64
 }
 
 type RecoveryBranchInfo struct {
@@ -311,22 +314,16 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 	if err != nil {
 		return err
 	}
-	probe, err := probeSessionEventLog(path)
+	probe, err := probeLogForSave(path)
 	if err != nil {
 		return err
 	}
-	if probe.futureSchema {
-		return fmt.Errorf("session event log for %s uses schema %d; this build supports up to %d", path, probe.schemaVersion, sessionEventSchemaVersion)
-	}
-	if probe.native && probe.size > 0 {
-		// Drop any torn tail a crashed or disk-full append left behind before
-		// it can be buried under new records where replay would stop forever.
-		if err := repairSessionEventLogTail(path); err != nil {
-			return fmt.Errorf("repair session event log: %w", err)
-		}
+	if route := s.dagSaveRoute(path, probe); route != dagRouteSchemaOne {
+		return s.saveDAGLocked(path, mode, route, msgs, version, rewriteVersion, digest)
 	}
 	repairLog := false
-	ownedRewrite := mode == sessionSaveRewrite || mode == sessionSaveRewriteCompact
+	deferProjection := mode.defersProjection()
+	ownedRewrite := mode.allowsOwnedRewrite()
 	decision, err := s.classifySnapshotWriteForCommit(path, msgs, digest, version, ownedRewrite, mode)
 	if err != nil {
 		return err
@@ -361,16 +358,17 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 				}
 			}
 			if displayModelCurrent {
-				if err := refreshSessionDisplayIndex(path, msgs, digest, revision, -1); err != nil {
+				if err := refreshCheckpointDisplayIndex(path, msgs, digest, revision, -1, deferProjection); err != nil {
 					// The display index is a derived sidecar; transcript durability
 					// must not depend on rebuilding it successfully.
 					slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 				}
 			}
-			s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
+			s.markCheckpointPersisted(path, digest, version, revision, rewriteVersion, msgs, deferProjection)
 			return nil
 		}
-		s.markPersistedWithListing(path, digest, version, decision.revision, rewriteVersion, msgs)
+		s.refreshPendingCheckpointProjection(path, msgs, digest, decision.revision, deferProjection)
+		s.markCheckpointPersisted(path, digest, version, decision.revision, rewriteVersion, msgs, deferProjection)
 		return nil
 	}
 	if decision.appendOnly && probe.native && mode != sessionSaveRewriteCompact {
@@ -414,13 +412,13 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 			slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
 		}
 		if displayModelCurrent {
-			if err := refreshSessionDisplayIndex(path, msgs, digest, revision, decision.appendFrom); err != nil {
+			if err := refreshCheckpointDisplayIndex(path, msgs, digest, revision, decision.appendFrom, deferProjection); err != nil {
 				// The append boundary lets the refresh extend the previous index
 				// instead of re-encoding the whole transcript.
 				slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 			}
 		}
-		s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
+		s.markCheckpointPersisted(path, digest, version, revision, rewriteVersion, msgs, deferProjection)
 		return nil
 	}
 	baseRevision = decision.revision
@@ -429,15 +427,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 	// damage repairs. The event log mutates first so a crash between the two
 	// writes leaves the newer transcript authoritative; the anchor rewrite
 	// keeps the compatibility .jsonl fresh for direct readers.
-	reason := "save"
-	switch mode {
-	case sessionSaveSnapshot:
-		reason = "snapshot"
-	case sessionSaveRewrite:
-		reason = "rewrite"
-	case sessionSaveRewriteCompact:
-		reason = "rewrite-compact"
-	}
+	reason := mode.eventReason()
 	if repairLog {
 		reason = "repair"
 	}
@@ -475,12 +465,12 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 			slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
 		}
 	}
-	if err := refreshSessionDisplayIndex(path, msgs, digest, revision, -1); err != nil {
+	if err := refreshCheckpointDisplayIndex(path, msgs, digest, revision, -1, deferProjection); err != nil {
 		// Warn-only like the event index above: the display index is a pure
 		// derived sidecar and must never fail a save.
 		slog.Warn("session: keeping save after display index write failure", "path", path, "err", err)
 	}
-	s.markPersistedWithListing(path, digest, version, revision, rewriteVersion, msgs)
+	s.markCheckpointPersisted(path, digest, version, revision, rewriteVersion, msgs, deferProjection)
 	return nil
 }
 
@@ -839,6 +829,7 @@ func (s *Session) snapshotUpToDate(path string) bool {
 	defer s.mu.RUnlock()
 	return s.persisted.ok &&
 		s.persisted.saveVerified &&
+		!s.persisted.projectionPending &&
 		s.persisted.path == key &&
 		s.persisted.version == s.version &&
 		s.persisted.revisionKnown &&
@@ -1036,10 +1027,11 @@ func digestSessionMessages(msgs []provider.Message) ([sha256.Size]byte, error) {
 }
 
 func messageForSessionIdentity(m provider.Message) provider.Message {
-	// CreatedAt is local display metadata. Keep it out of transcript identity
-	// so older builds that ignore the optional field can share the same event-
+	// CreatedAt and ID are local metadata. Keep them out of transcript identity
+	// so older builds that ignore the optional fields can share the same event-
 	// log revision and append without false conflicts.
 	m.CreatedAt = 0
+	m.ID = ""
 	return m
 }
 
@@ -1346,45 +1338,7 @@ func UpdateBranchMeta(path string, touchUpdated bool, update func(*BranchMeta) e
 }
 
 func canonicalSessionSavePath(path string) string {
-	key := filepath.Clean(strings.TrimSpace(path))
-	if abs, err := filepath.Abs(key); err == nil {
-		key = abs
-	}
-	// Resolve physical identity, not just spelling. Otherwise a symlink or
-	// junction alias can acquire a second sidecar lock for the same transcript.
-	key = resolvePathThroughExistingAncestor(key)
-	if runtime.GOOS == "windows" {
-		if strings.HasPrefix(strings.ToUpper(key), `\\?\UNC\`) {
-			key = `\\` + key[len(`\\?\UNC\`):]
-		} else {
-			key = strings.TrimPrefix(key, `\\?\`)
-		}
-		key = strings.ToLower(key)
-	}
-	return key
-}
-
-// resolvePathThroughExistingAncestor resolves the deepest existing ancestor
-// and appends every still-missing component. Fresh sessions can be nested under
-// directories that have not been created yet; resolving only the immediate
-// parent leaves aliases above that directory split into different lease keys.
-func resolvePathThroughExistingAncestor(path string) string {
-	current := filepath.Clean(path)
-	missing := make([]string, 0, 4)
-	for {
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
-			for _, v := range slices.Backward(missing) {
-				resolved = filepath.Join(resolved, v)
-			}
-			return resolved
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return path
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
+	return pathidentity.Canonical(path)
 }
 
 // CanonicalSessionPath is the identity key of a session path: cleaned,
@@ -1418,11 +1372,12 @@ func LoadSession(path string) (*Session, error) {
 
 func loadSessionUnlocked(path string) (*Session, error) {
 	hasher := newSessionTranscriptHasher()
-	msgs, _, damaged, err := loadSessionMessagesWithLimits(path, defaultSessionReplayLimits, hasher)
+	res, err := loadSessionTranscript(context.Background(), path, defaultSessionReplayLimits, hasher)
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Messages: msgs, eventLogDamaged: damaged}
+	msgs := res.msgs
+	s := &Session{Messages: msgs, eventLogDamaged: res.damaged, head: sessionHeadState{ref: res.head, dag: res.dag, headCount: res.headCount, state: res.state, openTurn: res.openTurn, events: res.events}}
 	// Repair persisted-history-safe issues before anything reads the session.
 	// Old sessions (pre adde2d3e) and interrupted turns can carry empty tool-call
 	// names, dangling tool_calls, or half-streamed argument JSON that DeepSeek
@@ -1444,6 +1399,7 @@ func loadSessionUnlocked(path string) (*Session, error) {
 		s.rawMessages = msgs
 	}
 	s.Messages = normalized
+	assignLegacyMessageIDs(path, s.Messages)
 	// Decode already hashed the transcript; when the repairs above returned it
 	// unchanged (the common case) reuse that digest, else re-hash the repair.
 	digest, digestOK := hasher.sum()
@@ -1483,22 +1439,26 @@ func loadSessionUnlocked(path string) (*Session, error) {
 // disk, when it was created/last active, the first user message as a preview, and
 // a rough turn count.
 type SessionInfo struct {
-	Path           string
-	CreatedAt      time.Time
-	LastActivityAt time.Time
-	ModTime        time.Time // compatibility alias for LastActivityAt
-	Preview        string
-	Turns          int
-	CountsKnown    bool
-	Scope          string
-	WorkspaceRoot  string
-	TopicID        string
-	TopicTitle     string
-	CustomTitle    string
-	Recovered      bool
-	RecoveryReason string
-	RecoveryDigest string
-	ParentID       string
+	Path                 string
+	CreatedAt            time.Time
+	LastActivityAt       time.Time
+	ModTime              time.Time // compatibility alias for LastActivityAt
+	Preview              string
+	Turns                int
+	CountsKnown          bool
+	Scope                string
+	WorkspaceRoot        string
+	TopicID              string
+	TopicTitle           string
+	CustomTitle          string
+	Recovered            bool
+	RecoveryReason       string
+	RecoveryDigest       string
+	ParentID             string
+	VersionKind          SessionVersionKind
+	VersionState         SessionVersionState
+	ParentConversationID string
+	ParentVersionID      string
 }
 
 // CleanupPendingMeta records that a session was logically removed but still has
@@ -2034,6 +1994,11 @@ func ListSessionOrderWithRecoveryPreferenceResolver(dir string, resolve Recovery
 		recoveryReason := ""
 		recoveryDigest := ""
 		parentID := ""
+		versionKind := VersionNormal
+		versionState := VersionActive
+		parentConversationID := ""
+		var headMirror BranchMeta
+		parentVersionID := ""
 		recoveryPreferred := false
 		turns := 0
 		preview := ""
@@ -2058,6 +2023,10 @@ func ListSessionOrderWithRecoveryPreferenceResolver(dir string, resolve Recovery
 			recoveryReason = meta.RecoveryReason
 			recoveryDigest = meta.RecoveryDigest
 			parentID = meta.ParentID
+			versionKind = meta.EffectiveVersionKind()
+			versionState = meta.EffectiveVersionState()
+			parentConversationID = meta.ParentConversationID
+			parentVersionID = meta.ParentVersionID
 			recoveryPreferred = resolve(full, meta)
 			turns = meta.Turns
 			preview = meta.Preview
@@ -2066,11 +2035,13 @@ func ListSessionOrderWithRecoveryPreferenceResolver(dir string, resolve Recovery
 			contentDigest = meta.ContentDigest
 			listingRevision = meta.ListingRevision
 			listingContentDigest = meta.ListingContentDigest
+			headMirror = meta
 		}
 		// Old recovery files may lack Recovered meta; filename still proves
 		// automatic recovery lineage for catalog folding.
 		if !recovered && LooksLikeRecoveryFilename(full) {
 			recovered = true
+			versionKind = VersionRecovery
 			if parentID == "" {
 				if parent, ok := RecoveryFilenameParentID(full); ok {
 					parentID = parent
@@ -2091,6 +2062,10 @@ func ListSessionOrderWithRecoveryPreferenceResolver(dir string, resolve Recovery
 			RecoveryReason:       recoveryReason,
 			RecoveryDigest:       recoveryDigest,
 			ParentID:             parentID,
+			VersionKind:          versionKind,
+			VersionState:         versionState,
+			ParentConversationID: parentConversationID,
+			ParentVersionID:      parentVersionID,
 			RecoveryPreferred:    recoveryPreferred,
 			Turns:                turns,
 			Preview:              preview,
@@ -2099,6 +2074,9 @@ func ListSessionOrderWithRecoveryPreferenceResolver(dir string, resolve Recovery
 			ContentDigest:        contentDigest,
 			ListingRevision:      listingRevision,
 			ListingContentDigest: listingContentDigest,
+			HeadID:               headMirror.HeadID,
+			HeadCount:            headMirror.HeadCount,
+			LogSchema:            headMirror.LogSchema,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2212,30 +2190,4 @@ func truncatePreview(s string) string {
 		return string(r[:77]) + "…"
 	}
 	return s
-}
-
-// ContinueSessionPath returns where a conversation carried into a rebuilt
-// controller (model switch, config change) should keep auto-saving: its existing
-// file when it has one, so the continued session stays a single file instead of
-// the old one being orphaned as an identical duplicate (#2807). A session with no
-// file yet gets a fresh path; "" when persistence is disabled.
-func ContinueSessionPath(prevPath, dir, model string) string {
-	if prevPath != "" {
-		return prevPath
-	}
-	if dir == "" {
-		return ""
-	}
-	return NewSessionPath(dir, model)
-}
-
-// NewSessionPath returns the path to use for a fresh session, namespaced by
-// the model so the filename hints at what the conversation was with. dir is
-// typically config.SessionDir().
-func NewSessionPath(dir, model string) string {
-	safe := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "<", "-", ">", "-", "\"", "-", "|", "-", "?", "-", "*", "-").Replace(model)
-	if safe == "" {
-		safe = "session"
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405.000000000"), safe))
 }

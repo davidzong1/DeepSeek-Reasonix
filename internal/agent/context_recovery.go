@@ -35,6 +35,11 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 		prompt = a.estimatedRequestTokens(frozen.req)
 	}
 	physical := window - prompt - outputBudgetReserve
+	// An overflow without token numbers cannot size a retry: the estimate that
+	// admitted the request is the number the provider just rejected.
+	if limit.PromptTokens <= 0 && limit.WindowTokens <= 0 {
+		physical = 0
+	}
 	if physical > 0 && budget.retries == 0 {
 		next := freezeProviderRequest(frozen.req)
 		next.MaxTokens = physical

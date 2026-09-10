@@ -17,10 +17,12 @@ import (
 // the run-loop goroutine stay lock-free (serial with its own writes); cross-
 // goroutine access goes through Snapshot.
 type Session struct {
-	mu             sync.RWMutex
-	Messages       []provider.Message
-	version        uint64
-	rewriteVersion int // bumped each time the log is rewritten (compact/fold)
+	cacheSessionID          string // ephemeral transport identity; never model-visible or persisted
+	mu                      sync.RWMutex
+	Messages                []provider.Message
+	version                 uint64
+	recoveryMetadataVersion uint64 // local receipt edits require persistence, not a model-history rewrite
+	rewriteVersion          int    // bumped each time the log is rewritten (compact/fold)
 	// persistedRewriteVersion is the highest rewriteVersion whose transcript
 	// has fully reached disk. It lives on the Session — not on the controller
 	// — so swapping session objects can never orphan or misattribute the
@@ -75,13 +77,14 @@ type Session struct {
 	// first true conflict. It bounds repeated saves by this live controller to
 	// one recovery file without letting a replacement controller overwrite it.
 	recoveryLane string
+	head         sessionHeadState
 }
 
 // NewSession initializes a session with an optional system prompt.
 func NewSession(system string) *Session {
 	s := &Session{}
 	if system != "" {
-		s.Messages = append(s.Messages, provider.Message{Role: provider.RoleSystem, Content: system})
+		s.Messages = append(s.Messages, provider.Message{Role: provider.RoleSystem, Content: system, ID: NewMessageID()})
 	}
 	return s
 }
@@ -90,6 +93,10 @@ func NewSession(system string) *Session {
 func (s *Session) Add(m provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if m.ID == "" {
+		m.ID = NewMessageID()
+	}
+	s.expireProtocolRecoveryLocked([]provider.Message{m})
 	s.Messages = append(s.Messages, m)
 	s.version++
 }
@@ -102,6 +109,8 @@ func (s *Session) AddBatch(messages ...provider.Message) {
 		return
 	}
 	s.mu.Lock()
+	mintMessageIDs(messages)
+	s.expireProtocolRecoveryLocked(messages)
 	s.Messages = append(s.Messages, messages...)
 	s.version++
 	s.mu.Unlock()
@@ -128,7 +137,7 @@ func (s *Session) SetLeadingSystemPromptWithReason(prompt, reason string) bool {
 		}
 		s.Messages[0].Content = prompt
 	} else if prompt != "" {
-		s.Messages = append([]provider.Message{{Role: provider.RoleSystem, Content: prompt}}, s.Messages...)
+		s.Messages = append([]provider.Message{{Role: provider.RoleSystem, Content: prompt, ID: NewMessageID()}}, s.Messages...)
 	} else {
 		return false
 	}
@@ -292,6 +301,8 @@ func (s *Session) UpdateToolCallResolution(call provider.ToolCall) bool {
 func (s *Session) Replace(msgs []provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	msgs = retainUnresolvedToolRecords(s.Messages, msgs)
+	mintMessageIDs(msgs)
 	s.Messages = msgs
 	s.version++
 }
@@ -310,6 +321,8 @@ func (s *Session) Replace(msgs []provider.Message) {
 func (s *Session) Rewrite(msgs []provider.Message, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	msgs = retainUnresolvedToolRecords(s.Messages, msgs)
+	mintMessageIDs(msgs)
 	s.Messages = msgs
 	s.rewriteVersion++
 	s.version++
@@ -327,6 +340,8 @@ func (s *Session) Rewrite(msgs []provider.Message, reason string) {
 func (s *Session) ReplaceLocalMetadata(msgs []provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	msgs = retainUnresolvedToolRecords(s.Messages, msgs)
+	mintMessageIDs(msgs)
 	s.Messages = msgs
 	s.rewriteVersion++
 	s.version++
@@ -412,6 +427,7 @@ func (s *Session) CloneWithMessages(msgs []provider.Message) *Session {
 	return &Session{
 		Messages:                append([]provider.Message(nil), msgs...),
 		version:                 version,
+		recoveryMetadataVersion: s.recoveryMetadataVersion,
 		rewriteVersion:          s.rewriteVersion,
 		persistedRewriteVersion: s.persistedRewriteVersion,
 		persisted:               s.persisted,
@@ -442,6 +458,7 @@ func (s *Session) CloneWithMessagesIfCompatible(msgs []provider.Message) (*Sessi
 	return &Session{
 		Messages:                append([]provider.Message(nil), msgs...),
 		version:                 version,
+		recoveryMetadataVersion: s.recoveryMetadataVersion,
 		rewriteVersion:          s.rewriteVersion,
 		persistedRewriteVersion: s.persistedRewriteVersion,
 		persisted:               s.persisted,
@@ -508,7 +525,7 @@ func (s *Session) RewriteVersion() int {
 func (s *Session) NeedsRewriteSave() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.rewriteVersion > s.persistedRewriteVersion
+	return s.rewriteVersion > s.persistedRewriteVersion || s.recoveryMetadataVersion > s.persisted.version
 }
 
 // HasUnsavedChanges reports whether the in-memory transcript contains storage

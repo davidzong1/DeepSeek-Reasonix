@@ -6,10 +6,22 @@ import (
 )
 
 // UpdateSessionListingProjectionIfCurrent publishes counts decoded from one
-// persisted transcript generation. It rechecks both the transcript digest and
-// its sidecar identity while holding the save lock, so an autosave that landed
-// after the caller's decode cannot receive the stale projection.
-func UpdateSessionListingProjectionIfCurrent(sessionPath, model, preview string, turns int, markActivity bool, expected PersistedState) (bool, error) {
+// persisted transcript generation together with the runtime's acknowledged
+// model identity. It rechecks both the transcript digest and its sidecar
+// identity while holding the save lock, so an autosave that landed after the
+// caller's decode cannot receive the stale projection.
+func UpdateSessionListingProjectionIfCurrent(sessionPath, model, identity, preview string, turns int, markActivity bool, expected PersistedState) (bool, error) {
+	return updateSessionListingProjectionIfCurrent(sessionPath, model, identity, preview, turns, markActivity, expected, nil, false)
+}
+
+// UpdateOwnedSessionListingProjectionIfCurrent also fences the runtime that
+// saved the transcript. Model-only changes need not change its digest, so the
+// transcript CAS alone cannot reject a retired runtime's delayed publication.
+func UpdateOwnedSessionListingProjectionIfCurrent(sessionPath, model, identity, preview string, turns int, markActivity bool, expected PersistedState, authority *SessionWriteAuthority) (bool, error) {
+	return updateSessionListingProjectionIfCurrent(sessionPath, model, identity, preview, turns, markActivity, expected, authority, true)
+}
+
+func updateSessionListingProjectionIfCurrent(sessionPath, model, identity, preview string, turns int, markActivity bool, expected PersistedState, authority *SessionWriteAuthority, requireAuthority bool) (bool, error) {
 	if strings.TrimSpace(sessionPath) == "" {
 		return false, fmt.Errorf("empty session path")
 	}
@@ -34,6 +46,13 @@ func UpdateSessionListingProjectionIfCurrent(sessionPath, model, preview string,
 		return false, err
 	}
 	defer unlockMeta()
+	if requireAuthority {
+		unlockAuthority, err := authority.lockCurrentLease(sessionPath)
+		if err != nil {
+			return false, err
+		}
+		defer unlockAuthority()
+	}
 	meta, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
 		return false, err
@@ -47,7 +66,7 @@ func UpdateSessionListingProjectionIfCurrent(sessionPath, model, preview string,
 		return false, nil
 	}
 	if strings.TrimSpace(model) != "" {
-		meta.Model = strings.TrimSpace(model)
+		setMetaModelSelection(&meta, model, &identity)
 	}
 	meta.Preview = preview
 	meta.Turns = turns

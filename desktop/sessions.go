@@ -109,41 +109,6 @@ func saveSessionTitles(dir string, m map[string]string) error {
 	return fileutil.AtomicWriteFile(sessionTitlesPath(dir), b, 0o600)
 }
 
-// setSessionTitle sets (or, with an empty title, clears) a session's custom name.
-func setSessionTitle(dir, sessionPath, title string) error {
-	sessionPath, _, err := validateSessionPath(dir, sessionPath)
-	if err != nil {
-		return err
-	}
-	key := filepath.Base(sessionPath)
-	return updateSessionTitles(dir, func(m map[string]string) bool {
-		title = strings.TrimSpace(title)
-		if title == "" {
-			if _, ok := m[key]; !ok {
-				return false
-			}
-			delete(m, key)
-			return true
-		}
-		if m[key] == title {
-			return false
-		}
-		m[key] = title
-		return true
-	})
-}
-
-// deleteSessionFile moves a session's .jsonl and file sidecars into the local
-// trash. Title/display sidecars stay in place so trash previews and restores can
-// preserve the user's labels.
-func deleteSessionFile(dir, sessionPath string) error {
-	sessionPath, key, err := validateSessionPath(dir, sessionPath)
-	if err != nil {
-		return err
-	}
-	return trashSessionArtifacts(dir, sessionPath, key)
-}
-
 type trashedSessionMeta struct {
 	Key       string `json:"key"`
 	DeletedAt int64  `json:"deletedAt"`
@@ -159,25 +124,6 @@ func sessionTelemetryPath(sessionPath string) string {
 		return ""
 	}
 	return sessionPath + ".telemetry.json"
-}
-func sessionTrashArtifacts(sessionPath, key string) []sessionTrashArtifact {
-	stem := strings.TrimSuffix(key, ".jsonl")
-	return []sessionTrashArtifact{
-		{src: sessionPath, name: key},
-		{src: store.SessionMeta(sessionPath), name: key + ".meta"},
-		{src: store.SessionGoalState(sessionPath), name: stem + ".goal-state.json"},
-		{src: store.SessionEventLog(sessionPath), name: stem + ".events.jsonl"},
-		{src: store.SessionEventLogDamaged(sessionPath), name: stem + ".events.jsonl.damaged"},
-		{src: store.SessionEventIndex(sessionPath), name: stem + ".event-index.json"},
-		{src: store.SessionDisplayIndex(sessionPath), name: stem + ".display-index.json"},
-		{src: store.SessionConflictLog(sessionPath), name: stem + ".conflicts.jsonl"},
-		{src: store.SessionRecoveryState(sessionPath), name: stem + ".recovery.json"},
-		{src: store.SessionPinnedContext(sessionPath), name: stem + ".pinned-context.json"},
-		{src: sessionTelemetryPath(sessionPath), name: key + ".telemetry.json"},
-		{src: store.SessionCheckpointDir(sessionPath), name: stem + ".ckpt"},
-		{src: store.SessionJobsDir(sessionPath), name: stem + ".jobs"},
-		{src: store.SessionInboxDir(sessionPath), name: stem + ".inbox"},
-	}
 }
 
 // errSessionBusyElsewhere is the sanitized error surfaced when a destructive

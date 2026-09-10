@@ -18,6 +18,7 @@ type Approval struct {
 	Kind        string
 	Recovery    *RecoveryApproval
 	WriteAccess *WriteAccessApproval
+	TurnID      string
 }
 
 // ApprovalKindWriteAccess is the Approval.Kind value for directory expansion.
@@ -34,7 +35,7 @@ type WriteAccessApproval struct {
 	PersistAllowed           bool     `json:"persist_allowed,omitempty"`
 }
 
-// NormalizeWriteAccessApproval makes list fields non-nil for Wails/JSON.
+// NormalizeWriteAccessApproval makes list fields non-nil for desktop/JSON.
 func NormalizeWriteAccessApproval(w *WriteAccessApproval) *WriteAccessApproval {
 	if w == nil {
 		return nil

@@ -1679,7 +1679,7 @@ func TestNewProviderBuildsDeepSeekAnthropicPreset(t *testing.T) {
 	}
 }
 
-func TestNewProviderRejectsExplicitOfficialDeepSeekVisionModel(t *testing.T) {
+func TestNewProviderAllowsExplicitUnknownDeepSeekVisionModel(t *testing.T) {
 	var gotReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
@@ -1724,15 +1724,15 @@ func TestNewProviderRejectsExplicitOfficialDeepSeekVisionModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("message = %#v, want object", messages[0])
 	}
-	if got, ok := message["content"].(string); !ok || got != "describe" {
-		t.Fatalf("content = %#v, want plain text despite stale explicit vision metadata", message["content"])
+	if got, ok := message["content"].([]any); !ok || len(got) != 2 {
+		t.Fatalf("content = %#v, want text and explicitly enabled image", message["content"])
 	}
 	encoded, err := json.Marshal(gotReq)
 	if err != nil {
 		t.Fatalf("marshal captured request: %v", err)
 	}
-	if bytes.Contains(encoded, []byte("image_url")) || bytes.Contains(encoded, []byte("base64,AAAA")) {
-		t.Fatalf("official DeepSeek request leaked image payload: %s", encoded)
+	if !bytes.Contains(encoded, []byte("image_url")) || !bytes.Contains(encoded, []byte("base64,AAAA")) {
+		t.Fatalf("explicitly enabled image missing: %s", encoded)
 	}
 }
 
@@ -1997,7 +1997,7 @@ model = "x"
 
 	defaultReq := firstTokenProfileRequest(t, "")
 	balancedReq := firstTokenProfileRequest(t, "balanced")
-	if !reflect.DeepEqual(balancedReq.Messages, defaultReq.Messages) {
+	if !reflect.DeepEqual(withoutMessageIDs(balancedReq.Messages), withoutMessageIDs(defaultReq.Messages)) {
 		t.Fatal("balanced alias changed provider-visible messages")
 	}
 	if !reflect.DeepEqual(balancedReq.Tools, defaultReq.Tools) {
@@ -2311,6 +2311,7 @@ func unifiedBootToolNames() []string {
 		"todo_write",
 		"update_goal",
 		"use_capability",
+		"view_image",
 		"wait",
 		"write_file",
 	}
@@ -3475,72 +3476,6 @@ func TestBuildMigratesLegacyConfigEndToEnd(t *testing.T) {
 	migratedSession := filepath.Join(config.SessionDir(), "chat-1.jsonl")
 	if _, err := os.Stat(migratedSession); err != nil {
 		t.Errorf("legacy session not imported to %s: %v", migratedSession, err)
-	}
-}
-
-func TestBuildMigratesLegacyDeepSeekProtocolWithOneNotice(t *testing.T) {
-	home := isolateConfigHome(t)
-	t.Setenv("REASONIX_HOME", filepath.Join(home, "reasonix-home"))
-	userPath := config.UserConfigPath()
-	if err := os.MkdirAll(filepath.Dir(userPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(userPath, []byte(`default_model = "deepseek-flash/deepseek-v4-flash"
-
-[[providers]]
-name = "deepseek-flash"
-kind = "openai"
-base_url = "https://api.deepseek.com"
-model = "deepseek-v4-flash"
-api_key_env = "DEEPSEEK_API_KEY"
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	var notices []event.Event
-	sink := event.FuncSink(func(e event.Event) {
-		if e.Kind == event.Notice {
-			notices = append(notices, e)
-		}
-	})
-	build := func() {
-		t.Helper()
-		ctrl, err := Build(context.Background(), Options{Sink: sink, WorkspaceRoot: t.TempDir()})
-		if err != nil {
-			t.Fatalf("Build: %v", err)
-		}
-		ctrl.Close()
-	}
-
-	build()
-	migrationNotices := 0
-	for _, notice := range notices {
-		if notice.Text != "DeepSeek official access was upgraded to Anthropic Messages." {
-			continue
-		}
-		migrationNotices++
-		if notice.Level != event.LevelInfo || !strings.Contains(notice.Detail, "prefix-cache") {
-			t.Fatalf("migration notice = %+v", notice)
-		}
-	}
-	if migrationNotices != 1 {
-		t.Fatalf("migration notices = %d, want 1; got %+v", migrationNotices, notices)
-	}
-	raw, err := os.ReadFile(userPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `kind = "anthropic"`) ||
-		!strings.Contains(string(raw), `base_url = "https://api.deepseek.com/anthropic"`) {
-		t.Fatalf("legacy DeepSeek protocol remained on disk:\n%s", raw)
-	}
-
-	notices = nil
-	build()
-	for _, notice := range notices {
-		if strings.Contains(notice.Text, "DeepSeek official access was upgraded") {
-			t.Fatalf("second boot repeated migration notice: %+v", notice)
-		}
 	}
 }
 

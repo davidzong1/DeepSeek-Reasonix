@@ -44,6 +44,8 @@ import (
 // agent to connect for this session. The path hooks keep service bookkeeping
 // aligned; factories must wire both into the controller they build.
 type SessionParams struct {
+	// MCPInteractions enables interactive MCP only after explicit client negotiation.
+	MCPInteractions     bool
 	Cwd                 string
 	MCPServers          []plugin.Spec
 	Sink                event.Sink
@@ -232,6 +234,7 @@ func clientExtensionSurfaceSupported(caps ClientCapabilities) bool {
 // declared capabilities. The nil checks keep absent capabilities as nil
 // interface fields (a typed-nil *clientIO must never reach the interface).
 func (s *service) bindClientIO(p *SessionParams, sessionID string) {
+	p.MCPInteractions = clientMCPInteractionSupported(s.clientCapabilities())
 	io := newClientIO(s.conn, sessionID, s.clientCapabilities())
 	if !io.hasAny() {
 		return
@@ -588,7 +591,8 @@ func (s *service) initialize(_ context.Context, raw json.RawMessage) (any, error
 			MCPCapabilities: MCPCapabilities{HTTP: true, SSE: false},
 			Meta: map[string]any{
 				"reasonix.io": ReasonixExtensionCapabilities{
-					SessionSteer: &SessionSteerCapability{Method: sessionSteerMethod},
+					MCPInteraction: &MCPInteractionCapability{Supported: true, SchemaVersion: 1, Method: mcpInteractionMethod},
+					SessionSteer:   &SessionSteerCapability{Method: sessionSteerMethod},
 					SessionInbox: &SessionInboxCapability{
 						SchemaVersion: sessionInboxSchemaVersion,
 						Methods: map[string]string{
@@ -690,8 +694,7 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, &RPCError{Code: ErrInternal, Message: "session/new: " + err.Error()}
 	}
 	ctrl.EnableInteractiveApproval()
-	sink.bindApprove(ctrl.Approve)
-	sink.bindAnswer(ctrl.AnswerQuestion)
+	sink.bindControllerPrompts(ctrl, sessionParams.MCPInteractions)
 
 	now := time.Now().UTC()
 	sess := &acpSession{
@@ -993,8 +996,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
 	}
 	ctrl.EnableInteractiveApproval()
-	sink.bindApprove(ctrl.Approve)
-	sink.bindAnswer(ctrl.AnswerQuestion)
+	sink.bindControllerPrompts(ctrl, sessionParams.MCPInteractions)
 
 	dir := ctrl.SessionDir()
 	if dir == "" {
@@ -1138,18 +1140,28 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: unknown session " + p.SessionID}
 	}
 	text := FlattenPrompt(p.Prompt)
-	if text == "" {
+	if text == "" && p.Action != control.ProtocolRecoveryAction {
 		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: empty prompt"}
 	}
+	protocolRecovery := p.Action == control.ProtocolRecoveryAction
+	if protocolRecovery && p.RecoveryID == "" {
+		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: missing recoveryId"}
+	}
 	recovery := p.Action == control.FinalReadinessRecoveryAction
-	if p.Action != "" && !recovery {
+	if p.Action != "" && !recovery && !protocolRecovery {
 		return nil, &RPCError{Code: ErrInvalidParams, Message: "session/prompt: unsupported action " + p.Action}
 	}
-	if prompt, ok := control.ParseFinalReadinessRecoveryCommand(text); ok {
-		recovery = true
-		text = prompt
-	} else {
-		text = s.resolveSlashPrompt(ctx, sess, text)
+	if p.Action == "" {
+		if id, guidance, ok := control.ParseProtocolRecoveryCommand(text); ok {
+			protocolRecovery = true
+			p.RecoveryID = id
+			text = guidance
+		} else if prompt, ok := control.ParseFinalReadinessRecoveryCommand(text); ok {
+			recovery = true
+			text = prompt
+		} else {
+			text = s.resolveSlashPrompt(ctx, sess, text)
+		}
 	}
 
 	runCtx, cancel, ok := sess.begin(ctx)
@@ -1176,11 +1188,22 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 		statusStarted = true
 	}
 	var runErr error
-	if recovery {
+	if protocolRecovery {
+		if runner, ok := sess.ctrl.(interface {
+			RunProtocolRecoveryWithAdmission(context.Context, string, string, func()) error
+		}); ok {
+			runErr = runner.RunProtocolRecoveryWithAdmission(runCtx, p.RecoveryID, text, beginTurn)
+		} else {
+			return nil, &RPCError{Code: ErrInvalidRequest, Message: "protocol recovery is unsupported by this controller"}
+		}
+	} else if recovery {
 		runErr = sess.ctrl.RunFinalReadinessRecoveryWithAdmission(runCtx, text, beginTurn)
 	} else {
 		beginTurn()
 		runErr = sess.ctrl.RunTurn(runCtx, text)
+	}
+	if errors.Is(runErr, agent.ErrProtocolRecoveryUnavailable) && !statusStarted {
+		return nil, &RPCError{Code: ErrInvalidRequest, Message: "session/prompt: protocol recovery is unavailable or stale"}
 	}
 	if errors.Is(runErr, control.ErrNoFinalReadinessRecovery) && !statusStarted {
 		return nil, &RPCError{
@@ -1432,8 +1455,7 @@ func (s *service) reloadSessionExtensionsLocked(ctx context.Context, sess *acpSe
 		_ = saveACPMeta(sess.transcript, sess.metaLocked())
 	}
 	sess.mu.Unlock()
-	sink.bindApprove(newCtrl.Approve)
-	sink.bindAnswer(newCtrl.AnswerQuestion)
+	sink.bindControllerPrompts(newCtrl, rebuildParams.MCPInteractions)
 
 	// Release the outgoing controller only after the swap published the
 	// replacement. ReleaseResources (not Close): the session logically
@@ -1943,8 +1965,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		_ = saveACPMeta(sess.transcript, sess.metaLocked())
 	}
 	sess.mu.Unlock()
-	sink.bindApprove(newCtrl.Approve)
-	sink.bindAnswer(newCtrl.AnswerQuestion)
+	sink.bindControllerPrompts(newCtrl, rebuildParams.MCPInteractions)
 
 	cur.ReleaseResources()
 	s.sendAvailableCommands(sess)

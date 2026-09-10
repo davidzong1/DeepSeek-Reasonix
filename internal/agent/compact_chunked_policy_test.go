@@ -11,12 +11,14 @@ import (
 func TestPressureCompactionDoesNotCallChunkedFold(t *testing.T) {
 	prov := &extractStubProvider{failFirst: 64, reply: "digest"}
 	a := agentOverForce(t, prov, foldableSessionOverForce(12))
-	err := prepareContext(context.Background(), a, CompactionTriggerPressure)
-	if err == nil {
-		t.Fatal("truncated summary must fail without installing a chunked projection")
+	if err := prepareContext(context.Background(), a, CompactionTriggerPressure); err != nil {
+		t.Fatalf("prepare = %v, want the truncation rescue instead of a chunked projection", err)
 	}
 	if degradedFold(a) {
 		t.Fatal("pressure compaction must not install a fabricated summary")
+	}
+	if !truncatedRescue(a) {
+		t.Fatalf("receipt = %+v, want the truncation rescue, not a chunked digest", a.sess.compactionState.LastReceipt)
 	}
 	if prov.calls > 2 {
 		t.Fatalf("provider calls = %d, want at most one summary plus one retry, not chunked/tree-reduce", prov.calls)

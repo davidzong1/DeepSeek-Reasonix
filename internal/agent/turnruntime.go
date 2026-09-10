@@ -2,6 +2,7 @@ package agent
 
 import (
 	"reasonix/internal/completion"
+	"reasonix/internal/provider"
 	"reasonix/internal/runtimepolicy"
 )
 
@@ -10,8 +11,10 @@ import (
 // State an external caller arms before a Run lives in pendingTurn; state that
 // outlives the Run lives in taskRuntime or sessionRuntime.
 type turnRuntime struct {
-	runMaxSteps    int
-	runMaxStepsKey string
+	writeRecovery   map[string]provider.ToolCall // unresolved prior effects; reverified before reuse
+	unknownRecovery map[string]provider.ToolCall // every unresolved side-effecting call, not only file writes
+	runMaxSteps     int
+	runMaxStepsKey  string
 
 	terminal           terminalProtocolState
 	usedAnyTool        bool
@@ -101,6 +104,14 @@ type turnRuntime struct {
 	// fresh user turn may choose a different strategy, but this run cannot write
 	// or finish from a silent partial read.
 	incompleteReads incompleteReadState
+
+	// readShadow owns read obligations unless the legacy rollback is selected.
+	readShadow readShadowState
+
+	// evidenceBlocked records paths whose writer was blocked for missing
+	// evidence this turn. While it is non-empty an unknown-scope writer may not
+	// route around the block. Parallel tool calls write it, so it is guarded.
+	evidenceBlocked evidenceBlockState
 
 	phase phaseClock
 

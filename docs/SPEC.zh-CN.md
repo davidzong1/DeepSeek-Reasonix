@@ -164,10 +164,20 @@ transcript，仅在唯一自动阈值被跨越时安装 provider 可见的短 **
   若已解除压力则不调摘要模型；否则将连续旧前缀摘要，并仅原样保留最近
   **16%** 窗口，边界不拆分 assistant tool-call/tool-result 组。
 - 摘要请求复用原 system、选中消息前缀和普通请求的 tools schema，只在最后追加
-  user compaction instruction，以复用 provider KV Cache。输出上限为 **8192 tokens**。
+  user compaction instruction，以复用 provider KV Cache。输出上限为 **8192 tokens**，
+  前缀规划另在其下预留窗口的 **5%**（至少 256 tokens）作为估算余量。
   pressure 最多两次成功摘要，overflow 最多一次摘要且原请求最多重试一次。
+  overflow 救援可折叠当前 turn 已完成的轮次，最新两轮原样保留。
+- 每次摘要回复（成功或 provider 超窗）都把真实 prompt 数回灌估算器。摘要请求
+  本身被 provider 拒绝时，先按修正后的估算重新规划更小前缀（最多两次），再以
+  有界转录形式发送一次（工具结果截到 2000 字符、不带 tools schema）；手动压缩
+  随后可走分片路径。自动尝试失败后，同一 turn 内暂停重试，直到视图较该次尝试
+  再增长窗口的 5%，因此单个 turn 的重试次数有界。
 - 候选必须严格小于被替换请求。摘要 timeout/error/空输出/token cap 都不会伪造
-  机械 digest；硬上限或 overflow 下 prune 仍不足时返回 `ErrCompactionRequired`。
+  机械 digest；硬上限以下沿用最近的持久投影。硬上限或 overflow 下摘要无法形成时，
+  改为有损的 `truncate` 投影：先抹去最旧的工具结果，再丢弃最旧的回放单元，
+  留下明确标记，直到视图回到阈值以下；只有连这样也回收不够时才返回
+  `ErrCompactionRequired`。
 - 用户可用 `reasonix config compact-ratio [--local] [VALUE]` 查看或修改阈值。
   项目配置优先于桌面与新 CLI 会话共用的用户全局配置。UI 始终展示**实际生效**值。
 - `max_output_tokens` 是独立的**本轮**输出上限，**绝不**改变 `triggerTokens` / `compact_ratio`。
@@ -406,7 +416,7 @@ name           = "deepseek"
 kind           = "anthropic"
 base_url       = "https://api.deepseek.com/anthropic"
 # request_url  = "https://proxy.example.com/anthropic/v1/messages" # 可选：完整请求地址
-models         = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
+models         = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
 default        = "deepseek-v4-flash"
 # vision_models = ["deepseek-v4-flash-vision-exp"]  # 旧配置兼容；设置页根据模型能力元数据展示图片支持
 # 官方 DeepSeek 视觉支持内联 base64、http(s) 图片 URL、以及 Files API file_id。

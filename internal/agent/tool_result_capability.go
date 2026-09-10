@@ -30,7 +30,7 @@ type sessionToolResultTool struct {
 	session func() *Session
 }
 
-func (*sessionToolResultTool) Name() string { return "session_tool_result" }
+func (*sessionToolResultTool) Name() string { return tool.HostSessionToolResult }
 
 func (*sessionToolResultTool) Description() string {
 	return "Read one bounded UTF-8 page from a complete tool result retained in the current agent session. This uses tr-... result references; for a sa_... subagent reference, use read_subagent_result instead."
@@ -109,7 +109,7 @@ func toolOutputRecoveryMarkerAt(toolName, toolCallID, resultRef string, original
 		Offset     int    `json:"offset"`
 	}{ToolCallID: exampleID, ResultRef: resultRef, Offset: recoverOffset})
 	return fmt.Sprintf(
-		"\n\n…[truncated tool=%s call_id=%s result_ref=%s original_bytes=%d kept_bytes=%d next_offset=%d — full original retained locally; recover with use_capability(action=\"call\", capability_id=\"session:tool_result\", arguments=%s). INCOMPLETE READ: only a contiguous prefix is visible; do not answer, modify state, or finish until recovery reaches complete=true. If use_capability is unavailable, re-run the original tool with narrower arguments]…\n\n",
+		"\n\n…[truncated tool=%s call_id=%s result_ref=%s original_bytes=%d kept_bytes=%d next_offset=%d — full original retained locally; recover with use_capability(action=\"call\", capability_id=\"session:tool_result\", arguments=%s). INCOMPLETE READ: only a contiguous prefix is visible. Independent work may continue; recover more content when required and do not claim whole-file coverage from this prefix. If use_capability is unavailable, re-run the original tool with narrower arguments]…\n\n",
 		namePart, idPart, resultRef, originalBytes, keptBytes, recoverOffset, args,
 	)
 }

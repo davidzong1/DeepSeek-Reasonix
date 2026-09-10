@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"reasonix/internal/provider"
 )
 
 // ReasoningReplayFailure classifies why an assistant turn could not safely be
@@ -13,6 +15,7 @@ type ReasoningReplayFailure string
 const (
 	ReasoningReplayMissing      ReasoningReplayFailure = "missing_required_reasoning"
 	ReasoningReplayOverflow     ReasoningReplayFailure = "reasoning_overflow"
+	ReasoningReplayIncomplete   ReasoningReplayFailure = "incomplete_reasoning"
 	ReasoningReplayUnreplayable ReasoningReplayFailure = "unreplayable_history"
 )
 
@@ -24,6 +27,9 @@ type ReasoningReplayError struct {
 }
 
 func (e *ReasoningReplayError) Error() string {
+	if e != nil && e.Kind == ReasoningReplayIncomplete {
+		return "The provider ended the response with unfinished reasoning. Reasonix kept existing work and did not run the requested tools; retry to continue safely."
+	}
 	if e != nil && e.Kind == ReasoningReplayOverflow {
 		return "The provider reasoning exceeded the client safety limit, so Reasonix did not run the requested tools. Existing work was kept; retry to continue safely."
 	}
@@ -65,6 +71,7 @@ func PauseClass(err error) string {
 // only partially visible and the host refused to let the model silently treat
 // it as complete. It carries only routing/size metadata, never file contents.
 type IncompleteReadError struct {
+	Pause         *provider.ReadPause
 	Reason        string
 	Path          string
 	ToolCallID    string
@@ -139,6 +146,19 @@ type FinalReadinessError struct {
 	Missing           []string
 	ContinuationClass ReadinessContinuationClass
 	ProgressKey       string
+	// Operations names the concrete changes the host could not settle, so the
+	// report points at a real change with a real next action instead of a
+	// category the user has to map back onto their work themselves.
+	Operations []ReadinessOperationGap
+}
+
+// ReadinessOperationGap is one unsettled host-observed change in a readiness
+// report. Action is the closed-set next step, never prose.
+type ReadinessOperationGap struct {
+	OperationID string   `json:"operation_id"`
+	Paths       []string `json:"paths,omitempty"`
+	State       string   `json:"state"`
+	Action      string   `json:"action"`
 }
 
 func (e *FinalReadinessError) Error() string {
