@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"reasonix/internal/boot"
+	"reasonix/internal/config"
 
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -437,6 +439,76 @@ func TestMemberSinkTagsEveryEvent(t *testing.T) {
 	if got["lead"] != "one" || got["alice"] != "two" {
 		t.Errorf("tagged events = %v", got)
 	}
+}
+
+// TestMemberPoolEntryPassesBootRolePreflight pins the path the pool editor's
+// dry run cannot see: boot's role preflight reads the resolver's Catalog
+// descriptor, not the provider Extra map, so a descriptor declaring a default
+// effort with no levels beside it is refused before the member can bind. It
+// drives boot.ValidateReasoningSnapshot rather than Resolve, because Resolve
+// alone never reaches the preflight.
+func TestMemberPoolEntryPassesBootRolePreflight(t *testing.T) {
+	entry := func(effort string) *memberProviderResolver {
+		r, err := newMemberProviderResolver(team.AgentUser{
+			UserID: "wan-gpt-5.6", Provider: "openai", Model: "gpt-5.6-sol[1m]",
+			BaseURL: "https://api.wanapis.com/v1", APIKey: "sk-x", Effort: effort,
+		}, netclient.ProxySpec{})
+		if err != nil {
+			t.Fatalf("resolver for effort %q: %v", effort, err)
+		}
+		return r
+	}
+
+	r := entry("high")
+	if err := boot.ValidateReasoningSnapshot(&config.Config{}, boot.Options{
+		Model: r.Ref(), ProviderResolver: r,
+	}); err != nil {
+		t.Fatalf("a level the adapter offers must pass boot preflight, got %v", err)
+	}
+
+	// A level the endpoint does not offer is refused with the levels it does,
+	// not as a default contradicting an empty vocabulary.
+	bad := entry("max")
+	err := boot.ValidateReasoningSnapshot(&config.Config{}, boot.Options{
+		Model: bad.Ref(), ProviderResolver: bad,
+	})
+	if err == nil {
+		t.Fatal("a level outside the adapter vocabulary must be refused")
+	}
+	for _, want := range []string{`"max"`, "low medium high"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must name %s, got %v", want, err)
+		}
+	}
+}
+
+// TestMemberBackendBuildsWithGatewayEffort is the end-to-end guard for the same
+// contract as TestMemberPoolEntryPassesBootRolePreflight, at the boundary that
+// actually broke: a pool entry pointing at a gateway the config table cannot
+// classify, carrying an effort and the [1m] alias, must assemble a member
+// backend rather than report it unavailable.
+func TestMemberBackendBuildsWithGatewayEffort(t *testing.T) {
+	workspace := t.TempDir()
+	deps := memberBackendDeps{
+		ctx: t.Context(),
+		users: fakePool{users: map[string]team.AgentUser{
+			"wan": {UserID: "wan-gpt-5.6", Provider: "openai", Model: "gpt-5.6-sol[1m]",
+				BaseURL: "https://api.wanapis.com/v1", APIKey: "sk-x", Effort: "high"},
+		}},
+		events:        make(chan memberEvent, 1),
+		workspaceRoot: workspace,
+		base: func() boot.Options {
+			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
+		},
+	}
+	ctrl, err := newMemberBackendBuilder(deps)(team.MemberBinding{
+		Team: "alpha", MemberID: "lead", Leader: true, AgentUserRef: "wan",
+		SessionFile: filepath.Join("alpha", "lead.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("a pool entry the adapter accepts must assemble, got %v", err)
+	}
+	t.Cleanup(ctrl.Close)
 }
 
 // TestMemberProviderResolverServesThePoolEntry pins R1.3's provider half: the

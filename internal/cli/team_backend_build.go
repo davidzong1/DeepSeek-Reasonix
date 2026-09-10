@@ -117,6 +117,16 @@ func memberReasoningProtocol(providerName, kind, endpoint, model string) string 
 	return ""
 }
 
+// memberEffortVocabulary is the adapter's declared levels for this member's
+// endpoint. boot's role preflight reads it through syntheticEntryFromResolver,
+// whose entry has no Kind, so a default declared without it is self-contradictory.
+func (r *memberProviderResolver) memberEffortVocabulary() []string {
+	return config.ReasoningCapabilityForEntry(&config.ProviderEntry{
+		Kind: r.kind, BaseURL: r.endpoint, Model: r.model,
+		ReasoningProtocol: r.reasoningProtocol,
+	}).IDs()
+}
+
 // Ref is the model ref boot.Options.Model must carry for this member.
 func (r *memberProviderResolver) Ref() string { return r.ref }
 
@@ -124,14 +134,22 @@ func (r *memberProviderResolver) Ref() string { return r.ref }
 // declared: a member is a full Agent, so the assembled request carries the tool
 // schemas — the capability that a bare completion loop lacked. The [1m] alias
 // carries the 1M context window so the TUI gauge uses the correct denominator.
+// Efforts carries the adapter's levels, so /effort offers what the endpoint
+// accepts; the default rides along only beside them, because the preflight
+// refuses a default it has no levels to check against — and with no levels
+// declared at all, the adapter's own default is the honest answer.
 func (r *memberProviderResolver) Catalog() []provider.Descriptor {
+	efforts := r.memberEffortVocabulary()
 	d := provider.Descriptor{
-		Ref:           r.ref,
-		DisplayName:   r.name,
-		Model:         r.model,
-		Tools:         true,
-		Reasoning:     true,
-		DefaultEffort: r.effort,
+		Ref:         r.ref,
+		DisplayName: r.name,
+		Model:       r.model,
+		Tools:       true,
+		Reasoning:   true,
+		Efforts:     efforts,
+	}
+	if len(efforts) > 0 {
+		d.DefaultEffort = r.effort
 	}
 	if r.context1M {
 		d.ContextWindow = 1_000_000
