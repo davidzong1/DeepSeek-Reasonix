@@ -18,8 +18,11 @@ a depth scale merely by listing depth values in `supported_efforts`.
 ## Where the vocabulary is enforced
 
 One resolved vocabulary produces one verdict at every boundary that can carry an
-effort. A level refused at one is refused at the others, and none of them
-rewrites the value into a neighbour.
+effort, as long as that vocabulary names levels the endpoint can be asked for. A
+level refused at one is refused at the others, and none of them rewrites the
+value into a neighbour. A vocabulary naming the endpoint's fixed mode carries no
+such level: it is the one case where the stored and the selected verdict differ,
+and it is not an effort menu.
 
 | Boundary | Entry point | Undeclared level |
 | --- | --- | --- |
@@ -52,6 +55,22 @@ provider assembly validates it first against that entry's vocabulary — empty f
 there rather than mapped. Both skips matter only to a caller that constructs the
 adapter without provider assembly, and neither widens what a fresh selection may
 pick.
+
+That is also where a fixed mode and a selectable level part company. A pinned
+`thinking = "disabled"` entry reports `disabled` as its only ID, because that is
+what validates a stored value: the stored verdict keeps admitting it, so a value
+already on disk is judged exactly as it was before. The selection boundary is
+narrower — `/effort`, the desktop menu, `--effort`, ACP session config and
+subagent profiles accept `auto` and the levels that entry declares, and never the
+pinned ID, which no `supported_efforts` edit makes selectable. The ID is retained
+for stored values, not offered as a menu.
+
+`reasoning_protocol = "none"` is the other fixed mode, and its vocabulary is
+empty, so both boundaries refuse every level and only `auto` selects anything. An
+endpoint whose adapter does send `disabled` as an effort — official DeepSeek, the
+deepseek protocol, GLM, LongCat, MiniMax, anthropic's binary knob, and any entry
+that declares it — keeps the level selectable, so a pinned entry there accepts
+`/effort disabled` instead of refusing it.
 
 The ACP per-session override drops to `auto` (`""`) when the selected model
 cannot express it. That is the contract's meaning of "inherit the provider

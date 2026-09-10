@@ -145,6 +145,33 @@ func TestPinnedThinkingSelectionRefusedBeforeAssembly(t *testing.T) {
 	}
 }
 
+// Undeclared aliases are refused at every selection boundary, the retired `off`
+// spelling and a mixed-case level included: matching is exact, and the role
+// preflight no longer folds a selection through EffectiveEffort.
+func TestUndeclaredEffortAliasRefusedAtEverySelectionBoundary(t *testing.T) {
+	entry := config.ProviderEntry{Name: "gateway", Kind: "openai", BaseURL: "https://gateway.example.invalid/v1", Model: "custom", Models: []string{"custom"}, SupportedEfforts: []string{"low", "high"}}
+	cfg := &config.Config{Providers: []config.ProviderEntry{entry}, DefaultModel: "gateway/custom"}
+	resolver := NewLocalProviderResolver(cfg, netclient.ProxySpec{})
+	declared := "high"
+	if _, err := resolver.Resolve(provider.Selection{Ref: "gateway/custom", Effort: &declared}); err != nil {
+		t.Fatalf("the declared level %q did not resolve: %v", declared, err)
+	}
+	var unsupported *provider.UnsupportedReasoningEffort
+	for _, alias := range []string{"off", "HIGH"} {
+		if _, err := config.NormalizeEffort(&entry, alias); !errors.As(err, &unsupported) {
+			t.Errorf("/effort %s = %v, want a typed refusal", alias, err)
+		}
+		if _, err := resolver.Resolve(provider.Selection{Ref: "gateway/custom", Effort: &alias}); !errors.As(err, &unsupported) {
+			t.Errorf("--effort %s resolved with %v, want a typed refusal", alias, err)
+		}
+		err := preflightRoleReasoning(cfg, Options{EffortOverride: &alias}, nil, false)
+		var role *RoleReasoningError
+		if !errors.As(err, &role) || role.Role != "execution" || !errors.As(err, &unsupported) {
+			t.Errorf("--effort %s preflight = %v, want the typed role refusal", alias, err)
+		}
+	}
+}
+
 // The CLI --effort flag and the ACP per-session override both arrive as a
 // provider.Selection.Effort, which the resolver normalizes before the adapter
 // is constructed. A level the adapter would refuse must fail there instead of
