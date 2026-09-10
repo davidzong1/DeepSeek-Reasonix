@@ -56,16 +56,6 @@ func newTeamHub(store *team.TeamStore, backends *teamBackends, teamName string) 
 	return h
 }
 
-// setSubmit installs the turn driver. Tests replace it to observe routing
-// without a controller; a host may route into its own composer path later.
-func (h *teamHub) setSubmit(fn func(control.SessionAPI, string) error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if fn != nil {
-		h.submit = fn
-	}
-}
-
 // Submit drives text on member's backend, assembling it on first use through
 // the registry. An unknown team/member or a refused admission is an error. No
 // hub-level lock is held across the backend call, so concurrent submits to

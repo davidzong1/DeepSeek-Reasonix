@@ -6,6 +6,7 @@ package boot
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"reasonix/internal/config"
@@ -71,10 +72,8 @@ func ensureRegisteredKind(e *config.ProviderEntry, requestedModel string) error 
 		return nil
 	}
 	kind := strings.TrimSpace(e.Kind)
-	for _, registered := range provider.Kinds() {
-		if registered == kind {
-			return nil
-		}
+	if slices.Contains(provider.Kinds(), kind) {
+		return nil
 	}
 	return strictEntryFailure(e, requestedModel,
 		fmt.Errorf("provider kind %q is not registered (registered: %v)", e.Kind, provider.Kinds()))

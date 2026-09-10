@@ -177,7 +177,7 @@ func TestOptionListViewAdaptsHeight(t *testing.T) {
 	}
 	l.setOptions(optionSingle, []option{{id: "averylongoptionlabelthatmustbetruncated"}}, "a")
 	got = ansi.Strip(l.view(20, 10))
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		if w := visibleWidth(line); w > 20 {
 			t.Fatalf("a view line must not exceed the width, got %d: %q", w, line)
 		}

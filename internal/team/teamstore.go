@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -92,19 +93,15 @@ func (s *TeamStore) agentUserInUse(id string) (bool, error) {
 		if doc.Teams[i].DefaultAgentUserRef == id {
 			return true, nil
 		}
-		for _, ref := range doc.Teams[i].AgentUserPool {
-			if ref == id {
-				return true, nil
-			}
+		if slices.Contains(doc.Teams[i].AgentUserPool, id) {
+			return true, nil
 		}
 		for j := range doc.Teams[i].Template {
 			if doc.Teams[i].Template[j].AgentUserRef == id {
 				return true, nil
 			}
-			for _, ref := range doc.Teams[i].Template[j].AgentUserPool {
-				if ref == id {
-					return true, nil
-				}
+			if slices.Contains(doc.Teams[i].Template[j].AgentUserPool, id) {
+				return true, nil
 			}
 		}
 	}

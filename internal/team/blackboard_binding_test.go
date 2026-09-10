@@ -3,6 +3,7 @@ package team
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,11 +98,11 @@ func TestUnbindRequiresMatchingHandoff(t *testing.T) {
 		t.Fatalf("failed unbind must leave the member bound: %+v ok=%v", rec, ok)
 	}
 	// Oversized digest: rejected.
-	tooLong := ""
-	for i := 0; i < 201; i++ {
-		tooLong += "字"
+	var tooLong strings.Builder
+	for range 201 {
+		tooLong.WriteString("字")
 	}
-	if _, err := r.Unbind("m1", testIdentity("leader-a", 1), Handoff{TaskID: "t1", Digest: tooLong}); !errors.Is(err, ErrInvalidHandoff) {
+	if _, err := r.Unbind("m1", testIdentity("leader-a", 1), Handoff{TaskID: "t1", Digest: tooLong.String()}); !errors.Is(err, ErrInvalidHandoff) {
 		t.Fatalf("want ErrInvalidHandoff for long digest, got %v", err)
 	}
 	// Artifact pointer without a path: rejected.
@@ -188,7 +189,7 @@ func TestConcurrentBindSingleWinner(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	results := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -223,13 +224,11 @@ func TestConcurrentBindSameLeaderIdempotent(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	results := make(chan error, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range n {
+		wg.Go(func() {
 			_, err := r.Bind("m1", testIdentity("leader-a", 1), TaskID("t1"))
 			results <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)

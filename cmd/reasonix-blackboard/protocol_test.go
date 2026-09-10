@@ -68,7 +68,7 @@ func TestCLIAppendStampsAndDigests(t *testing.T) {
 func TestCLIAppendIdempotentReplay(t *testing.T) {
 	db := newCLIBoard(t)
 	_, first := contractRun(t, db, appendReq("dup", "v1"))
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, again := contractRun(t, db, appendReq("dup", "v1"))
 		if !again.OK || again.Event.Seq != first.Event.Seq || again.Event.Digest != first.Event.Digest {
 			t.Fatalf("replay diverged: %+v vs %+v", again, first)
@@ -124,7 +124,7 @@ func TestCLIAppendConclusionConflict(t *testing.T) {
 // and a next_seq continuation.
 func TestCLIReadAfterPaging(t *testing.T) {
 	db := newCLIBoard(t)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		contractRun(t, db, appendReq(string(rune('p'+i)), "s"))
 	}
 	_, resp := contractRun(t, db,
@@ -146,7 +146,7 @@ func TestCLIReadAfterPaging(t *testing.T) {
 // need_resync.
 func TestCLIReadAfterNeedResync(t *testing.T) {
 	db := newCLIBoard(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		contractRun(t, db, appendReq(string(rune('q'+i)), "s"))
 	}
 	if err := db.ArchiveBefore(context.Background(), "shared", 3, team.Identity{MemberID: "leader", Role: "leader"}); err != nil {
@@ -287,7 +287,7 @@ func TestCLIRunEndToEnd(t *testing.T) {
 // parseable JSONL with the legacy aliases, and repeats are byte-identical.
 func TestCLIExportSnapshot(t *testing.T) {
 	db := newCLIBoard(t)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, resp := contractRun(t, db, appendReq(string(rune('a'+i))+"1", "s")); !resp.OK {
 			t.Fatalf("append %d rejected", i)
 		}

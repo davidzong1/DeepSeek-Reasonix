@@ -3,6 +3,7 @@ package team
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -186,7 +187,7 @@ func foldCheckpoints(events []BoardEvent, epoch uint64) []CheckpointSummary {
 				superseded = append(superseded, old.Seq)
 			}
 		}
-		sort.Slice(superseded, func(i, j int) bool { return superseded[i] < superseded[j] })
+		slices.Sort(superseded)
 		out = append(out, CheckpointSummary{
 			TaskID: ev.TaskID, Kind: ev.Kind, Epoch: epoch, SourceSeq: ev.Seq,
 			Supersedes: superseded, Summary: ev.Summary, ArtifactRefs: ev.ArtifactRefs,
@@ -217,7 +218,7 @@ func sortedTaskKeys(newest map[TaskID]BoardEvent) []TaskID {
 	for id := range newest {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	return ids
 }
 

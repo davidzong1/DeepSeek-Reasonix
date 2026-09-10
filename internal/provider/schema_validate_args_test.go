@@ -69,7 +69,7 @@ func TestValidateToolArgsMalformedInstance(t *testing.T) {
 // validates repeatedly and identical failures stay identical.
 func TestValidateToolArgsCachedRepeat(t *testing.T) {
 	schema := jsonRaw(t, taskFamilySchema)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := ValidateToolArgs(schema, jsonRaw(t, `{"prompt":"ok"}`)); err != nil {
 			t.Fatalf("repeat %d: valid args must pass: %v", i, err)
 		}

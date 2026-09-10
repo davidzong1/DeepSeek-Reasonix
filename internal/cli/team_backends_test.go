@@ -218,17 +218,15 @@ func TestTeamBackendsEvictNeverKillsBusy(t *testing.T) {
 // and LRU order coherent under concurrency.
 func TestTeamBackendsConcurrentBindEvict(t *testing.T) {
 	closed := 0
-	var builds int64
+	var builds atomic.Int64
 	r := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
-		atomic.AddInt64(&builds, 1)
+		builds.Add(1)
 		return fakeBackend{closed: &closed}, nil
 	}, 4)
 	ids := []string{"a", "b", "c", "d"}
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 40 {
 				bid := ids[int(buildn.Add(1))%len(ids)]
 				if _, err := r.bind(binding("t", bid)); err != nil {
@@ -236,7 +234,7 @@ func TestTeamBackendsConcurrentBindEvict(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	r.closeAll()

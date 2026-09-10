@@ -211,7 +211,7 @@ func TestReportConcurrentDoubleCloseConverges(t *testing.T) {
 	results := make([]string, 2)
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -220,7 +220,7 @@ func TestReportConcurrentDoubleCloseConverges(t *testing.T) {
 	}
 	wg.Wait()
 	successes := 0
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if errs[i] != nil {
 			text := errs[i].Error()
 			if strings.Contains(text, "agentruntime: unknown task") {

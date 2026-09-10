@@ -25,9 +25,6 @@ func classifySed(args []string) CommandEffect {
 		if a == "--" {
 			if !expectedScript && len(scripts) == 0 && operands == 0 && i+1 < len(args) {
 				scripts = append(scripts, args[i+1])
-				operands += len(args) - i - 2
-			} else {
-				operands += len(args) - i - 1
 			}
 			break
 		}

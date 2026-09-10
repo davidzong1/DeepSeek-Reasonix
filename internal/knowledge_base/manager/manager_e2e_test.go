@@ -131,7 +131,7 @@ func TestE2EConcurrentIngestNoLossNoDup(t *testing.T) {
 	const n = 24
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()
@@ -375,7 +375,7 @@ func TestE2EIllegalTeamAndInvalidNew(t *testing.T) {
 func TestE2EQueryOnlySeesCommitted(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "kb")
 	m, _ := e2eNew(t, dir, "alpha")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		e2eIngest(t, m, []model.Thought{e2eThought("decision: committed item number "+itoa(i), "alice")})
 		if res := e2eQueryAll(t, m); len(res) != i+1 {
 			t.Fatalf("after %d committed ingests query = %d, want %d (only committed visible)", i+1, len(res), i)
@@ -399,11 +399,11 @@ func TestE2EConcurrentClearTeamIngestLinearized(t *testing.T) {
 	e2eIngest(t, mb, []model.Thought{e2eThought("decision: beta keeps region-ap", "bob")})
 
 	m, a := e2eNew(t, dir, "alpha")
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		e2eIngest(t, m, []model.Thought{e2eThought("decision: alpha seed number "+itoa(i), "alice")})
 	}
 
-	for round := 0; round < 6; round++ {
+	for round := range 6 {
 		var older []string
 		for _, r := range e2eQueryAll(t, m) {
 			older = append(older, r.Item.ID)
@@ -415,7 +415,7 @@ func TestE2EConcurrentClearTeamIngestLinearized(t *testing.T) {
 		var wg sync.WaitGroup
 		var qErr error
 		var qErrMu sync.Mutex
-		for i := 0; i < postN; i++ {
+		for i := range postN {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -425,16 +425,14 @@ func TestE2EConcurrentClearTeamIngestLinearized(t *testing.T) {
 				}
 			}(i)
 		}
-		for k := 0; k < 4; k++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 4 {
+			wg.Go(func() {
 				if _, err := m.Query(context.Background(), model.Query{Limit: 50}); err != nil {
 					qErrMu.Lock()
 					qErr = err
 					qErrMu.Unlock()
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		e2eFlush(t, m)
@@ -500,7 +498,7 @@ func TestE2ERepeatedClearTeamIdempotent(t *testing.T) {
 	e2eIngest(t, m, []model.Thought{e2eThought("decision: disposable fact two", "alice")})
 
 	const clears = 3
-	for i := 0; i < clears; i++ {
+	for i := range clears {
 		if err := m.ClearTeam(context.Background(), "alpha", model.ScopeTeam); err != nil {
 			t.Fatalf("ClearTeam #%d: %v", i+1, err)
 		}

@@ -7,6 +7,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,13 +62,7 @@ func nameSet(got []string, want ...string) bool {
 		return false
 	}
 	for _, w := range want {
-		found := false
-		for _, g := range got {
-			if g == w {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(got, w)
 		if !found {
 			return false
 		}
@@ -304,12 +299,7 @@ func TestTeamBoundPickerAndRescanReadControllerCatalog(t *testing.T) {
 
 // hasName reports whether names contains want.
 func hasName(names []string, want string) bool {
-	for _, n := range names {
-		if n == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, want)
 }
 
 // pickerNames lists the names of the open picker's skill list.

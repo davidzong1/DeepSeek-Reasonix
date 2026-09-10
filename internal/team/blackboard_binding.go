@@ -49,10 +49,6 @@ var (
 	ErrInvalidTask    = errors.New("team: bind requires a task id")
 )
 
-// transitionTimeout is the max lifetime of an in-flight bind/unbind
-// transition (route §4.2); past it the registry rolls back.
-const transitionTimeout = 5 * time.Second
-
 // BindingRegistry is the in-memory binding state machine (route §4.2):
 // unbound --Bind--> bound --Unbind--> unbound, with a transitioning window
 // that rolls back on timeout. A non-nil persist writes every record change

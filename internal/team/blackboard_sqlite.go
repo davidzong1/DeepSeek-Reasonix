@@ -134,11 +134,11 @@ func (s *SQLiteStore) inTx(ctx context.Context, fn func(conn *sql.Conn) error) e
 		return err
 	}
 	if err := fn(conn); err != nil {
-		conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		return err
 	}
 	return nil
@@ -302,7 +302,7 @@ func stampEvent(in AppendInput, seq int64) BoardEvent {
 // digest and views can compare revisions cheaply (route §1.1).
 func digestOf(ev BoardEvent) string {
 	h := sha256.New()
-	json.NewEncoder(h).Encode(ev)
+	_ = json.NewEncoder(h).Encode(ev)
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

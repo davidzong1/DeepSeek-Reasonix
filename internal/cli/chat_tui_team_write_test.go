@@ -145,7 +145,7 @@ func TestTeamPickerDeleteLastTeamShowsEmptyState(t *testing.T) {
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: 'a'})
 	m = typeTeamName(m, "Fresh")
-	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if doc := readStoredTeamDoc(t); len(doc.Teams) != 1 || doc.Teams[0].Name != "Fresh" {
 		t.Fatalf("empty registry must still accept a new team, got %+v", doc.Teams)
 	}

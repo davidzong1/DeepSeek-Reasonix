@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -22,9 +23,7 @@ import (
 // seq floor on cursor and export.
 func boardReq(op string, kv map[string]any) string {
 	body := map[string]any{"op": op}
-	for k, v := range kv {
-		body[k] = v
-	}
+	maps.Copy(body, kv)
 	b, err := json.Marshal(body)
 	if err != nil {
 		panic(err)

@@ -150,7 +150,7 @@ func TestAuthzLedgerAppendRead(t *testing.T) {
 // kept, and a record torn by a crash mid-append is skipped, never misread.
 func TestAuthzLedgerBoundedAndTornTailSafe(t *testing.T) {
 	store, _ := modeFixtureStore(t)
-	for i := 0; i < authzReadPage+6; i++ {
+	for i := range authzReadPage + 6 {
 		if err := store.AppendAuthz("alpha", AuthzEntry{TS: fmt.Sprintf("t%02d", i), Member: "alice", Source: "auto", Allow: true, ID: fmt.Sprintf("a%02d", i)}); err != nil {
 			t.Fatal(err)
 		}
@@ -199,11 +199,11 @@ func TestAuthzLedgerConcurrentAppendsLoseNothing(t *testing.T) {
 	store, _ := modeFixtureStore(t)
 	const writers, each = 4, 10
 	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < each; i++ {
+			for i := range each {
 				if err := store.AppendAuthz("alpha", AuthzEntry{TS: "t", Member: "alice", Source: "auto", Allow: true, ID: fmt.Sprintf("w%d-%d", w, i)}); err != nil {
 					t.Error(err)
 					return

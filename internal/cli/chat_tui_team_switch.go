@@ -379,7 +379,7 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	// leader's first member session continues from. It is captured by reference
 	// (nil when the seam races differently), so the carrier reads the chat at
 	// the moment that member is actually assembled.
-	var ambientCtrl control.SessionAPI = m.ctrl
+	var ambientCtrl = m.ctrl
 	var ambientCarrier func() []provider.Message
 	if ambientCtrl != nil {
 		ambientCarrier = func() []provider.Message { return ambientCtrl.History() }

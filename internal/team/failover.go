@@ -111,7 +111,7 @@ func NextPoolRef(pool, saturated []string, active string) (string, bool) {
 	if i := slices.Index(pool, active); i >= 0 {
 		start = i + 1
 	}
-	for seen := 0; seen < len(pool); seen++ {
+	for seen := range pool {
 		ref := pool[(start+seen)%len(pool)]
 		if ref == active || slices.Contains(saturated, ref) {
 			continue

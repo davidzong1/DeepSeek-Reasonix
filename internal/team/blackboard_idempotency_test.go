@@ -19,7 +19,7 @@ func TestBlackboardBatchReplayIdempotent(t *testing.T) {
 		}
 	}
 	var batch []AppendInput
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		batch = append(batch, mk(i))
 	}
 	first, err := s.AppendBatch(context.Background(), batch)

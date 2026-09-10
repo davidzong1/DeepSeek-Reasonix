@@ -740,7 +740,7 @@ func undrivenTasksError(memberID string, owned []team.Task) error {
 func parseRoles(raw string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		role := strings.TrimSpace(strings.ToLower(part))
 		if role != "" && !seen[role] {
 			seen[role] = true

@@ -70,7 +70,7 @@ func (s *RuntimeScheduler) Assign(task team.Task, fleet []team.Member) (Assignme
 		return Assignment{}, fmt.Errorf("%w: task %s requires role %q", ErrNoSuitableMember, task.ID, task.RequireRole)
 	}
 	if err := s.exec.Start(context.Background(), task, m); err != nil {
-		return Assignment{}, fmt.Errorf("%w: %v", ErrStartFailed, err)
+		return Assignment{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	return Assignment{
 		TaskID:   task.ID,

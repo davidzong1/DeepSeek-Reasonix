@@ -189,17 +189,15 @@ func TestTeamBackendsConcurrentMixedBindsRace(t *testing.T) {
 	ids := []string{"a", "b", "c", "bomb"}
 	var wg sync.WaitGroup
 	for range 12 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 20; i++ {
+		wg.Go(func() {
+			for i := range 20 {
 				id := ids[i%len(ids)]
 				if _, err := r.bind(binding("t", id)); err != nil && !errors.Is(err, boom) {
 					t.Errorf("bind %s: %v", id, err)
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	failed.Store(true)

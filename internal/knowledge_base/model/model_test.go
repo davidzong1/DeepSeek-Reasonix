@@ -129,13 +129,15 @@ func TestIDSortableAndUnique(t *testing.T) {
 }
 
 func TestStableFingerprints(t *testing.T) {
-	if ContentHash("x") != ContentHash("x") {
+	stable, again := ContentHash("x"), ContentHash("x")
+	if stable != again {
 		t.Fatal("content hash must be stable")
 	}
 	if ContentHash("x") == ContentHash("y") {
 		t.Fatal("content hash must change with content")
 	}
-	if ChunkID(1, "a") != ChunkID(1, "a") || ChunkID(1, "a") == ChunkID(2, "a") {
+	id, idAgain := ChunkID(1, "a"), ChunkID(1, "a")
+	if id != idAgain || ChunkID(1, "a") == ChunkID(2, "a") {
 		t.Fatal("chunk id must be deterministic over content+order")
 	}
 }

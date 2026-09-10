@@ -1,6 +1,8 @@
 package index
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -135,13 +137,7 @@ func match(q model.Query, it model.KnowledgeItem) bool {
 		return false
 	}
 	if len(q.Kinds) > 0 {
-		ok := false
-		for _, k := range q.Kinds {
-			if it.Kind == k {
-				ok = true
-				break
-			}
-		}
+		ok := slices.Contains(q.Kinds, it.Kind)
 		if !ok {
 			return false
 		}
@@ -158,19 +154,12 @@ func match(q model.Query, it model.KnowledgeItem) bool {
 }
 
 func contains(hay []string, needle string) bool {
-	for _, s := range hay {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(hay, needle)
 }
 
 func copyMap(m map[string]int) map[string]int {
 	out := make(map[string]int, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 

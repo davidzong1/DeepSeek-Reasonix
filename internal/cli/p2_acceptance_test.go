@@ -22,15 +22,13 @@ func TestP2MemberEventPumpPreservesPerSenderOrder(t *testing.T) {
 		active: true, teamName: "alpha", current: "lead", unread: map[string]int{},
 	}}
 	const n = 25
-	for _, member := range []string{"alice", "bob"} {
-		m.teamPick.session.members = append(m.teamPick.session.members, member)
-	}
+	m.teamPick.session.members = append(m.teamPick.session.members, []string{"alice", "bob"}...)
 	var wg sync.WaitGroup
 	for _, member := range []string{"alice", "bob"} {
 		wg.Add(1)
 		go func(member string) {
 			defer wg.Done()
-			for i := 0; i < n; i++ {
+			for i := range n {
 				m.memberEvents <- memberEvent{
 					member: member,
 					ev:     event.Event{Kind: event.Message, Text: member + "#" + byteFrame(i)},

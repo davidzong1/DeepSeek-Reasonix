@@ -50,7 +50,7 @@ func ChunkThoughts(thoughts []model.Thought, cfg Config) ([]model.SourceChunk, [
 // estimateTokens counts whitespace tokens, counting each CJK rune as a token.
 func estimateTokens(s string) int {
 	n := 0
-	for _, f := range strings.Fields(s) {
+	for f := range strings.FieldsSeq(s) {
 		if allASCII(f) {
 			n++
 		} else {

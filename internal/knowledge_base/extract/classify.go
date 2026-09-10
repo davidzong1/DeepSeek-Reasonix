@@ -93,7 +93,7 @@ func BuildItem(chunk model.SourceChunk, v Verdict, author string, scope model.Sc
 
 // titleOf picks the first meaningful line, else a bounded prefix of the body.
 func titleOf(body string) string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		line = strings.TrimLeft(line, "#-* \t")
 		if line != "" {

@@ -10,7 +10,7 @@ import (
 // (route §1.1), so readers compare revisions without touching payloads.
 func TestBlackboardDigestAlwaysPresent(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		ev, err := boardAppend(s, fmt.Sprintf("d-%d", i), "m", 1)
 		if err != nil {
 			t.Fatal(err)
@@ -27,14 +27,14 @@ func TestBlackboardDigestAlwaysPresent(t *testing.T) {
 func TestBlackboardReadAfterDeltaProportional(t *testing.T) {
 	s := newTestBoard(t)
 	const total = 120
-	for i := 0; i < total; i++ {
+	for i := range total {
 		if _, err := boardAppend(s, fmt.Sprintf("p-%d", i), "m", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
 	seen := map[int64]bool{}
 	after := int64(0)
-	for pages := 0; pages < 30; pages++ {
+	for range 30 {
 		page, err := s.ReadAfter(context.Background(), BoardShared, after,
 			Filter{Limit: 10, Stamped: Identity{MemberID: "m", Generation: 1}})
 		if err != nil {
@@ -63,7 +63,7 @@ func TestBlackboardReadAfterDeltaProportional(t *testing.T) {
 // or below the cursor is served again (route §3.2: no re-injection).
 func TestBlackboardAdvanceSkipsSeenEvents(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		if _, err := boardAppend(s, fmt.Sprintf("c-%d", i), "m", 1); err != nil {
 			t.Fatal(err)
 		}

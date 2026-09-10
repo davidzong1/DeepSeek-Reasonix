@@ -41,11 +41,11 @@ func TestBlackboardConcurrentAppendNoTears(t *testing.T) {
 	const writers, per = 10, 100
 	var wg sync.WaitGroup
 	errCh := make(chan error, writers)
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < per; i++ {
+			for i := range per {
 				_, err := s.Append(context.Background(), AppendInput{
 					BoardID: BoardShared, ClientMsgID: fmt.Sprintf("w%d-%d", w, i),
 					Kind: EventReport, TaskID: "t1", Summary: "s",
@@ -76,8 +76,8 @@ func TestBlackboardConcurrentAppendNoTears(t *testing.T) {
 	}
 	seen := make(map[string]bool)
 	owner := make(map[string]string)
-	for w := 0; w < writers; w++ {
-		for i := 0; i < per; i++ {
+	for w := range writers {
+		for i := range per {
 			owner[fmt.Sprintf("w%d-%d", w, i)] = fmt.Sprintf("m%d", w)
 		}
 	}
@@ -101,7 +101,7 @@ func TestBlackboardConcurrentAppendNoTears(t *testing.T) {
 // TestBlackboardPaging verifies limit + has_more + next_seq continuation.
 func TestBlackboardPaging(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		if _, err := boardAppend(s, fmt.Sprintf("p%d", i), "m1", 1); err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +134,7 @@ func TestBlackboardIdempotentReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		again, err := boardAppend(s, "dup-1", "m1", 1)
 		if err != nil {
 			t.Fatal(err)
@@ -157,7 +157,7 @@ func TestBlackboardConclusionCASMatchesRoute(t *testing.T) {
 	const racers = 10
 	var wg sync.WaitGroup
 	wins, conflicts := make(chan int, racers), make(chan error, racers)
-	for i := 0; i < racers; i++ {
+	for i := range racers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -233,11 +233,11 @@ func TestBlackboardCursorIsolationAndMonotonic(t *testing.T) {
 	const consumers = 10
 	var wg sync.WaitGroup
 	errCh := make(chan error, consumers)
-	for i := 0; i < consumers; i++ {
+	for i := range consumers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			for j := 0; j < 20; j++ {
+			for j := range 20 {
 				if err := s.AdvanceCursor(context.Background(), CursorUpdate{
 					BoardID: BoardShared, ConsumerID: fmt.Sprintf("c%d", i),
 					Generation: 1, LastSeq: int64(j*3 + 2),
@@ -274,7 +274,7 @@ func TestBlackboardWALRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := boardAppend(s1, fmt.Sprintf("r%d", i), "m1", 1); err != nil {
 			t.Fatal(err)
 		}
@@ -347,7 +347,7 @@ func TestBlackboardPrivateAccess(t *testing.T) {
 // cursor inside the hole gets NeedResync; logical seqs are not renumbered.
 func TestBlackboardArchiveResync(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if _, err := boardAppend(s, fmt.Sprintf("a%d", i), "m1", 1); err != nil {
 			t.Fatal(err)
 		}
@@ -381,7 +381,7 @@ func TestBlackboardArchiveResync(t *testing.T) {
 // replacement chaining the target seqs while the originals stay readable.
 func TestBlackboardSupersedeChainsAudit(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := boardAppend(s, fmt.Sprintf("s%d", i), "m1", 1); err != nil {
 			t.Fatal(err)
 		}

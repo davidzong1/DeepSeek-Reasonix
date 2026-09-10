@@ -172,7 +172,7 @@ func TestTeamProxyEditorSavesEnabled(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})    // off -> on
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm the pick
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save
+	teamKey(m, tea.KeyPressMsg{Code: 's'})              // save
 	p := readStoredTeamDoc(t).Teams[0].Proxy
 	if p == nil || !p.Enabled || p.Address != team.DefaultProxyAddress {
 		t.Fatalf("s should enable the team default proxy, got %+v", p)

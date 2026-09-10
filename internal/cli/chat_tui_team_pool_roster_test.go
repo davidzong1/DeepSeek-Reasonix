@@ -37,7 +37,7 @@ func TestTeamPoolEditorSavePreservesClickOrder(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: ' '})         // first click: au-2
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})   // au-2 → au-1
 	m = teamKey(m, tea.KeyPressMsg{Code: ' '})         // second click: au-1
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})         // save
+	teamKey(m, tea.KeyPressMsg{Code: 's'})             // save
 	doc := readStoredTeamDoc(t)
 	if got := doc.Teams[0].AgentUserPool; !reflect.DeepEqual(got, []string{"au-2", "au-1"}) {
 		t.Fatalf("saved pool = %v, want [au-2 au-1] (click order, not list order)", got)
@@ -69,7 +69,7 @@ func TestTeamPoolEditorFoldsLegacyDefaultOnWrite(t *testing.T) {
 	// The editor seeds the legacy default as the selection; add au-2 behind it.
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // au-1 → au-2
 	m = teamKey(m, tea.KeyPressMsg{Code: ' '})         // select au-2 (click order tail)
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})         // save → fold
+	teamKey(m, tea.KeyPressMsg{Code: 's'})             // save → fold
 	doc := readStoredTeamDoc(t)
 	team0 := doc.Teams[0]
 	if !reflect.DeepEqual(team0.AgentUserPool, []string{"au-1", "au-2"}) {
@@ -116,7 +116,7 @@ func TestTeamRosterGRestoresFocusedMemberToPoolHead(t *testing.T) {
 	}}
 	writeTeamPoolFixture(t, []team.Team{teamFixture}, poolRosterUsers())
 	m := openRoster(t)
-	m = teamKey(m, tea.KeyPressMsg{Code: 'g'})
+	teamKey(m, tea.KeyPressMsg{Code: 'g'})
 	doc := readStoredTeamDoc(t)
 	byID := map[string]string{}
 	for _, slot := range doc.Teams[0].Template {
@@ -186,7 +186,7 @@ func TestMemberEditPoolModeDefaultsToInherit(t *testing.T) {
 		t.Fatalf("the inherit option should label the inherited team head, got:\n%s", got)
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm inherit
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save
+	teamKey(m, tea.KeyPressMsg{Code: 's'})              // save
 	raw, err := os.ReadFile(primaryTeamPath())
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestMemberEditPoolCustomPersistsClickOrder(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})    // au-2 → au-1
 	m = teamKey(m, tea.KeyPressMsg{Code: ' '})          // second click: au-1
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // merge into the draft
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // save the editor
+	teamKey(m, tea.KeyPressMsg{Code: 's'})              // save the editor
 	doc := readStoredTeamDoc(t)
 	slot := doc.Teams[0].Template[0]
 	if !slot.IsCustomPool() {
@@ -244,7 +244,7 @@ func TestMemberEditPoolEscCancelsZeroWrite(t *testing.T) {
 	if got := ansi.Strip(m.renderTeamPicker()); !strings.Contains(got, "Agent pool: inherit") {
 		t.Fatalf("cancel must restore the inherited mode, got:\n%s", got)
 	}
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'}) // save nothing
+	teamKey(m, tea.KeyPressMsg{Code: 's'}) // save nothing
 	if after := raw(); after != before {
 		t.Fatalf("esc cancels must be zero writes:\nbefore: %s\nafter:  %s", before, after)
 	}
@@ -260,7 +260,7 @@ func TestMemberEditPoolInheritBackKeepsEntries(t *testing.T) {
 	m := openMemberPoolRow(t, fixture)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})    // custom → inherit
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm inherit
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+	teamKey(m, tea.KeyPressMsg{Code: 's'})
 	slot := readStoredTeamDoc(t).Teams[0].Template[0]
 	if slot.IsCustomPool() {
 		t.Fatalf("mode after switching back = %q, want empty (inherit)", slot.PoolMode)
@@ -282,7 +282,7 @@ func TestMemberEditPoolCustomEmptyRefused(t *testing.T) {
 		t.Fatalf("an empty custom pool must be refused in the select, got:\n%s", got)
 	}
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // cancel back to inherit
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+	teamKey(m, tea.KeyPressMsg{Code: 's'})
 	raw, _ := os.ReadFile(primaryTeamPath())
 	if strings.Contains(string(raw), `"PoolMode"`) {
 		t.Fatalf("the refused custom edit must leave no pool field:\n%s", raw)

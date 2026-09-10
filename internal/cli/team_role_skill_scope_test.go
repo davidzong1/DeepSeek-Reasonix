@@ -7,6 +7,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -137,12 +138,7 @@ func storeSkillNames(s *skill.Store) []string {
 
 // contains is a helper for string-slice membership.
 func contains(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, s)
 }
 
 // writeRoleSkillTree creates a role skill directory tree under root with

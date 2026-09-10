@@ -2,6 +2,7 @@ package team
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -75,12 +76,7 @@ func TestAdvanceFailoverExhaustsWhenNoneRemain(t *testing.T) {
 }
 
 func containsStr(hay []string, needle string) bool {
-	for _, s := range hay {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(hay, needle)
 }
 
 func TestMemberFailoverPersistsAcrossRestart(t *testing.T) {
@@ -167,7 +163,7 @@ func TestMemberFailoverConcurrentWriters(t *testing.T) {
 	const n = 32
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

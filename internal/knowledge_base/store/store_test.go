@@ -172,7 +172,7 @@ func TestConcurrentPutDistinct(t *testing.T) {
 	const n = 16
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()

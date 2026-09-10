@@ -189,7 +189,7 @@ func TestMemberEditorProxyFieldThreeWay(t *testing.T) {
 		m := memberProxyPicker(t)
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // inherit -> on
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+		teamKey(m, tea.KeyPressMsg{Code: 's'})
 		got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled
 		if got == nil || !*got {
 			t.Fatalf("s should persist force-on, got %v", got)
@@ -201,7 +201,7 @@ func TestMemberEditorProxyFieldThreeWay(t *testing.T) {
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // inherit -> on
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown}) // on -> off
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+		teamKey(m, tea.KeyPressMsg{Code: 's'})
 		got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled
 		if got == nil || *got {
 			t.Fatalf("s should persist force-off, got %v", got)
@@ -213,7 +213,7 @@ func TestMemberEditorProxyFieldThreeWay(t *testing.T) {
 		m := memberProxyPicker(t)
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp}) // on -> inherit
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+		teamKey(m, tea.KeyPressMsg{Code: 's'})
 		got := readStoredTeamDoc(t).Teams[0].Template[0].ProxyEnabled
 		if got != nil {
 			t.Fatalf("s should clear a force-on back to inherit, got %v", *got)
@@ -257,7 +257,7 @@ func TestTeamProxyEditorSavesCustomAddress(t *testing.T) {
 	m := proxyEditor(t)
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // enabled -> address
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the address field
-	for i := 0; i < len(team.DefaultProxyAddress); i++ {
+	for range len(team.DefaultProxyAddress) {
 		m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	m = typeTeamName(m, "10.0.0.1:7890")
@@ -266,7 +266,7 @@ func TestTeamProxyEditorSavesCustomAddress(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open the on/off picker
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyUp})    // off -> on
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm on
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})          // publish
+	teamKey(m, tea.KeyPressMsg{Code: 's'})              // publish
 	p := readStoredTeamDoc(t).Teams[0].Proxy
 	if p == nil || !p.Enabled || p.Address != "10.0.0.1:7890" {
 		t.Fatalf("editor must persist an explicit custom proxy, got %+v", p)

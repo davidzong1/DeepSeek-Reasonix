@@ -37,7 +37,7 @@ func deltaItems(v BoardView) int {
 // skipping the gap.
 func TestCursorThreeStates(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "summary")
 	}
 	cursors := NewMemoryCursorStore()
@@ -97,7 +97,7 @@ func TestCursorThreeStates(t *testing.T) {
 // into exactly one turn; a second read with no new events renders nothing.
 func TestNoDoubleConsumption(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventConclusion, "t1", "summary")
 	}
 	a := newAssembler(s, "m1", 1, NewMemoryCursorStore(), NewViewCache())
@@ -192,7 +192,7 @@ func TestL2OnDemand(t *testing.T) {
 // of reusing accumulated counts across epochs.
 func TestEpochInvalidationWholeKey(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "summary")
 	}
 	cursors := NewMemoryCursorStore()
@@ -222,19 +222,19 @@ func TestEpochInvalidationWholeKey(t *testing.T) {
 // -race guards the shared cursor store.
 func TestConcurrentConsumersRace(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "summary")
 	}
 	cursors := NewMemoryCursorStore()
 	const consumers = 4
 	var wg sync.WaitGroup
 	errCh := make(chan error, consumers)
-	for c := 0; c < consumers; c++ {
+	for c := range consumers {
 		wg.Add(1)
 		go func(c int) {
 			defer wg.Done()
 			a := newAssembler(s, fmt.Sprintf("m%d", c), 1, cursors, NewViewCache())
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				as, err := a.Advance(context.Background(), i%2 == 0)
 				if err != nil {
 					errCh <- err
@@ -252,7 +252,7 @@ func TestConcurrentConsumersRace(t *testing.T) {
 	for err := range errCh {
 		t.Fatal(err)
 	}
-	for c := 0; c < consumers; c++ {
+	for c := range consumers {
 		cur, err := cursors.LoadCursor(BoardShared, fmt.Sprintf("m%d", c))
 		if err != nil {
 			t.Fatal(err)

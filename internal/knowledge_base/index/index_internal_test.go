@@ -69,7 +69,7 @@ func TestSearchFilters(t *testing.T) {
 
 func TestSearchLimitAndEmptyQuery(t *testing.T) {
 	ix := New()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ix.Upsert(coderDoc(string(rune('a'+i)), "item", "some stable body text", model.ItemFact, model.ScopeTeam, nil, model.StatusLive))
 	}
 	hits, _ := ix.Search(model.Query{Text: "", Limit: 3})

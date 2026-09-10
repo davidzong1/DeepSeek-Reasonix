@@ -3,6 +3,7 @@ package team
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -78,12 +79,7 @@ func teamNames(t *testing.T, dir string) []string {
 }
 
 func hasStr(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 // TestAdoptProjectIntoCarriesRegistryPoolAndHistoryOnce proves the legacy

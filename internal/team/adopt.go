@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // boardDBFile is the SQLite board name shared by the durable command chain; the
@@ -289,12 +290,7 @@ func markerHas(userDir, source string) bool {
 		return false
 	}
 	key := dirKey(source)
-	for _, s := range m.Sources {
-		if s == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Sources, key)
 }
 
 func markerAdd(userDir, source string) error {

@@ -184,7 +184,7 @@ func confinedSkillDir(skillsDir, dir string) bool {
 		return false
 	}
 	cur := skillsDir
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
 		fi, err := os.Lstat(cur)
 		if err != nil {

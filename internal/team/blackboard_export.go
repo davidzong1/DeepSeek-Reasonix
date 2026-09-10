@@ -40,7 +40,7 @@ func (s *SQLiteStore) ExportSnapshot(ctx context.Context, w io.Writer, opts Expo
 	if err != nil {
 		return SnapshotReport{}, fmt.Errorf("team: export snapshot: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var conds []string
 	var args []any

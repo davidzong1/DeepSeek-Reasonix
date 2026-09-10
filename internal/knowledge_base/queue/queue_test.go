@@ -34,7 +34,7 @@ func TestAppendCommitSurvivesRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "q")
 	q := reopen(t, dir)
 	seqs := make([]uint64, 3)
-	for k := 0; k < 3; k++ {
+	for k := range 3 {
 		s, err := q.Append("ingest", []byte(`{"n":`+string(rune('0'+k))+`}`))
 		if err != nil {
 			t.Fatal(err)
@@ -77,7 +77,7 @@ func TestCommitNeverRegresses(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "q")
 	q := reopen(t, dir)
 	defer q.Close()
-	for k := 0; k < 3; k++ {
+	for range 3 {
 		if _, err := q.Append("x", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +145,7 @@ func TestConcurrentAppendSequencesUnique(t *testing.T) {
 	const n = 24
 	var wg sync.WaitGroup
 	seqs := make([]uint64, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		wg.Add(1)
 		go func(k int) {
 			defer wg.Done()
@@ -177,7 +177,7 @@ func TestConcurrentAppendSequencesUnique(t *testing.T) {
 func TestCloseThenReopenContinuesWatermark(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "q")
 	q := reopen(t, dir)
-	for k := 0; k < 2; k++ {
+	for range 2 {
 		if _, err := q.Append("ingest", nil); err != nil {
 			t.Fatal(err)
 		}

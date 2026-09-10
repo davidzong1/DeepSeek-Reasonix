@@ -106,7 +106,7 @@ func TestMemberPickerCommitPersistsArchived(t *testing.T) {
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // active → disabled
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyDown})  // disabled → archived
 	m = teamKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // commit
-	m = teamKey(m, tea.KeyPressMsg{Code: 's'})
+	teamKey(m, tea.KeyPressMsg{Code: 's'})
 	doc := readStoredTeamDoc(t)
 	if st := doc.Teams[0].Template[0].Status; st != team.MemberStatusArchived {
 		t.Fatalf("s should persist the archived status, got %q", st)

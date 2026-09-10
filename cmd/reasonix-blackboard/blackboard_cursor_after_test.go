@@ -48,7 +48,7 @@ func cliStoreReadAfter(t *testing.T, db *team.SQLiteStore, after int64, limit in
 // events appended afterwards (route §3.2 no-reinjection).
 func TestCLIAfterSeqIncrementalNoReplay(t *testing.T) {
 	db := newCLIBoard(t)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		cliStoreAppend(t, db, fmt.Sprintf("seed-%d", i))
 	}
 	after, seen := int64(0), 0
@@ -86,7 +86,7 @@ func TestCLIAfterSeqIncrementalNoReplay(t *testing.T) {
 // event is an empty, finished page — both must not break the gateway.
 func TestCLIAfterSeqEdgeValues(t *testing.T) {
 	db := newCLIBoard(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		cliStoreAppend(t, db, fmt.Sprintf("e-%d", i))
 	}
 	if page := cliStoreReadAfter(t, db, -1, 100); len(page.Events) != 5 || page.HasMore {
@@ -103,7 +103,7 @@ func TestCLIAfterSeqEdgeValues(t *testing.T) {
 func TestCLICursorPersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "board.db")
 	db := openStore(t, path)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		cliStoreAppend(t, db, fmt.Sprintf("e-%d", i))
 	}
 	_, resp := contractRun(t, db, `{"op":"cursor","action":"advance","board_id":"shared","consumer_id":"m","generation":1,"last_seq":5}`)

@@ -110,7 +110,7 @@ func TestBindPersistFailureLeavesMemoryUntouched(t *testing.T) {
 func TestCursorSurvivesReopen(t *testing.T) {
 	dir := t.TempDir()
 	s := newTestBoardAt(t, dir)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		boardAppend(s, fmt.Sprintf("e%d", i), "m1", 1)
 	}
 	cursors := NewSQLiteCursorStore(s, 1)

@@ -19,7 +19,7 @@ import (
 // on which member the roster happens to open on.
 func focusMember(t *testing.T, m chatTUI, id string) chatTUI {
 	t.Helper()
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		if got, ok := m.teamPick.model.Focused(); ok && got.ID == id {
 			return m
 		}

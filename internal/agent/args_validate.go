@@ -32,8 +32,8 @@ func (p *ParallelTasksTool) ValidateArgs(_ context.Context, args json.RawMessage
 
 // ValidateArgs implements tool.ArgsValidator for fleet: same item-array
 // pre-validation as parallel_tasks against the fleet schema.
-func (t *FleetTool) ValidateArgs(_ context.Context, args json.RawMessage) error {
-	return validateNestedTaskPrompts(args, t.Schema())
+func (f *FleetTool) ValidateArgs(_ context.Context, args json.RawMessage) error {
+	return validateNestedTaskPrompts(args, f.Schema())
 }
 
 // validateTaskPrompt is the registry-backed schema pre-validation for the

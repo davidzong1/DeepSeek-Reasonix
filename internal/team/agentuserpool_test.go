@@ -108,10 +108,10 @@ func TestTeamStoreSetTeamAgentUserPoolAtomicReplace(t *testing.T) {
 	// Each call publishes a full ordered pool under the CAS loop, so a concurrent
 	// writer can never interleave into a mix: the survivor is one writer's pool.
 	done := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		go func(i int) {
 			var err error
-			for k := 0; k < 25; k++ {
+			for range 25 {
 				set := b
 				if i == 0 {
 					set = a

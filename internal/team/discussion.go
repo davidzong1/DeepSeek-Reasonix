@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 )
 
@@ -412,7 +413,7 @@ func (s *DiscussionStore) Update(teamName string, mutate func(*DiscussionDoc) er
 		if err := mutate(&cur); err != nil {
 			return err
 		}
-		cur.Document.SchemaVersion = SchemaVersion
+		cur.SchemaVersion = SchemaVersion
 		if !absent && documentsEqual(&expected, &cur) {
 			return nil
 		}
@@ -465,12 +466,7 @@ func documentsEqual(a, b *DiscussionDoc) bool {
 }
 
 func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(xs, want)
 }
 
 func clampMaxRounds(maxRounds int) int {

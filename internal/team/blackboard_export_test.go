@@ -40,7 +40,7 @@ func exportedRows(t *testing.T, s *SQLiteStore, opts ExportOptions) ([]exportRow
 		t.Fatal(err)
 	}
 	var rows []exportRow
-	for _, ln := range bytes.Split(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n")) {
+	for ln := range bytes.SplitSeq(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n")) {
 		if len(ln) == 0 {
 			continue
 		}
@@ -106,7 +106,7 @@ func TestExportGoldenFile(t *testing.T) {
 // TestExportIdempotent: two exports of the same store are byte-identical.
 func TestExportIdempotent(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "s")
 	}
 	var a, b bytes.Buffer
@@ -132,17 +132,17 @@ func TestExportIdempotent(t *testing.T) {
 // torn one.
 func TestExportConcurrentAppendNoTear(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		boardAppendKind(t, s, fmt.Sprintf("pre%d", i), "m1", 1, EventReport, "t1", "s")
 	}
 	// Writers run concurrently on the same store: exports take a
 	// read-only transaction while appends queue on their own writes.
 	var wg sync.WaitGroup
-	for w := 0; w < 2; w++ {
+	for w := range 2 {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				if _, err := s.Append(context.Background(), AppendInput{
 					BoardID: BoardShared, ClientMsgID: fmt.Sprintf("w%d-%d", w, i),
 					Kind: EventReport, TaskID: "t1", Summary: "s",
@@ -193,7 +193,7 @@ func TestExportKillReopen(t *testing.T) {
 	s := newTestBoardAt(t, dir)
 	// Enough events to overflow the internal buffer, so the interrupted
 	// writer is actually reached mid-export.
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "s")
 	}
 	if _, err := s.ExportSnapshot(context.Background(), &errWriter{max: 2}, ExportOptions{}); err == nil {
@@ -222,7 +222,7 @@ func TestExportKillReopen(t *testing.T) {
 // rows are excluded by default and reported in the count.
 func TestExportSinceSeqAndArchived(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		boardAppendKind(t, s, fmt.Sprintf("e%d", i), "m1", 1, EventReport, "t1", "s")
 	}
 	if err := s.ArchiveBefore(context.Background(), BoardShared, 2, Identity{MemberID: "leader", Role: "leader", Generation: 1}); err != nil {

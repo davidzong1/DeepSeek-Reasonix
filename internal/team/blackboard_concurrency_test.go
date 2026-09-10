@@ -20,11 +20,11 @@ func TestBlackboardConcurrentReadWriteIsolation(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			for i := 0; i < perWriter; i++ {
+			for i := range perWriter {
 				if _, err := boardAppend(s, fmt.Sprintf("w%d-%d", w, i), fmt.Sprintf("m%d", w), 1); err != nil {
 					t.Errorf("append: %v", err)
 					return
@@ -36,9 +36,7 @@ func TestBlackboardConcurrentReadWriteIsolation(t *testing.T) {
 	// Read-after-read: a page is monotonic, every event is fully stamped,
 	// and seqs stay within the committed range [1, total].
 	var wgR sync.WaitGroup
-	wgR.Add(1)
-	go func() {
-		defer wgR.Done()
+	wgR.Go(func() {
 		after := int64(0)
 		for {
 			select {
@@ -69,7 +67,7 @@ func TestBlackboardConcurrentReadWriteIsolation(t *testing.T) {
 				after = page.Events[len(page.Events)-1].Seq
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 	close(stop)
@@ -84,10 +82,8 @@ func TestBlackboardConcurrentSameMsgIDSingleWinner(t *testing.T) {
 	const n = 20
 	var wg sync.WaitGroup
 	seqs := make(chan int64, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range n {
+		wg.Go(func() {
 			ev, err := s.Append(context.Background(), AppendInput{
 				BoardID: BoardShared, ClientMsgID: "same-id", Kind: EventReport,
 				TaskID: "t", CreatedAt: time.Now().UTC(), Summary: "s",
@@ -98,7 +94,7 @@ func TestBlackboardConcurrentSameMsgIDSingleWinner(t *testing.T) {
 				return
 			}
 			seqs <- ev.Seq
-		}()
+		})
 	}
 	wg.Wait()
 	close(seqs)
@@ -123,20 +119,20 @@ func TestBlackboardConcurrentSameMsgIDSingleWinner(t *testing.T) {
 // own cursors concurrently without cross-talk (route §2.2).
 func TestBlackboardConcurrentCursorsIndependent(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if _, err := boardAppend(s, fmt.Sprintf("seed-%d", i), "m", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const consumers = 5
 	var wg sync.WaitGroup
-	for c := 0; c < consumers; c++ {
+	for c := range consumers {
 		wg.Add(1)
 		go func(c int) {
 			defer wg.Done()
 			id := fmt.Sprintf("consumer-%d", c)
 			last := int64(0)
-			for i := 0; i < 20; i++ {
+			for i := range 20 {
 				last += int64(i%5 + 1)
 				if err := s.AdvanceCursor(context.Background(), CursorUpdate{
 					BoardID: BoardShared, ConsumerID: id, Generation: 1, LastSeq: last,
@@ -155,7 +151,7 @@ func TestBlackboardConcurrentCursorsIndependent(t *testing.T) {
 // state must accept the max position and reject a step below it.
 func TestBlackboardConcurrentSameCursorMonotonic(t *testing.T) {
 	s := newTestBoard(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if _, err := boardAppend(s, fmt.Sprintf("seed-%d", i), "m", 1); err != nil {
 			t.Fatal(err)
 		}
@@ -165,11 +161,11 @@ func TestBlackboardConcurrentSameCursorMonotonic(t *testing.T) {
 			BoardID: BoardShared, ConsumerID: "one", Generation: 1, LastSeq: seq})
 	}
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
+	for g := range 8 {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				_ = advance(int64(g*10 + i + 1)) // intermediate losses are fine
 			}
 		}(g)
@@ -189,7 +185,7 @@ func TestBlackboardConcurrentSameCursorMonotonic(t *testing.T) {
 func TestBlackboardConcurrentSupersedeWithAppend(t *testing.T) {
 	s := newTestBoard(t)
 	var target int64
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ev, err := boardAppend(s, fmt.Sprintf("seed-%d", i), "m", 1)
 		if err != nil {
 			t.Fatal(err)
@@ -200,7 +196,7 @@ func TestBlackboardConcurrentSupersedeWithAppend(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			if _, err := boardAppend(s, fmt.Sprintf("app-%d", i), "m", 1); err != nil {
 				t.Errorf("append: %v", err)
 				return
@@ -209,7 +205,7 @@ func TestBlackboardConcurrentSupersedeWithAppend(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			_, err := s.Supersede(context.Background(), BoardShared, []int64{target}, AppendInput{
 				ClientMsgID: fmt.Sprintf("sup-%d", i), Kind: EventSupersede, TaskID: "t",
 				CreatedAt: time.Now().UTC(), Summary: "revised",

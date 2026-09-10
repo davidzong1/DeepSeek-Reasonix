@@ -218,7 +218,7 @@ func TestRetireIsIdempotentSoftDelete(t *testing.T) {
 	alpha, _ := krecallHarnessTeams(t)
 	item := krecallSeed(t, alpha, "alpha",
 		"we decided signing rotation is deterministic so a double sweep stays a no-op", "signing")
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		krecallRetire(t, alpha, item.ID)
 	}
 	tk, err := alpha.ensureKB()

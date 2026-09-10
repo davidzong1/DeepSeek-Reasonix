@@ -45,10 +45,6 @@ type hubBackend struct {
 	member string
 	probe  *hubProbe
 	err    error
-	// decision records that a route reached this backend without ever
-	// consulting the hub's own window — the per-member prompt answer.
-	approves int
-	answers  int
 }
 
 func (b hubBackend) SubmitUserTurnOrError(input, display string) error {

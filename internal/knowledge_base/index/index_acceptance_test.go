@@ -102,7 +102,7 @@ func TestSearchAppliesFilters(t *testing.T) {
 
 func TestSearchRespectsLimitDeterministicOrder(t *testing.T) {
 	ix := New()
-	for k := 0; k < 5; k++ {
+	for k := range 5 {
 		ix.Upsert(ixItem(idN(k), "shared topic", "team", model.ItemFact, nil, 0.9, "some body text"))
 	}
 	if got := mustSearch(ix, model.Query{Limit: 2}); len(got) != 2 {
@@ -139,9 +139,7 @@ func TestConcurrentSearchDuringWrites(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	// writer flips items in/out
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		k := 0
 		for {
 			select {
@@ -154,12 +152,10 @@ func TestConcurrentSearchDuringWrites(t *testing.T) {
 			ix.Remove(it.ID)
 			k++
 		}
-	}()
+	})
 	// readers hammer the snapshot under RLock
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -172,10 +168,10 @@ func TestConcurrentSearchDuringWrites(t *testing.T) {
 				}
 				_ = ix.LiveCount()
 			}
-		}()
+		})
 	}
 	// let it churn briefly, then stop
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		_ = i
 	}
 	close(stop)
