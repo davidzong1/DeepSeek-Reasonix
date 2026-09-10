@@ -75,6 +75,38 @@ scope 隔离的权威 SQLite 数据库。已存在旧文件的 scope 会继续�
 迁移不会删除旧文件，也不会修改项目拥有的 `.reasonix` 资产。不支持新旧 Desktop 同时写
 同一个工作区。
 
+## 推理力度词汇表
+
+`/effort` 现在只接受当前端点真正声明的档位；不在其中的值会被拒绝，而不再被改写为它所知的
+最近档位。旧别名不再作为选择捷径：通用 OpenAI-compatible 网关上的 `max` 折叠为 `high`、
+DeepSeek 上的 `medium`/`xhigh` 折叠为 `high`、Ollama Cloud 上的 `xhigh` 折叠为 `max`，
+以及把深度档位折叠到二元 thinking 开关上的行为都已取消。被拒绝的选择会在发出任何请求之前
+返回 `UNSUPPORTED_REASONING_EFFORT`，并指出待修改的 `supported_efforts` 键。
+
+原本可用的配置无需任何改动：
+
+- 官方 DeepSeek V4 Flash / Pro 无需声明即接受 `low`、`high`、`max`，与之前一致。
+- 未声明词汇表时，已保存的 DeepSeek `medium`、`xhigh` 沿用原本的 `high` 请求值；磁盘上的
+  值不会被改写，因此未改动的配置行为不变，也可以随时回退到旧版本。
+- 已识别端点（MiniMax、智谱 GLM、LongCat、Ollama Cloud、Kimi K3、MiMo）保留各自的档位表，
+  只是去掉了在那里本就不存在的别名。
+
+深度档位未被识别的端点——任何其他 OpenAI-compatible 网关——在条目显式声明之前不再提供
+`/effort` 控制。声明端点真正接受的档位即可恢复；该列表会替换该条目的内置档位表，而不是追加：
+
+```toml
+[[providers]]
+name              = "my-gateway"
+supported_efforts = ["low", "high", "max"]
+default_effort    = "high"
+```
+
+如果此前依赖 `max` 送达一个适配器刻度只到 `high` 的网关，请把 `"max"` 加进
+`supported_efforts`——该值现在会原样到达请求体。所有边界共用同一份列表：`/effort`、
+桌面端菜单、`reasonix run --effort`、ACP 会话配置、子智能体 profile、已存的
+`effort = "..."`，以及请求级 override。完整边界表见
+[REASONING_CONTRACT.zh-CN.md](./REASONING_CONTRACT.zh-CN.md)。
+
 ## Context Engine v2 升级
 
 指令与记忆升级会自动完成，不需要 setup mode、re-index 命令或新配置：

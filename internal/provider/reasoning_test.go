@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"reasonix/internal/provider"
@@ -78,5 +79,30 @@ func TestAdapterReasoningExactSelectionBeforeIO(t *testing.T) {
 				t.Fatalf("calls=%d", calls)
 			}
 		})
+	}
+}
+
+// The refusal has to name the knob to turn: supported_efforts is the provider
+// entry key that decides the vocabulary, and an empty list needs different
+// advice from a list that merely lacks the requested level.
+func TestUnsupportedEffortErrorNamesTheConfigKey(t *testing.T) {
+	declared := (&provider.UnsupportedReasoningEffort{Model: "m", Effort: "max", Supported: []string{"low", "high"}}).Error()
+	undeclared := (&provider.UnsupportedReasoningEffort{Model: "m", Effort: "max"}).Error()
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want []string
+	}{
+		{"declared", declared, []string{"UNSUPPORTED_REASONING_EFFORT", `does not support "max"`, "supported_efforts", "supported: [low high]"}},
+		{"undeclared", undeclared, []string{"UNSUPPORTED_REASONING_EFFORT", `does not support "max"`, "supported_efforts", "supported: []"}},
+	} {
+		for _, want := range tc.want {
+			if !strings.Contains(tc.msg, want) {
+				t.Errorf("%s error %q does not mention %q", tc.name, tc.msg, want)
+			}
+		}
+	}
+	if declared == undeclared {
+		t.Fatal("an empty vocabulary needs its own advice")
 	}
 }

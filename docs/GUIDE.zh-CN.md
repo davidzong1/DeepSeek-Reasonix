@@ -390,6 +390,46 @@ Thinking 覆盖选项：
 | Disabled（关闭） | 对兼容 provider 发送 `thinking.type = "disabled"`。DeepSeek 风格 provider 下还会避免继续发送推理深度提示。 |
 | Adaptive（自适应） | 仅在服务文档明确支持 adaptive thinking 时使用，例如 MiniMax-M3 风格端点；语义是发送或保留 `thinking.type = "adaptive"`。 |
 
+### 推理力度（`/effort`）
+
+聊天 TUI 的 `/effort` 与桌面端输入区的推理深度控件，只能在当前端点声明的档位中选择。
+档位由适配器拥有：Reasonix 不定义全局 low/medium/high 刻度，也绝不会把你没选的档位
+改写成相邻档位。
+
+已识别端点（官方 DeepSeek、MiniMax、智谱 GLM、LongCat、Ollama Cloud、Kimi K3、MiMo）
+自带档位表。其他 OpenAI-compatible 网关默认没有可声明的深度控制，需要在 provider 条目上声明：
+
+```toml
+[[providers]]
+name              = "my-gateway"
+kind              = "openai"
+base_url          = "https://gateway.example.com/v1"
+models            = ["my-reasoning-model"]
+api_key_env       = "MY_GATEWAY_KEY"
+supported_efforts = ["low", "high", "max"]
+default_effort    = "high"
+```
+
+非空的 `supported_efforts` 会**替换**该条目的内置档位表，而不是追加，因此需要列出该端点
+真正接受的全部档位。`default_effort` 是 `auto` 解析到的档位；省略则取列表第一项。
+这也是适配器内置刻度只到 `high` 时，让端点保留 `max` 的方式。
+
+未声明的档位会在发出任何请求之前被拒绝，而不会被降级：
+
+```
+UNSUPPORTED_REASONING_EFFORT: model "my-reasoning-model" does not support "max"
+(supported: [low high]); add the level to supported_efforts on the provider entry
+only if the endpoint accepts it
+```
+
+只要力度能进入的边界都是同一结论：`/effort`、桌面端菜单、`reasonix run --effort`、
+ACP 会话配置、子智能体 profile，以及 provider 条目里已存的 `effort = "..."`。
+官方 DeepSeek V4 Flash / Pro 无需声明即接受 `max`。
+
+已有配置不受影响：未声明词汇表时，已保存的 DeepSeek `medium`、`xhigh` 沿用原本的
+`high` 请求值，磁盘上的值不会被改写；但在 `/effort` 重新选择同一别名会被拒绝。
+完整边界表见 [REASONING_CONTRACT.zh-CN.md](./REASONING_CONTRACT.zh-CN.md)。
+
 ## 快捷键
 
 这里按使用端来写，因为用户通常是先知道“我现在在桌面端/CLI”，再找对应按键。

@@ -23,14 +23,24 @@ type ReasoningCapability struct {
 type ReasoningProvider interface{ ReasoningCapability() ReasoningCapability }
 
 // UnsupportedReasoningEffort is returned before provider I/O. Never clamp an
-// explicit selection or silently replace it with the configured default.
+// explicit selection or silently replace it with the configured default: the
+// config period, provider construction and a per-request override all reach
+// this one verdict, so a value refused at one boundary must not be rewritten
+// at another.
 type UnsupportedReasoningEffort struct {
 	Model, Effort string
 	Supported     []string
 }
 
+// Error names supported_efforts because that provider-entry key is what decides
+// the vocabulary. An empty list is a different fix from a short one: the first
+// declares the levels, the second only extends them.
 func (e *UnsupportedReasoningEffort) Error() string {
-	return fmt.Sprintf("UNSUPPORTED_REASONING_EFFORT: model %q does not support %q (supported: %v)", e.Model, e.Effort, e.Supported)
+	msg := fmt.Sprintf("UNSUPPORTED_REASONING_EFFORT: model %q does not support %q (supported: %v)", e.Model, e.Effort, e.Supported)
+	if len(e.Supported) == 0 {
+		return msg + "; set supported_efforts on the provider entry to declare this endpoint's levels"
+	}
+	return msg + "; add the level to supported_efforts on the provider entry only if the endpoint accepts it"
 }
 func (c ReasoningCapability) IDs() []string {
 	ids := make([]string, 0, len(c.Options))

@@ -66,7 +66,10 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 }
 
 // NormalizeEffort maps a user-supplied /effort level into the value stored in
-// config. Empty means auto/provider default.
+// config. Empty means auto/provider default. This is the explicit-selection
+// boundary: an undeclared level is refused here and never mapped to a
+// neighbour, which is what separates it from the stored-config compatibility in
+// EffectiveEffort and migrateStoredDeepSeekEffort.
 func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 	// auto is the historical spelling for inheriting the provider default.
 	if raw == "auto" {
@@ -101,6 +104,11 @@ func EffortDisplay(e *ProviderEntry) string {
 // ProviderEntry.Effort wins; otherwise a configured SupportedEfforts list makes
 // DefaultEffort (or the first supported level) the runtime default. Empty means
 // provider default / omit the provider-specific effort field.
+//
+// A value that predates the strict vocabulary is carried on the depth it was
+// originally chosen for, not re-selected. That compatibility applies only to
+// what is already stored: a new selection is refused by NormalizeEffort before
+// it can reach here, so this path never rescues one.
 func EffectiveEffort(e *ProviderEntry) string {
 	if e == nil {
 		return ""

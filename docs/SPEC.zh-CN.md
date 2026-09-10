@@ -75,6 +75,7 @@ func New(kind string, cfg Config) (Provider, error)
 - `context_window` 是 provider 级默认值；`model_overrides.<model>.context_window` 可覆盖单个模型。
 - `max_output_tokens` 是独立的本轮输出上限，不由客户端 reasoning 字节上限换算，也不参与 `compact_ratio`。`0` 是 Provider 自动值（官方 DeepSeek 384K / OpenCode 元数据），不再表示跳过本地检查；空间充足时官方 DeepSeek 仍省略字段，临界时裁剪。正数为用户显式控费上限。负数为明确省略；安全不足时压缩。`budget_tokens` 在官方 Anthropic 兼容层会被忽略。混合网关可用 `model_overrides.<model>.max_output_tokens` 覆盖单个模型。
 - streaming tool-call delta 在 provider 内按 index 聚合，只向上层发出完整 `ToolCall`。
+- **推理力度由适配器拥有。** 每个协议适配器注册纯函数 `ReasoningForConfig`，已创建的客户端通过 `ReasoningProvider` 暴露它。`provider.ReasoningCapability.Validate` 是所有边界共用的唯一判定：`/effort` 与桌面端菜单（`config.NormalizeEffort`）、provider 组装、适配器构造，以及 HTTP 之前的 `Request.EffortOverride`。非空的 `supported_efforts` 会**替换**该条目的内置档位表，而不是追加。未声明的档位返回类型化错误 `provider.UnsupportedReasoningEffort`（`UNSUPPORTED_REASONING_EFFORT`，并指出待修改的 `supported_efforts` 键），不会映射到相邻档位。已存配置兼容是唯一例外，且绝不适用于新做出的选择。详见 [REASONING_CONTRACT.zh-CN.md](./REASONING_CONTRACT.zh-CN.md)。
 
 ### 3.2 Tool 与 registry（`internal/tool`）
 

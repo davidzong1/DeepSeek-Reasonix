@@ -15,6 +15,38 @@ Explicit selections must match a declared ID exactly. Unsupported choices return
 rejected. No nearest-level mapping is performed. Binary protocols cannot acquire
 a depth scale merely by listing depth values in `supported_efforts`.
 
+## Where the vocabulary is enforced
+
+One resolved vocabulary produces one verdict at every boundary that can carry an
+effort. A level refused at one is refused at the others, and none of them
+rewrites the value into a neighbour.
+
+| Boundary | Entry point | Undeclared level |
+| --- | --- | --- |
+| Explicit selection | `/effort`, desktop menu, `--effort`, ACP session config, subagent profiles | refused |
+| Stored configuration | provider assembly, then adapter construction | refused |
+| Per-request override | `provider.Request.EffortOverride` | refused before HTTP |
+
+`supported_efforts` is the provider-entry key that decides the vocabulary. A
+non-empty list **replaces** the built-in one, so an endpoint with real depth
+levels declares them there; the built-in scale for a known endpoint is not
+consulted in addition. An empty or absent list means the endpoint offers no
+depth control at all, and every level is refused.
+
+Two paths keep a stored value instead of refusing it. Both apply only to what is
+already on disk, never to a selection just made:
+
+- A saved DeepSeek `medium`/`xhigh` on an entry with no declared vocabulary keeps
+  its historical `high` wire value (`migrateStoredDeepSeekEffort`). The same
+  alias typed at `/effort` is refused.
+- The generic OpenAI-compatible scale still maps a stored `max` to its `high`
+  ceiling when the switch is reached with validation short-circuited by
+  `thinking = "disabled"`.
+
+The ACP per-session override drops to `auto` (`""`) when the selected model
+cannot express it. That is the contract's meaning of "inherit the provider
+default", not a different level.
+
 `auto` remains the existing UI/CLI spelling for clearing an override; it is not an
 adapter option and does not mean adaptive thinking. Request-level overrides use
 an empty string to inherit configuration, not the literal `auto`. Existing load

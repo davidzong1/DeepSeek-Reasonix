@@ -47,6 +47,12 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 }
 func (c *client) ReasoningCapability() provider.ReasoningCapability { return c.reasoning.Clone() }
 
+// configuredEffort is the construction-time half of the effort contract: a
+// stored value is refused unless the adapter's own vocabulary declares it, so
+// the same undeclared level fails here and at Stream's per-request check.
+// Validation is skipped for auto/off and for a protocol that carries no depth
+// control, which is how a stored value can still reach the generic max-to-high
+// compatibility arm — that arm never sees a freshly selected level.
 func configuredEffort(cfg provider.Config) (string, error) {
 	effort, _ := cfg.Extra["effort"].(string)
 	protocol, _ := cfg.Extra["reasoning_protocol"].(string)

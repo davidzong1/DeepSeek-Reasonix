@@ -97,6 +97,45 @@ stages are not guaranteed. The migration never deletes the legacy files or
 changes project-owned `.reasonix` assets. Running old and new Desktop versions
 concurrently against the same workspace is not supported.
 
+## Reasoning effort vocabulary
+
+`/effort` now takes the levels the selected endpoint actually declares, and
+refuses anything else instead of moving it to the nearest level it knows. The
+old aliases (`max` folded to `high` on a generic OpenAI-compatible gateway,
+`medium`/`xhigh` folded to `high` on DeepSeek, `xhigh` folded to `max` on Ollama
+Cloud, depth levels folded onto binary thinking knobs) are no longer a selection
+shortcut. A refused selection reports `UNSUPPORTED_REASONING_EFFORT` before any
+request is sent, naming `supported_efforts` as the key to edit.
+
+Nothing needs to change for a configuration that was already working:
+
+- Official DeepSeek V4 Flash and Pro accept `low`, `high`, and `max` with no
+  declaration, exactly as before.
+- A saved DeepSeek `medium` or `xhigh` on an entry with no declared vocabulary
+  keeps the `high` wire value it always had. The stored value is not rewritten,
+  so an untouched config keeps behaving the same and can still be rolled back.
+- Recognised endpoints (MiniMax, Zhipu, LongCat, Ollama Cloud, Kimi K3, MiMo)
+  keep their own scales, minus the aliases that were never real levels there.
+
+An endpoint whose depths are not recognised — any other OpenAI-compatible
+gateway — now has no `/effort` control until the entry declares one. To restore
+it, list the levels the endpoint accepts; the list replaces the built-in scale
+for that entry rather than extending it:
+
+```toml
+[[providers]]
+name              = "my-gateway"
+supported_efforts = ["low", "high", "max"]
+default_effort    = "high"
+```
+
+If you previously relied on `max` reaching a gateway whose adapter stopped at
+`high`, add `"max"` to `supported_efforts` — the value now reaches the wire
+unchanged. Every boundary agrees on the same list: `/effort`, the desktop menu,
+`reasonix run --effort`, ACP session config, subagent profiles, a stored
+`effort = "..."`, and the per-request override. See
+[REASONING_CONTRACT.md](./REASONING_CONTRACT.md) for the boundary table.
+
 ## Context Engine v2 upgrade
 
 Instruction and memory upgrades are automatic and do not require a setup mode,

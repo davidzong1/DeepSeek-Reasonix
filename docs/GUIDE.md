@@ -469,6 +469,52 @@ extra_body  = { enable_thinking = true }
 fields such as `model`, `messages`, `tools`, `stream`, and `thinking` under its
 own control.
 
+## Reasoning effort
+
+`/effort` in the chat TUI and the reasoning-depth control in the desktop
+composer pick one of the levels the selected endpoint declares. Those levels are
+adapter-owned: Reasonix does not impose a global low/medium/high scale, and it
+never maps a level you did not pick onto a neighbouring one.
+
+A recognised endpoint (official DeepSeek, MiniMax, Zhipu, LongCat, Ollama Cloud,
+Kimi K3, MiMo) supplies its own levels. Any other OpenAI-compatible gateway has
+no declared depth control, so declare it on the provider entry:
+
+```toml
+[[providers]]
+name              = "my-gateway"
+kind              = "openai"
+base_url          = "https://gateway.example.com/v1"
+models            = ["my-reasoning-model"]
+api_key_env       = "MY_GATEWAY_KEY"
+supported_efforts = ["low", "high", "max"]
+default_effort    = "high"
+```
+
+A non-empty `supported_efforts` **replaces** the built-in list for that entry
+rather than extending it, so list every level the endpoint accepts. `default_effort`
+is what `auto` resolves to — omit it to use the first listed level. This is also
+how an endpoint keeps `max` when its adapter's own scale stops at `high`.
+
+An unlisted level is refused before any request is sent, never downgraded:
+
+```
+UNSUPPORTED_REASONING_EFFORT: model "my-reasoning-model" does not support "max"
+(supported: [low high]); add the level to supported_efforts on the provider entry
+only if the endpoint accepts it
+```
+
+The same verdict applies wherever the level can enter: `/effort`, the desktop
+menu, `reasonix run --effort`, an ACP session config, a subagent profile, and a
+stored `effort = "..."` in the provider entry. Official DeepSeek V4 Flash and Pro
+accept `max` without any declaration.
+
+Existing configurations are unaffected. A saved DeepSeek `medium` or `xhigh` on
+an entry with no declared vocabulary keeps the `high` wire value it always had,
+and the stored value is never rewritten on disk; re-selecting the same alias at
+`/effort` is refused. See [REASONING_CONTRACT.md](./REASONING_CONTRACT.md) for
+the boundary table.
+
 ## Desktop hooks
 
 Desktop hooks run local commands at lifecycle events such as `SessionStart`,

@@ -216,8 +216,8 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			break
 		}
 		// Non-DeepSeek backends use OpenAI's reasoning_effort scale (low/medium/
-		// high) by default. Without an explicit provider vocabulary, max remains
-		// clamped to the OpenAI ceiling because MiMo and similar backends reject it.
+		// high) by default, so a stored max lands on that ceiling. configuredEffort
+		// already refused undeclared values: this is not a general clamp.
 		switch effort {
 		case "max":
 			effort = "high"

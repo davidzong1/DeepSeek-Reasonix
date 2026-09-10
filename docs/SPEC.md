@@ -106,6 +106,18 @@ type Config struct {
   it for one model. Per-model `prices` use model IDs as keys.
 - Streaming tool-call deltas are accumulated by index inside the provider; only
   complete `ToolCall`s are emitted.
+- **Reasoning effort is adapter-owned.** Each protocol adapter registers a pure
+  `ReasoningForConfig` resolver and the resolved client exposes it through
+  `ReasoningProvider`. `provider.ReasoningCapability.Validate` is the single
+  predicate every boundary calls: `/effort` and the desktop menu
+  (`config.NormalizeEffort`), provider assembly, adapter construction, and
+  `Request.EffortOverride` before HTTP. A non-empty `supported_efforts`
+  **replaces** the built-in vocabulary for that entry rather than extending it.
+  An undeclared level returns the typed `provider.UnsupportedReasoningEffort`
+  (`UNSUPPORTED_REASONING_EFFORT`, naming `supported_efforts` as the key to
+  edit) instead of mapping to a neighbour. Stored-config compatibility is the
+  only exception and never rescues a fresh selection. See
+  [REASONING_CONTRACT.md](./REASONING_CONTRACT.md).
 
 ### 3.2 Tool + registry (`internal/tool`)
 

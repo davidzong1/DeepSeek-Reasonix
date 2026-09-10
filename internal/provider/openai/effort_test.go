@@ -1,7 +1,11 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -28,28 +32,29 @@ func TestEffortNormalization(t *testing.T) {
 	tests := []struct {
 		base, effort, want string
 	}{
-		{mimo, "max", "high"}, // DeepSeek-ism clamped to the OpenAI ceiling — MiMo 400s on "max"
 		{mimo, "high", "high"},
 		{mimo, "medium", "medium"},
 		{mimo, "low", "low"},
-		{mimo, "MAX", "high"}, // case-insensitive
-		{mimo, "auto", ""},    // UI/config auto means omit provider-specific effort
-		{mimo, "", ""},        // unset stays omitted
+		{mimo, "auto", ""}, // UI/config auto means omit provider-specific effort
+		{mimo, "", ""},     // unset stays omitted
 		{deepseek, "max", "max"},
 		{deepseek, "high", "high"},
 		{deepseek, "auto", "high"},
 		{deepseek, "", "high"}, // DeepSeek default depth
 	}
 	for _, tc := range tests {
-		if tc.base == mimo && strings.EqualFold(tc.effort, "max") {
-			_, err := New(provider.Config{BaseURL: tc.base, Model: "m", Extra: map[string]any{"effort": tc.effort}})
-			if err == nil {
-				t.Fatal("max must not clamp to high")
-			}
-			continue
-		}
 		if got := newClient(t, tc.base, tc.effort).effort; got != tc.want {
 			t.Errorf("base=%s effort=%q: got %q, want %q", tc.base, tc.effort, got, tc.want)
+		}
+	}
+
+	// MiMo 400s on "max" and its capability stops at high, so the value is
+	// refused outright — never rewritten to the neighbouring ceiling. Case
+	// folding does not soften the verdict.
+	for _, effort := range []string{"max", "MAX", "Max"} {
+		_, err := New(provider.Config{Name: "p", BaseURL: mimo, Model: "m", APIKey: "k", Extra: map[string]any{"effort": effort}})
+		if err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
+			t.Errorf("effort %q: New error = %v, want a refusal", effort, err)
 		}
 	}
 }
@@ -203,6 +208,89 @@ func TestEffortInvalidRejected(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
 		t.Fatalf("expected a low/medium/high validation error, got: %v", err)
+	}
+}
+
+// Official V4 Flash and Pro are the endpoints that accept max without any
+// declaration, so the level must reach the wire unchanged from both the
+// configured depth and a per-request override.
+func TestOfficialDeepSeekV4MaxReachesTheWire(t *testing.T) {
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		p, err := New(provider.Config{
+			Name: "official", BaseURL: "https://api.deepseek.com", Model: model, APIKey: "k",
+			Extra: map[string]any{"effort": "max"},
+		})
+		if err != nil {
+			t.Fatalf("%s New: %v", model, err)
+		}
+		c := p.(*client)
+		if got := c.buildRequest(provider.Request{}).ReasoningEffort; got != "max" {
+			t.Errorf("%s configured max reached the wire as %q", model, got)
+		}
+		if got := c.buildRequest(provider.Request{EffortOverride: "max"}).ReasoningEffort; got != "max" {
+			t.Errorf("%s override max reached the wire as %q", model, got)
+		}
+	}
+}
+
+// Stream re-checks a per-request override against the capability frozen at
+// construction, so an undeclared level is refused by identity and never leaves
+// the process. Both fixtures point at the test server, so a regression shows up
+// as a counted request rather than as traffic to a real endpoint.
+func TestRequestEffortOverrideRefusedBeforeIO(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"contract fixture"}}`))
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name     string
+		extra    map[string]any
+		refused  []string
+		accepted []string
+	}{
+		{
+			name:    "generic endpoint declares nothing",
+			refused: []string{"max", "high", "low", "turbo"},
+		},
+		{
+			name:     "deepseek protocol without a declaration",
+			extra:    map[string]any{"reasoning_protocol": "deepseek"},
+			refused:  []string{"medium", "xhigh", "turbo"},
+			accepted: []string{"max", "high", "disabled"},
+		},
+	}
+	want := 0
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := map[string]any{}
+			maps.Copy(extra, tc.extra)
+			p, err := New(provider.Config{
+				Name: "p", BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", APIKey: "k", Extra: extra,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			for _, level := range tc.refused {
+				_, err := p.Stream(context.Background(), provider.Request{EffortOverride: level})
+				if err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
+					t.Fatalf("override %q: Stream error = %v, want a refusal", level, err)
+				}
+			}
+			for _, level := range tc.accepted {
+				_, err := p.Stream(context.Background(), provider.Request{EffortOverride: level})
+				if err != nil && strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
+					t.Fatalf("override %q was refused: %v", level, err)
+				}
+			}
+			want += len(tc.accepted)
+		})
+	}
+	if calls != want {
+		t.Fatalf("requests reaching the endpoint = %d, want %d", calls, want)
 	}
 }
 
