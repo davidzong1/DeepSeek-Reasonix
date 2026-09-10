@@ -42,16 +42,19 @@ provider 组装会先用该条目的词汇表校验它——`none` 为空、`dis
 因此二者上的已存 `max` 会在那里被拒绝，而不是被映射。两处跳过只对绕过 provider 组装、
 直接构造适配器的调用者有意义，也都不会放宽新选择可见的档位。
 
-固定模式与可选档位也在这里分道：固定 `thinking = "disabled"` 的条目只报告 `disabled`
-一个 ID，因为它正是校验已存值的依据——存储边界继续接受它，磁盘上已有的值判定保持不变；
-选择边界则更窄——`/effort`、桌面菜单、`--effort`、ACP 会话配置与子智能体 profile 只接受
-`auto` 与该条目声明的档位，绝不接受这个 ID（任何 `supported_efforts` 改动都不会让它可选）。
-该 ID 只为已存值保留，不作为菜单提供。
+固定模式与可选档位也在这里分道：固定 `thinking = "disabled"` 的条目无论还声明了什么，都
+只报告 `disabled` 一个 ID，因为它正是校验已存值的依据——存储边界继续接受它，磁盘上已有的
+值判定保持不变。这个固定值替换声明而非在其上追加，所以往 `supported_efforts` 里补一个普通
+档位不会让它可选：词汇表仍只有 `disabled`，锁定条目的菜单只提供 `auto`。
+
+该 ID 是否可选，取决于端点是否真的会发送它。若适配器自身的档位表带有 `disabled`——官方
+DeepSeek、deepseek 协议、GLM、LongCat、MiniMax 与 anthropic 的开关都是如此——或条目在
+`supported_efforts` 中声明了它，词汇表就不锁定：`/effort disabled` 可被接受，菜单同时提供
+`auto` 与 `disabled`，该档位按存储的值原样发送。只有除固定模式之外并不携带 `disabled` 的
+词汇表才锁定，那里的 ID 只为已存值保留：选择边界会连同其他所有档位一起拒绝它。
 
 `reasoning_protocol = "none"` 是另一种固定模式，其词汇表为空，因此两个边界都拒绝所有
-档位，只有 `auto` 能选中任何东西。若端点的适配器确实会把 `disabled` 当作力度发送——
-官方 DeepSeek、deepseek 协议、GLM、LongCat、MiniMax、anthropic 的开关，以及任何显式声明
-的条目——该档位保持可选，固定 thinking 的条目会接受而不是拒绝 `/effort disabled`。
+档位，只有 `auto` 能选中任何东西。
 
 选中的模型无法表达该力度时，ACP 的会话级 override 会退化为 `auto`（`""`），
 这是契约中“继承 provider 默认”的含义，而不是某个其他档位。

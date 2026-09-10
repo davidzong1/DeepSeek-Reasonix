@@ -57,20 +57,24 @@ adapter without provider assembly, and neither widens what a fresh selection may
 pick.
 
 That is also where a fixed mode and a selectable level part company. A pinned
-`thinking = "disabled"` entry reports `disabled` as its only ID, because that is
-what validates a stored value: the stored verdict keeps admitting it, so a value
-already on disk is judged exactly as it was before. The selection boundary is
-narrower — `/effort`, the desktop menu, `--effort`, ACP session config and
-subagent profiles accept `auto` and the levels that entry declares, and never the
-pinned ID, which no `supported_efforts` edit makes selectable. The ID is retained
-for stored values, not offered as a menu.
+`thinking = "disabled"` entry reports `disabled` as its only ID, whatever else is
+declared, because that is what validates a stored value: the stored verdict keeps
+admitting it, so a value already on disk is judged exactly as it was before. The
+pin replaces the declared vocabulary rather than extending it, so an ordinary
+level appended to `supported_efforts` never becomes selectable — the vocabulary
+stays `disabled`-only, and a locked entry's menu offers `auto` alone.
+
+Whether that ID is selectable turns on whether the endpoint really sends it. When
+the adapter's own scale carries `disabled` — official DeepSeek, the deepseek
+protocol, GLM, LongCat, MiniMax and anthropic's binary knob all do — or the entry
+declares it in `supported_efforts`, the vocabulary is unlocked: `/effort disabled`
+is accepted, the menu offers `auto` and `disabled`, and the level is sent as
+stored. Only a vocabulary carrying `disabled` for no reason other than the pin is
+locked, and there the ID is retained for stored values alone: the selection
+boundary refuses it along with every other level.
 
 `reasoning_protocol = "none"` is the other fixed mode, and its vocabulary is
-empty, so both boundaries refuse every level and only `auto` selects anything. An
-endpoint whose adapter does send `disabled` as an effort — official DeepSeek, the
-deepseek protocol, GLM, LongCat, MiniMax, anthropic's binary knob, and any entry
-that declares it — keeps the level selectable, so a pinned entry there accepts
-`/effort disabled` instead of refusing it.
+empty, so both boundaries refuse every level and only `auto` selects anything.
 
 The ACP per-session override drops to `auto` (`""`) when the selected model
 cannot express it. That is the contract's meaning of "inherit the provider
