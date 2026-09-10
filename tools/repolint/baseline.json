@@ -65,6 +65,15 @@
     "desktop/external_opener_windows_test.go": {
       "essay": 2
     },
+    "desktop/frontend/src/App.tsx": {
+      "file-size": 4778
+    },
+    "desktop/frontend/src/__tests__/app-chrome-tabs.test.ts": {
+      "test-file-size": 27
+    },
+    "desktop/frontend/src/__tests__/capabilities-panel-actions.test.ts": {
+      "test-file-size": 307
+    },
     "desktop/frontend/src/__tests__/composer-goal-toggle.test.tsx": {
       "test-file-size": 1733
     },
@@ -125,6 +134,9 @@
     "desktop/frontend/src/components/ThemeLibrary.tsx": {
       "file-size": 159
     },
+    "desktop/frontend/src/components/Transcript.tsx": {
+      "file-size": 262
+    },
     "desktop/frontend/src/components/UsageStatsPanel.tsx": {
       "file-size": 277
     },
@@ -173,6 +185,10 @@
     "desktop/internal/winuninstall/registry_windows.go": {
       "essay": 1
     },
+    "desktop/main.go": {
+      "essay": 7,
+      "function-size": 7
+    },
     "desktop/main_test.go": {
       "essay": 1
     },
@@ -181,6 +197,9 @@
     },
     "desktop/metrics_app.go": {
       "essay": 2
+    },
+    "desktop/nvidia_wayland_linux.go": {
+      "essay": 3
     },
     "desktop/plugin_packages_app.go": {
       "essay": 4
@@ -199,7 +218,8 @@
     },
     "desktop/remote_tab.go": {
       "essay": 8,
-      "file-size": 182
+      "file-size": 182,
+      "function-size": 1
     },
     "desktop/remote_tab_commands.go": {
       "essay": 1
@@ -209,6 +229,10 @@
     },
     "desktop/remote_tab_review_regressions_test.go": {
       "test-file-size": 7
+    },
+    "desktop/remote_window_test.go": {
+      "essay": 1,
+      "test-file-size": 127
     },
     "desktop/session_catalog_app_test.go": {
       "essay": 1
@@ -319,6 +343,7 @@
     },
     "desktop/updater_mac.go": {
       "complexity": 39,
+      "essay": 1,
       "function-size": 176
     },
     "desktop/updater_mac_test.go": {
@@ -329,6 +354,9 @@
     },
     "desktop/updater_windows.go": {
       "essay": 1
+    },
+    "desktop/webkit_compat_linux.go": {
+      "essay": 8
     },
     "desktop/workspace.go": {
       "essay": 3
@@ -414,7 +442,8 @@
     },
     "internal/agent/execute_one.go": {
       "complexity": 1,
-      "essay": 7
+      "essay": 7,
+      "file-size": 3
     },
     "internal/agent/extensions.go": {
       "essay": 53
@@ -496,7 +525,8 @@
       "essay": 1
     },
     "internal/agent/session_events.go": {
-      "essay": 7
+      "essay": 7,
+      "file-size": 15
     },
     "internal/agent/session_events_test.go": {
       "essay": 3,
@@ -820,6 +850,10 @@
     },
     "internal/config/edit_test.go": {
       "test-file-size": 2409
+    },
+    "internal/config/effort.go": {
+      "complexity": 9,
+      "essay": 9
     },
     "internal/config/effort_test.go": {
       "essay": 2
@@ -1197,6 +1231,7 @@
     "internal/provider/anthropic/anthropic.go": {
       "complexity": 23,
       "essay": 25,
+      "file-size": 58,
       "function-size": 87,
       "struct-state": 5
     },
@@ -1219,6 +1254,9 @@
     "internal/provider/provider.go": {
       "essay": 7,
       "file-size": 314
+    },
+    "internal/provider/provider_test.go": {
+      "test-file-size": 12
     },
     "internal/provider/responses/responses.go": {
       "complexity": 49,
