@@ -76,14 +76,12 @@ const (
 4. Only the read-only inspection your split and acceptance need (reading files, checking status) is yours to do; writing files, changing code and running implementation commands must be assigned to a member.
 5. After assigning, track task state with leader_check_member_status instead of polling terminals; integrate and close out once the reports arrive.
 6. Authorization decisions are yours to make — do not hand them to the user: a member's out-of-scope write blocks until you decide, so call leader_list_member_approvals to see the pending requests and leader_resolve_member_approval to answer them; when the same directory keeps coming back, grant scope "session" rather than blocking the member again and again.
-
 `
 	// memberCollaborationDiscipline applies to regular slots: read the durable
 	// task first and formally report completion.
 	memberCollaborationDiscipline = `Team collaboration discipline (member):
 1. Read the durable task (member_get_my_task) before you start; never invent your own scope.
 2. Your first action when you finish is a formal member_report_result; prose or an inferred monitor state does not replace the formal report.
-
 `
 	// sharedCollaborationDiscipline binds both sides: team-dispatch tools vs
 	// the local task capability, no empty-prompt retries, and split-and-rerun

@@ -37,10 +37,10 @@ func roleForLeader(leader bool) teamRole {
 	return teamRole(skill.TeamRoleMember)
 }
 
-// teamRoleSkillBudget caps the assembled <team-role-skill> section. 16 KiB
+// teamRoleSkillBudget caps the assembled <team-role-skill> section. 32 KiB
 // holds several playbooks while bounding the worst case a stray oversized
 // skills tree can add to the member prefix.
-const teamRoleSkillBudget = 16 << 10
+const teamRoleSkillBudget = 32 << 10
 
 // skillFileNames are the accepted skill spellings, canonical first.
 var skillFileNames = []string{"SKILL.md", "skill.md"}
@@ -69,9 +69,9 @@ func teamRoleAllows(meta map[string]string, path string, role teamRole, warn io.
 // base/<role> skill (historical by-name behaviour), then every skill under
 // team/skills/shared (role-neutral) and team/skills/special/<role>. Missing
 // playbooks are a no-op for workspaces that do not install them. warn, when
-// given, receives one line per skill dropped for an invalid team_role
-// declaration. roleSkillPrompt carries the allowlist, confinement and budget
-// guarantees.
+// given, receives one line per skill dropped — for an invalid team_role
+// declaration, or for one that would not fit the section budget.
+// roleSkillPrompt carries the allowlist, confinement and budget guarantees.
 func teamRoleSkillPrompt(root string, leader bool, warn ...io.Writer) string {
 	return roleSkillPrompt(root, roleForLeader(leader), warn...)
 }
@@ -100,7 +100,7 @@ func roleSkillPrompt(root string, role teamRole, warn ...io.Writer) string {
 	sec := roleSkillSection{max: teamRoleSkillBudget}
 	if sk, ok := skill.New(skill.Options{ProjectRoot: root, Stderr: io.Discard}).Read(string(role)); ok {
 		if body := strings.TrimSpace(sk.Body); body != "" {
-			sec.add(string(role), body)
+			sec.add(string(role), body, w)
 		}
 	}
 	appendRoleSkillDir(&sec, skillsDir, filepath.Join(skillsDir, "shared"), role, w)
@@ -114,16 +114,21 @@ func roleSkillPrompt(root string, role teamRole, warn ...io.Writer) string {
 // roleSkillSection accumulates skills under a byte budget in append order. A
 // block that would exceed the remaining budget is dropped whole — never
 // truncated mid-playbook — so one oversized skill cannot evict the ones after
-// it and the output is always deterministic.
+// it and the output is always deterministic. Dropping is reported through warn;
+// the budget is otherwise invisible.
 type roleSkillSection struct {
 	b   strings.Builder
 	max int
 }
 
-// add writes one skill headed by its directory name when it fits the budget.
-func (s *roleSkillSection) add(heading, body string) {
+// add writes one skill headed by its directory name when it fits the budget. An
+// over-budget block is dropped with a warning rather than silently: skills are
+// appended base → shared → special, so the loss lands on the role-specific ones
+// last, and only the warning says a playbook stopped reaching the model at all.
+func (s *roleSkillSection) add(heading, body string, warn io.Writer) {
 	block := "\n\n### " + heading + "\n\n" + body
-	if s.b.Len()+len(block) > s.max {
+	if over := s.b.Len() + len(block) - s.max; over > 0 {
+		fmt.Fprintf(warn, "team role skill %s: dropped, %d bytes over the %d-byte section budget\n", heading, over, s.max)
 		return
 	}
 	s.b.WriteString(block)
@@ -171,7 +176,7 @@ func appendRoleSkillFile(sec *roleSkillSection, path, heading string, role teamR
 	if body == "" || !teamRoleAllows(meta, path, role, warn) {
 		return
 	}
-	sec.add(heading, body)
+	sec.add(heading, body, warn)
 }
 
 // confinedSkillDir verifies every component of dir below skillsDir is a real

@@ -7,6 +7,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -188,5 +189,44 @@ func TestRoleSkillBudgetCapsSection(t *testing.T) {
 	}
 	if len(got) > teamRoleSkillBudget {
 		t.Errorf("assembled section exceeds budget: %d > %d", len(got), teamRoleSkillBudget)
+	}
+}
+
+// TestRoleSkillBudgetDropIsReported pins that an over-budget skill is announced
+// rather than silently dropped. Work deliberately added to team/skills vanishes
+// from the model's prompt when it does not fit, and the loss lands on the last
+// appended branch — so without the warning the only symptom is a leader that
+// quietly stopped following the playbook.
+func TestRoleSkillBudgetDropIsReported(t *testing.T) {
+	root := t.TempDir()
+	bigBody := "BIG-SENTINEL" + strings.Repeat("x", teamRoleSkillBudget*2)
+	writeRoleSkillTree(t, root, map[string]string{
+		"team/skills/shared/big/SKILL.md":   "---\nname: big\ndescription: shared\n---\n" + bigBody,
+		"team/skills/shared/small/SKILL.md": "---\nname: small\ndescription: shared\n---\nSMALL-BODY",
+	})
+
+	var warn strings.Builder
+	got := teamRoleSkillPrompt(root, true, &warn)
+	if !strings.Contains(got, "SMALL-BODY") {
+		t.Errorf("fitting skill must still load, got:\n%s", got)
+	}
+
+	// The dropped block is named, with how far over it went.
+	line := warn.String()
+	if !strings.Contains(line, "team role skill big: dropped") {
+		t.Fatalf("an over-budget skill must be reported, warn = %q", line)
+	}
+	if !strings.Contains(line, "over the "+strconv.Itoa(teamRoleSkillBudget)+"-byte section budget") {
+		t.Errorf("the warning must name the budget it exceeded, warn = %q", line)
+	}
+
+	// A tree that fits warns about nothing: the writer is silent by default.
+	small := t.TempDir()
+	writeRoleSkillTree(t, small, map[string]string{
+		"team/skills/shared/small/SKILL.md": "---\nname: small\ndescription: shared\n---\nSMALL-BODY",
+	})
+	var quiet strings.Builder
+	if teamRoleSkillPrompt(small, true, &quiet); quiet.Len() != 0 {
+		t.Fatalf("a fitting tree must not warn, got %q", quiet.String())
 	}
 }
