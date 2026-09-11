@@ -381,6 +381,14 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		} else {
 			opts.ExtraTools = append(opts.ExtraTools, newMemberTaskTools(tasks, b.Team, b.MemberID)...)
 		}
+		// The deliverable surface needs no store handle of its own: it resolves
+		// the fixed user state root, so both roles get their half whether or not
+		// this build was handed a registry.
+		if b.Leader {
+			opts.ExtraTools = append(opts.ExtraTools, newLeaderDeliverableTools(b.Team, b.MemberID, opts.Stderr)...)
+		} else {
+			opts.ExtraTools = append(opts.ExtraTools, newMemberDeliverableTools(b.Team, b.MemberID, opts.Stderr)...)
+		}
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err

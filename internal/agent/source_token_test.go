@@ -115,3 +115,19 @@ func TestFileReadsPublishASourceTokenAndOtherReadsDoNot(t *testing.T) {
 		t.Fatalf("a read with no versioned window must not carry a token: %q", got)
 	}
 }
+
+// TestReceiptTrailerCarriesItsOperation pins the only place the model can learn
+// an operation id: it is derived from the call's arguments, so a receipt
+// trailer that prints only the receipt id leaves a later sign-off unable to name
+// the operation except by failing once first.
+func TestReceiptTrailerCarriesItsOperation(t *testing.T) {
+	rec := evidence.Receipt{ID: "r_3f92b71b", Success: true, Write: true, OperationID: "op_9f8e7d6c"}
+	if got := appendReceiptCitation("edited", rec); got != "edited\n[receipt r_3f92b71b op_9f8e7d6c]" {
+		t.Fatalf("mutation trailer = %q, want the operation beside the receipt id", got)
+	}
+	// A receipt with no operation keeps the trailer it had.
+	legacy := evidence.Receipt{ID: "r_1", Success: true, Write: true}
+	if got := appendReceiptCitation("edited", legacy); got != "edited\n[receipt r_1]" {
+		t.Fatalf("legacy trailer = %q, want no operation token", got)
+	}
+}

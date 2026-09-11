@@ -48,7 +48,7 @@ var validEvidenceKinds = map[string]bool{
 func (completeStep) Name() string { return "complete_step" }
 
 func (completeStep) Description() string {
-	return "Record the completion of ONE step of an approved plan. Call it as you finish each step so the task list advances and the user sees what changed. Cite proof by RECEIPT ID: every tool result ends with the host's own id (`[receipt r_1a2b3c4d]`), and listing those ids in `receipt_ids` is exact — retyping a command instead makes the host match your text, which fails over a `cd` prefix, quoting, or argument order. For ordinary work the host has already recorded what your tools did, so anything it cannot confirm is reported alongside the sign-off rather than rejected; under a delivery floor the proof is still required. Fields: `step_id` or `step` (which task-list item), `result` (what is now true/changed), `receipt_ids` (preferred proof), `evidence` (optional items, each with `kind` = verification|review|diff|files|manual and a `summary`, plus optional `command`/`paths`, and `criterion_id` naming the acceptance criterion the proof satisfies), and optional `notes`."
+	return "Record the completion of ONE step of an approved plan. Call it as you finish each step so the task list advances and the user sees what changed. Cite proof by RECEIPT ID: every tool result ends with the host's own id and the operation it belongs to (`[receipt r_1a2b3c4d op_9f8e7d6c]`), and listing those ids in `receipt_ids` is exact — retyping a command instead makes the host match your text, which fails over a `cd` prefix, quoting, or argument order. For ordinary work the host has already recorded what your tools did, so anything it cannot confirm is reported alongside the sign-off rather than rejected; under a delivery floor the proof is still required. Fields: `step_id` or `step` (which task-list item), `operation_id` (the `op_…` token beside the cited receipts; omit when they all belong to one operation), `result` (what is now true/changed), `receipt_ids` (preferred proof), `evidence` (optional items, each with `kind` = verification|review|diff|files|manual and a `summary`, plus optional `command`/`paths`, and `criterion_id` naming the acceptance criterion the proof satisfies), and optional `notes`."
 }
 
 func (completeStep) Schema() json.RawMessage {
@@ -75,7 +75,7 @@ func (completeStep) Schema() json.RawMessage {
     }
   },
   "receipt_ids":{"type":"array","items":{"type":"string"},"description":"PREFERRED proof: the host receipt ids printed after the tool calls that did the work (e.g. \"r_1a2b3c4d\"). Citing an id is exact — the host issued it — so shell prefixes, quoting, argument order, and working directory never matter. Use these instead of retyping a command."},
-  "operation_id":{"type":"string","description":"The host operation whose receipts are being cited. Required when citing runtime-issued receipts so evidence from another change cannot satisfy this step."},
+  "operation_id":{"type":"string","description":"The host operation whose receipts are being cited, as the op_… token printed beside them. Omit when they all belong to one operation — the host reads it from the citations; name it when they span several, to settle which change is being completed."},
   "notes":{"type":"string","description":"Optional caveats, follow-ups, or anything deferred."}
 },
 "required":["result"]
@@ -116,7 +116,10 @@ func (completeStep) Execute(ctx context.Context, args json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
-	if err := validateCitedReceiptsForOperation(ctx, cited, p.OperationID); err != nil {
+	// One resolution for the whole call: the evidence matcher below has to agree
+	// with the citation check about which operation is being signed off.
+	operationID, err := resolveCitedOperation(ctx, cited, p.OperationID)
+	if err != nil {
 		return "", err
 	}
 	step := completeStepIdentity(p.StepID, p.Step, p.StepIndex)
@@ -158,7 +161,7 @@ func (completeStep) Execute(ctx context.Context, args json.RawMessage) (string, 
 		}
 		gaps, hasTodo = append(gaps, err.Error()), false
 	}
-	tally, err := verifyStepEvidence(ctx, p.Evidence, cited, p.OperationID)
+	tally, err := verifyStepEvidence(ctx, p.Evidence, cited, operationID)
 	if err != nil {
 		if strict {
 			if hasTodo && todoMatch.Status == "in_progress" {

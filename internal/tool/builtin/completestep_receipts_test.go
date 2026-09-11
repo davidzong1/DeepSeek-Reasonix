@@ -177,18 +177,67 @@ func TestCompleteStepRejectsUnrelatedReceiptEvenWhenAnotherCitationCoversOperati
 	}
 }
 
-func TestCompleteStepRequiresOperationIDForRuntimeReceipt(t *testing.T) {
+// TestCompleteStepDerivesOperationFromCitations pins the sign-off contract: the
+// operation is derived from the call's arguments, so the model can only know it
+// by reading it off a receipt. An omitted id is therefore taken from the
+// citations when they agree; citations spanning several operations stay
+// ambiguous and still have to name the one being completed.
+func TestCompleteStepDerivesOperationFromCitations(t *testing.T) {
 	ledger := evidence.NewLedger()
 	id := recordReceiptID(t, ledger, evidence.Receipt{ToolName: "bash", Success: true, Command: "go test ./...", OperationID: "op_verify"})
 	ctx := evidence.WithLedger(context.Background(), ledger)
 
-	_, err := completeStep{}.Execute(ctx, json.RawMessage(`{
+	if _, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
 		"step":"x","result":"y",
 		"receipt_ids":["`+id+`"],
+		"evidence":[{"kind":"verification","summary":"claimed"}]}`)); err != nil {
+		t.Fatalf("a citation list naming one operation must not need it spelled out: %v", err)
+	}
+
+	other := recordReceiptID(t, ledger, evidence.Receipt{ToolName: "bash", Success: true, Command: "go test ./other", OperationID: "op_other"})
+	_, err := completeStep{}.Execute(ctx, json.RawMessage(`{
+		"step":"x","result":"y",
+		"receipt_ids":["`+id+`","`+other+`"],
 		"evidence":[{"kind":"verification","summary":"claimed"}]}`))
 	var operationErr *tool.OperationError
 	if !errors.As(err, &operationErr) || operationErr.Diagnostic.Code != tool.VerificationReceiptMismatch {
-		t.Fatalf("runtime receipt without operation_id should be rejected structurally, got %v", err)
+		t.Fatalf("citations spanning two operations must still be rejected, got %v", err)
+	}
+}
+
+// TestCompleteStepDerivesTheOperationAVerificationWasAttachedTo pins the strong
+// link the derivation must not lose: a verifier attached to a mutation belongs
+// to that mutation's operation, not to its own, so the derived path runs the
+// same path/order check the explicit path runs.
+func TestCompleteStepDerivesTheOperationAVerificationWasAttachedTo(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ops := ledger.Operations()
+	ops.Open("op_write", "write_file", []string{"internal/auth/login.go"})
+	mutation := ledger.Record(evidence.Receipt{
+		ToolName: "write_file", Success: true, Write: true,
+		Paths: []string{"internal/auth/login.go"}, OperationID: "op_write",
+	})
+	ops.Apply("op_write", mutation.Ref())
+	verification := ledger.Record(evidence.Receipt{
+		ToolName: "bash", Success: true, Command: "go test ./...",
+		Paths: []string{"internal/auth/login.go"}, OperationID: "op_verify",
+	})
+	ops.AttachVerification("op_write", verification.Ref())
+
+	ctx := evidence.WithLedger(context.Background(), ledger)
+	ctx = evidence.WithClosedLoopExecution(ctx)
+	out, err := completeStep{}.Execute(ctx, json.RawMessage(`{
+		"step":"Add auth","result":"auth done",
+		"receipt_ids":["`+mutation.ID+`","`+verification.ID+`"],
+		"evidence":[
+			{"kind":"diff","summary":"login rewritten","paths":["internal/auth/login.go"]},
+			{"kind":"verification","summary":"auth tests pass"}
+		]}`))
+	if err != nil {
+		t.Fatalf("both receipts belong to the mutation's operation: %v", err)
+	}
+	if !strings.Contains(out, "host-verified 2") {
+		t.Fatalf("ack should count both host-backed evidence items, got %q", out)
 	}
 }
 

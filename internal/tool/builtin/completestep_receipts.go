@@ -55,27 +55,67 @@ func citedReceiptError(ledger *evidence.Ledger, id, why string) error {
 	return &tool.OperationError{Diagnostic: d, Cause: fmt.Errorf("receipt %q %s", id, why)}
 }
 
-// validateCitedReceiptsForOperation checks every runtime-issued citation, not
-// just the first receipt whose kind happens to satisfy one evidence item. A
-// valid receipt cannot hide an unrelated one in the same citation list.
-func validateCitedReceiptsForOperation(ctx context.Context, cited []evidence.ReceiptRef, operationID string) error {
+// resolveCitedOperation settles which operation this sign-off is about and
+// checks that every runtime-issued citation covers it. An omitted id is taken
+// from the citations themselves: it is derived from the call's arguments, so the
+// model can only know it by reading it off a receipt, and demanding it outright
+// rejected sign-offs that named perfectly good evidence. Citations spanning
+// several operations stay ambiguous and still have to name one.
+func resolveCitedOperation(ctx context.Context, cited []evidence.ReceiptRef, operationID string) (string, error) {
 	ledger, ok := evidence.FromContext(ctx)
-	if !ok || len(cited) == 0 {
-		return nil
-	}
 	operationID = strings.TrimSpace(operationID)
+	if !ok || len(cited) == 0 {
+		return operationID, nil
+	}
+	if operationID == "" {
+		operationID = citedOperation(ledger, cited)
+	}
 	for _, ref := range cited {
 		if ref.OperationID == "" && operationID == "" {
 			continue // compatibility for hand-built/legacy receipts
 		}
 		if operationID == "" {
-			return citedReceiptMismatchError(ledger, ref.ID, operationID, "requires operation_id")
+			return "", citedReceiptMismatchError(ledger, ref.ID, operationID, "spans more than one operation, so the one being completed must be named")
 		}
 		if !ledger.ReceiptCoversOperation(ref.ID, operationID) {
-			return citedReceiptMismatchError(ledger, ref.ID, operationID, "does not cover the cited operation")
+			return "", citedReceiptMismatchError(ledger, ref.ID, operationID, "does not cover the cited operation")
 		}
 	}
-	return nil
+	return operationID, nil
+}
+
+// citedOperation resolves the one operation the citations belong to. A receipt
+// the host attached to an operation as its mutation or verification names that
+// operation — the strong link a verifier has to satisfy — and otherwise the
+// receipt's own stamp answers. Empty means the citations are ambiguous.
+func citedOperation(ledger *evidence.Ledger, cited []evidence.ReceiptRef) string {
+	ops := ledger.Operations()
+	if ops == nil {
+		return ""
+	}
+	snapshot := ops.Snapshot()
+	operationID := ""
+	for _, ref := range cited {
+		current := ref.OperationID
+		for _, candidate := range snapshot {
+			if (candidate.Mutation != nil && candidate.Mutation.ID == ref.ID) ||
+				(candidate.Verification != nil && candidate.Verification.ID == ref.ID) {
+				current = candidate.ID
+				break
+			}
+		}
+		if current == "" {
+			continue
+		}
+		if operationID == "" {
+			operationID = current
+			continue
+		}
+		if operationID != current {
+			return ""
+		}
+	}
+	return operationID
 }
 
 func citedReceiptMismatchError(ledger *evidence.Ledger, receiptID, operationID, why string) error {

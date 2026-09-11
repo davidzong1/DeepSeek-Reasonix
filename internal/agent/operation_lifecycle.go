@@ -249,7 +249,18 @@ func appendReceiptCitation(result string, rec evidence.Receipt) string {
 	default:
 		return result
 	}
-	return strings.TrimRight(result, "\n") + "\n[receipt " + rec.ID + "]"
+	return strings.TrimRight(result, "\n") + "\n[receipt " + rec.ID + citedOperationSuffix(rec) + "]"
+}
+
+// citedOperationSuffix renders the operation a receipt belongs to beside the
+// receipt id. The operation is derived from the call's arguments, so the model
+// can neither compute nor guess it; printing it here is what lets a sign-off
+// name the operation instead of learning the id only from a rejection.
+func citedOperationSuffix(rec evidence.Receipt) string {
+	if op := strings.TrimSpace(rec.OperationID); op != "" {
+		return " " + op
+	}
+	return ""
 }
 
 // Readiness gap actions. They are identifiers the frontend maps to a control,
