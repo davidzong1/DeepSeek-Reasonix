@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Registry errors. ErrMigrateRefused guards the primary file.
@@ -46,6 +47,8 @@ type TeamStore struct {
 	anchor       string           // data root reported by Root(); "" = the data dir
 	agentUsers   *AgentUsersStore // pool store for binding validation (§5)
 	memberPolicy MemberWritePolicy
+	// writeMu serializes this process's mutations; see update.
+	writeMu sync.Mutex
 }
 
 // NewTeamStore returns the project-rooted TeamStore: data in
@@ -352,8 +355,19 @@ func (s *TeamStore) MigrateLegacy() error {
 // update runs fn against the loaded registry and publishes the result under a
 // CAS loop (max 3 attempts): a conflict re-loads and retries, so concurrent
 // writers surface as ErrCASConflict rather than a silent clobber.
+// casAttempts bounds the publish retry. The write mutex below already serializes
+// writers inside this process, so a conflict here means another process owns the
+// file; this many tries ride out a burst from a sibling process without
+// livelocking behind one that keeps winning.
+const casAttempts = 8
+
 func (s *TeamStore) update(fn func(*TeamDoc) error) error {
-	for attempt := range 3 {
+	// Serialize the read-modify-publish cycle in-process: the CAS below guards
+	// against other processes, this guards against our own writers racing each
+	// other's retry budgets away. fn never re-enters update.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	for attempt := range casAttempts {
 		doc, create, err := s.loadForUpdate()
 		if err != nil {
 			return err
@@ -370,7 +384,7 @@ func (s *TeamStore) update(fn func(*TeamDoc) error) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, ErrCASConflict) && attempt < 2 {
+		if errors.Is(err, ErrCASConflict) && attempt < casAttempts-1 {
 			continue
 		}
 		return err

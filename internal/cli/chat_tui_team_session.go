@@ -374,6 +374,9 @@ func (m *chatTUI) closeTeamResources() {
 		m.ambient = nil
 	}
 	if m.teamBackends != nil {
+		// Drop queued requests first: closeAll unblocks every blocked waiter, and
+		// each release then finds its entry already gone rather than racing it.
+		m.teamEscalations.clear()
 		m.teamBackends.closeAll()
 		m.teamBackends = nil
 	}

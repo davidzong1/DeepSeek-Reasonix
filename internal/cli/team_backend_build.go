@@ -251,6 +251,9 @@ type memberBackendDeps struct {
 	// release retires one member's assembled backend. Late-bound like tasks'
 	// bind hook, because the registry is constructed around this builder.
 	release func(teamName, memberID string)
+	// escalations is the window-scoped decider for out-of-scope writes. Nil
+	// leaves every write-access card on the operator's surface.
+	escalations *writeAccessEscalations
 }
 
 // memberPoolLookup reads one pool entry. Narrowed to the one method the builder
@@ -332,6 +335,33 @@ func dryRunPoolEntry(u team.AgentUser) error {
 	return err
 }
 
+// memberApprovalPosture is the posture one role's backend runs with. The leader
+// works unattended — the operator reads the transcript rather than answering a
+// modal per write — while a member answers its own ordinary prompts and escalates
+// only what its write scope does not cover. The fresh-human tools stay gated for
+// both, whatever this returns.
+func memberApprovalPosture(leader bool) string {
+	if leader {
+		return control.ToolApprovalYolo
+	}
+	return control.ToolApprovalAuto
+}
+
+// memberWriteRoots widens one role's build-time write scope. The leader works
+// anywhere. A member adds the user state root, whose session stores,
+// settings.json and runtime ledgers SessionDataGuard keeps denying whatever the
+// roots say — the guard is a separate layer and is only lifted by an explicit
+// config allow_write entry, never by a write root.
+func memberWriteRoots(leader bool) []string {
+	if leader {
+		return []string{string(filepath.Separator)}
+	}
+	if root := strings.TrimSpace(config.MemoryUserDir()); root != "" {
+		return []string{root}
+	}
+	return nil
+}
+
 // newMemberBackendBuilder returns the assembly function teamBackends binds
 // with: one member's pool entry becomes a full Agent backend — tools, memory,
 // skills, hooks and trajectory included — pointed at that member's own session
@@ -362,6 +392,11 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		if strings.TrimSpace(deps.workspaceRoot) != "" {
 			opts.WorkspaceRoot = deps.workspaceRoot
 		}
+		// Both the write scope and the posture are fixed here rather than carried
+		// across rebuilds: this builder is the only construction point, so eviction,
+		// model rebind and quota failover all re-derive them for free.
+		opts.AdditionalDirs = append(opts.AdditionalDirs, memberWriteRoots(b.Leader)...)
+		opts.HeadlessApprovalMode = memberApprovalPosture(b.Leader)
 		// Team playbooks are user-global: the member's role tree is read from
 		// the user state root, so it resolves from any launching directory and
 		// a team's recorded workspace cannot steer it.
@@ -389,6 +424,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		} else {
 			opts.ExtraTools = append(opts.ExtraTools, newMemberDeliverableTools(b.Team, b.MemberID, opts.Stderr)...)
 		}
+		// The escalation queue is the leader's to clear; the constructor returns
+		// nil for anyone else, so a member never holds the surface.
+		opts.ExtraTools = append(opts.ExtraTools, newLeaderApprovalTools(deps.escalations, b.Team, b.MemberID, b.Leader)...)
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err
@@ -419,6 +457,16 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			return nil, err
 		}
 		ctrl.EnableInteractiveApproval()
+		// Order matters: EnableInteractiveApproval builds the gate from the posture
+		// then in force, so setting the mode first would leave expansion flagged
+		// non-interactive and deny an out-of-scope write as if headless.
+		ctrl.SetToolApprovalMode(memberApprovalPosture(b.Leader))
+		// Installed before the first turn reads it. A leader gets none: its scope
+		// is the whole filesystem, so it raises no card to escalate, and a member
+		// must never be able to answer its own.
+		if esc := memberWriteAccessEscalator(deps.escalations, b.Team, b.MemberID, b.Leader); esc != nil {
+			ctrl.SetWriteAccessEscalator(esc)
+		}
 		return memberLeasedBackend{SessionAPI: ctrl, stop: wl}, nil
 	}
 }

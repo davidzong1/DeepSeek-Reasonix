@@ -24,6 +24,10 @@ type controllerWriteAccess struct {
 	roots               *sandbox.WritableRootSet
 	interactive         bool
 	bashSandboxEnforced bool
+	// escalator, when set, offers an out-of-scope card to a non-human decider as
+	// well as the frontend; the first answer wins through the ordinary resolve
+	// path. Set before the first turn (SetWriteAccessEscalator).
+	escalator WriteAccessEscalator
 }
 
 func newControllerWriteAccess(opts Options) controllerWriteAccess {
@@ -200,6 +204,16 @@ func (c *Controller) requestWriteAccessDecision(ctx context.Context, toolName, s
 	c.sink.Emit(c.approvalRequestEvent(approval))
 	c.approval.promptEmitMu.Unlock()
 	go c.hooks.Notification(ctx, approvalNotificationText(toolName, subject), "permission_prompt")
+
+	// A decider that answers before the human is not a second authority: both go
+	// through the same resolve path, and whichever lands first wins. The release
+	// is deferred so it runs on every exit — answer, timeout, or Close.
+	if e := c.writeAccess.escalator; e != nil {
+		release := e.BeginWriteAccessEscalation(c.writeAccessEscalation(id, toolName, subject, payload))
+		if release != nil {
+			defer release()
+		}
+	}
 
 	waitCtx, cancelWait := c.approval.waitContext(ctx)
 	defer cancelWait()

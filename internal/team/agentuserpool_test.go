@@ -477,6 +477,10 @@ func TestCloneDocDeepCopiesMemberCustomPool(t *testing.T) {
 
 // TestMemberPoolConcurrentWriters runs racing SetMemberPool writers on two
 // members of one team under -race: every write lands whole, no torn pool.
+//
+// Every writer's error is asserted, not discarded: a dropped write is exactly
+// what this test exists to catch, and ignoring the error let it fail only when
+// a second assertion happened to notice months later.
 func TestMemberPoolConcurrentWriters(t *testing.T) {
 	ts, root := newTeamStore(t)
 	if err := ts.Save(validDoc()); err != nil {
@@ -485,6 +489,7 @@ func TestMemberPoolConcurrentWriters(t *testing.T) {
 	poolAgentUsers(t, ts, root, "au-1", "au-2", "au-3")
 	addTestMembers(t, ts, "alpha", "m2")
 	var wg sync.WaitGroup
+	errs := make(chan error, 16)
 	for g := range 16 {
 		wg.Add(1)
 		go func(g int) {
@@ -497,10 +502,16 @@ func TestMemberPoolConcurrentWriters(t *testing.T) {
 			if g%3 == 0 {
 				pool = []string{"au-2", "au-1"}
 			}
-			_ = ts.SetMemberPool("alpha", member, MemberPoolCustom, pool)
+			if err := ts.SetMemberPool("alpha", member, MemberPoolCustom, pool); err != nil {
+				errs <- err
+			}
 		}(g)
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a racing writer was refused: %v", err)
+	}
 	for _, id := range []string{"m1", "m2"} {
 		slot := mustSlot(t, ts, "alpha", id)
 		if slot.PoolMode != MemberPoolCustom {

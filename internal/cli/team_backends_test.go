@@ -518,6 +518,67 @@ func TestMemberBackendBuildsWithGatewayEffort(t *testing.T) {
 // anthropic adapter registers through a blank import in the host binaries
 // (cmd/reasonix, desktop), so it is absent from this test binary. The official
 // DeepSeek route is asserted on the mapping alone for that reason.
+// TestMemberRolePostureAndScope pins the two values the builder derives per role
+// at its single construction point. Both are pure so a rebuild cannot drift from
+// them, which is why they are asserted directly as well as through a real build.
+func TestMemberRolePostureAndScope(t *testing.T) {
+	if got := memberApprovalPosture(true); got != control.ToolApprovalYolo {
+		t.Errorf("leader posture = %q, want yolo — the operator reads the transcript, not a modal per write", got)
+	}
+	if got := memberApprovalPosture(false); got != control.ToolApprovalAuto {
+		t.Errorf("member posture = %q, want auto — a member answers its own ordinary prompts", got)
+	}
+
+	leaderRoots := memberWriteRoots(true)
+	if len(leaderRoots) != 1 || leaderRoots[0] != string(filepath.Separator) {
+		t.Errorf("leader write roots = %v, want the filesystem root", leaderRoots)
+	}
+	memberRoots := memberWriteRoots(false)
+	if len(memberRoots) != 1 || memberRoots[0] != config.MemoryUserDir() {
+		t.Errorf("member write roots = %v, want the state root %q", memberRoots, config.MemoryUserDir())
+	}
+}
+
+// TestMemberBackendCarriesItsRolePosture is the end-to-end half: the posture and
+// scope reach a real assembled backend, so a member never runs in the hardcoded
+// ask posture control.New starts every controller with.
+func TestMemberBackendCarriesItsRolePosture(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		leader bool
+		want   string
+	}{
+		{"leader", true, control.ToolApprovalYolo},
+		{"member", false, control.ToolApprovalAuto},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := memberBackendDeps{
+				ctx: t.Context(),
+				users: fakePool{users: map[string]team.AgentUser{
+					"u": {UserID: "u", Provider: "openai", Model: "gpt-5.6",
+						BaseURL: "https://example.invalid/v1", APIKey: "k"},
+				}},
+				events:        make(chan memberEvent, 1),
+				workspaceRoot: t.TempDir(),
+				base: func() boot.Options {
+					return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
+				},
+			}
+			ctrl, err := newMemberBackendBuilder(deps)(team.MemberBinding{
+				Team: "alpha", MemberID: "lead", Leader: tc.leader, AgentUserRef: "u",
+				SessionFile: filepath.Join("alpha", "lead.jsonl"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(ctrl.Close)
+			if got := ctrl.ToolApprovalMode(); got != tc.want {
+				t.Fatalf("%s posture = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMemberProviderResolverServesThePoolEntry(t *testing.T) {
 	r, err := newMemberProviderResolver(team.AgentUser{
 		UserID: "pool-1", Provider: "deepseek", Model: "deepseek-v4",

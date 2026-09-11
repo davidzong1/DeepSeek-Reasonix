@@ -549,6 +549,22 @@ func (s *teamTaskService) authzLog(limit int) (string, error) {
 			}
 			line += "]"
 		}
+		// An escalated write request records what a plain tool approval cannot:
+		// which handle was answered, the directories it covers, and how long the
+		// grant lasts. Absent on ordinary rows, so older entries render as before.
+		if e.Kind != "" {
+			line += " (" + e.Kind
+			if e.RequestID != "" {
+				line += ", " + e.RequestID
+			}
+			if e.Scope != "" {
+				line += ", scope=" + e.Scope
+			}
+			if len(e.Dirs) > 0 {
+				line += ", dirs=" + strings.Join(e.Dirs, ",")
+			}
+			line += ")"
+		}
 		lines = append(lines, line)
 	}
 	return "authorization log for team " + s.teamName + " (newest first):\n" + strings.Join(lines, "\n"), nil

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -356,5 +358,40 @@ func TestAgentUsersUpdateFieldLegacyPreserved(t *testing.T) {
 	}
 	if got, _, _ := au.GetAgentUser("au-1"); got.Provider != "codex" || got.Model != "gpt-5.1-codex" {
 		t.Fatalf("legacy provider must survive the field edit, got %+v", got)
+	}
+}
+
+// TestAgentUsersConcurrentWriters is the sibling-store guard for the same race
+// the team registry had: every racing writer must land, because a refused write
+// here is a lost pool edit, not a refusal anyone asked for.
+func TestAgentUsersConcurrentWriters(t *testing.T) {
+	au, err := NewAgentUsersStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for g := range 16 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			if err := au.AddAgentUser(AgentUser{
+				UserID: "au-" + strconv.Itoa(g), Provider: "anthropic", Model: "claude-opus-5",
+			}); err != nil {
+				errs <- err
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a racing writer was refused: %v", err)
+	}
+	doc, err := au.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.AgentUsers) != 16 {
+		t.Fatalf("pool = %d entries after racing writers, want all 16 to land", len(doc.AgentUsers))
 	}
 }

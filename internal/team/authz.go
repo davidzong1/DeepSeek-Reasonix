@@ -9,10 +9,11 @@ import (
 	"path/filepath"
 )
 
-// Approval modes decide who answers a member's tool-approval prompts: "auto"
-// (the default) lets an ordinary approval through immediately; "manual" raises
-// every approval to the leader for a one-shot grant. The leader slot is pinned
-// to auto and refuses any change.
+// Approval modes decide who answers a member's ordinary tool-approval prompts:
+// "auto" (the default) lets one through immediately; "manual" leaves it on the
+// operator's surface at the leader's window. Neither mode governs an
+// out-of-scope write request — that is decided by the leader agent whatever the
+// mode says. The leader slot is pinned to auto and refuses any change.
 const (
 	ApprovalModeAuto   = "auto"
 	ApprovalModeManual = "manual"
@@ -66,17 +67,37 @@ func (s *TeamStore) SetMemberApprovalMode(teamName, memberID, mode string) error
 	})
 }
 
+// Authz sources. "auto" is a member's own mode grant, "leader" is the operator
+// answering at the leader's window, and "leader_agent" is the leader agent
+// deciding an escalated request — the three are distinct grant classes and must
+// stay distinguishable in the ledger.
+const (
+	AuthzSourceAuto        = "auto"
+	AuthzSourceLeader      = "leader"
+	AuthzSourceLeaderAgent = "leader_agent"
+)
+
+// AuthzKindWriteAccess marks a ledger row that came from an out-of-scope write
+// request rather than an ordinary tool approval.
+const AuthzKindWriteAccess = "write_access"
+
 // AuthzEntry is one recorded authorization decision: which member's approval
-// was answered, by whom ("auto" mode grant or the leader), and how. The ledger
-// is team-scoped audit state — never a skill or transcript write.
+// was answered, by whom, and how. The ledger is team-scoped audit state — never
+// a skill or transcript write.
 type AuthzEntry struct {
 	TS      string `json:"ts"`                // RFC3339 decision time
 	Member  string `json:"member"`            // member whose approval was answered
-	Source  string `json:"source"`            // "auto" (mode auto-grant) or "leader"
+	Source  string `json:"source"`            // AuthzSourceAuto | AuthzSourceLeader | AuthzSourceLeaderAgent
 	Allow   bool   `json:"allow"`             // granted or denied
 	ID      string `json:"id"`                // the approval id answered
 	Tool    string `json:"tool,omitempty"`    // tool under approval
 	Subject string `json:"subject,omitempty"` // approval subject line
+	// Escalation detail. Absent on ordinary rows, so pre-existing entries keep
+	// parsing and rendering unchanged.
+	RequestID string   `json:"request_id,omitempty"` // member:approvalID handle given to the decider
+	Kind      string   `json:"kind,omitempty"`       // AuthzKindWriteAccess
+	Dirs      []string `json:"dirs,omitempty"`       // directories the grant covers
+	Scope     string   `json:"scope,omitempty"`      // once | session
 }
 
 // Ledger read bounds: a query under the default returns the newest

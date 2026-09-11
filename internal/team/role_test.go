@@ -100,13 +100,13 @@ func TestSystemPromptForRole(t *testing.T) {
 		}
 	}
 	empty := SystemPromptForRole("alpha", "m1", "", false)
-	if !strings.Contains(empty, "未配置") {
+	if !strings.Contains(empty, "no team role configured") {
 		t.Fatalf("empty role should render the unconfigured hint, got:\n%s", empty)
 	}
-	if strings.Contains(empty, "你的团队角色是") {
+	if strings.Contains(empty, "Your team role is") {
 		t.Fatalf("empty role must not render a role line, got:\n%s", empty)
 	}
-	if !strings.Contains(empty, "团队协作纪律（member）") {
+	if !strings.Contains(empty, "Team collaboration discipline (member)") {
 		t.Fatalf("empty role must still carry the collaboration discipline, got:\n%s", empty)
 	}
 }
@@ -141,7 +141,7 @@ func TestSystemPromptForRoleDiscipline(t *testing.T) {
 		if !strings.Contains(tc.prompt, "task/use_capability") {
 			t.Fatalf("%s prompt must codify the task-vs-capability distinction, got:\n%s", tc.name, tc.prompt)
 		}
-		if !strings.Contains(tc.prompt, "空 prompt") {
+		if !strings.Contains(tc.prompt, "empty prompt") {
 			t.Fatalf("%s prompt must ban empty-prompt retries, got:\n%s", tc.name, tc.prompt)
 		}
 		if !strings.Contains(tc.prompt, "dependency skip") || !strings.Contains(tc.prompt, "permission deny") {
@@ -171,7 +171,7 @@ func TestSystemPromptForRoleCacheStable(t *testing.T) {
 	// The discipline text itself is static: only the identity line varies
 	// with team/member state, never the collaboration rules.
 	other := SystemPromptForRole("beta", "m2", "coder", false)
-	sep := "团队协作纪律"
+	sep := "Team collaboration discipline"
 	i := strings.Index(a, sep)
 	j := strings.Index(other, sep)
 	if i < 0 || j < 0 {
@@ -188,10 +188,10 @@ func TestSystemPromptForRoleCacheStable(t *testing.T) {
 // line is drawn at write access, not at how small the task looks.
 func TestLeaderDisciplineDelegatesExecution(t *testing.T) {
 	leader := SystemPromptForRole("alpha", "m1", "lead", true)
-	if strings.Contains(leader, "简单任务可由 leader 自行完成") {
+	if strings.Contains(leader, "simple tasks may stay with the leader") {
 		t.Fatalf("the unbounded self-execution escape hatch must not return:\n%s", leader)
 	}
-	for _, want := range []string{"不是亲自实现", "执行由 member 承担", "leader_add_member", "必须派给 member"} {
+	for _, want := range []string{"not to implement it yourself", "members execute", "leader_add_member", "must be assigned to a member"} {
 		if !strings.Contains(leader, want) {
 			t.Fatalf("leader discipline missing %q:\n%s", want, leader)
 		}
@@ -213,5 +213,25 @@ func TestSystemPromptForRoleCollaborationDiscipline(t *testing.T) {
 	}
 	if leader == member {
 		t.Fatal("leader and member prompts must differ")
+	}
+}
+
+// TestLeaderPromptNamesTheApprovalSurface pins the prompt against promising a
+// capability no tool implements — the shape of the bug where the leader was told
+// to orchestrate authorization while nothing let it answer a member's request.
+// A member must not be told to answer approvals: it cannot, and saying so would
+// invite it to try.
+func TestLeaderPromptNamesTheApprovalSurface(t *testing.T) {
+	leader := CollaborationDiscipline(true)
+	for _, want := range []string{"leader_list_member_approvals", "leader_resolve_member_approval"} {
+		if !strings.Contains(leader, want) {
+			t.Fatalf("leader discipline must name %q so the duty is actionable:\n%s", want, leader)
+		}
+	}
+	member := CollaborationDiscipline(false)
+	for _, absent := range []string{"leader_list_member_approvals", "leader_resolve_member_approval"} {
+		if strings.Contains(member, absent) {
+			t.Fatalf("member discipline must not name %q:\n%s", absent, member)
+		}
 	}
 }

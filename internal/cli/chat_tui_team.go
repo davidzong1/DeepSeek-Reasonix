@@ -185,6 +185,9 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 				return nil
 			}
 			p.hub = newTeamHub(roots.store, m.teamBackends, p.model.Name())
+			// Late-bound for the same reason tasks are: the escalations service is
+			// built with the registry, and the hub is built with the overlay.
+			m.teamEscalations.setHub(p.hub)
 			// Leader wakeups land as notices; a leader without a cursor yet is
 			// quiet — history before the first open does not replay (§5.1).
 			for _, reason := range p.board.consumeWakeups(p.firstLeader()) {

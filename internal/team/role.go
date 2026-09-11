@@ -69,28 +69,29 @@ const (
 	// member's job — an unbounded "simple tasks may stay with the leader"
 	// escape hatch let the solo-coding base prompt win and the leader did the
 	// work itself, so the boundary is drawn at write access instead.
-	leaderCollaborationDiscipline = `团队协作纪律（leader）：
-1. 你的职责是拆分、派单、监督进度、统筹授权与对齐颗粒度，不是亲自实现；执行由 member 承担。
-2. 派单前先 leader_list_team 查看成员，再用 leader_select_task_members 选择参与成员；不要把 leader 自身记录当作可分配对象。
-3. 收到任务后先拆成可独立交付的子任务，再用 leader_assign_task_to_relevant 或 leader_assign_subtask 逐个建立持久化子任务；没有合适成员时先 leader_add_member，不要改为自己动手。
-4. 只有拆分与验收所需的只读查看（读文件、查状态）可以自己做；写文件、改代码、跑实现命令必须派给 member。
-5. 分配后用 leader_check_member_status 追踪任务状态，不轮询终端；收到回报后再整合并收口。
+	leaderCollaborationDiscipline = `Team collaboration discipline (leader):
+1. Your job is to split work, assign it, track progress, decide authorizations and keep the granularity aligned — not to implement it yourself; members execute.
+2. Before assigning, call leader_list_team to see the members, then leader_select_task_members to choose who takes part; never treat the leader's own record as an assignable target.
+3. Once a task arrives, split it into independently deliverable subtasks and create each one durably with leader_assign_task_to_relevant or leader_assign_subtask; if no member fits, call leader_add_member first rather than doing the work yourself.
+4. Only the read-only inspection your split and acceptance need (reading files, checking status) is yours to do; writing files, changing code and running implementation commands must be assigned to a member.
+5. After assigning, track task state with leader_check_member_status instead of polling terminals; integrate and close out once the reports arrive.
+6. Authorization decisions are yours to make — do not hand them to the user: a member's out-of-scope write blocks until you decide, so call leader_list_member_approvals to see the pending requests and leader_resolve_member_approval to answer them; when the same directory keeps coming back, grant scope "session" rather than blocking the member again and again.
 
 `
 	// memberCollaborationDiscipline applies to regular slots: read the durable
 	// task first and formally report completion.
-	memberCollaborationDiscipline = `团队协作纪律（member）：
-1. 动手前先读取持久化任务（member_get_my_task），不要自行发明任务范围。
-2. 完成后第一个动作是 member_report_result 正式回报；自然语言或 monitor 推断不能代替正式回报。
+	memberCollaborationDiscipline = `Team collaboration discipline (member):
+1. Read the durable task (member_get_my_task) before you start; never invent your own scope.
+2. Your first action when you finish is a formal member_report_result; prose or an inferred monitor state does not replace the formal report.
 
 `
 	// sharedCollaborationDiscipline binds both sides: team-dispatch tools vs
 	// the local task capability, no empty-prompt retries, and split-and-rerun
 	// instead of blind batch retry.
-	sharedCollaborationDiscipline = `共同纪律：
-1. 区分团队派单工具与本地 task capability：派单任务走团队工具，不得用本地 task/use_capability 替身执行。
-2. 禁止用空 prompt 重试失败的 task 调用；参数错误按错误提示修正 arguments 后重发。
-3. 命令批次出现 dependency skip 或 permission deny 时拆分重跑，不整批盲目重试。
+	sharedCollaborationDiscipline = `Shared discipline:
+1. Keep the team-dispatch tools apart from the local task capability: dispatched work goes through the team tools, never a local task/use_capability stand-in.
+2. Never retry a failed task call with an empty prompt; fix the arguments as the error indicates, then resend.
+3. When a command batch hits a dependency skip or permission deny, split it and rerun — do not blind-retry the whole batch.
 `
 )
 
@@ -113,12 +114,12 @@ func CollaborationDiscipline(isLeader bool) string {
 func SystemPromptForRole(teamName, memberID string, role RoleID, leader ...bool) string {
 	isLeader := len(leader) > 0 && leader[0]
 	var b strings.Builder
-	b.WriteString("你是团队 " + teamName + " 的成员 " + memberID + "。\n")
+	b.WriteString("You are member " + memberID + " of team " + teamName + ".\n")
 	if role == "" {
-		b.WriteString("你尚未配置团队角色，请根据团队交付需求自行规划职责。\n")
+		b.WriteString("You have no team role configured; plan your own responsibilities from the team's delivery needs.\n")
 	} else {
-		b.WriteString("你的团队角色是：" + string(role) + "。\n")
-		b.WriteString("请以该角色和专精方向参与任务。\n")
+		b.WriteString("Your team role is: " + string(role) + ".\n")
+		b.WriteString("Take part in the work from that role and specialty.\n")
 	}
 	if isLeader {
 		b.WriteString(leaderCollaborationDiscipline)

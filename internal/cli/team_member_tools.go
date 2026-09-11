@@ -97,7 +97,7 @@ func newMemberTaskTools(service *teamTaskService, teamName, memberID string) []t
 	return []tool.Tool{
 		base("member_get_my_task", "Read this member's unfinished assigned task.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		base("member_report_result", "Read this member's task or report a completed result. Use operation=read for a read-only query; operation=report (the default) persists completion. Pass task_id when more than one task is assigned.", `{"type":"object","properties":{"operation":{"type":"string","enum":["read","get","report"]},"result":{"type":"string"},"task_id":{"type":"string"}},"additionalProperties":false}`),
-		base("member_set_approval_mode", "Switch this member's own approval mode: auto (the default) answers ordinary approvals immediately, manual raises every approval to the leader for a one-shot grant. The leader's mode is fixed to auto.", `{"type":"object","properties":{"mode":{"type":"string","enum":["auto","manual"]}},"required":["mode"],"additionalProperties":false}`),
+		base("member_set_approval_mode", "Switch this member's own approval mode: auto (the default) answers ordinary approvals immediately; manual holds each one for the operator at the leader's window. This does not govern out-of-scope write requests — the leader agent decides those either way, through leader_resolve_member_approval. The leader's mode is fixed to auto.", `{"type":"object","properties":{"mode":{"type":"string","enum":["auto","manual"]}},"required":["mode"],"additionalProperties":false}`),
 		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
 	}
 }

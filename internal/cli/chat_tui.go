@@ -333,7 +333,11 @@ type chatTUI struct {
 	// teamBackends holds one assembled Agent backend per team member; binding a
 	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
 	teamBackends *teamBackends
-	memberEvents chan memberEvent
+	// teamEscalations is the decider for a member's out-of-scope write: it queues
+	// the request for the leader agent and settles the blocked member. Window-
+	// scoped, because member backends outlive the overlay.
+	teamEscalations *writeAccessEscalations
+	memberEvents    chan memberEvent
 	// memberBackendBase yields the boot options a member backend inherits from
 	// this session's launch wiring; the member builder overrides model and sink.
 	memberBackendBase func() boot.Options

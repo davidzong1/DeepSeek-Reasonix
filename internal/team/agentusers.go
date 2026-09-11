@@ -3,6 +3,7 @@ package team
 import (
 	"errors"
 	"os"
+	"sync"
 )
 
 // Agent-user pool errors. ErrLastAgentUser refuses emptying the pool by
@@ -27,6 +28,8 @@ var (
 type AgentUsersStore struct {
 	store *FileStore
 	inUse func(id string) (bool, error) // reference check; nil = none
+	// writeMu serializes this process's mutations; see update.
+	writeMu sync.Mutex
 }
 
 // NewAgentUsersStore returns a pool store rooted at the project's team data
@@ -68,10 +71,15 @@ func (s *AgentUsersStore) CompareAndSwap(expected, doc AgentUsersDoc) error {
 }
 
 // update runs fn against the pool and publishes it under the same CAS loop as
-// team.json, so concurrent writers surface as ErrCASConflict rather than a
-// silent clobber. A missing file publishes create-if-absent.
+// team.json, so a concurrent process surfaces as ErrCASConflict rather than a
+// silent clobber. A missing file publishes create-if-absent. The mutex holds the
+// read-modify-publish cycle together in-process, so this process's own writers
+// queue instead of racing each other's retry budgets away; fn never re-enters
+// update.
 func (s *AgentUsersStore) update(fn func(*AgentUsersDoc) error) error {
-	for attempt := range 3 {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	for attempt := range casAttempts {
 		doc, create, err := s.loadForUpdate()
 		if err != nil {
 			return err
@@ -88,7 +96,7 @@ func (s *AgentUsersStore) update(fn func(*AgentUsersDoc) error) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, ErrCASConflict) && attempt < 2 {
+		if errors.Is(err, ErrCASConflict) && attempt < casAttempts-1 {
 			continue
 		}
 		return err

@@ -8,6 +8,7 @@ import (
 
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/sandbox"
 	"reasonix/internal/team"
 )
 
@@ -137,6 +138,19 @@ func (h *teamHub) Approve(teamName, memberID, id string, allow, session, persist
 	}
 	backend.Approve(id, allow, session, persist)
 	return nil
+}
+
+// ResolveApproval answers a member's pending write-access prompt with an explicit
+// scope. It reports the settle result instead of discarding it, which Approve
+// cannot: a decider that logs its decision has to know the prompt was still
+// there to answer, or a lost race would be audited as a decision that never
+// happened.
+func (h *teamHub) ResolveApproval(teamName, memberID, id string, allow bool, scope sandbox.ApprovalScope) error {
+	backend, err := h.assembled(teamName, memberID)
+	if err != nil {
+		return err
+	}
+	return backend.ResolveApproval(id, allow, scope)
 }
 
 // Answer resolves an `ask` question card on a named member's backend, mirroring

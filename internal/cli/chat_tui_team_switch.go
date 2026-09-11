@@ -383,6 +383,9 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		ambientCarrier = func() []provider.Message { return ambientCtrl.History() }
 	}
 	tasks := newTeamTaskService(m.teamPick.store, m.teamPick.boardStore(), "", bind)
+	if m.teamEscalations == nil {
+		m.teamEscalations = newWriteAccessEscalations(m.teamPick.store)
+	}
 	// The durable knowledge base rides the same service: it opens lazily on a
 	// member's first completed turn and closes with the registry's board. Its
 	// data root is the overlay's team data dir, user-global under Direction B.
@@ -396,6 +399,7 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		events: m.memberEvents, base: m.memberBackendBase,
 		workspaceRoot: workspaceRoot,
 		ambient:       ambientCarrier,
+		escalations:   m.teamEscalations,
 		release: func(teamName, memberID string) {
 			if m.teamBackends != nil {
 				m.teamBackends.release(teamName, memberID)
