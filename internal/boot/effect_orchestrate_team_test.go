@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"reasonix/internal/agent/testutil"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -51,6 +52,10 @@ func TestEffectOrchestrateRunsAgentNodesInAMemberSession(t *testing.T) {
 	ctrl, err := Build(context.Background(), Options{
 		Sink: sink, WorkspaceRoot: workspace, TeamSkillsRoot: dir,
 		TeamRole: "member", Stderr: io.Discard,
+		// The posture the team backend actually binds (memberApprovalPosture
+		// returns auto for a member). Without it this test ran on the headless
+		// default, which is not what a member session gets.
+		HeadlessApprovalMode: control.ToolApprovalAuto,
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)

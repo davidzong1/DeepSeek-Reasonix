@@ -2654,7 +2654,7 @@ func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 		return s, ""
 	}
 	if toolName == "read_file" {
-		return truncateReadFileOutput(s, toolName, toolCallID)
+		return truncateReadFileOutput(s, toolName, toolCallID, maxToolOutputBytes)
 	}
 	strategy := snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
 	switch {

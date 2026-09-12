@@ -182,6 +182,17 @@ func emitOrchestrateProgress(ctx context.Context, report OrchestrationNodeResult
 // with its state, timing and receipt count, and the reduction or the stopping
 // reason. Node bodies are never inlined here — a caller that wants one
 // addresses it by id.
+// firstNodeRef returns the first handle a caller could page, so the footer names
+// a real id rather than a placeholder shape.
+func firstNodeRef(nodes []OrchestrationNodeResult) string {
+	for _, node := range nodes {
+		if ref := strings.TrimSpace(node.Ref); ref != "" {
+			return ref
+		}
+	}
+	return ""
+}
+
 func formatOrchestrationResult(result OrchestrationResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "plan %s: %d nodes", result.PlanHash, len(result.Nodes))
@@ -204,6 +215,12 @@ func formatOrchestrationResult(result OrchestrationResult) string {
 			fmt.Fprintf(&b, " (%s)", reason)
 		}
 		b.WriteByte('\n')
+	}
+	// A measured run showed the model reading this list and then saying it had
+	// no way to reach a node's text, so name the reader the same way fleet and
+	// parallel_tasks do. A ref id alone is not a next step.
+	if ref := firstNodeRef(result.Nodes); ref != "" {
+		fmt.Fprintf(&b, "Node bodies are not inlined. Read one with read_subagent_result(ref=%q).\n", ref)
 	}
 	for _, value := range result.Reduced {
 		fmt.Fprintf(&b, "reduce %s.%s: count=%d", value.Node, value.Field, value.Count)

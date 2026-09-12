@@ -4,7 +4,7 @@ Status: **shipped and closed at phase 2** — spec, compiler, runner and the hos
 tool ship. `agent` nodes run; `tool` and `reduce` nodes are compiled and run by
 the library but are refused at the host tool's boundary (see
 [Current limits](#current-limits)). Phase 3 would have lifted that boundary and
-is **cancelled**: the pre-registered measurement behind it found that only ~23%
+is **cancelled**: the pre-registered measurement behind it found that only ~51%
 of this workload's tool-result growth is shaped the way a closed operator could
 absorb, against an 80% gate. The measurement, its data and its limits are in the
 design note; the harness is `tools/contextgrowth/`. The design and its rationale live in
@@ -12,7 +12,7 @@ design note; the harness is `tools/contextgrowth/`. The design and its rationale
 document describes the shipped API.
 
 **What this is not.** It is not a context-saving feature. The measurement behind
-that claim ran and the answer was no: only ~23% of this workload's tool-result
+that claim ran and the answer was no: only ~51% of this workload's tool-result
 growth is shaped the way a closed operator could absorb, against an 80% gate, so
 phase 3 was cancelled and `tool`/`reduce` nodes stay unreachable from this tool.
 Where `orchestrate` earns its keep is narrower and worth stating plainly — it is

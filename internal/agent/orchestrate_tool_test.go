@@ -26,6 +26,27 @@ func orchestrateToolFor(t *testing.T, allowAgentNodes bool) (*OrchestrateTool, *
 // A3's decode-level half: the tool receives raw bytes, so the cases that belong
 // to `dec.DisallowUnknownFields` are exercised here rather than in the
 // compiler's table, which sees an already-parsed struct.
+// A measured real-provider run had the model read the node list and report that
+// it had no way to reach a node's text. The footer names the reader, with an id
+// that actually exists, so the next step is in the result rather than inferred.
+func TestOrchestrationResultNamesTheNodeReader(t *testing.T) {
+	result := OrchestrationResult{PlanHash: "hash", Nodes: []OrchestrationNodeResult{
+		{ID: "a", Kind: NodeAgent, State: NodeCompleted},
+		{ID: "b", Kind: NodeAgent, State: NodeCompleted, Ref: "sa_abc123"},
+	}}
+	got := formatOrchestrationResult(result)
+	if !strings.Contains(got, "read_subagent_result(ref=\"sa_abc123\")") {
+		t.Fatalf("the footer does not name the reader with a real ref:\n%s", got)
+	}
+	// Without a handle there is nothing to page, so no footer is claimed.
+	none := formatOrchestrationResult(OrchestrationResult{PlanHash: "hash", Nodes: []OrchestrationNodeResult{
+		{ID: "a", Kind: NodeAgent, State: NodeFailed, Err: "boom"},
+	}})
+	if strings.Contains(none, "read_subagent_result") {
+		t.Fatalf("a plan with no refs advertised a reader:\n%s", none)
+	}
+}
+
 func TestOrchestrateToolRejectsUndecodableArguments(t *testing.T) {
 	cases := map[string]struct {
 		args string
