@@ -1054,6 +1054,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	taskToolAdded := false
 	readOnlyTaskToolAdded := false
 	var taskTool *agent.TaskTool
+	// orchestrateTool is registered with the other delegation tools so it
+	// inherits the same assembled task tool, while its spend predicate is bound
+	// after the executor exists: taskBudgetLimit and runBudget.exceeded both
+	// live on the Agent, not on the task tool.
+	var orchestrateTool *agent.OrchestrateTool
 	// capRuntime is assigned after MCP specs load; closures capture the variable
 	// so task tools created later still receive the session-shared substrate.
 	var capRuntime *agent.MCPCapabilityRuntime
@@ -1151,6 +1156,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		reg.Add(agent.NewParallelTasksTool(taskTool, reg))
 		reg.Add(agent.NewFleetTool(taskTool))
 		reg.Add(agent.NewSubagentResultTool(taskTool))
+		// True for every role, a member included: a member is its own boot at
+		// depth 0, not a nested delegate (§9.5). The field stays for a host that
+		// wants to withhold agent nodes.
+		orchestrateTool = agent.NewOrchestrateTool(taskTool, reg, true, taskBudgetFromConfig(cfg), nil)
+		reg.Add(orchestrateTool)
 		return "enabled task."
 	}
 	addReadOnlyTaskTool := func() string {
@@ -1702,6 +1712,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		MaxSubagentDepth:             maxSubagentDepth,
 		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),
 	}, sink)
+	if orchestrateTool != nil {
+		// The turn's own spend predicate: this is the one place a plan gains a
+		// real budget check, and the reason the runner ships nil.
+		orchestrateTool.BudgetCheck = agent.BindBudgetCheck(executor)
+	}
 	reg.Add(sessiontool.NewSetSessionTitleTool(sessionDir, executor.SessionPath, opts.OnSessionTitleChanged))
 
 	var runner agent.Runner = executor
