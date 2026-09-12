@@ -108,6 +108,7 @@ const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => (
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
 const StorageSettingsPage = lazy(() => import("./StorageSettingsPage").then((module) => ({ default: module.StorageSettingsPage })));
+const BrowserControlSettingsPage = lazy(() => import("./BrowserControlSettingsPage").then((module) => ({ default: module.BrowserControlSettingsPage })));
 const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
@@ -500,6 +501,7 @@ export function SettingsPanel({
                   </SettingsPageShell>
                 )}
                 {tab === "storage" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><StorageSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "browser" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><BrowserControlSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <UpdatesSection
@@ -620,6 +622,7 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.sandbox");
     case "appearance": return t("settings.tab.appearance");
     case "storage": return t("settings.tab.storage");
+    case "browser": return t("settings.tab.browser");
     case "updates":
       return t("settings.tab.updates");
   }
@@ -662,6 +665,7 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return sandboxModeLabel(s.sandbox.bash, t);
     case "appearance": return t("settings.appearanceMeta");
     case "storage": return t("settings.storageMeta");
+    case "browser": return t("settings.browserMeta");
     case "updates":
       return t("settings.updatesMeta");
   }
@@ -6327,7 +6331,7 @@ export function ProviderEditor({
     setModelContextWindows(current => ({...current, [draft.model]:draft.contextWindow}));
     setModelOverrides(current => {
       const previous = current.find(item => item.model === draft.model);
-      return [...current.filter(item => item.model !== draft.model), {...previous, model:draft.model, reasoningProtocol:previous?.reasoningProtocol ?? "", supportedEfforts:previous?.supportedEfforts ?? [], defaultEffort:previous?.defaultEffort ?? "", vision:draft.vision, maxOutputTokens:draft.maxOutputTokens}];
+      return [...current.filter(item => item.model !== draft.model), {...previous, model:draft.model, reasoningProtocol:previous?.reasoningProtocol ?? "", supportedEfforts:draft.supportedEfforts, defaultEffort:draft.defaultEffort, vision:draft.vision, maxOutputTokens:draft.maxOutputTokens}];
     });
     setModelDialog(null);
   };
@@ -6517,7 +6521,8 @@ export function ProviderEditor({
       {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       {modelDialog !== null && <Suspense fallback={null}><ProviderModelDialog
         baseURL={effectiveRequestUrl} candidates={modelCandidateNames} contextDefault={Number(ctx) || undefined}
-        initial={modelDialog ? {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:modelOverrides.find(item=>item.model === modelDialog)?.maxOutputTokens ?? 0, vision:modelOverrides.find(item=>item.model === modelDialog)?.vision ?? null} : undefined}
+        effortOptions={(modelDialog && modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts?.length ? (modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? []) : (supportedEfforts ?? [])).filter(Boolean)}
+        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? supportedEfforts, defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
         capability={modelCapabilities.find(item=>item.model === modelDialog)} busy={busy || fetchingModels}
         onClose={()=>setModelDialog(null)} onApply={applyModelDetails} onDelete={deleteModel}/></Suspense>}
       <ProviderEditorModelPicker

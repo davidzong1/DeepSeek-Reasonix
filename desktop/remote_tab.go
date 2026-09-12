@@ -710,6 +710,10 @@ func remoteSessionTakenOver(err error) bool {
 }
 
 func (a *App) SubmitRemoteTab(tabID, text string) error {
+	return a.SubmitRemoteTabWithSubmission(tabID, text, "")
+}
+
+func (a *App) SubmitRemoteTabWithSubmission(tabID, text, submissionID string) error {
 	for {
 		revision, admittedGen, err := a.ensureRemoteModelSettings(tabID)
 		if err != nil {
@@ -723,7 +727,11 @@ func (a *App) SubmitRemoteTab(tabID, text string) error {
 			continue
 		}
 		ctx, cancel := commandContext(a)
-		body, _ := json.Marshal(map[string]string{"input": text})
+		input := map[string]string{"input": text}
+		if submissionID != "" {
+			input["submissionId"] = submissionID
+		}
+		body, _ := json.Marshal(input)
 		err = servePostForSession(ctx, client, serveURL(base, "/submit"), body, expectedPath, revision)
 		cancel()
 		return err

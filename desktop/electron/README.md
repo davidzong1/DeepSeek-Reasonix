@@ -99,6 +99,13 @@ recomputes its digest the way `hostrpc.Contract.Canonical` defines it
 set `REASONIX_ELECTRON_ALLOW_MISSING_CONTRACT=1` to build without it (every
 `desktop/invoke` is then rejected and the hello digest is empty).
 
+Packaged shells read the full version tag, channel and commit from
+`resources/build.json` for `desktop/hello`. `app.getVersion()` and
+`package.json.version` are numeric native metadata and must not identify the
+RPC build. The packaged startup smoke runs without development overrides and
+requires the renderer's `Version` command to match that manifest; the service
+used by CI must also be linked with the same non-development version.
+
 ## Run
 
 ```sh

@@ -9,7 +9,7 @@ func TestOpenCodeGoContractUsesExactEffectiveEndpointAndModel(t *testing.T) {
 	for _, kind := range []string{"openai", "anthropic", "responses"} {
 		endpoint := map[string]string{"openai": "chat/completions", "anthropic": "messages", "responses": "responses"}[kind]
 		url := "https://opencode.ai/zen/go/v1/" + endpoint
-		for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"} {
+		for _, model := range []string{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"} {
 			c, ok := LookupOpenCodeGoContract(kind, "https://custom.example", url, "", model)
 			if !ok || c.RecommendedRoute != OpenCodeGoRouteChat || c.Reasoning.Default != "high" || c.Reasoning.Validate(model, "max") != nil {
 				t.Fatalf("%s %s: %+v %v", kind, model, c, ok)

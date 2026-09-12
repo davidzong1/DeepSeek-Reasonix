@@ -3389,6 +3389,9 @@ a[href] {
 .transcript-navigation-content {
   position: relative;
   flex: 1 1 auto;
+  /* Content may contain unbroken code lines. Its intrinsic width must not
+     become the minimum width of this horizontal flex item. */
+  min-width: 0;
   min-height: 0;
   height: 100%;
 }
@@ -4933,6 +4936,35 @@ button.reasoning-summary:focus-visible {
   font-size: var(--text-sm);
   line-height: 1.4;
 }
+
+.tool__command {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.tool__command-label,
+.tool__data-status {
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+}
+.tool__data-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Commands opt into wrapping; output and ordinary code preserve their lines.
+   This also covers CodeViewer's plain loading fallback. */
+.tool__command .code,
+.tool__command .code code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.tool__command .code {
+  max-height: 240px;
+}
 .tool__search-query {
   color: var(--fg);
   overflow-wrap: anywhere;
@@ -5199,6 +5231,7 @@ button.reasoning-summary:focus-visible {
 }
 .reasoning__body,
 .turn-collapse__inline-reasoning {
+  overflow-wrap: anywhere;
   max-height: min(40vh, 480px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -5245,6 +5278,16 @@ button.reasoning-summary:focus-visible {
 .md {
   font-family: var(--font-content-family);
   font-weight: var(--font-weight-regular);
+  overflow-wrap: anywhere;
+}
+/* Prose wraps long tokens; preformatted code, tables and mathematical layout
+   keep their own line/scroll contracts instead of inheriting prose wrapping. */
+.md pre,
+.md pre code,
+.md table,
+.md .katex {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 /* KaTeX \boxed draws its frame as an empty .fbox span that relies on
    width:100% resolving against an inline-table + table-layout:fixed row.
@@ -6607,13 +6650,52 @@ body > .mermaid-diagram--fullscreen {
 .notice--warn .notice__body {
   color: color-mix(in srgb, var(--warn) 78%, var(--fg));
 }
-.compaction__summary {
-  margin: 0;
-  padding: 12px 16px;
+/* Compaction card: the visible receipt of a context rewrite. It renders
+   outside the process fold as its own fold line, so it shares the
+   reasoning__head geometry instead of the folded process-card chrome. */
+.compaction {
+  margin: 4px auto;
+  -webkit-app-region: no-drag;
+}
+.compaction--pending,
+.compaction__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: var(--text-md);
+  color: var(--fg-faint);
+}
+.compaction__head {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-weight: 560;
+  border-radius: 6px;
+}
+.compaction__head:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.compaction__head > svg:last-child {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
+  transition: transform 0.2s;
+}
+.compaction__head > .compaction__chevron--open {
+  transform: rotate(90deg);
+}
+.compaction__meta {
+  font-weight: 400;
+}
+.compaction__body {
+  margin: 4px 0 8px;
+  padding: 0 11px 0 30px;
   color: var(--fg-dim);
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  line-height: 1.5;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
 }

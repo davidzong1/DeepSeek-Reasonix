@@ -108,6 +108,12 @@ system_prompt = "BASE"
 [environment]
 enabled = false
 
+# This case proves the read-evidence gate releases a later commit, so git must
+# really run. An enforced sandbox fails closed wherever the host lacks a backend
+# (coverage runners), which is the sandbox's own contract, not this one.
+[sandbox]
+bash = "off"
+
 [[providers]]
 name = "test-model"
 kind = "boot-read-then-mutate"

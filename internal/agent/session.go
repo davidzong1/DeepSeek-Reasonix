@@ -312,8 +312,8 @@ func (s *Session) Replace(msgs []provider.Message) {
 // pruning, or local metadata edits: a later autosave must use owned-rewrite
 // conflict checks instead of mistaking the modified prefix for another writer.
 //
-// reason names the provider-visible change (e.g. "compact_auto", "snip",
-// "rewind_truncate") and is queued for the next DrainContentRewriteReasons
+// reason names the provider-visible change (e.g. "rewind_truncate",
+// "guardian_merge") and is queued for the next DrainContentRewriteReasons
 // call, which feeds cache-diagnostics attribution. Callers whose msgs only
 // change local-only display metadata (never serialized to the provider) must
 // use ReplaceLocalMetadata instead, so they don't misreport a cache-prefix
@@ -378,6 +378,15 @@ func (s *Session) NoteContentRewrite(reason string) {
 func (s *Session) Snapshot() []provider.Message {
 	msgs, _, _ := s.snapshotWithVersion()
 	return msgs
+}
+
+// DisplayBaseline captures messages and their rewrite/head identity together.
+// The controller calls this at an idle/admission boundary, before any new
+// streaming event can commit to its display projection.
+func (s *Session) DisplayBaseline() (messages []provider.Message, headID string, rewriteEpoch uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]provider.Message(nil), s.Messages...), s.head.ref.HeadID, uint64(s.rewriteVersion)
 }
 
 // Len returns the number of messages, safe to call from any goroutine.
@@ -518,10 +527,10 @@ func (s *Session) RewriteVersion() int {
 	return s.rewriteVersion
 }
 
-// NeedsRewriteSave reports whether the history has been rewritten in memory
-// (compaction, prune) since the last successful full save of this session.
-// Snapshot paths use it to decide that the next write must be an owned
-// rewrite instead of an append.
+// NeedsRewriteSave reports whether the message log was rewritten in place —
+// rather than appended to — since the last successful full save of this
+// session. Snapshot paths use it to decide that the next write must be an
+// owned rewrite instead of an append.
 func (s *Session) NeedsRewriteSave() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

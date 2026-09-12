@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -146,7 +147,9 @@ func TestOpenCodeGoV10MigrationPreservesAccountsHistorySearchAndRawFields(t *tes
 	}
 	for _, suffix := range []string{".opencode-go-v10.backup", ".opencode-go-v10.json"} {
 		info, err := os.Stat(path + suffix)
-		if err != nil || info.Mode().Perm() != 0600 {
+		// Windows carries no POSIX permission bits, so only the Unix legs can
+		// prove the sidecar is private.
+		if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 			t.Fatalf("private sidecar: %v %v", info, err)
 		}
 	}

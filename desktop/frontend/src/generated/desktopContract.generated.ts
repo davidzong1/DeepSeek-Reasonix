@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:7b9f66d0fe65b706ad0e4fff9c4abd53f48802ed54dc38da1c4b9da2b2a7d9a7";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:09e42772bf1f9f5619f90a36c16fcd4b2ab5ebf73655fe73bc39d8cf4ae59f08";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -258,6 +258,7 @@ export const DESKTOP_COMMANDS = [
   "NewSessionForTab",
   "OpenChannelSessionForTab",
   "OpenChannelSessionPageForTab",
+  "OpenChannelTranscriptSessionForTab",
   "OpenDownloadPage",
   "OpenGlobalTab",
   "OpenLocalPath",
@@ -324,9 +325,14 @@ export const DESKTOP_COMMANDS = [
   "RemoteServerLogs",
   "RemoteServerStatus",
   "RemoteTabBranches",
+  "RemoteTabMetadata",
   "RemoteTabSkills",
   "RemoteTabSnapshot",
   "RemoteTabStatus",
+  "RemoteTranscriptContentForTab",
+  "RemoteTranscriptPageForTab",
+  "RemoteTranscriptReplayForTab",
+  "RemoteTranscriptSnapshotForTab",
   "RemoveMCPServer",
   "RemovePermissionRule",
   "RemovePlugin",
@@ -383,6 +389,7 @@ export const DESKTOP_COMMANDS = [
   "ResumeSessionForTab",
   "ResumeSessionPage",
   "ResumeSessionPageForTab",
+  "ResumeTranscriptSessionForTab",
   "RetryInboxItem",
   "RetryModelSettingsApplication",
   "RetrySessionRecovery",
@@ -542,6 +549,7 @@ export const DESKTOP_COMMANDS = [
   "SubmitInvocationsToTabWithID",
   "SubmitRemoteTab",
   "SubmitRemoteTabExtensionForm",
+  "SubmitRemoteTabWithSubmission",
   "SubmitToTab",
   "SubmitToTabWithID",
   "SummarizeFrom",
@@ -559,6 +567,10 @@ export const DESKTOP_COMMANDS = [
   "TestProviderModel",
   "ToggleMaximiseMainWindow",
   "ToolResultForTab",
+  "TranscriptContentForTab",
+  "TranscriptPageForTab",
+  "TranscriptReplayForTab",
+  "TranscriptSnapshotForTab",
   "TrashTopic",
   "TrustProjectHooks",
   "TrustProjectHooksForRoot",
@@ -894,6 +906,30 @@ export interface ToolResultData {
   mcpApp?: MCPAppPresentation | null;
 }
 
+export interface TranscriptReplay {
+  protocolVersion: number;
+  snapshotId: string;
+  identity: Identity;
+  projectionRevision: number;
+  coveredThroughSeq: number;
+  events: Envelope[];
+  floorSeq: number;
+  latestSeq: number;
+  nextAfterSeq: number;
+  hasMore: boolean;
+  resetRequired: boolean;
+  transcriptRevision?: number;
+  transcriptDigest?: string;
+  headId?: string;
+  leafMessageId?: string;
+  runtimeEpoch?: string;
+}
+
+export interface TranscriptReplayRequest {
+  identity: Identity;
+  after: number;
+}
+
 export interface event_FinalReadiness {
   attempts?: number;
   missing?: string[];
@@ -1038,6 +1074,12 @@ export interface eventwire_DecisionReceipt {
 export interface Event {
   runtimeState?: RuntimeStateSnapshot | null;
   kind: string;
+  messageId?: string;
+  attemptId?: string;
+  source?: string;
+  sessionId?: string;
+  runtimeEpoch?: string;
+  submissionId?: string;
   promptId?: string;
   promptKind?: string;
   promptLegacy?: boolean;
@@ -1053,6 +1095,7 @@ export interface Event {
   tool?: Tool | null;
   readStatus?: ReadStatus | null;
   readPause?: ReadPause | null;
+  readCompletion?: ReadCompletion | null;
   usage?: Usage | null;
   approval?: Approval | null;
   ask?: Ask | null;
@@ -1975,53 +2018,19 @@ export interface HistoryEntry {
   entryId: string;
   turn: number;
   order: number;
-  message: HistoryMessage;
+  message: Message;
   refs: HistoryContentRef[];
 }
 
-export interface HistoryMessage {
-  completionReceipt?: CompletionReceipt | null;
-  completionSummary?: CompletionSummary | null;
-  turnId?: string;
-  role: string;
-  content: string;
-  detail?: string;
-  code?: string;
-  submitText?: string;
-  checkpointTurn?: number | null;
-  createdAt?: number;
-  reasoning?: string;
-  memoryCitations?: provider_MemoryCitation[];
-  workDurationMs?: number;
-  level?: string;
-  toolCalls?: HistoryToolCall[];
-  toolCallId?: string;
-  toolName?: string;
-  toolResultArchived?: boolean;
-  toolResultError?: string;
-  execution?: ToolExecution | null;
-  pending?: boolean;
-  trigger?: string;
-  messages?: number;
-  summary?: string;
-  archive?: string;
-  decisionReceipt?: provider_DecisionReceipt | null;
-  readiness?: event_FinalReadiness | null;
-  readPause?: ReadPause | null;
-  readCompletion?: ReadCompletion | null;
-  protocolRecovery?: ProtocolRecoveryAction | null;
-  diagnostic?: FailureDiagnostic | null;
-  serverSearch?: ServerSearchCall[];
-}
-
 export interface HistoryPage {
-  messages: HistoryMessage[];
+  messages: Message[];
   startTurn: number;
   endTurn: number;
   totalTurns: number;
   hasOlder: boolean;
   revision?: number;
   digest?: string;
+  switch?: HistorySwitchPhases | null;
 }
 
 export interface HistorySearchContextLine {
@@ -2117,19 +2126,17 @@ export interface HistorySliceRequest {
   bytes: number;
 }
 
-export interface HistoryToolCall {
-  id: string;
-  name: string;
-  arguments: string;
-  resolvedName?: string;
-  capabilityId?: string;
-  resolvedReadOnly?: boolean | null;
-  subject?: string;
-  summary?: string;
-  diff?: string;
-  added?: number;
-  removed?: number;
-  argumentsArchived?: boolean;
+export interface HistorySwitchPhases {
+  resolveMs: number;
+  loadMs: number;
+  rebindMs: number;
+  historyMs: number;
+  totalMs: number;
+  loadedMessages: number;
+  loadedBytes: number;
+  historyEntries: number;
+  durableReads: number;
+  outcome: string;
 }
 
 export interface HookConfigView {
@@ -3100,6 +3107,11 @@ export interface RemoteTabSnapshot {
   commands?: unknown;
   status?: unknown;
   pendingEvents?: unknown[];
+}
+
+export interface RemoteTranscriptSnapshot {
+  supported: boolean;
+  snapshot?: Snapshot | null;
 }
 
 export interface RemoteWriteResult {
@@ -4155,6 +4167,142 @@ export interface TaskSnapshot {
   error_summary?: string;
 }
 
+export interface ActiveAttempt {
+  id: string;
+  messageId: string;
+}
+
+export interface ContentChunk {
+  data: string;
+  nextOffset: number;
+  done: boolean;
+  stale: boolean;
+}
+
+export interface ContentRef {
+  snapshotId: string;
+  recordId: string;
+  path: string[];
+  bytes: number;
+}
+
+export interface ContentRequest {
+  snapshotId: string;
+  recordId: string;
+  path: string[];
+  bytes: number;
+  offset: number;
+}
+
+export interface Identity {
+  sessionId: string;
+  headId: string;
+  rewriteEpoch: number;
+  runtimeEpoch: string;
+}
+
+export interface Message {
+  recordId?: string;
+  attemptId?: string;
+  submissionId?: string;
+  source?: string;
+  messageId?: string;
+  completionReceipt?: CompletionReceipt | null;
+  completionSummary?: CompletionSummary | null;
+  turnId?: string;
+  role: string;
+  content: string;
+  detail?: string;
+  code?: string;
+  submitText?: string;
+  checkpointTurn?: number | null;
+  historyTurn?: number;
+  createdAt?: number;
+  reasoning?: string;
+  memoryCitations?: provider_MemoryCitation[];
+  workDurationMs?: number;
+  level?: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  toolName?: string;
+  toolResultArchived?: boolean;
+  toolResultError?: string;
+  execution?: ToolExecution | null;
+  pending?: boolean;
+  trigger?: string;
+  messages?: number;
+  summary?: string;
+  archive?: string;
+  decisionReceipt?: provider_DecisionReceipt | null;
+  readiness?: event_FinalReadiness | null;
+  readPause?: ReadPause | null;
+  readCompletion?: ReadCompletion | null;
+  protocolRecovery?: ProtocolRecoveryAction | null;
+  diagnostic?: FailureDiagnostic | null;
+  serverSearch?: ServerSearchCall[];
+}
+
+export interface PageRequest {
+  snapshotId: string;
+  before: number;
+  records: number;
+  bytes: number;
+}
+
+export interface transcript_Record {
+  id: string;
+  order: number;
+  message: Message;
+  refs: ContentRef[];
+}
+
+export interface Runtime {
+  turnId?: string;
+  submissionId?: string;
+  status?: string;
+  phase?: string;
+  startedAt?: number;
+  pendingEvents: Event[];
+  completionSummary?: CompletionSummary | null;
+}
+
+export interface Snapshot {
+  protocolVersion: number;
+  snapshotId: string;
+  identity: Identity;
+  projectionRevision: number;
+  coveredThroughSeq: number;
+  records: transcript_Record[];
+  runtime: Runtime;
+  activeAttempts: ActiveAttempt[];
+  activeRecords: transcript_Record[];
+  before: number;
+  hasOlder: boolean;
+  totalRecords: number;
+  totalTurns: number;
+  stale: boolean;
+}
+
+export interface ToolCall {
+  partial?: boolean;
+  argChars?: number;
+  pending?: boolean;
+  parentId?: string;
+  startedAt?: number;
+  id: string;
+  name: string;
+  arguments: string;
+  resolvedName?: string;
+  capabilityId?: string;
+  resolvedReadOnly?: boolean | null;
+  subject?: string;
+  summary?: string;
+  diff?: string;
+  added?: number;
+  removed?: number;
+  argumentsArchived?: boolean;
+}
+
 export interface Envelope {
   schemaVersion: number;
   sessionId: string;
@@ -4170,6 +4318,7 @@ export interface Envelope {
   transcriptRevision?: number;
   transcriptDigest?: string;
   headId?: string;
+  rewriteEpoch?: number;
   leafMessageId?: string;
   createdAt: number;
   event: Event;
@@ -4431,10 +4580,10 @@ export interface GeneratedDesktopCommands {
   HeartbeatSaveConfig(arg0: HeartbeatConfigUpdate): Promise<HeartbeatConfigView>;
   HeartbeatSaveTasks(arg0: HeartbeatTask[]): Promise<void>;
   HeartbeatTriggerNow(arg0: string): Promise<void>;
-  History(): Promise<HistoryMessage[]>;
+  History(): Promise<Message[]>;
   HistoryCheckpointTurnsForTab(arg0: string): Promise<number[]>;
   HistoryContentForTab(arg0: string, arg1: HistoryContentRef, arg2: number): Promise<HistoryContentChunk>;
-  HistoryForTab(arg0: string): Promise<HistoryMessage[]>;
+  HistoryForTab(arg0: string): Promise<Message[]>;
   HistoryPage(arg0: number, arg1: number): Promise<HistoryPage>;
   HistoryPageForTab(arg0: string, arg1: number, arg2: number): Promise<HistoryPage>;
   HistorySliceForTab(arg0: string, arg1: HistorySliceRequest): Promise<HistorySlice>;
@@ -4502,8 +4651,9 @@ export interface GeneratedDesktopCommands {
   NeedsOnboarding(): Promise<boolean>;
   NewSession(): Promise<void>;
   NewSessionForTab(arg0: string): Promise<void>;
-  OpenChannelSessionForTab(arg0: string, arg1: string): Promise<HistoryMessage[]>;
+  OpenChannelSessionForTab(arg0: string, arg1: string): Promise<Message[]>;
   OpenChannelSessionPageForTab(arg0: string, arg1: string, arg2: number): Promise<HistoryPage>;
+  OpenChannelTranscriptSessionForTab(arg0: string, arg1: string): Promise<HistorySwitchPhases>;
   OpenDownloadPage(): Promise<void>;
   OpenGlobalTab(arg0: string): Promise<TabMeta>;
   OpenLocalPath(arg0: string): Promise<void>;
@@ -4535,7 +4685,7 @@ export interface GeneratedDesktopCommands {
   PollBotConnectionInstall(arg0: string): Promise<BotInstallPollResult>;
   PrepareWorktreeMerge(arg0: string): Promise<MergeInspection>;
   PreviewRewindForTab(arg0: string, arg1: number, arg2: string): Promise<RewindPlanView>;
-  PreviewSession(arg0: string): Promise<HistoryMessage[]>;
+  PreviewSession(arg0: string): Promise<Message[]>;
   PreviewWorkspaceFileRevertForTab(arg0: string, arg1: string): Promise<RewindPlanView>;
   PurgeRecoveryCopy(arg0: string): Promise<void>;
   PurgeTrashedSession(arg0: string): Promise<void>;
@@ -4570,9 +4720,14 @@ export interface GeneratedDesktopCommands {
   RemoteServerLogs(arg0: string, arg1: string, arg2: number): Promise<string>;
   RemoteServerStatus(arg0: string, arg1: string): Promise<RemoteServerView>;
   RemoteTabBranches(arg0: string): Promise<unknown>;
+  RemoteTabMetadata(arg0: string): Promise<RemoteTabSnapshot>;
   RemoteTabSkills(arg0: string): Promise<unknown>;
   RemoteTabSnapshot(arg0: string): Promise<RemoteTabSnapshot>;
   RemoteTabStatus(arg0: string): Promise<unknown>;
+  RemoteTranscriptContentForTab(arg0: string, arg1: ContentRequest): Promise<ContentChunk>;
+  RemoteTranscriptPageForTab(arg0: string, arg1: PageRequest): Promise<Snapshot>;
+  RemoteTranscriptReplayForTab(arg0: string, arg1: TranscriptReplayRequest): Promise<TranscriptReplay>;
+  RemoteTranscriptSnapshotForTab(arg0: string, arg1: PageRequest): Promise<RemoteTranscriptSnapshot>;
   RemoveMCPServer(arg0: string): Promise<void>;
   RemovePermissionRule(arg0: string, arg1: string): Promise<void>;
   RemovePlugin(arg0: string): Promise<void>;
@@ -4625,10 +4780,11 @@ export interface GeneratedDesktopCommands {
   RestoreSession(arg0: string): Promise<void>;
   ResumeGoalForTab(arg0: string): Promise<boolean>;
   ResumeRemoteTabGoal(arg0: string): Promise<void>;
-  ResumeSession(arg0: string): Promise<HistoryMessage[]>;
-  ResumeSessionForTab(arg0: string, arg1: string): Promise<HistoryMessage[]>;
+  ResumeSession(arg0: string): Promise<Message[]>;
+  ResumeSessionForTab(arg0: string, arg1: string): Promise<Message[]>;
   ResumeSessionPage(arg0: string, arg1: number): Promise<HistoryPage>;
   ResumeSessionPageForTab(arg0: string, arg1: string, arg2: number): Promise<HistoryPage>;
+  ResumeTranscriptSessionForTab(arg0: string, arg1: string): Promise<HistorySwitchPhases>;
   RetryInboxItem(arg0: string, arg1: string): Promise<void>;
   RetryModelSettingsApplication(arg0: string): Promise<ModelSettingsResult>;
   RetrySessionRecovery(arg0: RecoveryPreferenceRequest): Promise<void>;
@@ -4788,6 +4944,7 @@ export interface GeneratedDesktopCommands {
   SubmitInvocationsToTabWithID(arg0: string, arg1: string, arg2: string, arg3: InvocationRequest[], arg4: string): Promise<void>;
   SubmitRemoteTab(arg0: string, arg1: string): Promise<void>;
   SubmitRemoteTabExtensionForm(arg0: string, arg1: string, arg2: string, arg3: Record<string, unknown>): Promise<void>;
+  SubmitRemoteTabWithSubmission(arg0: string, arg1: string, arg2: string): Promise<void>;
   SubmitToTab(arg0: string, arg1: string): Promise<void>;
   SubmitToTabWithID(arg0: string, arg1: string, arg2: string): Promise<void>;
   SummarizeFrom(arg0: number): Promise<void>;
@@ -4805,6 +4962,10 @@ export interface GeneratedDesktopCommands {
   TestProviderModel(arg0: ProviderView, arg1: string, arg2: string): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   ToolResultForTab(arg0: string, arg1: string): Promise<ToolResultData | null>;
+  TranscriptContentForTab(arg0: string, arg1: ContentRequest): Promise<ContentChunk>;
+  TranscriptPageForTab(arg0: string, arg1: PageRequest): Promise<Snapshot>;
+  TranscriptReplayForTab(arg0: string, arg1: TranscriptReplayRequest): Promise<TranscriptReplay>;
+  TranscriptSnapshotForTab(arg0: string, arg1: PageRequest): Promise<Snapshot>;
   TrashTopic(arg0: string): Promise<void>;
   TrustProjectHooks(): Promise<void>;
   TrustProjectHooksForRoot(arg0: string): Promise<void>;

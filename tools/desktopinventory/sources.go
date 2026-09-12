@@ -19,6 +19,7 @@ var ciJobs = map[string]struct {
 	"ci.yml/desktop-go":                           {classKeepBusiness, "hostrpc + module tests; no WebKitGTK toolchain"},
 	"ci.yml/desktop-macos":                        {classKeepBusiness, "Electron packaging smoke"},
 	"ci.yml/desktop-windows":                      {classKeepBusiness, "Electron packaging smoke"},
+	"ci.yml/desktop-windows-package":              {classKeepBusiness, "Electron installer build, split from the test leg"},
 	"app-memory.yml/app-memory":                   {classKeepBusiness, "browser memory screening unchanged"},
 	"app-memory.yml/prepare":                      {classKeepBusiness, "browser memory screening unchanged"},
 	"app-memory.yml/shard":                        {classKeepBusiness, "browser memory screening unchanged"},

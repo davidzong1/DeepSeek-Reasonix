@@ -657,7 +657,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     commitSingleSurface: commitSingleSurfaceNavigation,
     ports: {
       loadOlderHistory: (tabId, targetTurn, trigger) => loadOlderHistory(tabId, targetTurn, trigger),
-      commitThenSend: (tabId, text) => commitThenSend(tabId, text),
+      commitThenSend: (tabId, text, submitText) => commitThenSend(tabId, text, submitText),
     },
   });
 

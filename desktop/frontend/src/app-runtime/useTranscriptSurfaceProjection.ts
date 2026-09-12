@@ -29,7 +29,7 @@ export type TranscriptSurfaceProjectionInput = {
   commitSingleSurface: (tabId: string) => void;
   ports: {
     loadOlderHistory(tabId: string, targetTurn: number | undefined, trigger: HistoryLoadTrigger): Promise<boolean>;
-    commitThenSend(tabId: string, text: string): Promise<void>;
+    commitThenSend(tabId: string, displayText: string, submitText?: string): Promise<void>;
   };
 };
 
@@ -95,9 +95,9 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
     return null;
   }, [input.items]);
 
-  const handleTranscriptPrompt = useCommittedCommand((text: string) => {
+  const handleTranscriptPrompt = useCommittedCommand((text: string, submitText = text) => {
     if (!activeTabId || !input.controllerReady) return;
-    void ports.commitThenSend(activeTabId, text).catch((err) => {
+    void ports.commitThenSend(activeTabId, text, submitText).catch((err) => {
       console.warn("Failed to submit transcript prompt", err);
     });
   });

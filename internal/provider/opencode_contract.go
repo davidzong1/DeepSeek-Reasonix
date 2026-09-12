@@ -73,7 +73,7 @@ func OpenCodeGoRecommendedRoute(model string) (string, bool) {
 
 func OpenCodeGoDeepSeekModel(model string) bool {
 	switch strings.TrimSpace(model) {
-	case "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp":
+	case "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp":
 		return true
 	}
 	return false

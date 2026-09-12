@@ -3581,6 +3581,21 @@
       ]
     }
   },
+  "OpenChannelTranscriptSessionForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.OpenChannelTranscriptSessionForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.OpenChannelTranscriptSessionForTab",
+      "inputs": [
+        "tabID",
+        "path"
+      ]
+    }
+  },
   "OpenDownloadPage": {
     "domain": "desktop/updater_app.go",
     "owner": "App.OpenDownloadPage",
@@ -4493,6 +4508,20 @@
       ]
     }
   },
+  "RemoteTabMetadata": {
+    "domain": "desktop/remote_tab_snapshot.go",
+    "owner": "App.RemoteTabMetadata",
+    "sources": [
+      "desktop/remote_tab_snapshot.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteTabMetadata",
+      "inputs": [
+        "tabID"
+      ]
+    }
+  },
   "RemoteTabSkills": {
     "domain": "desktop/remote_tab_commands.go",
     "owner": "App.RemoteTabSkills",
@@ -4532,6 +4561,66 @@
       "resolver": "App.RemoteTabStatus",
       "inputs": [
         "tabID"
+      ]
+    }
+  },
+  "RemoteTranscriptContentForTab": {
+    "domain": "desktop/remote_transcript_api.go",
+    "owner": "App.RemoteTranscriptContentForTab",
+    "sources": [
+      "desktop/remote_transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteTranscriptContentForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "RemoteTranscriptPageForTab": {
+    "domain": "desktop/remote_transcript_api.go",
+    "owner": "App.RemoteTranscriptPageForTab",
+    "sources": [
+      "desktop/remote_transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteTranscriptPageForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "RemoteTranscriptReplayForTab": {
+    "domain": "desktop/remote_transcript_api.go",
+    "owner": "App.RemoteTranscriptReplayForTab",
+    "sources": [
+      "desktop/remote_transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteTranscriptReplayForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "RemoteTranscriptSnapshotForTab": {
+    "domain": "desktop/remote_transcript_api.go",
+    "owner": "App.RemoteTranscriptSnapshotForTab",
+    "sources": [
+      "desktop/remote_transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteTranscriptSnapshotForTab",
+      "inputs": [
+        "tabID",
+        "req"
       ]
     }
   },
@@ -5367,6 +5456,21 @@
         "tabID",
         "path",
         "limit"
+      ]
+    }
+  },
+  "ResumeTranscriptSessionForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.ResumeTranscriptSessionForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ResumeTranscriptSessionForTab",
+      "inputs": [
+        "tabID",
+        "path"
       ]
     }
   },
@@ -7720,6 +7824,22 @@
       ]
     }
   },
+  "SubmitRemoteTabWithSubmission": {
+    "domain": "desktop/remote_tab.go",
+    "owner": "App.SubmitRemoteTabWithSubmission",
+    "sources": [
+      "desktop/remote_tab.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SubmitRemoteTabWithSubmission",
+      "inputs": [
+        "tabID",
+        "text",
+        "submissionID"
+      ]
+    }
+  },
   "SubmitToTab": {
     "domain": "desktop/app.go",
     "owner": "App.SubmitToTab",
@@ -7962,6 +8082,66 @@
       "inputs": [
         "tabID",
         "toolID"
+      ]
+    }
+  },
+  "TranscriptContentForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.TranscriptContentForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.TranscriptContentForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "TranscriptPageForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.TranscriptPageForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.TranscriptPageForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "TranscriptReplayForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.TranscriptReplayForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.TranscriptReplayForTab",
+      "inputs": [
+        "tabID",
+        "req"
+      ]
+    }
+  },
+  "TranscriptSnapshotForTab": {
+    "domain": "desktop/transcript_api.go",
+    "owner": "App.TranscriptSnapshotForTab",
+    "sources": [
+      "desktop/transcript_api.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.TranscriptSnapshotForTab",
+      "inputs": [
+        "tabID",
+        "req"
       ]
     }
   },
