@@ -60,6 +60,15 @@ func (p *ParallelTasksTool) Schema() json.RawMessage {
 }`)
 }
 
+// CapabilityTriggers declares when the router should suggest concurrent
+// read-only sub-agents.
+func (p *ParallelTasksTool) CapabilityTriggers() []string {
+	return []string{
+		"in parallel", "concurrently", "at the same time", "parallel research",
+		"并行", "并发", "同时",
+	}
+}
+
 func (p *ParallelTasksTool) ReadOnly() bool { return true }
 
 func (p *ParallelTasksTool) PlanModeSafe() bool { return true }

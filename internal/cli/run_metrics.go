@@ -100,6 +100,7 @@ type RunMetrics struct {
 	CapabilityRoutedSuggest        int                       `json:"capability_routed_suggest,omitempty"`
 	CapabilityDeclines             int                       `json:"capability_declines,omitempty"`
 	CapabilitySemanticRoutes       int                       `json:"capability_semantic_routes,omitempty"`
+	CapabilitySemanticTruncated    int                       `json:"capability_semantic_truncated,omitempty"`
 	CapabilitySemanticFallbacks    int                       `json:"capability_semantic_fallbacks,omitempty"`
 	CapabilityRequireMissing       int                       `json:"capability_require_missing,omitempty"`
 	CapabilityRequireRecovered     int                       `json:"capability_require_recovered,omitempty"`
@@ -564,7 +565,7 @@ func (m *RunMetrics) MergeCapabilityAudit(snap *capability.Audit) {
 	}
 	m.MergeCapabilityAuditCounters(
 		snap.Routes, snap.RoutedCandidates, snap.RoutedRequire, snap.RoutedPrefer, snap.RoutedSuggest, snap.Declines,
-		snap.SemanticRoutes, snap.SemanticFallbacks,
+		snap.Semantic.Routes, snap.Semantic.Fallbacks, snap.Semantic.Truncated,
 		snap.RequireMissing, snap.RequireRecovered, snap.PreferMissing, snap.PreferRecovered,
 		snap.SkillInvocations, snap.SkillFailures, snap.SkillUnavailable,
 		snap.MCPInspect, snap.MCPCall, snap.MCPCallFailures,
@@ -618,7 +619,7 @@ func (m *RunMetrics) MergeCapabilityAudit(snap *capability.Audit) {
 // MergeCapabilityAuditCounters copies capability counters into RunMetrics.
 func (m *RunMetrics) MergeCapabilityAuditCounters(
 	routes, routedCandidates, routedRequire, routedPrefer, routedSuggest, declines int,
-	semantic, fallbacks, requireMiss, requireRec, preferMiss, preferRec int,
+	semantic, fallbacks, semanticTruncated, requireMiss, requireRec, preferMiss, preferRec int,
 	skillInv, skillFail, skillUnavail int,
 	mcpInspect, mcpCall, mcpFail int,
 	reviewBlocks, securityBlocks int,
@@ -636,6 +637,7 @@ func (m *RunMetrics) MergeCapabilityAuditCounters(
 	m.CapabilityRoutedSuggest += routedSuggest
 	m.CapabilityDeclines += declines
 	m.CapabilitySemanticRoutes += semantic
+	m.CapabilitySemanticTruncated += semanticTruncated
 	m.CapabilitySemanticFallbacks += fallbacks
 	m.CapabilityRequireMissing += requireMiss
 	m.CapabilityRequireRecovered += requireRec

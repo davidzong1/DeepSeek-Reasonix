@@ -74,6 +74,17 @@ func (*FleetTool) Schema() json.RawMessage {
 }`)
 }
 
+// CapabilityTriggers declares when the router should suggest fleet. Kept to
+// phrases that name fan-out or a parallel batch, so an ordinary request never
+// pays for a suggestion block.
+func (*FleetTool) CapabilityTriggers() []string {
+	return []string{
+		"parallel tasks", "in parallel", "fan out", "fan-out", "sub-agents",
+		"subagents", "multiple agents", "parallel agents", "batch of tasks",
+		"并行", "并行执行", "多个子任务", "扇出", "同时处理",
+	}
+}
+
 func (*FleetTool) ReadOnly() bool { return false }
 
 type fleetTaskItem struct {

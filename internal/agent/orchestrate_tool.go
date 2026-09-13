@@ -85,6 +85,16 @@ func (*OrchestrateTool) Schema() json.RawMessage {
 
 // ReadOnly reports false: an agent node may write, and the writer rule is what
 // decides whether a given plan is admitted.
+// CapabilityTriggers declares when the router should suggest a declarative
+// plan. Narrower than fleet's: a plan is worth it when the work has a shape
+// worth declaring, not merely when it can run at once.
+func (*OrchestrateTool) CapabilityTriggers() []string {
+	return []string{
+		"dependency graph", "orchestrate", "multi-step plan", "plan with dependencies",
+		"pipeline of agents", "fan out and reduce", "编排", "编排计划", "依赖图",
+	}
+}
+
 func (*OrchestrateTool) ReadOnly() bool { return false }
 
 // planToolNodeKinds is the node kinds this phase admits. A tool or reduce node

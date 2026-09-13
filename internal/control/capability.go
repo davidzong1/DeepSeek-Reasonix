@@ -8,6 +8,7 @@ import (
 	"reasonix/internal/capability"
 	"reasonix/internal/config"
 	"reasonix/internal/plugin"
+	"reasonix/internal/tool"
 )
 
 func (c *Controller) withCapabilityRoute(ctx context.Context, composed, routeInput string) string {
@@ -42,6 +43,31 @@ func (c *Controller) withCapabilityRoute(ctx context.Context, composed, routeInp
 	return block + "\n\n" + composed
 }
 
+// semanticRoutingApplies gates the model call routing makes to disambiguate a
+// tie. A strong match already decided, and one candidate needs no ranking.
+func semanticRoutingApplies(decision capability.RouteDecision) bool {
+	return !hasStrongPolicy(decision) && len(decision.Candidates) > 1
+}
+
+// semanticDiscoveryApplies gates the other model call: the one made when the
+// deterministic pass matched nothing at all. It requires a multi-target request
+// so discovery cannot run on ordinary prose — that is what bounds the cost, and
+// it is the only reason a request that matched nothing can be found at all.
+func semanticDiscoveryApplies(decision capability.RouteDecision, routeInput string) bool {
+	return !hasStrongPolicy(decision) &&
+		len(decision.Candidates) == 0 &&
+		capability.LooksMultiTarget(routeInput)
+}
+
+func hasStrongPolicy(decision capability.RouteDecision) bool {
+	for _, cand := range decision.Candidates {
+		if cand.Policy == capability.AutoUseRequire || cand.Policy == capability.AutoUsePrefer {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) routeCapabilities(ctx context.Context, routeInput string) capability.RouteDecision {
 	if ctx == nil {
 		ctx = context.Background()
@@ -67,6 +93,10 @@ func (c *Controller) routeCapabilities(ctx context.Context, routeInput string) c
 	opts := capability.CatalogOptions{
 		Tools:  tools,
 		Skills: c.Skills(),
+		// The router may suggest a tool the provider schema hides, which is the
+		// only way a delegation tool reaches the model without being asked for.
+		// The tool surface itself stays Tools, above.
+		RoutableTools: c.routableToolEntries(),
 	}
 	if c.capabilityRuntime != nil {
 		opts.Plugins, opts.CachedTools, opts.CacheKeyOK, opts.Disabled, proxyTools = c.capabilityRuntime.CapabilityCatalogState()
@@ -95,15 +125,7 @@ func (c *Controller) routeCapabilities(ctx context.Context, routeInput string) c
 		decision.CapabilityProxy = true
 	}
 
-	strong := false
-	for _, cand := range decision.Candidates {
-		if cand.Policy == capability.AutoUseRequire || cand.Policy == capability.AutoUsePrefer {
-			strong = true
-			break
-		}
-	}
-	ambiguous := !strong && len(decision.Candidates) > 1
-	if ambiguous && c.semanticRouter != nil {
+	if (semanticRoutingApplies(decision) || semanticDiscoveryApplies(decision, routeInput)) && c.semanticRouter != nil {
 		before := len(decision.Candidates)
 		decision = c.semanticRouter.RouteSemantic(ctx, routeInput, catalog, decision)
 		if c.capabilityProxy {
@@ -152,4 +174,34 @@ func (c *Controller) SetCapabilityProxyTools(fn func() map[string][]plugin.Cache
 		return
 	}
 	c.proxyToolsFn = fn
+}
+
+// RoutableToolContractEntries is the diagnostic view of the hidden, routable
+// tools the capability router may suggest (see routableToolEntries).
+func (c *Controller) RoutableToolContractEntries() []tool.ContractEntry {
+	return c.routableToolEntries()
+}
+
+// routableToolEntries returns the hidden tools that declared routing triggers.
+// A provider-visible tool is already in the router's catalog, so it is excluded
+// here rather than entered twice.
+func (c *Controller) routableToolEntries() []tool.ContractEntry {
+	if c == nil {
+		return nil
+	}
+	reg := c.mcp.registry()
+	if reg == nil {
+		return nil
+	}
+	visible := map[string]bool{}
+	for _, e := range reg.ContractEntries() {
+		visible[e.Name] = true
+	}
+	var out []tool.ContractEntry
+	for _, e := range reg.AllContractEntries() {
+		if !visible[e.Name] && len(e.Triggers) > 0 {
+			out = append(out, e)
+		}
+	}
+	return out
 }

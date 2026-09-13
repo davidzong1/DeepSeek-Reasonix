@@ -16,8 +16,7 @@ type Audit struct {
 	RoutedPrefer           int
 	RoutedSuggest          int
 	Declines               int
-	SemanticRoutes         int
-	SemanticFallbacks      int
+	Semantic               SemanticAudit
 	RequireMissing         int
 	RequireRecovered       int
 	PreferMissing          int
@@ -43,6 +42,13 @@ type Audit struct {
 }
 
 // DiscoveryAudit counts model list/search/inspect actions, not MCP network.
+// SemanticAudit is the router's own outcome counters. Truncated is carried apart
+// from Fallback because an answer cut off at the output ceiling is a defect in
+// this package, while a fallback is an ordinary judgement.
+type SemanticAudit struct {
+	Routes, Fallbacks, Truncated int
+}
+
 type DiscoveryAudit struct {
 	Lists, Searches, Inspects int
 	ResultCount, ResultBytes  int
@@ -258,11 +264,21 @@ func (a *Audit) RecordRoute(semantic, fallback bool) {
 	defer a.mu.Unlock()
 	a.Routes++
 	if semantic {
-		a.SemanticRoutes++
+		a.Semantic.Routes++
 	}
 	if fallback {
-		a.SemanticFallbacks++
+		a.Semantic.Fallbacks++
 	}
+}
+
+// RecordSemanticTruncated counts one router answer cut off at the output ceiling.
+func (a *Audit) RecordSemanticTruncated() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Semantic.Truncated++
 }
 
 // RecordGate records require/prefer missing and recovery.
@@ -381,8 +397,7 @@ func (a *Audit) Snapshot() Audit {
 		RoutedPrefer:           a.RoutedPrefer,
 		RoutedSuggest:          a.RoutedSuggest,
 		Declines:               a.Declines,
-		SemanticRoutes:         a.SemanticRoutes,
-		SemanticFallbacks:      a.SemanticFallbacks,
+		Semantic:               a.Semantic,
 		RequireMissing:         a.RequireMissing,
 		RequireRecovered:       a.RequireRecovered,
 		PreferMissing:          a.PreferMissing,

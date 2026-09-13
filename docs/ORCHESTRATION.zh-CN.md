@@ -126,6 +126,7 @@ use_capability {action: "call", capability_id: "tool:orchestrate", arguments: {s
 两个值得知道的后果：
 
 - **`workflow:orchestrate` 在该工具注册的瞬间即可被寻址。** `workflow:` 是既有的 capability 前缀，会解析到注册表工具，所以这是"顺带得到"而非新增。它同时也是本能力的表面与设计中"它不得变成的那个东西"发生碰撞的唯一位置：`orchestrate` 是委派计划，不是工作流引擎；以工作流为框架的请求，应当用这四种模式回答或直接拒绝，而不是不断扩展直到那个词变得贴切。
+- **宿主可能在你开口之前就建议这些工具。** 隐藏工具若不这样处理，就只有用户点名才可达，因此 capability 路由会把 `orchestrate`——连同 `task`、`fleet`、`parallel_tasks`——在请求出现扇出措辞（"in parallel"、"fan out"、"dependency graph"、编排、扇出）时列为可建议项。建议只是 turn 尾部的一行，策略为 `suggest`：觉得合适就用，不合适就忽略。provider 可见前缀不受任何影响，忽略也不付出代价。
 - **把它纳入 provider 工具面，复用的是既有 host tool 通道**（`boot.Options.ExtraTools`，或宿主自行注册的等价物）。不存在单独的配置键；opt-in 是刻意行为——此时工具 schema 与前缀都会变化，前缀稳定性守卫正是为此存在。
 
 在 `ablation.Subagent` 下该工具**根本不注册**，因此任何派发路径——`tool:`、`workflow:`、`task:`——都无法触达它。这是结构性的，而不是调用时的门禁。

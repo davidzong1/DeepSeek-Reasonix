@@ -47,6 +47,18 @@ type CallClass struct {
 
 // BatchClassifier lets a fixed proxy classify its resolved target without
 // executing discovery, starting a process, or making a network request.
+// RoutableTool is implemented by a tool that declares when the capability router
+// should surface it. The router reaches tools the provider schema does not show,
+// so without a declaration a tool is never recommended and only a model that
+// searches the catalog on its own will find it. Keep the triggers narrow: the
+// router matches them per turn, and a trigger that fires on ordinary requests
+// costs every turn a suggestion block.
+type RoutableTool interface {
+	// CapabilityTriggers are lowercase substrings of a user request that make
+	// this tool worth suggesting. An empty list keeps the tool unroutable.
+	CapabilityTriggers() []string
+}
+
 type BatchClassifier interface {
 	ClassifyCall(json.RawMessage) CallClass
 }

@@ -25,8 +25,8 @@ ships.
 ### 0.1 Corrections carried in this revision
 
 A review re-checked the previous draft's `file:line` claims against the tree,
-and this revision was re-checked the same way in full. At the P2 hand-off it
-carries 167 `path:line` citations over 49 files plus 17 bare `:N-M` ranges that
+and this revision was re-checked the same way in full. At the "Aux" hand-off it
+carries 161 `path:line` citations over 42 files plus 17 bare `:N-M` ranges that
 inherit the file named in their own paragraph, and every one of them resolves
 to a file present here and to a range inside that file. The counts are of
 *reference sites*, not distinct pairs — a later revision should recount
@@ -110,6 +110,21 @@ changed a decision:
 The `gate` node kind is deleted throughout: the previous draft's §19 answered
 its own question about it — "a node kind that does nothing a `reduce` cannot is
 drift".
+
+12. **The router could not see the hidden tools, and the semantic call had a
+    ceiling that hid its own failures.** Both are outside the orchestration
+    phases and both are new work, recorded in §7.6 and §13's "Aux" paragraph
+    rather than applied silently. The first is §1.1's question reached from the
+    other side: §17 A1 keeps `orchestrate` off the provider surface, the router
+    is then the only path that can surface it without the user naming it, and
+    the router's catalog was built from the provider-visible set — so
+    `orchestrate`, `fleet`, `parallel_tasks` and `task` were all invisible to
+    it. The second is a defect the first made visible: `semanticMaxTokens` was
+    `256`, a reasoning endpoint spent it on chain-of-thought, and the empty body
+    that came back is the same value `parseSemanticIDs` returns for a genuine
+    "nothing fits", so a cut-off read as a judgement. Both are fixed (§7.6); the
+    discovery path the routing work also added is **unproven** and §7.6 records
+    that as the outcome rather than as a caveat.
 
 ## 1. Background and the decision
 
@@ -969,6 +984,127 @@ the surface (§17 A1), which is where
 `TestEffectOrchestrateStaysOffTheProviderSurfaceByDefault`
 (`internal/boot/effect_orchestrate_surface_test.go`) takes it.
 
+### 7.6 Capability routing: how a hidden tool reaches the model
+
+`orchestrate` is deliberately off the provider-visible surface (§17 A1), so the
+router is the only path that can surface it without the user naming it. Three
+facts are load-bearing, and the first two are easy to get wrong:
+
+- The catalog is built from `c.ToolContractEntries()`, the **provider-visible**
+  set (`internal/control/capability.go:94-100`), so a hidden tool the router
+  cannot see is a hidden tool the model can never be told about. The hidden half
+  arrives through `CatalogOptions.RoutableTools`
+  (`internal/control/capability.go:99`, `:188`) and
+  `routableToolEntries` (`internal/capability/catalog.go:149-158`), which admits
+  only a tool that *declared* triggers — so the catalog does not grow for tools
+  that never opted in.
+- The declaration is `tool.RoutableTool` (`internal/tool/tool.go:56-59`), a
+  one-method optional interface, and its carrier is `ContractEntry.Triggers`
+  (`internal/tool/contract.go:22`). That field is `json:"-"` on purpose: it is
+  router metadata, not schema, and a tagged field leaked into the golden
+  `tool_schemas.json` and moved the provider-visible prefix before the tag was
+  added. The four delegating tools declare it — `fleet`
+  (`internal/agent/fleet.go:80`), `parallel_tasks`
+  (`internal/agent/parallel_tasks.go:65`), `task` (`internal/agent/task.go:479`)
+  and `orchestrate` (`internal/agent/orchestrate_tool.go:91`) — which is the
+  whole of the "baseline capability the team layer must also have" rule applied
+  to delegation.
+- The router **ranks, it does not discover**. It is given a candidate list and
+  answers about that list; an id outside it is not merged
+  (`mergeSemanticIDs`, `internal/capability/semantic.go:361-385`). So the
+  candidate list, not the model, is what bounds the feature.
+
+**Two calls, two gates.** The gates are not the same call and are not
+interchangeable (`internal/control/capability.go:46-60`):
+
+| Gate | Predicate | Why it is bounded that way |
+| --- | --- | --- |
+| routing | `!hasStrongPolicy && len(candidates) > 1` | a decided route needs no ranking, and one candidate needs no model to say so |
+| discovery | `!hasStrongPolicy && len(candidates) == 0 && LooksMultiTarget(input)` | the only way a request that matched *nothing* can be found; the multi-target requirement is what keeps it off ordinary prose |
+
+`semanticRoutingApplies` is true in exactly the case where the deterministic
+pass already produced a tie, and `semanticDiscoveryApplies` exactly where it
+produced nothing. Both are pinned per measured request in
+`internal/control/capability_semantic_gate_test.go`.
+
+**The ceiling was a real defect, and it was measured rather than reasoned.**
+`semanticMaxTokens` (`internal/capability/semantic.go:21-27`) was 256. A
+reasoning endpoint spent the whole budget on chain-of-thought and returned an
+empty body, which `parseSemanticIDs` reports as "empty semantic response" — the
+same result as a genuine "nothing fits". The two are indistinguishable to the
+caller, so the defect was invisible: it read as a model judgement. Raising the
+ceiling to 1024 removed it (measured answers are 398 and 498 tokens, so the
+larger ceiling costs nothing in the ordinary case), and `errSemanticTruncated`
+plus `SemanticAudit.Truncated`
+(`internal/capability/semantic.go:321`, `internal/capability/audit.go:48`)
+carry a cut-off answer apart from a judgement, so the next occurrence is
+visible instead of silent.
+
+**What the four measured groups show.** One CLI session per group against a
+real provider, one workspace of three small Go files, `REASONIX_HOME`
+per-group. The injected block and the usage counters are read out of the
+recorded session, so these are measurements of the shipped path and not of a
+harness:
+
+| Group | Request | Deterministic | Semantic call | Router cost (prompt/out) | What the model did |
+| --- | --- | --- | --- | --- | --- |
+| g1_hit | "…in parallel, each in its own sub-agent" | 2 — `fleet`, `parallel_tasks` on the *trigger* reason | yes | 418 / 398 | called `task` three times, 3 sub-agent runs || g2_miss | "Fix the typo in mod1.go…" | 0 | none | 0 | no block, no router spend |
+| g3_fuzzy | "Take a look at the three files…" | 0 | none | 0 | no block, no router spend |
+| g4_realistic | "Check mod1.go, mod2.go and mod3.go separately…" | 0 | yes | 472 / 498 | `bash` and `read_file` only; no delegation |
+
+g2 and g3 are the cost bound and they hold: a request that names one thing, or
+names no target at all, pays nothing. g1 is the value case and it works — the
+trigger-matched delegation tools are named, and the model delegates.
+
+**g4 is the case the discovery path was built for, and it did not take it.**
+This is the finding that matters, and it is a property of the shared lexical
+prefilter, not of the discovery branch. `semanticPool`
+(`internal/capability/semantic.go:110-160`) prefilters by testing every
+whitespace token of the request of length ≥ 3 with `strings.Contains` against a
+blob of the entry's name plus its triggers (`semanticPoolBlob`,
+`internal/capability/semantic.go:166-168`). A **substring** test with no word
+boundary means an English function word matches the inside of an unrelated
+trigger. Reproduced offline against the production entry set, the pool for g4 is
+four entries — more than the pool can hold for g2 or g3 — and every one of the
+three that is not `explore` arrives this way:
+
+```
+skill:security-review   token "and"    inside trigger "token handling"
+skill:security-review   token "then"   inside trigger "authentication"
+tool:orchestrate        token "and"    inside trigger "fan out and reduce"
+tool:task               token "and"    inside trigger "hand this off to an agent"
+```
+
+Because that pool is almost never empty, `RouteSemantic` takes its lexical
+branch on essentially any request that contains a common English word, and the
+discovery branch — whose precondition is `len(candidates) == 0` — is reachable
+only when the request has none. Over a probe set of twelve realistic requests
+(eight English, four Chinese) the discovery branch was reached twice, both
+times only because every token was a path-like name (`inspect mod1.go mod2.go
+mod3.go`, `分析 mod1.go, mod2.go, mod3.go …`), and g4 is not one of them. The
+prefilter that was meant to *narrow* the candidate set is what starves the
+feature added to complement it. The `source:skills` line quoted above is the
+same fact from the other end: `skill:explore` matched on the ordinary word
+"find" inside the trigger "find all", and it is rendered through
+`RenderTransientBlock`'s `source:` rewrite
+(`internal/capability/capability.go:244-247`) because a `skill` entry is only
+`StatusReady` when `run_skill` is provider-visible
+(`internal/capability/capability.go:85-94`) — which it is not, so every skill
+candidate renders as the anonymous target `source:skills` with a
+`connect_tool_source` instruction.
+
+**This is recorded rather than fixed, and the reason is the measurement, not
+caution about scope.** The record's conclusion is that the discovery path has no
+evidence of positive value: in the one realistic case it was built for, the
+request never reached it, and the suggestion that did reach the model came from
+the other branch and was declined. Fixing the prefilter to match whole words would
+change which requests enter the semantic call at all — a provider-visible
+behaviour change to a path that is currently measurable — and there is no
+measurement yet that says the change pays. What the record owes instead is the
+honest state: the mechanism is implemented, gated, and cheap; its value is
+unproven; and its precondition is nearly unreachable in production because of a
+substring match that no test pins.
+
 ## 8. Interfaces and data flow
 
 ```
@@ -1332,6 +1468,13 @@ Approved phase names map onto this section as: **P0 measurement** = P0 below;
 **P1 declarative graph** = P1; **P2 closed operators** = P2 + P3 (the host tool
 is split out only because it is the first cache-visible change and deserves its
 own review); **P3 conditional sandbox evaluation** = P4.
+
+One paragraph below is in neither list: **Aux — delegation routing**. It is
+named "Aux" rather than given a phase name because it is not a phase — it has no
+approval, no entry condition and no prerequisite relationship to P0–P4 — and
+because the record should not imply that it was one. It carries the routing work
+that makes the hidden delegation tools reachable at all, and §7.6 carries its
+measurement.
 
 **P0 — measurement (pre-registered, and not free).** Determine whether context
 growth in real sessions is dominated by (a) mechanical fan-out over known-shape
@@ -1740,16 +1883,43 @@ relaxing it would be a decision about R7 (§19 Q4), not a phase of this design.
 This is the phase that delivers the actual context saving, and the phase P0 can
 cancel.
 
+**Aux — delegation routing. Landed, outside the phase order, and recorded here
+because §13 is where the record says what shipped.** The work is in neither of
+this section's earlier tables, so it is named here with §7.6 carrying the
+measurement. §1.1's question — does a session reach the component at all — is
+the reason it exists: a tool that stays off the provider surface until a host
+opts it in (`§17 A1`) is reachable only through the capability router or by the
+user naming it, and the router's catalog was built from the provider-visible
+set, so the delegation tools were invisible to it. The omission was symmetric
+and pre-existing: `fleet`, `parallel_tasks` and `task` were hidden the same way.
+The change is one optional interface and its carrier (`tool.RoutableTool`,
+`ContractEntry.Triggers`), the four declarations, the `RoutableTools` catalog
+channel, the suggestion block's node-body footer, the discovery gate, and the
+`semanticMaxTokens` fix. What it is not is a new phase: nothing here is a
+prerequisite of P1 or P4, and nothing here changes a provider-visible byte.
+
+Its outcome is mixed and §7.6 records both halves. The value case (g1) works and
+is measured; the cost bound (g2, g3 at zero) holds; and the discovery path built
+to reach a request that matched nothing is **unproven**, because the lexical
+prefilter that feeds it admits a candidate on an English function word and so
+its precondition is nearly never met. `docs/ORCHESTRATION.md` and its zh-CN pair
+carry one paragraph for the part a user can see — the router may suggest
+`orchestrate` and the other delegation tools before the user names them, under a
+`suggest` policy — and nothing about the pool, the prefilter or the discovery
+branch, because those are internals and no user-facing contract depends on them.
+
 **P4 — conditional sandbox evaluation (expected not to be built).** Only if §6's
 conditions hold. Note that `internal/sandbox/` and `internal/shellrun/` confine
 *shell execution*; they contain no tool bridge, so a PTC bridge would be a new
 subsystem rather than a reuse.
 
-**Landing status.** Thirteen Go files under `internal/`, three more in `tools/contextgrowth/`, plus the two integration guides: the spec
+**Landing status.** Seventeen Go files under `internal/`, three more in
+`tools/contextgrowth/`, plus the two integration guides: the spec
 type, its compiler and the compiler's tests, P1's runner and the runner's tests,
 P2's host tool and the tool's own tests, four `boot` boundary tests that close
-P2's surface rows and A4, A5 and A2, and the two in-package `fleet` cases that
-complete A5 and pin P1's equivalence claim.
+P2's surface rows and A4, A5 and A2, the two in-package `fleet` cases that
+complete A5 and pin P1's equivalence claim, and the four files of the "Aux"
+table's routing work, which the line-by-line table below lists.
 P1's *other* half has still not landed — `outputs` and the `reduce` item kind
 added to `fleet`'s own schema (`internal/agent/fleet.go:43-75`) — and neither
 has anything §13 lists as a later phase. What the runner's own acceptance *is*
@@ -1784,8 +1954,16 @@ of this section.
 | `tools/contextgrowth/record.go` | 182 | P0's recorder: one transcript to its attributed growth, with the fan-out test §13 pre-registered |
 | `tools/contextgrowth/main.go` | 215 | P0's driver: the (a)/(b) split, the 80% gate, and the verdict |
 | `tools/contextgrowth/record_test.go` | 137 | the harness's own cases: role attribution, the repetition threshold, and both halves of the ship condition |
-| `docs/ORCHESTRATION.md` | 336 | the shipped API, in the mode `docs/ACP.md` established |
-| `docs/ORCHESTRATION.zh-CN.md` | 190 | its zh-CN pair |
+| `docs/ORCHESTRATION.md` | 344 | the shipped API, in the mode `docs/ACP.md` established |
+| `docs/ORCHESTRATION.zh-CN.md` | 191 | its zh-CN pair |
+| `internal/tool/tool.go` + `internal/tool/contract.go` | +12 / +24 | §7.6's opt-in: the `RoutableTool` interface and the `Triggers` carrier that stays off the schema (`json:"-"`) |
+| `internal/capability/catalog.go` | +35/-10 | §7.6's catalog channel: `RoutableTools` and `routableToolEntries` |
+| `internal/capability/semantic.go` | +132/-10 | §7.6's router: the discovery pool and gate, the truncation error, and the raised ceiling |
+| `internal/control/capability.go` | +70/-10 | §7.6's two gates and the hidden-tool catalog wiring |
+| `internal/capability/tool_routing_test.go` | 61 | §7.6's routing rules in-package |
+| `internal/capability/semantic_truncation_test.go` | 54 | §7.6's truncation counter: a cut-off answer is not a judgement |
+| `internal/control/capability_semantic_gate_test.go` | 74 | §7.6's two gates pinned per measured request |
+| `internal/boot/effect_delegation_routing_test.go` | 63 | §7.6 at the `boot` boundary: the catalog grows by exactly the declared tools, and no trigger reaches the provider surface |
 
 The line counts are `wc -l` on the tree this revision was checked against;
 they move with any edit to those files, so a later reader should re-measure
@@ -1975,6 +2153,19 @@ This feature is done when all of the following hold:
   weighed that against `docs/ORCHESTRATION.md` already carrying the schema. If a
   later revision wants it, the cost and the budget are the trade to restate, not
   the availability.
+- A hidden delegation tool is reachable without the user naming it, and the cost
+  of that reachability is bounded. **Satisfied with one half unproven.** The
+  router counts a tool that declared `CapabilityTriggers`, the suggestion block
+  names `read_subagent_result` beside the ref it hands out, and §7.6 carries the
+  four-group measurement: g1 delegates on a trigger match, g2 and g3 pay nothing
+  at all, and g4 does not delegate. The discovery path — the branch that exists
+  to reach a request which matched nothing — is implemented, gated on a
+  multi-target signal, and **reached twice in a twelve-request probe, neither
+  time by the request it was built for**, because the shared lexical prefilter
+  admits a candidate on an English function word (§7.6). No test pins that the
+  branch is reachable in production. This is recorded as the outcome, not
+  carried as a defect: fixing the prefilter changes which requests enter the
+  semantic call, and no measurement yet says the change pays.
 - The PR carries `Cache-impact: none` (or `low` with a guard test) and
   `Documentation-impact: updated`.
 - `go run ./tools/repolint` passes with new files at budget 0 — no baseline
@@ -2085,3 +2276,22 @@ but a phase decision (§13 P0/P3) and the team gate §9.5 records below.
 
 The previous draft's fourth question — whether `gate` deserves its own node
 kind — is closed by its own answer, and the kind is deleted (§0.1).
+
+6. **Open, and newly created by §7.6: should the lexical prefilter match whole
+   words?** It currently tests each request token of length ≥ 3 with
+   `strings.Contains` against a blob of the entry's name and triggers
+   (`internal/capability/semantic.go:141-150`), so "and" selects
+   `security-review` and `task` and "the" selects `parallel_tasks`. That is what
+   makes the discovery branch nearly unreachable, because discovery needs an
+   empty pool. The direction that was measured is the harmful one: every
+   over-admission in §7.6's trace is a fragment match, and no observed entry
+   reached the pool *only* by a whole-word match that the strict rule would have
+   rejected. That does not settle it — the strict rule is `triggerMatch`
+   (`internal/capability/capability.go:350-358`), which the deterministic pass
+   already runs, so replacing one with the other would leave the semantic call
+   a strict superset of a decision that has already been made, and it is not
+   obvious that is what a prefilter should be. A third option, matching the
+   request against declared triggers with word boundaries, sits between them and
+   is unmeasured. Whatever is chosen is a change to which requests enter the
+   semantic call, and the question is worth answering only together with a
+   measurement of the suggestion path's value, which §7.6 records as unproven.

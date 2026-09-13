@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,7 +18,13 @@ const (
 	semanticMaxResults    = 3
 	semanticTimeout       = 3 * time.Second
 	semanticCacheTTL      = 5 * time.Minute
-	semanticMaxTokens     = 256
+	// semanticMaxTokens bounds the router's answer, and it has to clear the
+	// answer plus whatever the endpoint spends thinking first: a measured
+	// reasoning model spent all 256 on chain-of-thought and returned an empty
+	// body, which read as "no relevant capability" rather than as a cut-off.
+	// The observed answer is 17 tokens, so the ceiling costs nothing in the
+	// ordinary case and only matters when a judgement is hard.
+	semanticMaxTokens = 1024
 )
 
 // SemanticRouter calls a lightweight model when deterministic routing has no
@@ -57,21 +64,38 @@ func (r *SemanticRouter) RouteSemantic(ctx context.Context, input string, catalo
 		return decision
 	}
 	candidates := semanticPool(input, catalog.Entries)
+	reason := "lightweight semantic match"
+	if len(candidates) == 0 {
+		// Discovery: nothing matched, so there is no prefilter to rank and the
+		// model is asked against the whole routable directory. Reaching here is
+		// the caller's decision — that is what keeps it off an ordinary turn.
+		candidates = DiscoveryPool(catalog.Entries)
+		reason = "semantic discovery of an unrouted request"
+	}
 	if len(candidates) == 0 {
 		return decision
 	}
 
-	cacheKey := input + "|" + catalog.Fingerprint
+	cacheKey := reason + "|" + input + "|" + catalog.Fingerprint
 	if ids, ok := r.cacheGet(cacheKey); ok {
 		return mergeSemanticIDs(decision, catalog, ids, "semantic cache hit")
 	}
 
 	ids, err := r.callModel(ctx, input, candidates)
-	if err != nil || len(ids) == 0 {
+	if err != nil {
+		// A cut-off answer and a "nothing matched" answer are both empty, but
+		// only one of them means the router could not finish its job. It is
+		// counted apart so the next occurrence is visible instead of silent.
+		if errors.Is(err, errSemanticTruncated) && r.Audit != nil {
+			r.Audit.RecordSemanticTruncated()
+		}
+		return decision
+	}
+	if len(ids) == 0 {
 		return decision
 	}
 	r.cachePut(cacheKey, ids)
-	return mergeSemanticIDs(decision, catalog, ids, "lightweight semantic match")
+	return mergeSemanticIDs(decision, catalog, ids, reason)
 }
 
 func hasStrongMatch(d RouteDecision) bool {
@@ -90,7 +114,15 @@ func semanticPool(text string, entries []Entry) []Entry {
 		if e.Status == StatusDisabled || e.Status == StatusFailed {
 			continue
 		}
-		if e.Kind != KindSkill && e.Kind != KindMCPTool && e.Kind != KindMCPServer {
+		switch e.Kind {
+		case KindSkill, KindMCPTool, KindMCPServer:
+		case KindTool:
+			// Only a tool that declared triggers is a candidate. An undeclared
+			// tool has nothing to match against and would only add noise.
+			if len(e.Triggers) == 0 {
+				continue
+			}
+		default:
 			continue
 		}
 		if e.AutoUse == AutoUseOff {
@@ -99,7 +131,7 @@ func semanticPool(text string, entries []Entry) []Entry {
 		if negativeMatch(text, e.NegativeTriggers) {
 			continue
 		}
-		blob := normalize(e.Name + " " + e.Description + " " + strings.Join(e.Triggers, " "))
+		blob := semanticPoolBlob(e)
 		if blob == "" {
 			continue
 		}
@@ -125,6 +157,76 @@ func semanticPool(text string, entries []Entry) []Entry {
 		scored = scored[:semanticMaxCandidates]
 	}
 	return scored
+}
+
+// semanticPoolBlob is what the cheap lexical prefilter matches against. It is
+// the name plus the declared triggers and nothing else: a full description makes
+// almost every entry match almost every request ("parallel", "plan"), which is
+// how a pool of four tools filled for a request about three files.
+func semanticPoolBlob(e Entry) string {
+	return normalize(e.Name + " " + strings.Join(e.Triggers, " "))
+}
+
+// DiscoveryPool is the candidate set for a discovery call, i.e. one made when
+// deterministic routing matched nothing. It is deliberately the whole routable
+// directory: with no trigger fired there is nothing to prefilter on, and the
+// caller bounds the request instead by requiring a multi-target signal.
+func DiscoveryPool(entries []Entry) []Entry {
+	out := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind != KindTool || len(e.Triggers) == 0 {
+			continue
+		}
+		if e.Status == StatusDisabled || e.Status == StatusFailed || e.AutoUse == AutoUseOff {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// LooksMultiTarget reports whether a request names more than one thing to act
+// on. It is the gate on discovery: a request with a single target has nothing to
+// fan out over, so spending a model call on it cannot pay.
+func LooksMultiTarget(text string) bool {
+	text = normalize(text)
+	if text == "" {
+		return false
+	}
+	targets := make([]string, 0, maxDiscoveryTargets)
+	for tok := range strings.FieldsSeq(text) {
+		if !looksLikeTarget(tok) {
+			continue
+		}
+		targets = append(targets, tok)
+		if len(targets) >= maxDiscoveryTargets {
+			break
+		}
+	}
+	return len(targets) >= 2
+}
+
+// maxDiscoveryTargets bounds the scan; two distinct targets is the whole claim.
+const maxDiscoveryTargets = 2
+
+// looksLikeTarget recognises a filename or path fragment. It is intentionally
+// narrow: prose nouns would make almost any sentence look multi-target, which is
+// the same false-positive that filling a pool with descriptions caused.
+func looksLikeTarget(tok string) bool {
+	tok = strings.Trim(tok, ".,;:!?()'`*")
+	if len(tok) < 4 || !strings.Contains(tok, ".") {
+		return false
+	}
+	ext := tok[strings.LastIndex(tok, ".")+1:]
+	if len(ext) < 1 || len(ext) > 5 {
+		return false
+	}
+	for _, r := range ext {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 func containsHan(text string) bool {
@@ -206,7 +308,23 @@ func (r *SemanticRouter) callModel(ctx context.Context, input string, candidates
 			}
 		}
 	}
-	return parseSemanticIDs(text.String())
+	ids, err := parseSemanticIDs(text.String())
+	if err != nil && answerHitCeiling(usage) {
+		return nil, errSemanticTruncated
+	}
+	return ids, err
+}
+
+// errSemanticTruncated marks a router answer that stopped at the output ceiling
+// rather than judging that nothing matched. The two are the same empty string,
+// and treating them alike is how a too-small ceiling stays invisible.
+var errSemanticTruncated = errors.New("semantic router answer was truncated")
+
+// answerHitCeiling reports whether the call provably spent its whole output
+// budget. Only usage can prove it: an empty body with no usage is still an error
+// to the caller, but calling it truncated would report a cause nobody measured.
+func answerHitCeiling(usage *provider.Usage) bool {
+	return usage != nil && usage.CompletionTokens >= semanticMaxTokens
 }
 
 func parseSemanticIDs(raw string) ([]string, error) {

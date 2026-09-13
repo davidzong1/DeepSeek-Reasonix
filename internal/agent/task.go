@@ -474,6 +474,15 @@ func (t *TaskTool) Schema() json.RawMessage {
 // ReadOnly is false: a sub-agent can invoke any whitelisted tool, including
 // writers. Conservative classification keeps the parallel-dispatch path from
 // running two sub-agents at once and letting their writes race.
+// CapabilityTriggers declares when the router should suggest a single
+// sub-agent. Narrow on purpose: "ask another agent" work, not ordinary work.
+func (t *TaskTool) CapabilityTriggers() []string {
+	return []string{
+		"delegate to a sub-agent", "use a subagent", "spawn a sub-agent",
+		"hand this off to an agent", "委派", "交给子 agent", "用子代理",
+	}
+}
+
 func (t *TaskTool) ReadOnly() bool { return false }
 
 // ResolveProfile extracts model/effort from task args (and optional profile

@@ -22,14 +22,18 @@ type Catalog struct {
 // CatalogOptions builds a catalog from live tools, skills, configured MCP
 // servers (including auto_start=false), schema cache, and host failure state.
 type CatalogOptions struct {
-	Tools       []tool.ContractEntry
-	Skills      []skill.Skill
-	Plugins     []config.PluginEntry
-	Connected   map[string]bool // server name → connected
-	Failed      map[string]string
-	Disabled    map[string]bool
-	CachedTools map[string][]plugin.CachedTool // server → tools
-	CacheKeyOK  map[string]bool                // server → schema-cache key match
+	Tools []tool.ContractEntry
+	// RoutableTools are tools the provider schema does not show but which
+	// declare routing triggers. They contribute routable entries only: the tool
+	// surface a skill's dependency check reads stays Tools.
+	RoutableTools []tool.ContractEntry
+	Skills        []skill.Skill
+	Plugins       []config.PluginEntry
+	Connected     map[string]bool // server name → connected
+	Failed        map[string]string
+	Disabled      map[string]bool
+	CachedTools   map[string][]plugin.CachedTool // server → tools
+	CacheKeyOK    map[string]bool                // server → schema-cache key match
 	// ProxyTools carries host-observed live tools of servers connected through
 	// the use_capability proxy: they are absent from Tools (never registered)
 	// yet must stay routable after the server turns ready.
@@ -94,6 +98,7 @@ func BuildCatalog(opts CatalogOptions) Catalog {
 		}
 	}
 	entries = append(entries, toolEntries...)
+	entries = append(entries, routableToolEntries(opts)...)
 	entries = append(entries, SkillEntriesForCatalog(opts.Skills, opts.Tools)...)
 	entries = append(entries, MCPServerEntries(opts)...)
 
@@ -134,6 +139,20 @@ func SkillEntriesForCatalog(skills []skill.Skill, tools []tool.ContractEntry) []
 			out[i].Requires = cleanList(skills[i].Requires)
 			out[i].Profiles = normalizeProfiles(skills[i].Profiles)
 		}
+	}
+	return out
+}
+
+// routableToolEntries turns a hidden tool's declared triggers into a routable
+// entry. A tool without triggers contributes nothing, so the catalog does not
+// grow for tools that never opted in.
+func routableToolEntries(opts CatalogOptions) []Entry {
+	out := make([]Entry, 0, len(opts.RoutableTools))
+	for _, e := range ToolEntries(opts.RoutableTools) {
+		if e.Kind != KindTool || len(e.Triggers) == 0 {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }

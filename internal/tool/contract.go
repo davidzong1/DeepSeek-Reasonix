@@ -16,6 +16,22 @@ type ContractEntry struct {
 	Description string
 	ReadOnly    bool
 	Schema      json.RawMessage
+	// Triggers carries a RoutableTool's routing triggers, empty for every other
+	// tool. Host-internal: no provider or extension payload carries it, and the
+	// catalog turns a non-empty list into a routable entry.
+	Triggers []string `json:"-"`
+}
+
+// cleanTriggers trims and lowercases a routing declaration. Case never matters
+// to the matcher, and folding here keeps the catalog snapshot canonical.
+func cleanTriggers(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if t := strings.ToLower(strings.TrimSpace(v)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // BuiltinContractEntries returns a stable snapshot of compile-time built-ins.
@@ -32,12 +48,16 @@ func contractEntriesFromTools(tools []Tool, canonical map[string]json.RawMessage
 				schema = append(json.RawMessage(nil), c...)
 			}
 		}
-		entries = append(entries, ContractEntry{
+		entry := ContractEntry{
 			Name:        t.Name(),
 			Description: strings.TrimSpace(t.Description()),
 			ReadOnly:    t.ReadOnly(),
 			Schema:      schema,
-		})
+		}
+		if routable, ok := t.(RoutableTool); ok {
+			entry.Triggers = cleanTriggers(routable.CapabilityTriggers())
+		}
+		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries

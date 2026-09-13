@@ -130,6 +130,13 @@ func ToolEntries(tools []tool.ContractEntry) []Entry {
 			Status:      StatusReady,
 			ReadOnly:    t.ReadOnly,
 			ToolName:    t.Name,
+			Triggers:    cleanList(t.Triggers),
+		}
+		// A declared trigger is the tool's opt-in to routing, and suggest is the
+		// only policy it can carry: a tool has no authored auto-use to honor, and
+		// requiring a delegation tool would override the model's judgment.
+		if e.Kind == KindTool && len(e.Triggers) > 0 {
+			e.AutoUse = AutoUseSuggest
 		}
 		if server, raw, ok := tool.SplitMCPName(t.Name); ok {
 			e.ID = "mcp-tool:" + server + "/" + raw
@@ -292,6 +299,11 @@ func routeEntry(text string, e Entry) (AutoUse, string, bool) {
 		}
 		if e.Name == "review" && looksLikeReview(text) {
 			return AutoUsePrefer, "the user is asking for review or issue inspection", true
+		}
+	}
+	if e.Kind == KindTool {
+		if len(e.Triggers) > 0 && triggerMatch(text, e.Triggers) {
+			return e.AutoUse, "the request matches this tool's routing triggers", true
 		}
 	}
 	if e.Kind == KindMCPTool {

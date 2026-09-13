@@ -209,6 +209,14 @@ Two consequences worth knowing:
   delegation plan, not a workflow engine, and a request framed as a workflow
   should be answered with these four modes or refused — not extended until the
   word fits.
+- **The host may suggest these tools before you ask for them.** Because a hidden
+  tool would otherwise be unreachable unless the user named it, the capability
+  router counts `orchestrate` — and `task`, `fleet` and `parallel_tasks` with it
+  — as suggestable when the request uses fan-out wording ("in parallel", "fan
+  out", "dependency graph", 编排, 扇出). A suggestion is a transient line on the
+  turn tail and carries a `suggest` policy: consider it, decline it if it does
+  not fit. Nothing about the provider-visible prefix changes, and declining
+  costs nothing.
 - **Opting it into the provider surface reuses the existing host-tool channel**
   (`boot.Options.ExtraTools`, or whatever a host registers). There is no
   separate config key, and opting in is a deliberate act: the tool schema and
