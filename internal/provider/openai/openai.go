@@ -898,7 +898,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			return emitted, scanner.DecodeError(c.name, data, err)
 		}
 		if sr.Error != nil {
-			return emitted, fmt.Errorf("%s: %s", c.name, sr.Error.Message)
+			return emitted, provider.CapacityOrError(c.name, c.identity.DisplayName, c.identity.Protocol, provider.StreamErrorCode(data), sr.Error.Message, fmt.Errorf("%s: %s", c.name, sr.Error.Message))
 		}
 		if len(sr.Choices) > 0 && sr.Choices[0].FinishReason != nil && *sr.Choices[0].FinishReason != "" {
 			lastFinishReason = *sr.Choices[0].FinishReason

@@ -623,7 +623,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			if ev.Error != nil && ev.Error.Message != "" {
 				msg = ev.Error.Message
 			}
-			send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, msg)})
+			send(provider.Chunk{Type: provider.ChunkError, Err: provider.CapacityOrError(c.name, c.identity.DisplayName, c.identity.Protocol, provider.StreamErrorCode(data), msg, fmt.Errorf("%s: %s", c.name, msg))})
 			return
 		}
 	}

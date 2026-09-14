@@ -634,7 +634,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 					if authErr := authErrorFromResponse(c, event.Response.Error); authErr != nil {
 						err = authErr
 					} else {
-						err = fmt.Errorf("responses: %s", event.Response.Error.Message)
+						err = provider.CapacityOrError(c.name, c.identity.DisplayName, c.identity.Protocol, event.Response.Error.Code, event.Response.Error.Message, fmt.Errorf("responses: %s", event.Response.Error.Message))
 					}
 				}
 				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: err}) {
