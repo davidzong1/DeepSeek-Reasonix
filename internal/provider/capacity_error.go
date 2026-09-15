@@ -3,6 +3,7 @@ package provider
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -62,6 +63,16 @@ func CapacityOrError(name, displayName, protocol, ref, message string, fallback 
 		}
 	}
 	return fallback
+}
+
+// AsCapacityError reports whether err carries a capacity refusal, so callers
+// can tell one apart from the status class it is classified under.
+func AsCapacityError(err error) *CapacityError {
+	var capacity *CapacityError
+	if errors.As(err, &capacity) {
+		return capacity
+	}
+	return nil
 }
 
 // StreamErrorCode reads the code from an OpenAI-shaped error event payload,

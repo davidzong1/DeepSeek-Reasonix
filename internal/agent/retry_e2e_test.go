@@ -202,6 +202,32 @@ func TestAgentRetriesResponsesOverloadInStream(t *testing.T) {
 	}
 }
 
+// TestAgentStopsAtCapacityRefusalBudget pins the retry budget for a capacity
+// refusal: it is replayed on the short backoff but never enters the long wait,
+// which exists for a provider that cannot be reached. Every replay carries the
+// full prompt, so an unbounded wait multiplies billed traffic ~13x.
+func TestAgentStopsAtCapacityRefusalBudget(t *testing.T) {
+	var reqs atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		reqs.Add(1)
+		_, _ = io.WriteString(w, `data: {"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`+"\n\n")
+	}))
+	defer srv.Close()
+
+	prov, err := openai.New(provider.Config{Name: "opencode-go", BaseURL: srv.URL, Model: "gpt-5.6-luna", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New provider: %v", err)
+	}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, &recordSink{})
+	if err := a.Run(context.Background(), "hi"); err == nil {
+		t.Fatal("a persistent capacity refusal must fail the turn")
+	}
+	if got := reqs.Load(); got != maxSamplingAttempts {
+		t.Fatalf("provider requests = %d, want %d (short backoff only, no long wait)", got, maxSamplingAttempts)
+	}
+}
+
 // TestDeepSeekFlashMissingReasoningRecoveryWithRealSSE exercises the actual
 // OpenAI-compatible decoder shape used by the official Flash endpoint. The
 // first response emits a tool call without reasoning_content; the second exact

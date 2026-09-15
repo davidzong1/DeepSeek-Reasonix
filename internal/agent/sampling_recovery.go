@@ -215,7 +215,10 @@ func (a *Agent) canWaitSampling(ctx context.Context, s *samplingRecoveryState, f
 
 func (a *Agent) waitSamplingRetry(ctx context.Context, s *samplingRecoveryState, result *streamedTurn, sink *deferredStreamSink, attempt int, id string) bool {
 	failure := provider.ClassifyRecovery(result.err)
-	waiting := attempt >= maxSamplingAttempts && a.canWaitSampling(ctx, s, failure)
+	// A capacity refusal was answered and billed in full, so it earns the short
+	// backoff replays but never the long wait, which exists for a provider that
+	// cannot be reached at all.
+	waiting := attempt >= maxSamplingAttempts && provider.AsCapacityError(result.err) == nil && a.canWaitSampling(ctx, s, failure)
 	if !failure.Retryable || (attempt >= maxSamplingAttempts && !waiting) {
 		return false
 	}
