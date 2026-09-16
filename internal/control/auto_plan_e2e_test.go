@@ -107,18 +107,13 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
-	var seeded bool
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
 			switch e.Kind {
 			case event.ApprovalRequest:
 				approvalID <- e.Approval.ID
-			case event.ToolDispatch:
-				if e.Tool.ID == "plan-seed" {
-					seeded = true
-				}
 			}
 		}),
 	})
@@ -138,8 +133,8 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	if c.PlanMode() {
 		t.Fatal("plan mode should be off after approval")
 	}
-	if !seeded {
-		t.Fatal("approved plan should seed the task list")
+	if got := c.Todos(); len(got) != 0 {
+		t.Fatalf("approved plan populated todo state: %+v", got)
 	}
 	if got := lastAssistantText(msgs); got != "Done — implemented the plan." {
 		t.Fatalf("last assistant text = %q, want the execution turn's answer", got)
@@ -149,7 +144,7 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	}
 }
 
-func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T) {
+func TestApprovedPlanDoesNotSeedTodosWithoutModelTodoWrite(t *testing.T) {
 	prov := &scriptedTurns{turns: planThenExecuteTurns(
 		"Plan:\n1. Add the config field\n2. Wire it into boot",
 		"Done.",
@@ -157,18 +152,13 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
-	var planSeedResults []string
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
 			switch e.Kind {
 			case event.ApprovalRequest:
 				approvalID <- e.Approval.ID
-			case event.ToolResult:
-				if e.Tool.ID == "plan-seed" && e.Tool.Name == "todo_write" && e.Tool.Err == "" {
-					planSeedResults = append(planSeedResults, e.Tool.Args)
-				}
 			}
 		}),
 	})
@@ -181,15 +171,8 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 		t.Fatalf("runTurnWithRaw: %v", err)
 	}
 
-	if len(planSeedResults) != 2 {
-		t.Fatalf("plan-seed todo results = %d, want seed then completion: %#v", len(planSeedResults), planSeedResults)
-	}
-	last := planSeedResults[len(planSeedResults)-1]
-	if strings.Contains(last, `"in_progress"`) || strings.Contains(last, `"pending"`) {
-		t.Fatalf("final plan-seed todos should be completed so the panel hides: %s", last)
-	}
-	if !strings.Contains(last, `"completed"`) {
-		t.Fatalf("final plan-seed todos should contain completed items: %s", last)
+	if got := c.Todos(); len(got) != 0 {
+		t.Fatalf("plan approval seeded todo state: %+v", got)
 	}
 }
 
@@ -203,7 +186,7 @@ func TestPlanGateRejectionStaysInPlan(t *testing.T) {
 
 	approvalID := make(chan string, 1)
 	var seeded bool
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {

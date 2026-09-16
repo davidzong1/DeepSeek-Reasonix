@@ -6,22 +6,16 @@ import { applyTerminalThemePreference } from "../lib/terminalTheme";
 import { applyConversationWidth } from "../lib/conversationWidth";
 import { hydrateReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
 import { hydrateSessionExperience } from "../lib/sessionExperience";
-import { applyLayoutStyleDefaults } from "../store/layout";
 import { loadBotRuntimeStatus } from "./botRuntimeAdapter";
 import type { CommandAuthority } from "../lib/commandOutcome";
 import type { BotRuntimeStatusView, DesktopStartupSettingsView, SettingsView } from "../lib/types";
 
 export type DesktopPreferencesSnapshot = DesktopStartupSettingsView | SettingsView;
-// A stored "classic" predates the style's removal; those installs land on workbench.
-export function layoutStyleFromSnapshot(style?: string) {
-  return style === "creation" ? "creation" : "workbench";
-}
 export function applyPreferencesAppearance(settings: DesktopPreferencesSnapshot) {
   const theme = normalizeThemePreference(settings.desktopTheme);
   applyConfiguredBaseAppearance(theme, normalizeThemeStyleForTheme(settings.desktopThemeStyle, theme));
   applyTerminalThemePreference(settings.desktopTerminalTheme);
   applyConversationWidth(settings.conversationWidth);
-  applyLayoutStyleDefaults(layoutStyleFromSnapshot(settings.desktopLayoutStyle));
   hydrateSessionExperience(settings.sessionExperience);
   hydrateReasoningDisplayMode(settings.sessionExperience === "deep" ? "expanded" : "auto", settings.sessionExperience === "deep");
   return normalizeLangPref(settings.desktopLanguage);

@@ -6,6 +6,16 @@ type OrganizationBindings = ProjectTreeOrganizationBindings;
 const groupsByKey: Record<string, SessionGroup[]> = {};
 const groupRevisionsByKey: Record<string, number> = {};
 
+// Match the native project-tree:changed notification across mounted browsers.
+const treeListeners = new Set<() => void>();
+export function subscribeMockProjectTreeChanged(listener: () => void): () => void {
+  treeListeners.add(listener);
+  return () => { treeListeners.delete(listener); };
+}
+export function notifyMockProjectTreeChanged(): void {
+  treeListeners.forEach(listener => listener());
+}
+
 function organizationKey(scope: string, workspaceRoot: string): string {
   return scope === "global" ? "global|" : `project|${workspaceRoot}`;
 }

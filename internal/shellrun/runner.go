@@ -42,7 +42,9 @@ var errForegroundTimeout = errors.New("shell foreground timeout")
 // Request describes one foreground shell launch. Argv must already include the
 // interpreter and any sandbox wrapping; Command is only for diagnostics.
 type Request struct {
-	Argv              []string
+	Argv []string
+	// ProbeArgv is an optional same-policy Windows shell preflight.
+	ProbeArgv         []string
 	Dir               string
 	Env               []string
 	Timeout           time.Duration
@@ -80,6 +82,9 @@ type Result struct {
 // lock-safe collector, and classifies timeout / cancel / launch / execution
 // failures. Combined output is always returned so callers can feed the model.
 func RunForeground(ctx context.Context, req Request) Result {
+	if failure := CheckShellLaunch(ctx, req); failure != nil {
+		return *failure
+	}
 	if len(req.Argv) == 0 {
 		return Result{
 			State:        tool.ShellStateFailed,
@@ -106,8 +111,10 @@ func RunForeground(ctx context.Context, req Request) Result {
 	collector := newOutputCollector(combinedOutputMaxBytes, tool.OutputTailMaxBytes)
 	var writers []io.Writer
 	writers = append(writers, collector.combined, collector.tail)
+	var progress *progressWriter
 	if req.Progress != nil {
-		writers = append(writers, newProgressWriter(req.Progress, progressOutputMaxBytes, progressOutputTruncated))
+		progress = newProgressWriter(req.Progress, progressOutputMaxBytes, progressOutputTruncated)
+		writers = append(writers, progress)
 	}
 	// Stdout and Stderr must stay the *same* writer value: os/exec then hands the
 	// child a single pipe, so the two streams interleave in the order the child
@@ -136,6 +143,9 @@ func RunForeground(ctx context.Context, req Request) Result {
 		CommandPreview:  req.CommandPreview,
 	})
 
+	if progress != nil {
+		progress.Flush()
+	}
 	out := Result{
 		Combined:   collector.combined.String(),
 		OutputTail: collector.tailString(),
@@ -144,6 +154,10 @@ func RunForeground(ctx context.Context, req Request) Result {
 		Cmd:        cmd,
 	}
 
+	return classifyForegroundResult(runCtx, req, out, err)
+}
+
+func classifyForegroundResult(runCtx context.Context, req Request, out Result, err error) Result {
 	if req.PreserveWaitDelay && runCtx.Err() == nil && errors.Is(err, exec.ErrWaitDelay) {
 		err = nil
 	}
@@ -184,6 +198,9 @@ func RunForeground(ctx context.Context, req Request) Result {
 		out.State = tool.ShellStateFailed
 		out.FailurePhase = tool.ShellPhaseExecution
 		out.Err = fmt.Errorf("command exited: %w", err)
+		if diagnostic := WindowsRuntimeDiagnostic(out.Combined); diagnostic != "" {
+			out.Err = fmt.Errorf("%s: %w", diagnostic, out.Err)
+		}
 		return out
 	}
 	// Process never produced an exit status — launch / dependency style failure.
@@ -248,7 +265,7 @@ func newOutputCollector(combinedLimit, tailLimit int) *outputCollector {
 func (c *outputCollector) tailString() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return string(c.tail.buf)
+	return string(completeTail(c.tail.buf))
 }
 
 // boundedBuffer keeps complete output up to limit. Once output crosses the
@@ -282,6 +299,8 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		b.tail = appendBoundedTail(b.tail, previous, b.tailLimit)
 		if b.buf.Len() > headLimit {
 			b.buf.Truncate(headLimit)
+		} else if remaining := headLimit - b.buf.Len(); remaining > 0 {
+			b.buf.Write(p[:min(remaining, len(p))])
 		}
 	}
 	b.tail = appendBoundedTail(b.tail, p, b.tailLimit)
@@ -296,9 +315,9 @@ func (b *boundedBuffer) String() string {
 	}
 	var out strings.Builder
 	out.Grow(b.buf.Len() + len(b.marker) + len(b.tail))
-	out.Write(b.buf.Bytes())
+	out.Write(completePrefix(b.buf.Bytes()))
 	out.WriteString(b.marker)
-	out.Write(b.tail)
+	out.Write(completeTail(b.tail))
 	return out.String()
 }
 
@@ -339,6 +358,7 @@ type progressWriter struct {
 	forwarded int
 	marker    string
 	truncated bool
+	pending   []byte
 }
 
 func newProgressWriter(emit func(string), limit int, marker string) *progressWriter {
@@ -354,17 +374,6 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 	if w.emit == nil || w.truncated {
 		return len(p), nil
 	}
-	remaining := max(0, w.limit-w.forwarded)
-	forward := min(len(p), remaining)
-	if forward > 0 {
-		w.emit(string(p[:forward]))
-		w.forwarded += forward
-	}
-	if forward < len(p) {
-		w.truncated = true
-		if w.marker != "" {
-			w.emit(w.marker)
-		}
-	}
+	w.writeUTF8(p, false)
 	return len(p), nil
 }

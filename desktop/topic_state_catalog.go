@@ -15,5 +15,5 @@ func (a *App) ListProjectTopics(req ProjectTopicPageRequest) (ProjectTopicPage, 
 	if err := topicStateReadable(topicTitleRoot(req.Scope, req.WorkspaceRoot)); err != nil {
 		return ProjectTopicPage{Items: []ProjectNode{}}, err
 	}
-	return a.listProjectTopics(req)
+	return a.unifiedProjectTopics(req)
 }

@@ -233,16 +233,22 @@ type Tool struct {
 	ID        string
 	Name      string
 	Args      string
+	// Todos is the complete semantic todo replacement committed with a
+	// successful todo_write result. TodoWritten distinguishes an empty list
+	// from an older event with no semantic payload.
+	Todos       []Todo
+	TodoWritten bool
 	// ResolvedName/CapabilityID describe the real target behind a stable proxy
 	// while Name/Args remain the provider-visible call. They are optional local
 	// display metadata and never enter provider requests.
-	ResolvedName string
-	CapabilityID string
-	Output       string // ToolResult: the result text fed to the model
-	Err          string // ToolResult: non-empty when the call failed or was blocked
-	ReadOnly     bool
-	Truncated    bool  // ToolResult: Output was head+tailed before display/model
-	DurationMs   int64 // ToolResult: wall-clock execution time in milliseconds
+	ResolvedName   string
+	CapabilityID   string
+	Output         string // ToolResult: the result text fed to the model
+	Err            string // ToolResult: non-empty when the call failed or was blocked
+	PresentedFiles []provider.PresentedFile
+	ReadOnly       bool
+	Truncated      bool  // ToolResult: Output was head+tailed before display/model
+	DurationMs     int64 // ToolResult: wall-clock execution time in milliseconds
 	// StartedAt/EndedAt are unix-millisecond execution bounds (ToolResult).
 	// Zero when the call never ran (dependency-skipped, cancelled, synthetic).
 	StartedAt int64
@@ -430,6 +436,9 @@ type Event struct {
 	RuntimeEpoch     string                    // originating controller incarnation
 	SubmissionID     string                    // exact optimistic submit correlation
 	PromptKind       string                    // interactive prompt kind for lifecycle events
+	InteractionState string                    // PromptAnswered: answered | rejected | cancelled | unavailable
+	DomainKind       string                    // host-internal state event committed atomically with this lifecycle event
+	DomainPayload    json.RawMessage           // host-internal payload for DomainKind
 	TurnID           string                    // stable id of the owning top-level turn
 	Sequence         uint64                    // monotonic session-local event sequence
 	Status           TurnStatus                // lifecycle state after this event
@@ -488,6 +497,11 @@ type Event struct {
 	PhaseName TurnPhaseName
 	// Completion is set on CompletionSummary events.
 	Completion *CompletionSummaryInfo
+	// CommittedMessage is the exact provider transcript record paired with a
+	// terminal tool result. It is host-internal and omitted from frontend wire
+	// payloads; the session event store commits it atomically with tool/result
+	// and any todo/write state transition.
+	CommittedMessage *provider.Message
 }
 
 type WorkspaceWatchState string
@@ -569,24 +583,6 @@ func RecordTurnCompletion(s Sink) {
 	}
 	if ts, ok := s.(TurnCompletionSink); ok {
 		ts.RecordTurnCompletion()
-	}
-}
-
-// OperationAuditSink is an optional sink capability for operation-lifecycle
-// counters. Implementations must keep it content-free: the audit carries host
-// identifiers only, never paths, arguments, or tool output.
-type OperationAuditSink interface {
-	RecordOperationAudit(evidence.OperationAudit)
-}
-
-// RecordOperationAudit reports one operation transition to a sink that wants
-// the counters; every other sink ignores it.
-func RecordOperationAudit(s Sink, a evidence.OperationAudit) {
-	if nilutil.IsNil(s) || a.Metric == "" {
-		return
-	}
-	if os, ok := s.(OperationAuditSink); ok {
-		os.RecordOperationAudit(a)
 	}
 }
 

@@ -114,7 +114,8 @@ export function formatPerformanceContext(snapshot: PerformanceSnapshot): string 
       `transcript cache: ${c.residentSessions}/${c.maxResidentSessions} resident sessions, ` +
         `bodies ${fmtMb(c.bodyBytes / 1048576)} of ${fmtMb(c.bodyBudgetBytes / 1048576)}, ` +
         `markdown ${fmtMb(c.markdownBytes / 1048576)} of ${fmtMb(c.markdownBudgetBytes / 1048576)}, ` +
-        `evictions ${c.historyEvictions} history + ${c.markdownEvictions} markdown`,
+        `evictions ${c.historyEvictions} history + ${c.markdownEvictions} markdown, ` +
+        `window ${c.residentWindowEntries} entries over ${c.windowMaxPages} pages, ${c.reclaimedPages} reclaimed`,
     );
   }
   return lines.join("\n");

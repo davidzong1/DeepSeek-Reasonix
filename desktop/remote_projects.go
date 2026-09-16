@@ -43,6 +43,7 @@ type RemoteTabOpenOptions struct {
 	NewSession   bool   `json:"newSession,omitempty"`
 	SessionName  string `json:"sessionName,omitempty"`
 	SessionPath  string `json:"sessionPath,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
 	SessionTitle string `json:"sessionTitle,omitempty"`
 }
 
@@ -81,8 +82,11 @@ type remoteTab struct {
 	client *http.Client
 	base   string
 	token  string
-	gen    uint64
-	cancel context.CancelFunc
+	// capabilities are fixed by the authenticated serve handshake. Missing
+	// permission-presets-v1 means history-only compatibility with an old serve.
+	capabilities map[string]bool
+	gen          uint64
+	cancel       context.CancelFunc
 	// attachedGen marks a pump that survived the open/session-entry barrier.
 	// It stays internal so ListTabs never exposes a transient non-wire state.
 	attachedGen uint64
@@ -127,6 +131,7 @@ type remoteTabSessionState struct {
 	newSession bool
 	name       string
 	path       string
+	sessionID  string
 	reset      bool
 	// takenOver marks a session a local runtime on the serve host took over:
 	// this tab is a read-only spectator until it reclaims the session.
@@ -181,8 +186,8 @@ func (a *App) registerRemoteTabOpen(tab *remoteTab, hostLabel string, opts Remot
 		// A ready tab keeps its current route until /new succeeds. Revived shells
 		// still need the requested blank identity committed before bootstrap so
 		// their first attach enters the requested session.
-		result.commitSelection = strings.TrimSpace(opts.SessionName) != "" || strings.TrimSpace(opts.SessionPath) != "" || opts.NewSession && result.revive
-		if strings.TrimSpace(opts.SessionName) != "" || strings.TrimSpace(opts.SessionPath) != "" || opts.NewSession {
+		result.commitSelection = strings.TrimSpace(opts.SessionName) != "" || strings.TrimSpace(opts.SessionPath) != "" || strings.TrimSpace(opts.SessionID) != "" || opts.NewSession && result.revive
+		if strings.TrimSpace(opts.SessionName) != "" || strings.TrimSpace(opts.SessionPath) != "" || strings.TrimSpace(opts.SessionID) != "" || opts.NewSession {
 			result.selection = newRemoteTabPendingOpenSelection(opts)
 			result.previousSelection = &remoteTabOpenSelection{
 				session: existing.session, topicTitle: existing.topicTitle,
@@ -282,13 +287,14 @@ func (a *App) commitRemoteTabOpenRegistration(registration *remoteTabOpenRegistr
 		existing.session.newSession = opts.NewSession
 		existing.session.name = strings.TrimSpace(opts.SessionName)
 		existing.session.path = strings.TrimSpace(opts.SessionPath)
+		existing.session.sessionID = strings.TrimSpace(opts.SessionID)
 		if title := strings.TrimSpace(opts.SessionTitle); title != "" {
 			existing.topicTitle = title
 		}
 		if existing.session.newSession {
 			commitRemoteTabAttachRoute(existing, "", true)
-		} else if existing.session.path != "" {
-			commitRemoteTabAttachRoute(existing, existing.session.path, false)
+		} else if route := remoteSessionIdentityRoute(existing.session.path, existing.session.sessionID); route != "" {
+			commitRemoteTabAttachRoute(existing, route, false)
 		}
 		if existing.state == "ready" {
 			registration.selection.identityCommitted = true
@@ -351,9 +357,9 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 	}
 	tab := &remoteTab{
 		id: tabID, ref: ref, state: "connecting",
-		session:   remoteTabSessionState{newSession: opts.NewSession, name: strings.TrimSpace(opts.SessionName), path: strings.TrimSpace(opts.SessionPath)},
+		session:   remoteTabSessionState{newSession: opts.NewSession, name: strings.TrimSpace(opts.SessionName), path: strings.TrimSpace(opts.SessionPath), sessionID: strings.TrimSpace(opts.SessionID)},
 		hostLabel: host.Name, topicTitle: title, model: model,
-		routing: remoteTabSessionRouting{currentPath: strings.TrimSpace(opts.SessionPath), running: map[string]bool{}},
+		routing: remoteTabSessionRouting{currentPath: remoteSessionIdentityRoute(opts.SessionPath, opts.SessionID), running: map[string]bool{}},
 	}
 
 	// Reuse-or-insert is atomic so concurrent opens cannot create two sessions.
@@ -382,7 +388,7 @@ func (a *App) OpenRemoteProjectTab(hostID, workspace string, opts RemoteTabOpenO
 			a.goRemoteTabSafe("remoteTabServe", func() { a.bootstrapRemoteTab(registration.reuseID, hostID, workspace) })
 		} else if registration.selection != nil && registration.selection.deferred {
 			// The reconnect/attach path applies the latest selection after ready.
-		} else if name := strings.TrimSpace(opts.SessionName); name != "" || strings.TrimSpace(opts.SessionPath) != "" {
+		} else if name := strings.TrimSpace(opts.SessionName); name != "" || strings.TrimSpace(opts.SessionPath) != "" || strings.TrimSpace(opts.SessionID) != "" {
 			a.resumeRemoteTabOpenAsync(registration.reuseID, name, opts.SessionPath, opts.SessionTitle, registration.previousSelection)
 		} else {
 			// Reuse the pending blank like EnsureBlankTab does locally; only
@@ -468,6 +474,8 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 		}
 		sessionName := strings.TrimSpace(entry.SessionName)
 		sessionPath := strings.TrimSpace(entry.SessionPath)
+		sessionID := strings.TrimSpace(entry.SessionID)
+		route := remoteSessionIdentityRoute(sessionPath, sessionID)
 		restored := &remoteTab{
 			id: id, ref: RemoteTabRef{HostID: hostID, Workspace: ws},
 			state: "disconnected",
@@ -475,10 +483,11 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 				newSession: entry.SessionReset || sessionName == "" && sessionPath == "",
 				name:       sessionName,
 				path:       sessionPath,
+				sessionID:  sessionID,
 				reset:      entry.SessionReset,
 			},
 			hostLabel: hostLabel, topicTitle: title, model: model,
-			routing: remoteTabSessionRouting{currentPath: sessionPath, running: map[string]bool{}},
+			routing: remoteTabSessionRouting{currentPath: route, running: map[string]bool{}},
 		}
 		restored.modelSeq = remoteTabModelSeq.Add(1)
 		a.remoteTabs[id] = restored
@@ -547,28 +556,33 @@ func remoteTabMetaLocked(tab *remoteTab) TabMeta {
 	}
 	ref := tab.ref
 	return TabMeta{
-		ID:              tab.id,
-		Scope:           "project",
-		WorkspaceRoot:   tab.ref.Workspace,
-		WorkspaceName:   remoteWorkspaceName(tab.ref.Workspace),
-		TopicID:         remoteTabTopicID(tab),
-		TopicTitle:      tab.topicTitle,
-		SessionPath:     tab.session.path,
-		Label:           label,
-		Mode:            "normal",
-		Active:          true,
-		Cwd:             tab.ref.Workspace,
-		Remote:          &ref,
-		RemoteState:     tab.state,
-		Ready:           tab.state == "ready",
-		Running:         tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
-		TurnStartedAt:   tab.runtime.turnStartedAt,
-		PendingPrompt:   tab.runtime.pendingPrompt,
-		BackgroundJobs:  tab.runtime.backgroundJobs,
-		CancelRequested: tab.runtime.cancelRequested,
-		Cancellable:     tab.runtime.cancellable,
-		ReadOnly:        tab.session.takenOver,
-		TakenOver:       tab.session.takenOver,
+		ID:            tab.id,
+		Scope:         "project",
+		WorkspaceRoot: tab.ref.Workspace,
+		WorkspaceName: remoteWorkspaceName(tab.ref.Workspace),
+		TopicID:       remoteTabTopicID(tab),
+		TopicTitle:    tab.topicTitle,
+		SessionPath:   tab.session.path,
+		SessionID:     tab.session.sessionID,
+		Label:         label,
+		Mode:          "normal",
+		Active:        true,
+		Cwd:           tab.ref.Workspace,
+		Remote:        &ref,
+		RemoteState:   tab.state,
+		// Every remote tab's view is built here, so the capability answer cannot
+		// be forgotten on one path. Local tabs never reach this helper and keep
+		// the false zero value.
+		ForkTargetsSupported: remoteForkTargetsSupported(tab),
+		Ready:                tab.state == "ready",
+		Running:              tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
+		TurnStartedAt:        tab.runtime.turnStartedAt,
+		PendingPrompt:        tab.runtime.pendingPrompt,
+		BackgroundJobs:       tab.runtime.backgroundJobs,
+		CancelRequested:      tab.runtime.cancelRequested,
+		Cancellable:          tab.runtime.cancellable,
+		ReadOnly:             tab.session.takenOver,
+		TakenOver:            tab.session.takenOver,
 	}
 }
 
@@ -646,7 +660,7 @@ func (a *App) bootstrapRemoteTab(tabID, hostID, workspace string) {
 		a.remoteTabMu.Unlock()
 		return // closed while the bootstrap was in flight
 	}
-	opts := RemoteTabOpenOptions{NewSession: openTab.session.newSession, SessionName: openTab.session.name, SessionPath: openTab.session.path, SessionTitle: openTab.topicTitle}
+	opts := RemoteTabOpenOptions{NewSession: openTab.session.newSession, SessionName: openTab.session.name, SessionPath: openTab.session.path, SessionID: openTab.session.sessionID, SessionTitle: openTab.topicTitle}
 	a.remoteTabMu.Unlock()
 	// ctx outlives the call: the pump derives from it, while the handshake
 	// and session entry inside run under a bounded sub-context.

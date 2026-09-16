@@ -163,6 +163,7 @@ const appStubTable = ({
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (tabID: string) => {
         if (tabID === "tab-x") return [userMessage("history X")];
         if (tabID === "tab-y") return [userMessage("history Y")];

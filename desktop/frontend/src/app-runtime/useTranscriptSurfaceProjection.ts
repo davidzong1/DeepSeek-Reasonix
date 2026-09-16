@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import type { useNavigationSurface } from "../lib/useNavigationSurface";
-import type { HistoryLoadTrigger, Item } from "../lib/useController";
+import type { HistoryLoadOutcome, HistoryLoadTrigger, Item } from "../lib/useController";
 import type { SessionAvailability } from "../lib/sessionAvailability";
 
 type NavigationSurfaceApi = ReturnType<typeof useNavigationSurface>;
@@ -28,7 +28,8 @@ export type TranscriptSurfaceProjectionInput = {
   commitPaint: NavigationSurfaceApi["commitPaint"];
   commitSingleSurface: (tabId: string) => void;
   ports: {
-    loadOlderHistory(tabId: string, targetTurn: number | undefined, trigger: HistoryLoadTrigger): Promise<boolean>;
+    loadOlderHistory(tabId: string, targetTurn: number | undefined, trigger: HistoryLoadTrigger): Promise<HistoryLoadOutcome>;
+    loadNewerHistory(tabId: string, latest: boolean): Promise<HistoryLoadOutcome>;
     commitThenSend(tabId: string, displayText: string, submitText?: string): Promise<void>;
   };
 };
@@ -56,7 +57,10 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
     !input.hydratePlaceholderActive;
   const transcriptItems = input.hydratePlaceholderActive ? input.hydratePlaceholderItems! : input.items;
   const handleLoadOlderHistory = useCommittedCommand((targetTurn?: number, trigger: HistoryLoadTrigger = "retry") => {
-    return activeTabId ? ports.loadOlderHistory(activeTabId, targetTurn, trigger) : Promise.resolve(false);
+    return activeTabId ? ports.loadOlderHistory(activeTabId, targetTurn, trigger) : Promise.resolve("empty" as const);
+  });
+  const handleLoadNewerHistory = useCommittedCommand((latest = false) => {
+    return activeTabId ? ports.loadNewerHistory(activeTabId, latest) : Promise.resolve("empty" as const);
   });
 
   // Display items: backend history is authoritative after immediate commit.
@@ -109,6 +113,7 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
     visibleTranscriptTabId,
     visibleTranscriptGeometryKey,
     handleLoadOlderHistory,
+    handleLoadNewerHistory,
     handleSurfacePaintReady,
     latestGuidanceConsumed,
     handleTranscriptPrompt,

@@ -14,31 +14,22 @@
 import type { Dispatch, SetStateAction } from "react";
 import { create } from "zustand";
 
-import { loadLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
+import { loadLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 
 import { applySetState } from "./setState";
 
 const SIDEBAR_COLLAPSED_KEY = "reasonix.sidebar.collapsed";
 const SIDEBAR_DEFAULT_WIDTH = 264;
 export const SIDEBAR_MIN_WIDTH = 264;
-export const CREATION_SIDEBAR_MIN_WIDTH = 236;
-// Creation keeps the expanded rail at the narrow floor by default.
-export const CREATION_SIDEBAR_DEFAULT_WIDTH = CREATION_SIDEBAR_MIN_WIDTH;
 export const SIDEBAR_MAX_WIDTH = 300;
 const SIDEBAR_VIEWPORT_RATIO = 0.18;
 
 const RIGHT_DOCK_TREE_DEFAULT_WIDTH = 300;
 export const RIGHT_DOCK_TREE_MIN_WIDTH = 300;
-// Creation file-tree dock stays tighter than classic 300. With Creation's
-// narrower Windows caption strip (~108px), 252 is enough for icon+label tabs.
-export const CREATION_RIGHT_DOCK_TREE_MIN_WIDTH = 252;
-export const CREATION_RIGHT_DOCK_TREE_DEFAULT_WIDTH = CREATION_RIGHT_DOCK_TREE_MIN_WIDTH;
 export const RIGHT_DOCK_TREE_MAX_WIDTH = 560;
 export const RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH = 660;
 export const RIGHT_DOCK_PREVIEW_MIN_WIDTH = 420;
 export const RIGHT_DOCK_MIN_RENDER_WIDTH = 280;
-// Creation tree mode may render below the classic 280 floor when the viewport squeezes.
-export const CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH = 236;
 export const RIGHT_DOCK_MAX_WIDTH = 860;
 const WORKSPACE_PANEL_OPEN_KEY = "reasonix.workspacePanel.open";
 // First-launch default when no preference is stored (matches post-#6371 UX).
@@ -48,12 +39,8 @@ export function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 }
 
-export function clampCreationSidebarWidth(width: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(CREATION_SIDEBAR_MIN_WIDTH, Math.round(width)));
-}
-
 function clampStoredSidebarWidth(width: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(CREATION_SIDEBAR_MIN_WIDTH, Math.round(width)));
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 }
 
 export function clampRightDockPreviewWidth(width: number, maxWidth = RIGHT_DOCK_MAX_WIDTH): number {
@@ -66,15 +53,11 @@ export function clampRightDockTreeWidth(width: number, maxWidth = RIGHT_DOCK_TRE
   return Math.min(Math.max(maxWidth, RIGHT_DOCK_TREE_MIN_WIDTH), Math.max(RIGHT_DOCK_TREE_MIN_WIDTH, Math.round(width)));
 }
 
-export function clampCreationRightDockTreeWidth(width: number, maxWidth = RIGHT_DOCK_TREE_MAX_WIDTH): number {
-  return Math.min(Math.max(maxWidth, CREATION_RIGHT_DOCK_TREE_MIN_WIDTH), Math.max(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH, Math.round(width)));
-}
-
 function clampStoredRightDockTreeWidth(width: number): number {
   // Stored widths are validated again against the live viewport at load time
   // (resolveWorkspacePanelWidth clamps to the chat pane's 400px floor), so
   // persistence only guards the sane lower bound and integer form.
-  return Math.max(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH, Math.round(width));
+  return Math.max(RIGHT_DOCK_TREE_MIN_WIDTH, Math.round(width));
 }
 
 export function defaultSidebarWidth(): number {
@@ -84,16 +67,8 @@ export function defaultSidebarWidth(): number {
   return SIDEBAR_DEFAULT_WIDTH;
 }
 
-export function defaultCreationSidebarWidth(): number {
-  return CREATION_SIDEBAR_DEFAULT_WIDTH;
-}
-
 export function defaultRightDockTreeWidth(): number {
   return RIGHT_DOCK_TREE_DEFAULT_WIDTH;
-}
-
-export function defaultCreationRightDockTreeWidth(): number {
-  return CREATION_RIGHT_DOCK_TREE_DEFAULT_WIDTH;
 }
 
 function loadSidebarCollapsed(): boolean {
@@ -308,13 +283,3 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   setLiveWorkspacePanelRenderWidth: (width) => set({ liveWorkspacePanelRenderWidth: width }),
   setLiveTerminalHeight: (height) => set({ liveTerminalHeight: height }),
 }));
-
-export function applyLayoutStyleDefaults(style: "classic" | "workbench" | "creation"): void {
-  const state = useLayoutStore.getState();
-  if (loadOptionalLayoutSize("sidebarWidthGraphite", clampStoredSidebarWidth) === null) {
-    state.setSidebarWidth(style === "creation" ? defaultCreationSidebarWidth() : defaultSidebarWidth());
-  }
-  if (loadOptionalLayoutSize("rightDockTreeWidth", clampStoredRightDockTreeWidth) === null) {
-    state.setRightDockTreeWidth(style === "creation" ? defaultCreationRightDockTreeWidth() : defaultRightDockTreeWidth());
-  }
-}

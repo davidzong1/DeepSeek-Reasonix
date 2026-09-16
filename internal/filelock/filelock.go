@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -259,6 +260,21 @@ func RegistrySizeForTest() int {
 	localRegistry.Lock()
 	defer localRegistry.Unlock()
 	return len(localRegistry.locks)
+}
+
+// HeldPathsForTest returns the canonical paths currently holding a lock. A
+// package TestMain uses it to turn a leaked lease into a failure everywhere:
+// Windows cannot remove a directory containing an open lock file, so a leak
+// that only breaks t.TempDir cleanup there is otherwise invisible on POSIX.
+func HeldPathsForTest() []string {
+	localRegistry.Lock()
+	defer localRegistry.Unlock()
+	held := make([]string, 0, len(localRegistry.locks))
+	for path := range localRegistry.locks {
+		held = append(held, path)
+	}
+	sort.Strings(held)
+	return held
 }
 
 func canonicalLockPath(path string) (string, error) {

@@ -43,7 +43,7 @@ func TestControllerWorkspaceRootRejectsTypedNil(t *testing.T) {
 // flips the composer into running state so an Enter queues instead of racing
 // the dispatched turn, and the elapsed-tick chain re-arms.
 func TestControllerDispatchedTurnStartedEntersRunning(t *testing.T) {
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	if m.state != tuiIdle {
 		t.Fatalf("fresh TUI state = %v, want idle", m.state)
@@ -84,7 +84,7 @@ func TestDrainedLifecyclePreservesOrder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			events := make(chan event.Event, 1)
 			events <- event.Event{Kind: tt.buffered}
-			m := newChatTUI(control.New(control.Options{}), "", events, 80)
+			m := newChatTUI(newOwnedTestController(t, control.Options{}), "", events, 80)
 			m.state = tt.initial
 
 			next, _ := m.Update(agentEventMsg(event.Event{Kind: tt.first}))
@@ -99,7 +99,7 @@ func TestDrainedTurnStartResetsBeforeNewUsage(t *testing.T) {
 	events := make(chan event.Event, 2)
 	events <- event.Event{Kind: event.TurnStarted}
 	events <- event.Event{Kind: event.Usage, Usage: &provider.Usage{CompletionTokens: 3}}
-	m := newChatTUI(control.New(control.Options{}), "", events, 80)
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", events, 80)
 	m.state = tuiRunning
 	m.turnTokens = 100
 
@@ -114,7 +114,7 @@ func TestDrainedTurnStartResetsBeforeNewUsage(t *testing.T) {
 }
 
 func TestElapsedTickRejectsPriorTurnGeneration(t *testing.T) {
-	m := newChatTUI(control.New(control.Options{}), "", make(chan event.Event, 1), 80)
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 80)
 	m.state = tuiRunning
 	m.runStart = time.Now().Add(-30 * time.Second)
 	m.elapsed = 7
@@ -135,7 +135,7 @@ func TestElapsedTickRejectsPriorTurnGeneration(t *testing.T) {
 }
 
 func TestStartControllerTurnQueuesThroughSessionPort(t *testing.T) {
-	ctrl := &runningQueueController{SessionAPI: control.New(control.Options{})}
+	ctrl := &runningQueueController{SessionAPI: newOwnedTestController(t, control.Options{})}
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.input.SetValue("next draft")
 	m.pastedBlocks = []pastedBlock{{label: "old paste"}, {label: "next paste"}}
@@ -157,7 +157,7 @@ func TestStartControllerTurnQueuesThroughSessionPort(t *testing.T) {
 }
 
 func TestStartControllerTurnRejectsInputDuringRemoteReclaim(t *testing.T) {
-	ctrl := &runningQueueController{SessionAPI: control.New(control.Options{})}
+	ctrl := &runningQueueController{SessionAPI: newOwnedTestController(t, control.Options{})}
 	takeover := newCLITakeoverManager(nil, nil)
 	takeover.reclaiming.Store(true)
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -177,7 +177,7 @@ func TestStartControllerTurnRejectsInputDuringRemoteReclaim(t *testing.T) {
 }
 
 func TestStartTurnWithRawQueuesMaterializablePrompt(t *testing.T) {
-	ctrl := &runningQueueController{SessionAPI: control.New(control.Options{})}
+	ctrl := &runningQueueController{SessionAPI: newOwnedTestController(t, control.Options{})}
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 
 	m.startTurnWithRaw("resolved context", "typed @file", "typed @file", "typed @file")
@@ -188,7 +188,7 @@ func TestStartTurnWithRawQueuesMaterializablePrompt(t *testing.T) {
 
 func TestStartControllerTurnRestoresComposerOnQueueFailure(t *testing.T) {
 	wantErr := errors.New("queue unavailable")
-	ctrl := &runningQueueController{SessionAPI: control.New(control.Options{}), err: wantErr}
+	ctrl := &runningQueueController{SessionAPI: newOwnedTestController(t, control.Options{}), err: wantErr}
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 
 	started := false
@@ -202,7 +202,7 @@ func TestStartControllerTurnRestoresComposerOnQueueFailure(t *testing.T) {
 }
 
 func TestStartControllerTurnQueueFailurePreservesNextDraft(t *testing.T) {
-	ctrl := &runningQueueController{SessionAPI: control.New(control.Options{}), err: errors.New("queue unavailable")}
+	ctrl := &runningQueueController{SessionAPI: newOwnedTestController(t, control.Options{}), err: errors.New("queue unavailable")}
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.input.SetValue("next draft")
 

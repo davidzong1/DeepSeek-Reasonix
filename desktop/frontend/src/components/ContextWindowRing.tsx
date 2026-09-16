@@ -19,6 +19,7 @@ interface ContextWindowRingProps {
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   balance?: BalanceInfo;
+  dismissSignal?: number;
 }
 
 const RING = 18;
@@ -41,7 +42,7 @@ function fmtDuration(ms: number, t: ReturnType<typeof useI18n>['t']): string {
   return t("context.durationMinutesSeconds", { minutes, seconds });
 }
 
-export function ContextWindowRing({ enabled = true, context, tabId, turnCost, turnRateBand, currency, cacheHitTokens, cacheMissTokens, balance, turnMetrics }: ContextWindowRingProps) {
+export function ContextWindowRing({ enabled = true, context, tabId, turnCost, turnRateBand, currency, cacheHitTokens, cacheMissTokens, balance, turnMetrics, dismissSignal }: ContextWindowRingProps) {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<ContextPanelInfo | null>(null);
@@ -79,8 +80,10 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
     requestSeq.current += 1;
     loadingTabRef.current = null;
     setInfo(null);
-    if (!enabled) setOpen(false);
-  }, [enabled, tabId]);
+    if (enterTimer.current != null) clearTimeout(enterTimer.current);
+    if (leaveTimer.current != null) clearTimeout(leaveTimer.current);
+    setOpen(false);
+  }, [dismissSignal, enabled, tabId]);
 
   useEffect(() => () => {
     requestSeq.current += 1;

@@ -200,6 +200,7 @@ const desktopStub = installDesktopHostStub(({
       },
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => [],
       HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
       HistorySliceForTab: async (tabID, req) => historySliceFromMessages(tabID, [], req),
@@ -316,6 +317,13 @@ eq(renderedAverage(), "90.00%", "status bar renders the live executor-era sessio
 eq(renderedPanelAverage(), "90.00%", "panel ignores its stale private snapshot and matches the status bar");
 ok(contextCalls > initialContextCalls, "usage triggers a new ContextUsageForTab snapshot");
 
+// v2 creates the stable assistant host at sampling start. Only subsequent
+// token deltas are non-structural updates to the live subscriber.
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "stream_attempt", tabId: "tab-live-context",
+    messageId: "mock-active:tab-live-context", streamAttempt: { id: "mock-active:tab-live-context", action: "begin" } });
+  await flushPromises(20);
+});
 const rendersBeforeTextBurst = controllerProbeRenders;
 await act(async () => {
   desktopStub.emit("agent:event", { kind: "text", tabId: "tab-live-context", text: "one " });

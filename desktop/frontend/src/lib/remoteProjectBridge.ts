@@ -27,6 +27,7 @@ export interface RemoteProjectBindings {
   SetRemoteTabComposerProfile(tabId: string, collaborationMode: string, toolApprovalMode: string, goal: string): Promise<string[]>;
   SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
   SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
+  EditRemoteTabGoal(tabId: string, objective: string, maxGoalRounds: number | null): Promise<void>;
   RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
   RemoteTabMetadata?(tabId: string): Promise<RemoteTabSnapshot>;
   RemoteTabStatus(tabId: string): Promise<unknown>;
@@ -40,6 +41,8 @@ export interface RemoteProjectBindings {
   CompactRemoteTab(tabId: string, instructions: string): Promise<void>;
   ReplayRemoteTabPrompts(tabId: string): Promise<unknown>;
   ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
+  ForkTargetsRemoteTab(tabId: string): Promise<import("../generated/desktopContract.generated").ForkTargetSetView>;
+  CreateForkRemoteTab(tabId: string, anchor: import("../generated/desktopContract.generated").ForkAnchorView): Promise<import("../generated/desktopContract.generated").ForkCreationView>;
   SummarizeRemoteTab(tabId: string, turn: number, mode: string): Promise<void>;
   ForgetRemoteTab(tabId: string, name: string): Promise<void>;
   RemoteTabBranches(tabId: string): Promise<unknown>;

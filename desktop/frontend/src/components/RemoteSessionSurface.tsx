@@ -10,7 +10,6 @@ import { projectSessionAvailability } from "../lib/sessionAvailability";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 export { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "../lib/remoteTelemetry";
 import type { TabMeta, WireApproval, WireAsk } from "../lib/types";
-import { useT } from "../lib/i18n";
 
 /**
  * RemoteSessionSurface renders the active remote tab's content area with
@@ -24,7 +23,6 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
   tab: TabMeta; session: RemoteSessionApi;
 } & Pick<TranscriptProps, "surfaceCommitToken" | "onSurfacePaintReady">) {
   const navigateRemote = useRemoteNavigationCommand();
-  const t = useT();
   const availability = projectSessionAvailability({ remote: session });
   const ready = availability.kind === "ready";
   const hasContent = session.transcript.items.length > 0 || Boolean(session.transcript.live?.text || session.transcript.live?.reasoning);
@@ -33,7 +31,7 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
   const extensionForm = session.transcript.extensionForm;
   const [actionError, setActionError] = useState("");
   const [extensionFormBusy, setExtensionFormBusy] = useState(false);
-  useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, tab.id]);
+  useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, session.surfaceGeneration, tab.id]);
   const runAction = async (action: () => Promise<unknown>, propagate = false): Promise<void> => {
     setActionError("");
     try {
@@ -62,29 +60,43 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
     }} />
     <main className="main">
     <div className="remote-surface remote-surface--ready">
-      {session.hydrated && session.syncMode === "legacy" ? <div className="remote-surface__detail" role="status">{t("remote.legacyTranscriptSync")}</div> : null}
       {!ready && !hasContent ? <SessionRecoveryPlaceholder availability={availability} /> : <Transcript
         items={session.transcript.items}
         live={session.transcript.live}
+        liveStore={session.liveStore}
         tabId={tab.id}
-        revealSignal={session.surfaceGeneration}
+        hostId={tab.remote.hostId}
+        geometrySessionKey={`${tab.id}:${session.surfaceGeneration}`}
         hydrating={!session.hydrated && !hasContent}
         surfaceCommitToken={surfaceCommitToken}
         onSurfacePaintReady={onSurfacePaintReady}
         running={session.transcript.running}
         hasOlderHistory={session.transcript.historyHasOlder}
-        stableHistoryPaging={session.syncMode === "snapshot"}
+        hasNewerHistory={session.transcript.historyHasNewer}
+        loadingNewerHistory={session.transcript.historyNewerLoading}
+        newerHistoryError={session.transcript.historyNewerError}
         historyStartTurn={session.transcript.historyStartTurn}
-        historyTotalTurns={session.transcript.historyTotalTurns}
+        totalTurns={session.transcript.historyTotalTurns}
         loadingOlderHistory={session.transcript.historyOlderLoading}
         olderHistoryError={session.transcript.historyOlderError}
         onLoadOlderHistory={session.loadOlderHistory}
-        contentRevision={session.transcript.historyLayoutRevision}
-        historyMutation={session.transcript.historyMutation}
-        checkpoints={session.transcript.checkpoints}
+        onLoadNewerHistory={session.loadNewerHistory}
         onPrompt={(display, submit = display) => runAction(() => session.submit(submit, display))}
-        onRewind={(turn, scope) => runAction(() => session.rewind(turn, scope))}
-        rewindDisabled={session.running || !ready}
+        forkTargets={session.transcript.forkTargets}
+        // The tab's advertised capability, not the target list, decides whether
+        // this serve can create a child at all: an empty list on a capable serve
+        // means no completed turn here, which its own reason explains.
+        forkBlocked={tab.forkTargetsSupported ? null : "unsupported"}
+        onFork={tab.forkTargetsSupported ? (target) => runAction(async () => {
+          const child = await session.forkTurn(target);
+          // The child session belongs to the serve, so its surface is opened
+          // here rather than adopted from a returned desktop tab. Desktop keeps
+          // the operation until navigation succeeds, allowing a later click to
+          // recover the same child after an unknown result.
+          if (!child) return;
+          const opened = await navigateRemote(tab.remote!, { sessionId: child.sessionId });
+          if (opened.status === "completed") await session.acknowledgeFork(child.operationId);
+        }) : undefined}
       />}
 
       {ready && approval ? (

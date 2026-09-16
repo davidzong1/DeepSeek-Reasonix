@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -660,34 +661,26 @@ func projectTopicSortValue(createdAt, lastActivityAt int64, sortMode string) int
 }
 
 func (a *App) GetTopicSummary(key ProjectTopicKey) (ProjectNode, error) {
-	if catalog := a.sessionCatalog.Load(); catalog != nil {
-		ctx, cancel := a.catalogReadContext()
-		defer cancel()
-		topic, ok, err := catalog.GetTopic(ctx, sessioncatalog.TopicKey{
-			Scope: key.Scope, WorkspaceRoot: key.WorkspaceRoot, TopicID: key.TopicID,
-		})
+	req := ProjectTopicPageRequest{
+		Scope: key.Scope, WorkspaceRoot: key.WorkspaceRoot, Limit: sessioncatalog.MaxLimit,
+	}
+	for {
+		page, err := a.ListProjectTopics(req)
 		if err != nil {
 			return ProjectNode{Children: []ProjectNode{}}, err
 		}
-		if ok {
-			topicOverlays, sessionOverlays := a.catalogRuntimeOverlays()
-			preferred, _ := catalog.PreferredOrdinarySessionPaths(ctx, key.Scope, key.WorkspaceRoot)
-			if node, visible := a.projectNodeFromCatalogTopic(topic, topicOverlays, sessionOverlays, preferred); visible {
+		for _, node := range page.Items {
+			if node.TopicID == key.TopicID {
 				return node, nil
 			}
-			return ProjectNode{Children: []ProjectNode{}}, nil
 		}
-	}
-	page, err := a.ListProjectTopics(ProjectTopicPageRequest{
-		Scope: key.Scope, WorkspaceRoot: key.WorkspaceRoot, Limit: sessioncatalog.MaxLimit,
-	})
-	if err != nil {
-		return ProjectNode{Children: []ProjectNode{}}, err
-	}
-	for _, node := range page.Items {
-		if node.TopicID == key.TopicID {
-			return node, nil
+		if page.NextCursor == "" {
+			break
 		}
+		if page.NextCursor == req.Cursor {
+			return ProjectNode{Children: []ProjectNode{}}, fmt.Errorf("session cursor did not advance")
+		}
+		req.Cursor = page.NextCursor
 	}
 	return ProjectNode{Children: []ProjectNode{}}, nil
 }

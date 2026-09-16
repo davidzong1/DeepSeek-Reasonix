@@ -539,18 +539,23 @@ func TestRebindWithTakeoverMirrorDoesNotReenterAppLock(t *testing.T) {
 	if app.takeoverMirrors == nil {
 		app.takeoverMirrors = map[string]*takeoverMirror{}
 	}
-	app.takeoverMirrors[key] = &takeoverMirror{app: app, key: key, sessionPath: targetPath}
+	mirror := &takeoverMirror{app: app, key: key, sessionPath: targetPath}
+	app.takeoverMirrors[key] = mirror
 	app.takeoverMu.Unlock()
 
-	done := make(chan error, 1)
-	go func() { done <- app.rebindTabToLoadedSessionPath(tab, targetPath, loaded) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("rebind deadlocked while reconnecting takeover mirror")
+	// Rebinding includes controller boot and disk migration, not just locking.
+	// Use the suite timeout for deadlocks; a local timer can fail on slow I/O
+	// and run fixture cleanup while the rebind goroutine still uses its files.
+	if err := app.rebindTabToLoadedSessionPath(tab, targetPath, loaded); err != nil {
+		t.Fatal(err)
+	}
+	if tab.sink.takeoverMirror.Load() != mirror {
+		t.Fatal("replacement sink did not reconnect the takeover mirror")
+	}
+	mirror.mu.Lock()
+	defer mirror.mu.Unlock()
+	if mirror.sink != tab.sink || mirror.tabID != tab.ID {
+		t.Fatal("takeover mirror retained the retired sink or tab binding")
 	}
 }
 
@@ -623,8 +628,9 @@ func TestLateReclaimSuccessCannotUnlockNewSelection(t *testing.T) {
 	app.remoteTabs = map[string]*remoteTab{}
 	tab := &remoteTab{
 		id: "remote-1", state: "ready", gen: 4, client: srv.Client(), base: srv.URL, selectionRevision: 9,
-		routing: remoteTabSessionRouting{currentPath: "/sessions/old.jsonl"},
-		session: remoteTabSessionState{takenOver: true},
+		routing:      remoteTabSessionRouting{currentPath: "/sessions/old.jsonl"},
+		session:      remoteTabSessionState{takenOver: true},
+		capabilities: map[string]bool{serveCapabilityExecutionV2: true, serveCapabilitySessions: true, serveCapabilitySessionIdentityV1: true, serveCapabilitySessionOwnershipV1: true},
 	}
 	app.remoteTabs[tab.id] = tab
 	done := make(chan error, 1)
@@ -664,8 +670,9 @@ func TestFailedReclaimKeepsSpectatorUntilOwnershipProbeCompletes(t *testing.T) {
 	app.remoteTabs = map[string]*remoteTab{}
 	tab := &remoteTab{
 		id: "remote-1", state: "ready", gen: 4, client: srv.Client(), base: srv.URL, selectionRevision: 9,
-		routing: remoteTabSessionRouting{currentPath: "/sessions/a.jsonl"},
-		session: remoteTabSessionState{takenOver: true},
+		routing:      remoteTabSessionRouting{currentPath: "/sessions/a.jsonl"},
+		session:      remoteTabSessionState{takenOver: true},
+		capabilities: map[string]bool{serveCapabilityExecutionV2: true, serveCapabilitySessions: true, serveCapabilitySessionIdentityV1: true, serveCapabilitySessionOwnershipV1: true},
 	}
 	app.remoteTabs[tab.id] = tab
 	if err := app.ReclaimRemoteTabSession(tab.id); err == nil {

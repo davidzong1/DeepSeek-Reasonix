@@ -35,7 +35,9 @@ func controllerWithContent(t *testing.T, path string) *control.Controller {
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "remember this turn"})
 	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"})
 	ag := agent.New(stubProvider{}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
-	return control.New(control.Options{Executor: ag, SessionDir: filepath.Dir(path), SessionPath: path, Sink: event.Discard})
+	ctrl := control.New(control.Options{Executor: ag, SessionDir: filepath.Dir(path), SessionPath: path, Sink: event.Discard})
+	t.Cleanup(ctrl.Close)
+	return ctrl
 }
 
 func waitForFile(t *testing.T, path, want string) {
@@ -87,6 +89,7 @@ func appWithTab(t *testing.T, path string) (*App, *WorkspaceTab) {
 		activeTabID: "test_tab",
 	}
 	tab.sink.app = a
+	t.Cleanup(func() { waitForAutosaveIdle(t, tab) })
 	return a, tab
 }
 
@@ -143,7 +146,10 @@ func TestAutosaveFailureRetriesAndRecoversOnNextTurnDone(t *testing.T) {
 		t.Fatalf("mkdir blocked path: %v", err)
 	}
 	a, tab := appWithTab(t, path)
-	_ = a
+	ctrl := tab.Ctrl
+	// Retry ownership does not depend on how quickly the filesystem rejects
+	// a write. Inject that failure, then use the real controller for recovery.
+	tab.Ctrl = &snapshotErrorSessionController{SessionAPI: ctrl, err: os.ErrPermission}
 
 	tab.sink.Emit(event.Event{Kind: event.TurnDone})
 	waitForAutosaveIdleWithin(t, tab, 5*time.Second)
@@ -151,8 +157,8 @@ func TestAutosaveFailureRetriesAndRecoversOnNextTurnDone(t *testing.T) {
 	tab.saveMu.Lock()
 	failures := tab.saveFailures
 	tab.saveMu.Unlock()
-	if failures == 0 {
-		t.Fatal("autosave failure should be recorded and retried")
+	if failures != maxTabSnapshotFailureRetries+1 {
+		t.Fatalf("autosave failures = %d, want %d attempts", failures, maxTabSnapshotFailureRetries+1)
 	}
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		t.Fatalf("blocked session path should still be the directory, info=%v err=%v", info, err)
@@ -161,6 +167,9 @@ func TestAutosaveFailureRetriesAndRecoversOnNextTurnDone(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove blocked dir: %v", err)
 	}
+	a.mu.Lock()
+	tab.Ctrl = ctrl
+	a.mu.Unlock()
 	tab.sink.Emit(event.Event{Kind: event.TurnDone})
 	waitForFile(t, path, "remember this turn")
 	waitForAutosaveIdle(t, tab)
@@ -579,7 +588,7 @@ func TestCloseTabSurvivorKeepsAutosave(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionClearsRemovedRuntimeSessionPath(t *testing.T) {
+func TestLegacyDeleteSessionClearsRemovedRuntimeSessionPath(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	dir := t.TempDir()
@@ -600,7 +609,7 @@ func TestDeleteSessionClearsRemovedRuntimeSessionPath(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 
-	if err := app.DeleteSession(path); err != nil {
+	if err := app.deleteSession(path); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 
@@ -662,6 +671,7 @@ func TestTrashTopicClearsRemovedRuntimeSessionPath(t *testing.T) {
 		activeTabID: "trash_open",
 	}
 
+	pinDesktopSessionRoot(t, app)
 	if err := app.TrashTopic(topicID); err != nil {
 		t.Fatalf("TrashTopic: %v", err)
 	}
@@ -669,8 +679,5 @@ func TestTrashTopicClearsRemovedRuntimeSessionPath(t *testing.T) {
 	if got := ctrl.SessionPath(); got != "" {
 		t.Fatalf("removed topic controller session path = %q, want empty before trash move can race Windows file locks", got)
 	}
-	trashPath := filepath.Join(dir, sessionTrashDir, "trash-open-topic.jsonl", "trash-open-topic.jsonl")
-	if _, err := os.Stat(trashPath); err != nil {
-		t.Fatalf("topic session should be in trash: %v", err)
-	}
+	assertLegacyLifecycle(t, app, path, "archived")
 }

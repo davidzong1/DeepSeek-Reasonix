@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { DOCK_ENTRIES } from "../lib/dockEntries";
 import { resolveLauncherCardState, type SpaceMode } from "../lib/launcherCardState";
@@ -8,8 +8,8 @@ import { useActivityBarStore, type TabType } from "../store/activityBar";
 import { useRemoteStore } from "../store/remote";
 
 type Input = {
+  sessionId: string;
   workspaceRoot: string;
-  creation: boolean;
   visible: boolean;
   closeOverlays: () => void;
   clearLiveWidth: (width: null) => void;
@@ -56,6 +56,7 @@ function labelKeyForTab(type: TabType): string {
 /** One project-scoped preference owner, with no mirrored layout state. */
 export function useWorkspacePanelCommands(input: Input) {
   const t = input.t;
+  const defaultTabSessionRef = useRef("");
   const mode = useLayoutStore(state => state.rightDockMode);
   const explorerOpen = useRemoteStore(state => state.explorerOpen);
   const hostCount = useRemoteStore(state => state.hosts.length);
@@ -103,6 +104,13 @@ export function useWorkspacePanelCommands(input: Input) {
     layout.setWorkspacePanelOpen(false);
     saveWorkspacePanelOpen(false, input.workspaceRoot);
   });
+  // Closing the last tab must release the dock's layout space as well as its
+  // content. Observe the transition synchronously so close-all and close/open
+  // in one batch use the same panel command. Project restoration is not a close.
+  useEffect(() => useActivityBarStore.subscribe((state, previous) => {
+    if (state.workspaceRoot !== previous.workspaceRoot || state.workspaceRoot !== input.workspaceRoot) return;
+    if (previous.tabs.length > 0 && state.tabs.length === 0) closeWorkspacePanel();
+  }), [input.workspaceRoot, closeWorkspacePanel]);
   // The toggle owns the card and nothing else — the dock panel has its own
   // button. It is inert only while the surface is too narrow for the card to
   // occupy space at all.
@@ -125,9 +133,8 @@ export function useWorkspacePanelCommands(input: Input) {
     if (!entry) return;
     openRightDockMode(dockModeForTab(entry.defaultTab));
   });
-  // Plain open/close: expanding restores whatever tabs the project had and
-  // leaves an empty dock to the tab picker instead of seeding a view the user
-  // did not ask for. openRightDockMode stays the "open this view" command.
+  // Plain open/close restores the project's tabs. The session initialization
+  // effect below fills an expanded empty dock with Overview once per session.
   const toggleWorkspacePanel = useCommittedCommand(() => {
     const layout = useLayoutStore.getState();
     if (layout.workspacePanelOpen) { closeWorkspacePanel(); return; }
@@ -164,9 +171,6 @@ export function useWorkspacePanelCommands(input: Input) {
   useLayoutEffect(() => {
     useLayoutStore.getState().setWorkspacePanelOpen(loadWorkspacePanelOpen(input.workspaceRoot));
   }, [input.workspaceRoot]);
-  useLayoutEffect(() => {
-    if (input.creation && mode === "context") useLayoutStore.getState().setRightDockMode("files");
-  }, [input.creation, mode]);
   // Keep the legacy mode mirror on the active tab's type.
   useEffect(() => {
     if (!activeTabType) return;
@@ -178,6 +182,19 @@ export function useWorkspacePanelCommands(input: Input) {
   useLayoutEffect(() => {
     useActivityBarStore.getState().setWorkspaceRoot(input.workspaceRoot);
   }, [input.workspaceRoot]);
+  // A restored, expanded dock should show useful session context immediately.
+  // Seed only once per session so manually reopening an emptied dock can show
+  // the tab picker without immediately recreating Overview.
+  useLayoutEffect(() => {
+    if (!input.visible || !input.sessionId) return;
+    const sessionKey = `${input.workspaceRoot}\u0000${input.sessionId}`;
+    if (defaultTabSessionRef.current === sessionKey) return;
+    if (!useLayoutStore.getState().workspacePanelOpen) return;
+    defaultTabSessionRef.current = sessionKey;
+    const activity = useActivityBarStore.getState();
+    if (activity.activeTabId) return;
+    activity.openEntry("context", t(labelKeyForTab("context") as never));
+  }, [input.sessionId, input.visible, input.workspaceRoot, t]);
   useEffect(() => {
     if (!explorerOpen) return;
     openRightDockMode("remote");

@@ -7,6 +7,7 @@ import type { TabMeta } from "../lib/types";
 import type { State } from "../lib/useController";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 import type { Translator } from "../lib/i18n";
+import type { ForkBlockReason } from "../lib/forkTargets";
 import type { SessionAvailability } from "../lib/sessionAvailability";
 
 const RemoteSessionSurface = lazy(() => import("../components/RemoteSessionSurface").then((module) => ({ default: module.RemoteSessionSurface })));
@@ -18,7 +19,6 @@ export type ChatPaneTranscriptInput = {
   tabId: TranscriptProps["tabId"];
   geometrySessionKey: TranscriptProps["geometrySessionKey"];
   footerHeight: TranscriptProps["footerHeight"];
-  revealSignal: TranscriptProps["revealSignal"];
   invocationMetadata: TranscriptProps["invocationMetadata"];
   surfaceCommitToken: TranscriptProps["surfaceCommitToken"];
   liveStore: TranscriptProps["liveStore"];
@@ -28,13 +28,11 @@ export type ChatPaneTranscriptInput = {
   controllerReady: boolean;
   hydratePlaceholderActive: boolean;
   clearContextPending: boolean;
-  creation: boolean;
   emptyHero?: boolean;
   availability: SessionAvailability;
   rewind: {
     stateActive: boolean;
     committing: boolean;
-    signal: TranscriptProps["rewindSignal"];
   };
 };
 
@@ -55,13 +53,9 @@ export type ChatPaneRegionProps = {
   onRetryHistory: () => Promise<unknown>;
   commands: {
     onPrompt: TranscriptProps["onPrompt"];
-    onDeliveryContinue: TranscriptProps["onDeliveryContinue"];
-    onAcceptDelivery: TranscriptProps["onAcceptDelivery"];
-    onOpenChanges: TranscriptProps["onOpenChanges"];
-    onOpenVerification: TranscriptProps["onOpenVerification"];
-    onEditPrompt: TranscriptProps["onEditPrompt"];
-    onRewind: TranscriptProps["onRewind"];
+    onFork: TranscriptProps["onFork"];
     onLoadOlderHistory: TranscriptProps["onLoadOlderHistory"];
+    onLoadNewerHistory: TranscriptProps["onLoadNewerHistory"];
     onSurfacePaintReady: TranscriptProps["onSurfacePaintReady"];
   };
 };
@@ -75,10 +69,15 @@ export type ChatPaneRegionProps = {
 export function ChatPaneRegion(props: ChatPaneRegionProps) {
   const { transitioning, t, transcript, commands } = props;
   const { state, rewind } = transcript;
-  const rewindDisabled = transcript.readOnly || !transcript.controllerReady || transcript.hydratePlaceholderActive
-    || rewind.stateActive || rewind.committing || state.running
-    || state.messageAction != null || state.approval != null || state.ask != null
-    || transcript.clearContextPending || transitioning;
+  // A fork entry reads persisted turn records, so it never waits for the session
+  // to stop running, and a read-only source still forks: the child is written
+  // from the source, never into it. It does wait for the surface it belongs to:
+  // while the transcript hydrates or the source identity is switching, the
+  // records on screen are not yet the ones a cut would address.
+  const forkBlocked: ForkBlockReason | null = state.forkCreating ? "creating"
+    : !transcript.controllerReady || transcript.transcriptHydrating || transcript.hydratePlaceholderActive || transitioning
+      ? "loading"
+      : null;
   const noticePreview = noticePreviewMockEnabled();
   if (props.remote && !(props.imDetail && !transitioning) && !noticePreview) {
     return <Suspense fallback={null}><RemoteSessionSurface tab={props.remote.tab} session={props.remote.session}
@@ -121,32 +120,23 @@ export function ChatPaneRegion(props: ChatPaneRegionProps) {
                 geometrySessionKey={transcript.geometrySessionKey}
                 footerHeight={transcript.footerHeight}
                 onPrompt={commands.onPrompt}
-                onDeliveryContinue={commands.onDeliveryContinue}
-                onAcceptDelivery={commands.onAcceptDelivery}
-                onOpenChanges={commands.onOpenChanges}
-                onOpenVerification={commands.onOpenVerification}
-                onEditPrompt={commands.onEditPrompt}
-                onRewind={commands.onRewind}
-                checkpoints={state.checkpoints}
-                actionPending={state.messageAction != null}
-                rewindDisabled={rewindDisabled}
+                onFork={commands.onFork}
+                forkTargets={state.forkTargets}
+                forkBlocked={forkBlocked}
                 running={state.running || rewind.committing}
                 turnStartAt={state.turnStartAt}
-                contentRevision={state.historyLayoutRevision}
-                historyMutation={state.historyMutation}
-                welcomeVariant={transcript.creation || transcript.emptyHero ? "creation" : "default"}
-                creationMode={transcript.creation}
-                actionHoverMenus={transcript.creation && !transcript.hydratePlaceholderActive && !transitioning}
-                rewindSignal={rewind.signal}
-                revealSignal={transcript.revealSignal}
                 hydrating={transcript.transcriptHydrating || (transitioning && !transcript.navigationDataReady)}
                 hasOlderHistory={!transitioning && state.historyHasOlder && !rewind.stateActive}
-                stableHistoryPaging={state.transcriptProtocol === 1}
+                hasNewerHistory={!transitioning && state.historyHasNewer && !rewind.stateActive}
                 historyStartTurn={state.historyStartTurn}
-                historyTotalTurns={state.historyTotalTurns}
+                historyEndTurn={state.historyEndTurn}
+                totalTurns={state.historyTotalTurns}
                 loadingOlderHistory={state.historyOlderLoading}
                 olderHistoryError={state.historyOlderError}
+                loadingNewerHistory={state.historyNewerLoading}
+                newerHistoryError={state.historyNewerError}
                 onLoadOlderHistory={commands.onLoadOlderHistory}
+                onLoadNewerHistory={commands.onLoadNewerHistory}
                 invocationMetadata={transcript.invocationMetadata}
                 surfaceCommitToken={transcript.surfaceCommitToken}
                 onSurfacePaintReady={commands.onSurfacePaintReady}

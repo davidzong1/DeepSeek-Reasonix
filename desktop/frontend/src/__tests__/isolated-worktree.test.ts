@@ -11,7 +11,7 @@ const bridge = source("../lib/bridge.ts");
 const tree = source("../components/ProjectTree.tsx");
 const badge = source("../components/WorktreeBadge.tsx");
 const forkAction = source("../lib/forkWorktree.ts");
-const message = source("../components/Message.tsx");
+const message = source("../components/ChatNodes.tsx");
 const mergeModal = source("../components/WorktreeMergeModal.tsx");
 const mergeStyles = source("../components/WorktreeMergeModal.css");
 const controller = source("../lib/useController.ts");
@@ -44,7 +44,8 @@ ok(/bindings\.ForkWorktreeForTab\(sourceTabId, turn\)/.test(forkAction) && /make
 ok(!/ForkForTab\(sourceTabId, turn, isolate/.test(forkAction), "shared fork never sends an extra bridge argument");
 ok(/result\.sourceDirty[\s\S]*forkWorktreeDirtySource/.test(forkAction), "dirty sources are refused with actionable guidance");
 ok(/result\.fallbackToShared[\s\S]*forkWorktreeFallbackNotice/.test(forkAction), "backend fallback state reaches the user");
-ok(/scope === "fork" \|\| scope === "fork-worktree"/.test(message), "both fork modes require a conversation boundary");
+ok(!message.includes("fork-worktree") && !message.includes("actions.checkpoints") && /actions\.fork/.test(message),
+  "chat exposes only the persisted-turn fork entry and never the worktree scope");
 ok(messageActionLabelKey("fork-worktree", false) === "rewind.forkWorktree", "isolated fork keeps its menu label after extraction");
 ok(messageActionLabelKey("fork-worktree", true) === "rewind.confirmForkWorktree", "isolated fork keeps its confirmation label after extraction");
 ok(/useState\(false\)/.test(mergeModal) && /autoCommitDirty/.test(mergeModal), "dirty auto-commit is opt-in by default");
@@ -57,8 +58,8 @@ ok(!/ModalCloseButton autoFocus/.test(mergeModal), "merge modal captures its tri
 ok(/CloseMergedWorktreeTab\(request: CloseMergedWorktreeTabRequest\)/.test(bridge), "worktree close is a request-object bridge call");
 ok(/FinalizeWorktreeMerge\(request: WorktreeCleanupRequest\)/.test(bridge), "cleanup is a separate request-object bridge call");
 const fencedNavigationCalls = [
-  ["const resumeSession", "app.ResumeSessionPage"],
-  ["const openChannelSession", "app.OpenChannelSessionPageForTab"],
+  ["const resumeSession", "app.ResumeTranscriptSessionForTab"],
+  ["const openChannelSession", "app.OpenChannelTranscriptSessionForTab"],
   ["const pickWorkspace", "app.PickWorkspace"],
   ["const switchWorkspace", "app.SwitchWorkspace"],
   ["const switchTab", "app.SetActiveTab"],
@@ -79,14 +80,16 @@ ok(fencedNavigationCalls.every(([startMarker, callMarker]) => {
 }), "navigation entry points await backend intent registration before switching");
 ok(/navigationIntentRegistrationTail\.then/.test(navigationFence) && /navigationIntentRegistrationTail = registered/.test(navigationFence), "navigation registrations preserve user-intent order across deferred bridge calls and remounts");
 
-const { makeMockForkBindings } = await import("../lib/mockForkWorktree");
+const { increaseMockForkTitle, makeMockForkBindings } = await import("../lib/mockForkWorktree");
 const { settleForkConversationForTab } = await import("../lib/controllerSwitchNotices");
 const original = { id: "source", active: true, workspaceRoot: "/project", topicTitle: "Source" } as TabMeta;
 let mockTabs = [original];
-const mockFork = makeMockForkBindings(() => mockTabs, tabs => { mockTabs = tabs; }, "Untitled");
+const mockFork = makeMockForkBindings(() => mockTabs, tabs => { mockTabs = tabs; }, "Untitled", async () => []);
 const isolated = await mockFork.ForkWorktreeForTab(original.id, 3);
 ok(isolated.isolated && isolated.tab.workspaceRoot === "/project-worktree" && mockTabs[0].active === false,
   "separate mock bindings retain isolated-worktree and activation behavior");
+ok(isolated.tab.topicTitle === "Source (1)" && increaseMockForkTitle("计划（9）") === "计划（10）",
+  "browser mock mirrors Harness fork-title numbering");
 const forkCalls: string[] = [];
 const bindings = {
   ForkForTab: async (id: string, turn: number) => { forkCalls.push(`shared:${id}:${turn}`); return isolated.tab; },

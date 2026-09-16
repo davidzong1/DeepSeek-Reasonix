@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,21 +12,166 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 	"reasonix/internal/sessioncatalog"
 )
 
 type desktopSessionTitleProvider struct {
 	started chan struct{}
 	chunks  chan provider.Chunk
+	request provider.Request
 }
 
 func (p *desktopSessionTitleProvider) Name() string { return "desktop-session-title" }
 
-func (p *desktopSessionTitleProvider) Stream(_ context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+func (p *desktopSessionTitleProvider) Stream(_ context.Context, request provider.Request) (<-chan provider.Chunk, error) {
+	p.request = request
 	if p.started != nil {
 		close(p.started)
 	}
 	return p.chunks, nil
+}
+
+func TestAIRenameCanonicalSessionUsesDurableHistoryInsteadOfEmptyLegacyFile(t *testing.T) {
+	for _, identity := range []string{"topic", "session-id", "session-route"} {
+		t.Run(identity, func(t *testing.T) {
+			app, ctrl, runtime, prov, path := newCanonicalTitleFixture(t)
+			appendSessionTestMessage(t, runtime, "host", provider.Message{ID: "host", Role: provider.RoleUser, Origin: provider.MessageOriginHost, Content: "hidden host policy"})
+			appendSessionTestMessage(t, runtime, "user", provider.Message{ID: "user", Role: provider.RoleUser, Origin: provider.MessageOriginUser, Content: "wrapped model input", RawContent: "帮我制作扫雷游戏"})
+			// Long tool work pushes the authored turn outside the recent window.
+			for i := range 110 {
+				id := fmt.Sprintf("tool-%d", i)
+				appendSessionTestMessage(t, runtime, id, provider.Message{ID: id, Role: provider.RoleTool, Content: "tool output"})
+			}
+			// Compaction changes model context without erasing the UI transcript.
+			if _, err := runtime.Session().AppendBatch(t.Context(), "compact", []session.Event{{Kind: "model/context-replace", Payload: []byte(`{"messages":[{"role":"assistant","content":"compacted summary"}],"reason":"compaction"}`)}}); err != nil {
+				t.Fatal(err)
+			}
+			key := "topic-canonical"
+			if identity != "topic" {
+				app.tabs["test"].TopicID = ""
+				key = runtime.Ref().SessionID
+				if identity == "session-route" {
+					key = sessionRoute(key)
+				}
+			}
+			title, err := app.AIRenameSession(key)
+			if err != nil || title != "制作扫雷游戏" {
+				t.Fatalf("AIRenameSession = %q, %v", title, err)
+			}
+			if got, err := ctrl.SessionService().Query().Stat(t.Context(), runtime.Ref()); err != nil || got.Title != title {
+				t.Fatalf("canonical title = %+v, %v", got, err)
+			}
+			if got := prov.request.Messages; len(got) != 2 || got[1].Content != "帮我制作扫雷游戏" {
+				t.Fatalf("title prompt = %+v", got)
+			}
+			if bytes, err := os.ReadFile(path); err != nil || len(bytes) != 0 {
+				t.Fatalf("legacy file changed: length=%d, err=%v", len(bytes), err)
+			}
+			if meta, ok, err := agent.LoadBranchMeta(path); err != nil || (ok && meta.CustomTitle != "") {
+				t.Fatalf("canonical rename wrote legacy title: %+v, %v", meta, err)
+			}
+			if identity == "topic" {
+				if got := loadTopicTitle("", key); got != title || app.tabs["test"].TopicTitle != title {
+					t.Fatalf("sidebar title = %q, runtime title = %q", got, app.tabs["test"].TopicTitle)
+				}
+			}
+		})
+	}
+}
+
+func newCanonicalTitleFixture(t *testing.T) (*App, *control.Controller, *session.Runtime, *desktopSessionTitleProvider, string) {
+	t.Helper()
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	service := app.desktopSessionService(dir)
+	runtime, err := service.Create(t.Context(), session.CreateOptions{SessionID: "canonical-title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := agent.NewSessionPath(dir, "legacy-empty")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	chunks := make(chan provider.Chunk, 2)
+	chunks <- provider.Chunk{Type: provider.ChunkText, Text: "制作扫雷游戏"}
+	chunks <- provider.Chunk{Type: provider.ChunkDone}
+	close(chunks)
+	prov := &desktopSessionTitleProvider{chunks: chunks}
+	ctrl := control.New(control.Options{
+		SessionDir: dir, SessionPath: path, ModelRef: "test/title-model",
+		SessionService: service, SessionRuntime: runtime, ExclusiveSession: true,
+		ProviderResolver: &provider.StaticResolver{Descriptors: []provider.Descriptor{{Ref: "test/title-model"}}, Providers: map[string]provider.Provider{"test/title-model": prov}},
+	})
+	t.Cleanup(ctrl.Close)
+	installDesktopSessionTitleTab(app, ctrl, "topic-canonical", path)
+	app.tabs["test"].SessionID = runtime.Ref().SessionID
+	return app, ctrl, runtime, prov, path
+}
+
+func TestAIRenameCanonicalSessionPreservesManualRenameAndRejectsReboundController(t *testing.T) {
+	for _, change := range []string{"manual-title", "manual-topic", "binding"} {
+		t.Run(change, func(t *testing.T) {
+			app, ctrl, runtime, prov, _ := newCanonicalTitleFixture(t)
+			appendSessionTestMessage(t, runtime, "user", provider.Message{ID: "user", Role: provider.RoleUser, Content: "rename this session"})
+			prov.started = make(chan struct{})
+			prov.chunks = make(chan provider.Chunk, 2)
+			result := make(chan error, 1)
+			go func() { _, err := app.AIRenameSession("topic-canonical"); result <- err }()
+			select {
+			case <-prov.started:
+			case err := <-result:
+				t.Fatalf("rename stopped before provider: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("provider did not start")
+			}
+			switch change {
+			case "manual-title":
+				if err := app.RenameSession(sessionRoute(runtime.Ref().SessionID), "manual title"); err != nil {
+					t.Fatal(err)
+				}
+			case "manual-topic":
+				if err := app.RenameTopic("topic-canonical", "manual topic title"); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				app.mu.Lock()
+				app.tabs["test"].Ctrl = nil
+				app.mu.Unlock()
+			}
+			prov.chunks <- provider.Chunk{Type: provider.ChunkText, Text: "stale AI title"}
+			prov.chunks <- provider.Chunk{Type: provider.ChunkDone}
+			close(prov.chunks)
+			if err := <-result; err == nil || !strings.Contains(err.Error(), "changed") {
+				t.Fatalf("stale completion = %v", err)
+			}
+			info, err := ctrl.SessionService().Query().Stat(t.Context(), runtime.Ref())
+			if err != nil || info.Title == "stale AI title" || (change == "manual-title" && info.Title != "manual title") {
+				t.Fatalf("title = %+v, %v", info, err)
+			}
+			if change == "manual-topic" && loadTopicTitle("", "topic-canonical") != "manual topic title" {
+				t.Fatal("manual sidebar title was overwritten")
+			}
+		})
+	}
+}
+
+func TestAIRenameSessionReadFailureIsNotEmptyHistory(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "unreadable")
+	if err := os.WriteFile(path, []byte("invalid JSON\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := newDesktopSessionTitleController(dir, path, &desktopSessionTitleProvider{})
+	defer ctrl.Close()
+	app := NewApp()
+	installDesktopSessionTitleTab(app, ctrl, "topic-error", path)
+	if _, err := app.AIRenameSession("topic-error"); err == nil || !strings.Contains(err.Error(), "read conversation") || strings.Contains(err.Error(), "no user messages") {
+		t.Fatalf("read error = %v", err)
+	}
 }
 
 func newDesktopSessionTitleController(dir, path string, prov provider.Provider) *control.Controller {

@@ -1,14 +1,16 @@
-import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { beneath, internalRoots, listPackages, runGoTest } from "./go-test-groups.mjs";
 
 export const isolatedGroups = ["agent", "boot", "control"];
-const smokeRoots = [
+const smokeRoots = internalRoots(
   "appidentity", "checkpoint", "cli", "desktoplauncher", "extension/sidecar",
-  "filelock", "fileutil", "hook", "instruction", "mcplaunch", "notify", "proc",
-  "remote", "repair", "sandbox", "sessioncatalog", "sysproxy", "workspacelease",
-].map(name => `reasonix/internal/${name}`).concat("reasonix/cmd");
-const beneath = (pkg, root) => pkg === root || pkg.startsWith(`${root}/`);
+  "filelock", "fileutil", "hook", "instruction", "mcplaunch", "notify",
+  // persistentshell drives a real ConPTY and a PowerShell wrapper that no other
+  // platform exercises, so Windows is the only lane that can prove it.
+  "persistentshell", "proc",
+  "remote", "repair", "sandbox", "sessioncatalog", "sysproxy", "winsandbox", "workspacelease",
+).concat("reasonix/cmd");
 
 export function selectPackages(packages, group) {
   if (!["full", "smoke", ...isolatedGroups].includes(group)) {
@@ -28,18 +30,9 @@ export function testArgs(packages, group) {
 }
 
 function main(group) {
-  const listed = spawnSync("go", ["list", "./..."], { encoding: "utf8" });
-  if (listed.error) throw listed.error;
-  if (listed.status !== 0) {
-    process.stderr.write(listed.stderr || "go list failed\n");
-    return listed.status ?? 1;
-  }
-  const packages = listed.stdout.trim().split(/\r?\n/).filter(Boolean);
-  const args = testArgs(packages, group);
-  console.log(`Windows ${group}: ${args.length - 4} packages; go ${args.join(" ")}`);
-  const result = spawnSync("go", args, { stdio: "inherit" });
-  if (result.error) throw result.error;
-  return result.status ?? 1;
+  const { packages, status } = listPackages();
+  if (!packages) return status;
+  return runGoTest(`Windows ${group}`, selectPackages(packages, group), testArgs(packages, group));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

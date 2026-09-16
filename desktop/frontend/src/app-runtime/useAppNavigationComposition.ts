@@ -103,7 +103,7 @@ export function useAppNavigationComposition(input: AppNavigationCompositionInput
     closeTransientOverlays,
     clearImDetail: () => setSidebarImDetailConnectionId(""),
     prepareBlankWorkspace: (workspaceRoot) => {
-      if (shell.sidebarWorkbench) session.workspacePanelCommands.prepareBlankWorkspace(workspaceRoot);
+      session.workspacePanelCommands.prepareBlankWorkspace(workspaceRoot);
     },
     navigation: { enqueueNavigation, enqueueNavigationWithIntent, openRemoteProject },
     noteNavigationIntent,

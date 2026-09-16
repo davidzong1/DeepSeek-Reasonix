@@ -138,7 +138,10 @@ func (a *App) bridgeDrive(tabID, text string, route bot.DesktopWatchRoute) error
 		ChatType: route.ChatType,
 	}
 	generation := tab.sink.SetBotSink(newBotEventForwarder(a.botRuntime, []botForwardTarget{target}))
-	a.ensureTabTopicIndexedForUserTurn(tab)
+	if err := a.ensureTabTopicIndexedForUserTurn(tab); err != nil {
+		tab.sink.clearBotSink(generation)
+		return err
+	}
 	ctrl.SubmitDisplay(text, text)
 	// Confirm the submit actually started a turn. If nothing is running now, the
 	// controller was rotating and the submit no-oped — detach this exact

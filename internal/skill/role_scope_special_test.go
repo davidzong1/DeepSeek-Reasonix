@@ -49,8 +49,12 @@ func TestTeamRoleScopeMemberOpensOwnSpecialBranchOnly(t *testing.T) {
 	if !ok || !strings.HasSuffix(tool.Path, filepath.Join("team", "skills", "special", "member", "member-tool", "SKILL.md")) {
 		t.Fatalf("member-tool must load special/member's file, got %+v", tool)
 	}
-	if !strings.Contains(tool.Body, "TOOL-MBR") || strings.Contains(tool.Body, "TOOL-LDR") {
-		t.Fatalf("member-tool body is wrong: %q", tool.Body)
+	toolBody, ok := st.Read("member-tool")
+	if !ok {
+		t.Fatal("member-tool must load by name")
+	}
+	if !strings.Contains(toolBody.Body, "TOOL-MBR") || strings.Contains(toolBody.Body, "TOOL-LDR") {
+		t.Fatalf("member-tool body is wrong: %q", toolBody.Body)
 	}
 	for _, name := range want {
 		if _, ok := st.Read(name); !ok {
@@ -92,8 +96,12 @@ func TestTeamRoleScopeLeaderOpensOwnSpecialBranchOnly(t *testing.T) {
 	if !ok || !strings.HasSuffix(tool.Path, filepath.Join("team", "skills", "special", "leader", "leader-tool", "SKILL.md")) {
 		t.Fatalf("leader-tool must load special/leader's file, got %+v", tool)
 	}
-	if !strings.Contains(tool.Body, "TOOL-LDR") || strings.Contains(tool.Body, "TOOL-MBR") {
-		t.Fatalf("leader-tool body is wrong: %q", tool.Body)
+	leaderToolBody, ok := st.Read("leader-tool")
+	if !ok {
+		t.Fatal("leader-tool must load by name")
+	}
+	if !strings.Contains(leaderToolBody.Body, "TOOL-LDR") || strings.Contains(leaderToolBody.Body, "TOOL-MBR") {
+		t.Fatalf("leader-tool body is wrong: %q", leaderToolBody.Body)
 	}
 	for _, closed := range []string{"member-tool", "member-broken", "leader-silent", "leader-broken"} {
 		if _, ok := st.Read(closed); ok {

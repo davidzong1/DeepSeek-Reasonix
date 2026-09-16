@@ -419,7 +419,13 @@ export function projectTreeFolderHasActiveRuntime(folder: ProjectNode): boolean 
   return asArray(folder.children).some(projectTreeTopicArchiveBlocked);
 }
 
-const FolderActivity = lazy(() => import("./ProjectTreeFolderActivity"));
+const FolderActivity = lazy(() => import("./RuntimeActivityIndicator"));
 export function ProjectTreeFolderActivity({ folder }: { folder: ProjectNode }) {
-  return <Suspense fallback={null}><FolderActivity folder={folder} /></Suspense>;
+  return <Suspense fallback={null}><FolderActivity target={{
+    scope: folder.kind === "global_folder" ? "global" : "project",
+    root: folder.root ?? "",
+    remote: folder.remote,
+    topics: asArray(folder.children),
+    fallbackActive: projectTreeFolderHasActiveRuntime(folder),
+  }} /></Suspense>;
 }

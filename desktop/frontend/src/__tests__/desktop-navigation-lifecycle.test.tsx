@@ -29,6 +29,7 @@ const ports: Parameters<typeof useDesktopNavigation>[0]["ports"] = {
   openRemoteProject: async (_host, workspace) => activate(`remote:${workspace}`),
   switchRemoteTab: async (meta, seq) => { calls.push(`remote-switch:${meta.id}:${seq}`); },
   activateTopic: async (_scope, _workspace, id) => activate(id),
+  openCanonicalSession: async (ref) => { await activate(`canonical:${ref.sessionId}`); },
   openTopicSession: async (_scope, _workspace, id) => { calls.push("tab-session"); return activate(id); },
   openGlobalTab: async id => { calls.push("tab-global"); return activate(id); },
   openProjectTab: async (_workspace, id) => { calls.push("tab-project"); return activate(id); },
@@ -44,7 +45,7 @@ const ports: Parameters<typeof useDesktopNavigation>[0]["ports"] = {
 function Probe({ visible = "A" }: { visible?: string }) {
   useRemoteTabOpened(meta => { calls.push(`resource:${meta.id}`); }, () => {});
   api = useDesktopNavigation({ visible: { tabId: visible, sessionKey: visible }, ports,
-    setTabRevealSignal: () => { calls.push("reveal-tab"); }, setTranscriptRevealSignal: () => { calls.push("reveal-transcript"); },
+    setTabRevealSignal: () => { calls.push("reveal-tab"); },
     setProjectRevision: () => { calls.push("project"); }, setHistory: () => { calls.push("history-close"); },
     t: ((key: string) => key) as Translator, showToast: message => { calls.push(`notice:${message}`); },
     noteIntent: () => ++intent, beginSurface: seq => { calls.push(`begin:${seq}`); },
@@ -54,9 +55,18 @@ function Probe({ visible = "A" }: { visible?: string }) {
 }
 const paint = (visible = "A") => act(async () => root.render(<Probe visible={visible} />));
 const topic = (id: string) => api.enqueueNavigation({ kind: "topic", scope: "project", workspaceRoot: "fixture", topicId: id });
-async function finish(id: string, task: Promise<void>) { pending.get(id)!.resolve(tab(id)); await task; }
+async function finish(id: string, task: Promise<void>) {
+  const deadline = Date.now() + 5000;
+  while (!pending.has(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.ok(pending.has(id), `navigation reached ${id}`);
+  pending.get(id)!.resolve(tab(id)); await task;
+}
 try {
   await paint();
+  const canonical = api.enqueueNavigation({ kind: "canonical-session", ref: { hostId: "local", sessionId: "canonical-target" } });
+  await finish("canonical:canonical-target", canonical);
+  assert.ok(calls.includes("history-close") && calls.includes("tabs") && calls.includes("reveal-tab"));
+  calls.length = 0; intent = 0;
   const entry = api.enqueueNavigation;
   const a = topic("A"), b = topic("B"), c = topic("C");
   await b;

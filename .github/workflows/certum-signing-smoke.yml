@@ -1,0 +1,71 @@
+name: Certum signing smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certum-signing
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.repository == 'esengine/DeepSeek-Reasonix' && github.ref == 'refs/heads/main-v2' && github.ref_protected
+    runs-on: windows-2022
+    environment: release
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check signing configuration
+        shell: pwsh
+        env:
+          CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+          CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:CERTUM_USERNAME)) { throw 'Missing CERTUM_USERNAME' }
+          if ($env:CERTUM_OTP_URI -notmatch '^otpauth://totp/') { throw 'CERTUM_OTP_URI must be a complete TOTP URI' }
+          if ($env:CERTUM_KEY_ID -notmatch '^[0-9a-fA-F]{40}$') { throw 'CERTUM_KEY_ID must be the 40-character SHA-1 certificate thumbprint' }
+
+      - name: Build open-source signing probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # This minimal probe is covered by the repository's MIT license.
+          New-Item -ItemType Directory payload | Out-Null
+          'package main; func main() { println("Reasonix Certum signing probe") }' | Set-Content probe.go
+          $env:GOOS = 'windows'
+          $env:CGO_ENABLED = '0'
+          foreach ($arch in @('amd64', 'arm64')) {
+            $env:GOARCH = $arch
+            go build -trimpath -o "payload/probe-$arch.exe" probe.go
+            if ($LASTEXITCODE -ne 0) { throw 'Probe compilation failed' }
+          }
+          @('probe-amd64.exe', 'probe-arm64.exe') | Set-Content payload/signing-files.txt
+          Copy-Item payload/probe-amd64.exe installer-probe.exe
+
+      - name: Connect to SimplySign cloud certificate
+        uses: ./.github/actions/setup-certum
+        with:
+          username: ${{ secrets.CERTUM_USERNAME }}
+          otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+          thumbprint: ${{ secrets.CERTUM_KEY_ID }}
+
+      - name: Sign and verify payload and installer probes
+        shell: pwsh
+        env:
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: |
+          ./scripts/sign-certum.ps1 -PayloadDirectory payload
+          ./scripts/sign-certum.ps1 -FilePath installer-probe.exe
+          'Certum x64/ARM64 payload and installer signing, expected signer, trust, and timestamps passed.' >> $env:GITHUB_STEP_SUMMARY

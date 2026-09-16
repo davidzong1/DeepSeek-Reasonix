@@ -4,6 +4,7 @@ import { act } from "react";
 import { workspaceFileIcon } from "../components/WorkspaceFileIcon";
 import type { DirEntry, FilePreview, WorkspaceChangeDetailView, WorkspaceChangesView } from "../lib/types";
 import { flushPromises, renderFilesWorkspace, renderWorkspace, waitFor } from "./workspace-panel-test-harness";
+import { performResourceAction } from "../lib/fileNavigationCommands";
 
 let passed = 0;
 let failed = 0;
@@ -123,7 +124,6 @@ console.log("\nworkspace changes git errors");
       gitAvailable: true,
     },
     {
-      creationMode: true,
       history: [{ hash: "1234567890", author: "Agent", date: "2026-07-10T12:00:00Z", message: "older commit" }],
     },
   );
@@ -487,8 +487,11 @@ console.log("\nworkspace changes git errors");
         binary: false,
       }),
     },
-    { revealPathRequest: { id: 1, path: "app.ts" } },
   );
+  await act(async () => {
+    await performResourceAction({ source: "workspace", hostId: "local", tabId: "tab-a", path: "app.ts" }, "preview");
+    await flushPromises();
+  });
 
   await waitFor("code preview", () => document.body.textContent?.includes("const value = 1;") === true);
   const previewBody = document.querySelector(".workspace-preview__body") as HTMLElement;

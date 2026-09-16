@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -24,24 +23,15 @@ func TestConcurrentRebuildSessionCatalogCallersShareFailure(t *testing.T) {
 	_ = waitForSessionCatalogForTest(t, app, nil)
 	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
 
-	projectRoot := filepath.Join(t.TempDir(), "broken-project")
-	if err := addProject(projectRoot, "Broken project"); err != nil {
-		t.Fatal(err)
-	}
-	badTarget := desktopSessionDir(projectRoot)
-	if err := os.MkdirAll(filepath.Dir(badTarget), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(badTarget, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	reconcileStarted := make(chan struct{})
 	reconcileRelease := make(chan struct{})
-	released := false
+	var reconcileDone []<-chan struct{}
 	t.Cleanup(func() {
-		if !released {
-			close(reconcileRelease)
+		close(reconcileRelease)
+		for _, done := range reconcileDone {
+			if !waitChannelBefore(done, time.Now().Add(5*time.Second)) {
+				t.Error("reconcile did not exit after release")
+			}
 		}
 	})
 	app.catalogReconcileHook = func(sessioncatalog.DirectoryTarget) {
@@ -52,9 +42,17 @@ func TestConcurrentRebuildSessionCatalogCallersShareFailure(t *testing.T) {
 		t.Fatal("explicit reconcile was not scheduled")
 	}
 	<-reconcileStarted
+	app.catalogReconcileMu.Lock()
+	for _, job := range app.catalogReconcileJobs {
+		reconcileDone = append(reconcileDone, job.done)
+	}
+	app.catalogReconcileMu.Unlock()
 
 	app.ctx = context.Background()
 	rebuildStarted := make(chan struct{})
+	joined := make(chan struct{})
+	rebuildRelease := make(chan struct{}, 1)
+	defer close(rebuildRelease)
 	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...any) {
 		if name != "project-tree:changed-v2" || len(payload) != 1 {
 			return
@@ -62,16 +60,19 @@ func TestConcurrentRebuildSessionCatalogCallersShareFailure(t *testing.T) {
 		event, ok := payload[0].(ProjectTreeChangedV2)
 		if ok && event.Reason == "catalog_rebuild_started" {
 			close(rebuildStarted)
+			// Keep the flight published until the follower has joined. Hold
+			// reconcile blocked through both results to force the exact stop
+			// failure independently of SQLite/disk speed.
+			<-rebuildRelease
 		}
 	}
-	joined := make(chan struct{})
 	app.catalogRebuildJoinHook = func() { close(joined) }
 
 	leaderDone := make(chan error, 1)
-	go func() { leaderDone <- app.rebuildSessionCatalog(3 * time.Second) }()
+	go func() { leaderDone <- app.rebuildSessionCatalog(25 * time.Millisecond) }()
 	<-rebuildStarted
 	followerDone := make(chan error, 1)
-	go func() { followerDone <- app.rebuildSessionCatalog(3 * time.Second) }()
+	go func() { followerDone <- app.rebuildSessionCatalog(25 * time.Millisecond) }()
 	<-joined
 	select {
 	case err := <-followerDone:
@@ -79,14 +80,13 @@ func TestConcurrentRebuildSessionCatalogCallersShareFailure(t *testing.T) {
 	default:
 	}
 
-	close(reconcileRelease)
-	released = true
+	rebuildRelease <- struct{}{}
 	leaderErr := <-leaderDone
 	followerErr := <-followerDone
 	if leaderErr == nil || followerErr == nil {
 		t.Fatalf("concurrent rebuild errors = leader %v, follower %v; want shared failure", leaderErr, followerErr)
 	}
-	if followerErr.Error() != leaderErr.Error() || !strings.Contains(leaderErr.Error(), "not a directory") {
+	if !errors.Is(followerErr, leaderErr) || !errors.Is(leaderErr, errSessionCatalogStopTimeout) {
 		t.Fatalf("concurrent rebuild errors = leader %q, follower %q; want the same rebuild result",
 			leaderErr, followerErr)
 	}

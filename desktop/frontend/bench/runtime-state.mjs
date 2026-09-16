@@ -5,6 +5,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { selectSession } from "./app-page-actions.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(root, ".pw-browsers");
 const { chromium } = await import("playwright");
@@ -19,7 +20,7 @@ try {
   await page.goto("http://127.0.0.1:4668/?mock=bench&bench=1");
   const input = page.locator("textarea.composer__input:not([aria-hidden=true])");
   await input.waitFor();
-  await page.locator('.project-tree__topic-main:has-text("bench:small-6t")').click();
+  await selectSession(page, "bench:small-6t");
   await page.waitForFunction(() => document.querySelector(".transcript")?.textContent?.includes("ASYNC LAYOUT EXPANSION COMPLETE"));
   await page.evaluate(async () => {
     const { app, onRemoteTabOpened, onRemoteTabUpdated } = await import("/src/lib/bridge.ts");
@@ -88,10 +89,10 @@ try {
   check(calls.length === 1 && queries.length === 1 && calls[0].at(-1) === queries[0].at(-1), "retry only queries the original durable idempotency key");
   await publish("idle", { backgroundJobs: 2 });
   await page.locator(".composer-run-strip").filter({ hasText: /2/ }).waitFor();
-  check(await page.locator(".project-tree__folder-active-indicator:not(.project-tree__folder-active-indicator--static)").count() > 0, "background jobs keep project activity visible");
+  check(await page.locator(".runtime-activity-indicator:not(.runtime-activity-indicator--static)").count() > 0, "background jobs keep project activity visible");
   await publish("idle");
   await page.locator(".composer-run-strip").waitFor({ state: "hidden" });
-  check(await page.locator(".project-tree__folder-active-indicator").count() === 0, "last job completion clears project activity");
+  check(await page.locator(".runtime-activity-indicator").count() === 0, "last job completion clears project activity");
   await page.locator('.project-tree__folder-main:has(svg.lucide-cloud)').click();
   await page.locator('.project-tree__topic-main:has-text("Remote demo session")').click();
   await page.locator(".remote-surface--ready").waitFor();
@@ -120,10 +121,9 @@ try {
   await publish("idle", {}, true);
   await page.locator(".composer-run-strip").waitFor({ state: "hidden" });
   check(await page.locator(".composer__btn--stop").count() === 0, "remote completion removes the run control");
-  await page.waitForFunction(() => !document.querySelector('.remote-surface [data-transcript-block-phase="active"]'));
-  check(await page.locator(".remote-surface").getByText("runtime missing completion fixture", { exact: true }).count() === 0,
-    "trusted idle without turn_done settles the real transcript and reconciles durable history");
-  await page.locator('.project-tree__topic-main:has-text("bench:geometry")').click();
+  check(await page.locator(".remote-surface").getByText("runtime missing completion fixture", { exact: true }).count() === 1,
+    "ancillary idle cannot erase output before transcript v2 confirms completion");
+  await selectSession(page, "bench:geometry");
   await page.waitForFunction(() => document.querySelector(".transcript")?.textContent?.includes("Geometry contract fixture complete."));
   check(await page.locator(".remote-surface").count() === 0, "local switch retains ownership after remote runtime frames");
   check(errors.length === 0, "runtime scenarios produce no browser errors: " + errors.join("; "));

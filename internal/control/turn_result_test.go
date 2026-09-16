@@ -56,7 +56,7 @@ func TestControllerFreezesTurnResultBeforeTerminalPublication(t *testing.T) {
 			events := make(chan event.Event, 2)
 			releaseTerminal := make(chan struct{})
 			var cancelDone chan struct{}
-			c := New(Options{Runner: runner, Executor: executor, WorkspaceRoot: root, SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Sink: event.FuncSink(func(e event.Event) {
+			c := newOwnedTestController(t, Options{Runner: runner, Executor: executor, WorkspaceRoot: root, SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Sink: event.FuncSink(func(e event.Event) {
 				if e.Kind == event.TurnDone {
 					events <- e
 					// Keep publication open while the test inspects the frozen result.
@@ -101,6 +101,9 @@ func TestControllerFreezesTurnResultBeforeTerminalPublication(t *testing.T) {
 			requireCheckpointTurn(t, done, 0)
 			if done.Receipt == nil || done.Receipt.Diff == nil {
 				t.Fatalf("terminal receipt missing: %+v", done)
+			}
+			if done.Receipt.AssessmentKind != "facts" || done.Receipt.Verdict != "unknown" {
+				t.Fatalf("checkpoint-only result became a quality assessment: %+v", done.Receipt)
 			}
 			diff := done.Receipt.Diff
 			if diff.Coverage != "complete" || diff.Added != 1 || diff.Removed != 1 || len(diff.Files) != 1 || diff.Files[0].Patch != "" {

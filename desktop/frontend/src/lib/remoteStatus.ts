@@ -1,4 +1,4 @@
-import type { CheckpointMeta, EffortInfo, GoalRuntime, GoalStatus, QualityFloor, ToolApprovalMode } from "./types";
+import { normalizeToolApprovalMode, type CheckpointMeta, type EffortInfo, type GoalLifecycleView, type GoalRuntime, type GoalStatus, type QualityFloor, type ToolApprovalMode } from "./types";
 
 // Raw /status payload mapping for the remote session surface. The serve reports
 // the fields it knows; everything else stays undefined so callers keep prior
@@ -30,6 +30,7 @@ export type RemoteStatus = {
   toolApprovalMode?: unknown;
   goal?: unknown;
   goalStatus?: unknown;
+  goalView?: unknown;
   effort?: unknown;
   used?: unknown;
   window?: unknown;
@@ -48,16 +49,24 @@ export function isAuthoritativeRemoteStatus(status: unknown): status is RemoteSt
   if (!status || typeof status !== "object" || Array.isArray(status)) return false;
   const raw = status as RemoteStatus;
   return typeof raw.plan === "boolean"
-    && (raw.toolApprovalMode === "ask" || raw.toolApprovalMode === "auto" || raw.toolApprovalMode === "yolo")
+    && ["read-only", "workspace-write", "danger-full-access", "ask", "auto", "yolo"].includes(String(raw.toolApprovalMode))
     && typeof raw.goal === "string";
+}
+
+export function remoteGoalView(status: unknown): GoalLifecycleView | undefined {
+  const value = (status as RemoteStatus | null)?.goalView;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Partial<GoalLifecycleView>;
+  if (typeof raw.id !== "string" || typeof raw.revision !== "number" || typeof raw.objective !== "string"
+    || !["active", "paused", "blocked", "complete"].includes(String(raw.phase))
+    || !["armed", "disarmed"].includes(String(raw.activation)) || typeof raw.roundsStarted !== "number") return undefined;
+  return raw as GoalLifecycleView;
 }
 
 export function remoteComposerState(status: unknown) {
   const raw = (status ?? null) as RemoteStatus | null;
   const goal = typeof raw?.goal === "string" ? raw.goal.trim() : "";
-  const toolApprovalMode: ToolApprovalMode = raw?.toolApprovalMode === "auto" || raw?.toolApprovalMode === "yolo"
-    ? raw.toolApprovalMode
-    : "ask";
+  const toolApprovalMode: ToolApprovalMode = normalizeToolApprovalMode(typeof raw?.toolApprovalMode === "string" ? raw.toolApprovalMode : undefined);
   const rawGoalStatus = raw?.goalStatus;
   const goalStatus: GoalStatus | undefined = rawGoalStatus === "running" || rawGoalStatus === "complete"
     || rawGoalStatus === "blocked" || rawGoalStatus === "stopped" ? rawGoalStatus : undefined;

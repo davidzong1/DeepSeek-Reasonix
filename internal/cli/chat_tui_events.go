@@ -151,8 +151,9 @@ func (m *chatTUI) ingestToolResult(e event.Event) {
 	// call surfaces a red card. Pass the final output so collapseToolOutput has
 	// a last-resort line count when live state was already reset.
 	m.collapseFinalToolOutput(e.Tool)
-	if e.Tool.Name == "todo_write" && e.Tool.Err == "" {
-		m.todoArgs = e.Tool.Args
+	if e.Tool.Name == "todo_write" && e.Tool.Err == "" && e.Tool.TodoWritten {
+		m.todos = append([]event.Todo(nil), e.Tool.Todos...)
+		m.todosDismissed = false
 	}
 	m.rememberSearchResult(e.Tool)
 	if e.Tool.Err != "" {
@@ -196,7 +197,7 @@ func (m *chatTUI) ingestTurnPhase(e event.Event) {
 
 func (m *chatTUI) ingestCompletionSummary(e event.Event) {
 	if e.Completion != nil {
-		if completionSummaryNeedsAttention(e.Completion, m.ctrlQualityFloor()) {
+		if completionSummaryNeedsAttention(e.Completion, "") {
 			m.finalizeStreamed()
 			m.commitLine(fmt.Sprintf("  ! %s", completionSummaryWarning(e.Completion)))
 		}

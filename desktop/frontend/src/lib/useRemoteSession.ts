@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRuntimeSession } from "./useRuntimeState";
+import { createLegacyRemotePolicyNoticeTracker } from "./legacyRemotePolicyNotice";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
+import { useRemoteForkTurn } from "./remoteForkTurn";
+import { useT } from "./i18n";
 import type { CancelOutcome } from "./inboxCancel";
-import { historyMessagesToItems, initialState, reducer, type ControllerLiveStore, type State } from "./useController";
-import { TurnEventProjector } from "./turnEventProjection";
-import { resolveSnapshotItems, StaleCut, TranscriptSnapshotClient } from "./transcriptSnapshotClient";
+import { initialState, reducer, type ControllerLiveStore, type HistoryLoadOutcome, type HistoryLoadTrigger, type State } from "./useController";
+import { TranscriptSessionFollower } from "./transcriptSessionFollower";
 import { getTranscriptStore } from "./transcriptStore";
-import { isAuthoritativeRemoteStatus, remoteCheckpoints, remoteComposerState, remoteGoalRuntime, remoteStatusToAction, type RemoteStatus } from "./remoteStatus";
-import type { CollaborationMode, CommandInfo, EffortInfo, GoalRuntime, GoalStatus, HistoryMessage, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
+import { isAuthoritativeRemoteStatus, remoteCheckpoints, remoteComposerState, remoteGoalRuntime, remoteGoalView } from "./remoteStatus";
+import type { CollaborationMode, CommandInfo, EffortInfo, GoalLifecycleView, GoalRuntime, GoalStatus, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
+import type { ForkTargetView } from "./forkTargets";
 
 const loadRemoteSurface = () => import("../components/RemoteSessionSurface");
 
@@ -25,8 +28,9 @@ export interface RemoteSessionApi {
   transcript: State;
   liveStore: ControllerLiveStore;
   hydrated: boolean;
-  syncMode?: "snapshot" | "legacy";
-  loadOlderHistory?: () => Promise<boolean>;
+  syncMode?: "v2";
+  loadOlderHistory?: (targetTurn?: number, trigger?: HistoryLoadTrigger) => Promise<HistoryLoadOutcome>;
+  loadNewerHistory?: (latest?: boolean) => Promise<HistoryLoadOutcome>;
   running: boolean;
   /** The serve's label for the active model, for the composer capsule. */
   modelLabel: string;
@@ -39,6 +43,7 @@ export interface RemoteSessionApi {
     qualityFloor: QualityFloor;
   };
   goalRuntime?: GoalRuntime;
+  goalView?: GoalLifecycleView;
   effort?: EffortInfo;
   /** Changes whenever the tab adopts a new/reconnected Serve session snapshot. */
   surfaceGeneration: number;
@@ -52,11 +57,15 @@ export interface RemoteSessionApi {
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
   clearExtensionForm: (pluginId: string, surfaceId: string) => void;
   rewind: (turn: number, scope: string) => Promise<void>;
+  /** Creates the child session for one turn; returns its id, or undefined with the reason in promptError. */
+  forkTurn: (target: ForkTargetView) => Promise<{ sessionId: string; operationId: string } | undefined>;
+  acknowledgeFork: (operationId: string) => Promise<void>;
   setModel: (ref: string) => Promise<void>;
   setEffort: (level: string) => Promise<void>;
   setQualityFloor: (floor: QualityFloor) => Promise<void>;
   pauseGoal: () => Promise<void>;
   resumeGoal: () => Promise<void>;
+  editGoal: (objective: string, maxGoalRounds: number | null) => Promise<void>;
   steer: (input: string) => Promise<void>;
   cancelJob: (jobId: string) => Promise<boolean>;
   drainApprovals: (ids: string[]) => void;
@@ -65,7 +74,7 @@ export interface RemoteSessionApi {
 
 export function useRemoteComposer(
   session: RemoteSessionApi,
-  showToast: (message: string, level: "error") => void,
+  showToast: (message: string, level: "warn" | "error") => void,
 ) {
   const onSend = useCallback(async (displayText: string, submitText = displayText) => {
     const text = (submitText || displayText).trim();
@@ -87,35 +96,50 @@ export function useRemoteComposer(
 
 export function useActiveRemoteSession(
   activeTab: TabMeta | undefined,
-  showToast: (message: string, level: "error") => void,
+  showToast: (message: string, level: "warn" | "error") => void,
 ) {
-  const active = Boolean(activeTab?.remote);
-  const session = useRemoteSession(active && activeTab ? activeTab.id : undefined, activeTab?.remoteState, activeTab?.sessionPath);
-  const composer = useRemoteComposer(session, showToast);
-  return { active, session, ready: active && session.state === "ready" && session.hydrated && Boolean(session.composerProfile), ...composer };
+	const t = useT();
+	const active = Boolean(activeTab?.remote);
+	const session = useRemoteSession(active && activeTab ? activeTab.id : undefined, activeTab?.remoteState, activeTab?.sessionPath);
+	const composer = useRemoteComposer(session, showToast);
+	useEffect(() => {
+		if (!activeTab?.remote || !activeTab.id) return;
+    const legacyQuality = session.transcript.items.some(item => item.kind === "notice" && (item.code === "final_readiness" || item.variant === "delivery"));
+		const key = `${activeTab.id}\u0000${activeTab.sessionPath ?? ""}`;
+    const notice = legacyRemotePolicyNotice(key, session.composerProfile?.qualityFloor, session.goalRuntime?.stopCause, legacyQuality);
+    if (notice) showToast(t(notice), "warn");
+	}, [activeTab?.remote, activeTab?.id, activeTab?.sessionPath, session.composerProfile?.qualityFloor, session.transcript.items, session.goalRuntime?.stopCause, showToast, t]);
+	return { active, session, ready: active && session.state === "ready" && session.hydrated && Boolean(session.composerProfile), ...composer };
 }
+
+const legacyRemotePolicyNotice = createLegacyRemotePolicyNoticeTracker();
 
 export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabStateValue, sessionPath?: string): RemoteSessionApi {
   const runtimeState = useRuntimeSession(tabId, sessionPath);
   const [state, setState] = useState<RemoteTabStateValue>(initial === "disconnected" ? "connecting" : (initial ?? "connecting"));
   const [error, setError] = useState("");
-  const [transcript, setTranscriptState] = useState<State>(initialState);
+  const transcript = useSyncExternalStore(
+    useCallback(listener => tabId ? getTranscriptStore().subscribeState(tabId, listener) : () => {}, [tabId]),
+    useCallback(() => (tabId ? getTranscriptStore().states.get(tabId) : undefined) ?? initialState, [tabId]),
+  );
   const [modelLabel, setModelLabel] = useState("");
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [composerProfile, setComposerProfile] = useState<RemoteSessionApi["composerProfile"]>();
   const [goalRuntime, setGoalRuntime] = useState<GoalRuntime>();
+  const [goalView, setGoalView] = useState<GoalLifecycleView>();
   const [effort, setEffortInfo] = useState<EffortInfo>();
   const [surfaceGeneration, setSurfaceGeneration] = useState(0);
   const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
-  const [syncMode, setSyncMode] = useState<"snapshot" | "legacy">("legacy");
-  const olderRef = useRef<(() => Promise<boolean>) | undefined>(undefined);
+  const olderRef = useRef<((trigger?: HistoryLoadTrigger) => Promise<HistoryLoadOutcome>) | undefined>(undefined);
+  const newerRef = useRef<(() => Promise<HistoryLoadOutcome>) | undefined>(undefined);
   const transcriptRef = useRef(transcript);
   const setTranscript = useCallback((update: State | ((state: State) => State)) => {
     const next = typeof update === "function" ? update(transcriptRef.current) : update;
     transcriptRef.current = next;
-    setTranscriptState(next);
-  }, []);
+    if (tabId) getTranscriptStore().setState(tabId, next);
+  }, [tabId]);
+  const { forkTurn, acknowledgeFork, forkTargetsRefreshRef } = useRemoteForkTurn(app, tabId, sessionPath, setTranscript, setPromptError);
   const liveListenersRef = useRef(new Set<() => void>());
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
@@ -152,6 +176,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setModelLabel(next.modelLabel);
     setComposerProfile(next.composerProfile);
     setGoalRuntime(remoteGoalRuntime(status));
+    setGoalView(remoteGoalView(status));
     setEffortInfo(next.effort);
   }, []);
 
@@ -165,386 +190,137 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setState(mountedState);
     setError("");
     setPromptError("");
-    setTranscript(initialState);
-    transcriptRef.current = initialState;
+    // The store owns mounted content across reconnects and tab switches.
     pendingTurnRef.current = null;
     eventTurnIdRef.current = undefined;
     setModelLabel("");
     setCommands([]);
     setComposerProfile(undefined);
     setGoalRuntime(undefined);
+    setGoalView(undefined);
     setEffortInfo(undefined);
     hydratedRef.current = false;
     hydratingRef.current = false;
     bufferedEventsRef.current = [];
     setHydrated(false);
     let cancelled = false;
-    let hydratePromise: Promise<void> | null = null;
-    let hydrateAfterCurrent = false;
-    let historyReconcilePromise: Promise<void> | null = null;
-    let historyReconcileAfterCurrent = false;
-    let connectionGeneration = 0;
-    let modern = false;
-    let supportsModern: boolean | undefined;
-    let negotiating = typeof app.RemoteTranscriptSnapshotForTab === "function";
-    const projector = new TurnEventProjector({ replay: (id, after, identity) => {
-      if (!identity || !app.RemoteTranscriptReplayForTab) throw new Error("remote transcript replay unavailable");
-      return app.RemoteTranscriptReplayForTab(id, { identity, after });
-    } });
-    const snapshots = new TranscriptSnapshotClient({
-      snapshot: async (id, request) => {
-        const result = await app.RemoteTranscriptSnapshotForTab!(id, request);
-        supportsModern = result.supported;
-        modern = result.supported;
-        return result.supported ? result.snapshot : undefined;
-      },
-      page: (id, request) => app.RemoteTranscriptPageForTab!(id, request),
-      content: (id, request) => app.RemoteTranscriptContentForTab!(id, request),
-    }, projector);
-    projector.bind((event) => {
-      snapshots.observeEvent(tabId, event);
-      setTranscript((current) => reducer(current, { type: "event", e: event, remote: true }));
-    });
-    const loadModern = async () => {
-      const generation = connectionGeneration;
-      return snapshots.load(tabId, (snapshot) => setTranscript((current) => reducer(current, { type: "transcript_snapshot", snapshot, remote: true })),
-        () => !cancelled && generation === connectionGeneration);
+    let generation = 0;
+    let follower: TranscriptSessionFollower | undefined;
+    const dispatch = (action: import("./useController").Action) => {
+      if (!cancelled) setTranscript(current => reducer(current, action));
     };
-    projector.bindReset(async () => loadModern());
-    const offContent = getTranscriptStore().registerContentResolver(tabId, async (entryId, field) => {
-      try {
-      const record = await resolveSnapshotItems(snapshots, tabId, entryId, () => cancelled ? undefined : transcriptRef.current, historyMessagesToItems,
-        (patches) => setTranscript((current) => reducer(current, { type: "history_items_patch", patches })));
-      return field === "reasoning" ? record?.message.reasoning : record?.message.content;
-      } catch (error) {
-        if (!(error instanceof StaleCut)) throw error;
-        await loadModern();
-        return undefined;
-      }
-    }, () => modern);
-    olderRef.current = async () => {
-      if (!modern || transcriptRef.current.historyOlderLoading) return false;
-      setTranscript((current) => reducer(current, { type: "history_older_start" }));
-      try {
-        const result = await snapshots.older(tabId, (snapshot) => setTranscript((current) => reducer(current, { type: "transcript_page", snapshot })));
-        if (result === "stale") return loadModern();
-        return result === "loaded";
-      } catch (error) {
-        if (!cancelled) setTranscript((current) => reducer(current, { type: "history_older_error", error: String(error) }));
-        return false;
-      }
-    };
-    // Reconcile durable history after a turn settles without advancing
-    // surfaceGeneration. Serve's broadcaster is intentionally bounded, so a
-    // slow subscriber can miss intermediate tool/text frames even when it
-    // receives turn_done (or when the watchdog observes the settled status).
-    const reconcileHistory = async () => {
-      if (modern) { projector.refresh(tabId); return; }
-      const requestedGeneration = connectionGeneration;
-      if (historyReconcilePromise) {
-        historyReconcileAfterCurrent = true;
-        return historyReconcilePromise;
-      }
-      historyReconcilePromise = (async () => {
-        const requestedActivity = activityRevisionRef.current;
-        const snap = await app.RemoteTabSnapshot(tabId);
-        // Ready-to-ready state publications represent /new, /clear, or
-        // saved-session adoption just as surely as reconnect publications do.
-        // A durable-history read started for the previous session must never
-        // replace the newly hydrated transcript.
-        if (cancelled || connectionGeneration !== requestedGeneration || activityRevisionRef.current !== requestedActivity) return;
-        const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
-        const checkpoints = remoteCheckpoints(snap.checkpoints);
-        setCommands(Array.isArray(snap.commands) ? snap.commands as CommandInfo[] : []);
-        setTranscript((current) => {
-          let next = reducer(current, { type: "history", messages, remote: true });
-          next = reducer(next, { type: "checkpoints", checkpoints });
-          return next;
-        });
-      })();
-      try {
-        await historyReconcilePromise;
-      } finally {
-        const rerun = historyReconcileAfterCurrent;
-        historyReconcileAfterCurrent = false;
-        historyReconcilePromise = null;
-        if (rerun && !cancelled) void reconcileHistory().catch(() => undefined);
-      }
-    };
-    reconcileHistoryRef.current = reconcileHistory;
-
-    const replayMissingPrompt = async (status: unknown, promptPresent: boolean, expectedGeneration: number) => {
-      if ((status as RemoteStatus | null)?.pendingPrompt !== true || promptPresent) return;
-      try {
-        const replay = await app.ReplayRemoteTabPrompts(tabId);
-        if (cancelled || connectionGeneration !== expectedGeneration || !Array.isArray(replay)) return;
-        setTranscript((current) => current.approval || current.ask ? current : replay.reduce(
-          (next, event) => reducer(next, { type: "event", e: event as WireEvent, remote: true }),
-          current,
-        ));
-      } catch {
-        // A transient tunnel failure is retried by the running-state watchdog.
-      }
-    };
-
-    // Metadata-only commands and turn completion refresh /status without
-    // replacing history or advancing surfaceGeneration. That signal is
-    // reserved for actual session adoption/reconnects because Transcript uses
-    // it as a reveal/remount boundary.
     const refreshStatus = async () => {
-      const expectedConnectionGeneration = connectionGeneration;
+      const ticket = generation;
       const status = await app.RemoteTabStatus(tabId);
-      if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
-      const settledWithPossibleFrameLoss = transcriptRef.current.running
-        && (status as RemoteStatus | null)?.running === false;
-      const { hydrateRemoteTelemetry } = await loadRemoteSurface();
-      if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
+      if (cancelled || ticket !== generation) return;
       applyRemoteStatus(status);
-      if (modern) {
-        projector.refresh(tabId);
-        setTranscript((current) => hydrateRemoteTelemetry(current, status));
-        return;
-      }
-      setTranscript((current) => hydrateRemoteTelemetry(
-        reducer(current, remoteStatusToAction(status, Date.now(), current.running)),
-        status,
-      ));
-      await replayMissingPrompt(status, Boolean(transcriptRef.current.approval || transcriptRef.current.ask), expectedConnectionGeneration);
-      if (settledWithPossibleFrameLoss) void reconcileHistory().catch(() => undefined);
+      const { hydrateRemoteTelemetry } = await loadRemoteSurface();
+      if (!cancelled && ticket === generation) setTranscript(current => hydrateRemoteTelemetry(current, status));
     };
-    refreshStatusRef.current = { tabId, run: refreshStatus };
-
-    // Hydrate from the snapshot; retry through the connecting window so a
-    // late backend never leaves the surface empty. A forced run re-syncs
-    // after a session reset or a reconnect: the snapshot reflects whatever
-    // session the serve now holds.
-    const hydrate = (force = false) => {
-      if (force) {
-        hydratedRef.current = false;
-        setHydrated(false);
-        // A ready event may arrive while the previous connection generation is
-        // still hydrating. That in-flight snapshot must finish and be discarded,
-        // then hand off to a fresh snapshot for the ready generation.
-        if (hydratePromise) hydrateAfterCurrent = true;
-      }
-      return hydrateLoop();
-    };
-    const hydrateLoop = async () => {
-      if (hydratePromise) return hydratePromise;
-      hydratingRef.current = true;
-      hydratePromise = (async () => {
-        const expectedConnectionGeneration = connectionGeneration;
-        // A tab already reported ready has no connection bootstrap left to wait
-        // for, so surface a retry affordance promptly. Connecting tabs retain the
-        // longer window for slow remote installs and tunnels.
-        try {
-          const { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } = await loadRemoteSurface();
-          if (typeof app.RemoteTranscriptSnapshotForTab === "function") {
-            negotiating = true;
-            modern = await loadModern();
-            negotiating = false;
-            if (cancelled || connectionGeneration !== expectedConnectionGeneration) return;
-            setSyncMode(modern ? "snapshot" : "legacy");
-          }
-          // /status is optional in the aggregate snapshot for non-composer
-          // consumers, but the remote composer must not submit with guessed
-          // plan/approval/goal settings. Fetch it explicitly if the optional
-          // member missed; a failure keeps hydration in the retry loop.
-          const loaded = await loadRemoteStatusSnapshot(
-            tabId,
-            mountedState === "ready" ? 3 : 60,
-            () => cancelled || hydratedRef.current,
-            isAuthoritativeRemoteStatus,
-            modern,
-          );
-          if (!loaded || cancelled) return;
-          if (connectionGeneration !== expectedConnectionGeneration) {
-            hydratingRef.current = false;
-            return;
-          }
-          const [snap, status] = loaded;
-          const messages = Array.isArray(snap.history) ? (snap.history as HistoryMessage[]) : [];
-          hydratedRef.current = true;
-          setState("ready");
-          setHydrated(true);
-          setError("");
-          setSurfaceGeneration((generation) => generation + 1);
-          applyRemoteStatus(status);
-          const checkpoints = remoteCheckpoints(snap.checkpoints);
-          setCommands(Array.isArray(snap.commands) ? snap.commands as CommandInfo[] : []);
-          if (modern) {
-            bufferedEventsRef.current = [];
-            hydratingRef.current = false;
-            setTranscript((current) => hydrateRemoteTelemetry(reducer(current, { type: "checkpoints", checkpoints }), status));
-            projector.refresh(tabId);
-            return;
-          }
-          const replay = [
-            ...(Array.isArray(snap.pendingEvents) ? snap.pendingEvents : []),
-            ...bufferedEventsRef.current,
-          ] as WireEvent[];
-          bufferedEventsRef.current = [];
-          hydratingRef.current = false;
-          setTranscript((s) => {
-            let next = reducer(s, { type: "history", messages, remote: true });
-            next = reducer(next, { type: "checkpoints", checkpoints });
-            // Hydrate doubles as the post-reconnect running reconciliation:
-            // whatever the serve reports about its current state lands now,
-            // not only after the next watchdog tick.
-            next = reducer(next, remoteStatusToAction(status, Date.now(), next.running));
-            next = hydrateRemoteTelemetry(next, status);
-            const seenPrompts = new Set<string>();
-            for (const event of replay) {
-              const promptId = event.kind === "approval_request"
-                ? event.approval?.id
-                : event.kind === "ask_request" ? event.ask?.id : undefined;
-              const promptKey = promptId ? `${event.kind}:${promptId}` : "";
-              if (promptKey && seenPrompts.has(promptKey)) continue;
-              if (promptKey) seenPrompts.add(promptKey);
-              next = reducer(next, { type: "event", e: event, remote: true });
-            }
-            return next;
-          });
-          await replayMissingPrompt(status, replay.some((event) => event.kind === "approval_request" || event.kind === "ask_request"), expectedConnectionGeneration);
-          if (replay.some((event) => event.kind === "turn_done")) {
-            // A status poll losing the revision race is benign; the SSE feed
-            // and the running-state watchdog converge the surface anyway.
-            void refreshStatus().catch(() => undefined);
-            void reconcileHistory().catch(() => undefined);
-          }
-          return;
-        } catch (error) {
-          negotiating = typeof app.RemoteTranscriptSnapshotForTab === "function" && supportsModern !== false;
-          if (!cancelled) setError(String(error));
-        }
-        hydratingRef.current = false;
-        if (bufferedEventsRef.current.length > 0) {
-          const buffered = bufferedEventsRef.current;
-          bufferedEventsRef.current = [];
-          setTranscript((current) => buffered.reduce(
-            (next, event) => reducer(next, { type: "event", e: event, remote: true }),
-            current,
-          ));
-        }
-      })();
+    const hydrate = async () => {
+      const ticket = ++generation;
+      follower?.stop();
+      follower = new TranscriptSessionFollower(tabId, sessionPath ?? "", true, action => {
+        if (!cancelled && ticket === generation) dispatch(action);
+      });
+      setHydrated(false);
       try {
-        await hydratePromise;
-      } finally {
-        const rerun = hydrateAfterCurrent;
-        hydrateAfterCurrent = false;
-        hydratePromise = null;
-        if (rerun && !cancelled) void hydrateLoop();
+        await follower.start();
+        const { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } = await loadRemoteSurface();
+        const loaded = await loadRemoteStatusSnapshot(tabId, mountedState === "ready" ? 3 : 60,
+          () => cancelled || ticket !== generation, isAuthoritativeRemoteStatus, true);
+        if (!loaded || cancelled || ticket !== generation) return;
+        const [snapshot, status] = loaded;
+        applyRemoteStatus(status);
+        setCommands(Array.isArray(snapshot.commands) ? snapshot.commands as CommandInfo[] : []);
+        setTranscript(current => hydrateRemoteTelemetry(reducer(current,
+          { type: "checkpoints", checkpoints: remoteCheckpoints(snapshot.checkpoints) }), status));
+        hydratedRef.current = true;
+        setState("ready");
+        setHydrated(true);
+        setError("");
+        setSurfaceGeneration(value => value + 1);
+        void forkTargetsRefreshRef.current?.();
+      } catch (error) {
+        if (!cancelled && ticket === generation) setError(String(error));
+      }
+    };
+    const offContent = getTranscriptStore().subscribe(tabId, change => dispatch({ type: "history_items_patch", patches: change.patches }));
+    olderRef.current = async () => {
+      if (transcriptRef.current.historyOlderLoading) return "empty";
+      dispatch({ type: "history_older_start" });
+      try {
+        const page = await getTranscriptStore().loadOlder(tabId, sessionPath ?? "");
+        if (!page || cancelled) return "empty";
+        if (page.kind === "reload") { await hydrate(); return "loaded"; }
+        dispatch({ type: "history_prepend", items: page.prependItems, removeIds: page.removeIds,
+          startTurn: page.startTurn, endTurn: page.endTurn, totalTurns: page.totalTurns,
+          hasOlder: page.hasOlder, hasNewer: page.hasNewer, revision: page.revision, digest: page.digest });
+        return "loaded";
+      } catch (error) {
+        dispatch({ type: "history_older_error", error: String(error) });
+        return "empty";
       }
     };
     hydrateRef.current = { tabId, run: hydrate };
-    void hydrateLoop();
-
-    const offState = onRemoteTabState(tabId, (s) => {
+    newerRef.current = async () => {
+      if (transcriptRef.current.historyNewerLoading) return "empty";
+      dispatch({ type: "history_newer_start" });
+      try {
+        const page = await getTranscriptStore().loadNewer(tabId, sessionPath ?? "");
+        if (!page || cancelled) { dispatch({ type: "history_newer_error", error: "" }); return "empty"; }
+        if (page.kind === "stale") { await hydrate(); return "loaded"; }
+        dispatch({ type: "history_append", items: page.items,
+          startTurn: page.startTurn, endTurn: page.endTurn, totalTurns: page.totalTurns,
+          hasOlder: page.hasOlder, hasNewer: page.hasNewer, revision: page.revision, digest: page.digest });
+        return "loaded";
+      } catch (error) {
+        dispatch({ type: "history_newer_error", error: String(error) });
+        return "empty";
+      }
+    };
+    refreshStatusRef.current = { tabId, run: refreshStatus };
+    reconcileHistoryRef.current = hydrate;
+    const offState = onRemoteTabState(tabId, next => {
       if (cancelled) return;
-      // Every backend state publication advances the surface identity. In
-      // particular, session rotations intentionally publish ready -> ready,
-      // so fencing only non-ready transitions leaves stale history requests
-      // able to overwrite the adopted session.
-      connectionGeneration += 1;
-      snapshots.release(tabId);
-      setState(s.state === "disconnected" ? "connecting" : s.state);
-      setError(s.error ?? "");
-      if (s.state === "disconnected") {
-        hydratedRef.current = false;
+      setState(next.state);
+      setError(next.error ?? "");
+      if (next.state === "ready") void hydrate();
+      else if (next.state === "disconnected") {
         setHydrated(false);
-        void app.SetActiveTab(tabId).catch(() => undefined);
+        dispatch({ type: "transcript_connection", status: "disconnected" });
       }
-      if (s.state === "ready") {
-        void hydrate(true);
-      }
-      // Disconnection preserves the observed transcript and runtime; it does
-      // not imply a terminal outcome for the model turn.
     });
-    // Subscribe before activating a restored shell. SetActiveTab republishes
-    // terminal bootstrap states, while the snapshot loop covers a ready event
-    // that completed before this surface mounted.
-    if (revivedFromShell) {
-      void app.SetActiveTab(tabId).catch(() => undefined);
-    }
-    const offEvent = onRemoteTabEvent(tabId, (raw) => {
-      if (cancelled) return;
-      const event = (raw ?? {}) as WireEvent;
-      if (event.kind === "turn_started" || (event.turnId && event.turnId !== eventTurnIdRef.current)) {
-        activityRevisionRef.current += 1;
-        eventTurnIdRef.current = event.turnId;
-      }
-      if (event.kind === "turn_started") pendingTurnRef.current = null;
-      if (modern || negotiating) {
-        if (negotiating && bufferedEventsRef.current.length < 1024) bufferedEventsRef.current.push(event);
-        projector.receiveLive(tabId, event);
-        if (modern && event.kind === "turn_done") void refreshStatus().catch(() => undefined);
-        return;
-      }
-      if (hydratingRef.current) {
-        bufferedEventsRef.current.push(event);
-        return;
-      }
-      setTranscript((s) => reducer(s, { type: "event", e: event, remote: true }));
+    // The legacy event channel carries ancillary invalidations only.
+    const offEvent = onRemoteTabEvent(tabId, raw => {
+      const event = raw as WireEvent;
       if (event.kind === "turn_done") {
         void refreshStatus().catch(() => undefined);
-        void reconcileHistory().catch(() => undefined);
+        void forkTargetsRefreshRef.current?.();
       }
     });
+    if (revivedFromShell) void app.SetActiveTab(tabId).catch(() => undefined);
+    void hydrate();
     return () => {
       cancelled = true;
-      snapshots.release(tabId);
+      generation++;
+      follower?.stop();
       offContent();
-      olderRef.current = undefined;
-      hydratingRef.current = false;
-      bufferedEventsRef.current = [];
-      if (hydrateRef.current?.run === hydrate) hydrateRef.current = null;
-      if (refreshStatusRef.current?.run === refreshStatus) refreshStatusRef.current = null;
-      if (reconcileHistoryRef.current === reconcileHistory) reconcileHistoryRef.current = null;
       offState();
       offEvent();
+      olderRef.current = undefined;
+      newerRef.current = undefined;
+      hydrateRef.current = null;
+      refreshStatusRef.current = null;
+      reconcileHistoryRef.current = null;
     };
-  }, [applyRemoteStatus, tabId]);
-
-  // The runtime projection owns liveness. Feed a confirmed completion through
-  // the shared reducer so the transcript and live store settle together. A
-  // finishing/unknown snapshot is not completion, and an earlier turn cannot
-  // settle a newer stream or an optimistic submission.
-  useEffect(() => {
-    const observed = runtimeState.state;
-    const current = transcriptRef.current;
-    if (!hydrated || state !== "ready" || runtimeState.unknown || !runtimeState.known
-      || !observed || observed.phase !== "idle" || observed.running
-      || observed === runtimeAtActivityRef.current || !current.running
-      || (pendingTurnRef.current && (!observed.turnId || observed.turnId === pendingTurnRef.current.previousTurnId))
-      || (current.activeTurnId && observed.turnId !== current.activeTurnId)) return;
-    const next = reducer(current, remoteStatusToAction(observed, Date.now(), current.running));
-    if (next.running) return;
-    setTranscript(next);
-    void reconcileHistoryRef.current?.().catch(() => undefined);
-  }, [hydrated, state, runtimeState.state, runtimeState.unknown, runtimeState.known]);
-
-  // Running-state watchdog: while the pill claims a turn is running, poll the
-  // serve's /status and feed it through the shared backend_status reducer.
-  // This is the remote twin of the local tab's reconcile loop — a lost
-  // turn_done frame (dropped SSE, slow-consumer drop, half-dead tunnel) then
-  // clears within one tick instead of spinning forever.
-  useEffect(() => {
-    if (runtimeState.known || !tabId || !hydrated || state !== "ready" || !transcript.running) return;
-    const reconcile = () => {
-      const current = refreshStatusRef.current;
-      if (!current || current.tabId !== tabId) return;
-      void current.run().catch(() => {
-        // Transient; the next tick retries.
-      });
-    };
-    const timer = window.setInterval(reconcile, 30_000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [tabId, hydrated, state, transcript.running, runtimeState.known]);
+  }, [applyRemoteStatus, tabId, sessionPath, setTranscript]);
 
   const submit = useCallback(async (text: string, displayText = text) => {
     if (!tabId) return;
+    if (transcriptRef.current.transcriptProtocol !== 2 || transcriptRef.current.transcriptConnection !== "connected") {
+      throw new Error("Transcript v2 is not synchronized. Upgrade Desktop and Serve together, or reconnect.");
+    }
     const trimmed = text.trim();
     if (!trimmed) return;
     // Optimistic user bubble, exactly like the local send path. seq rides
@@ -669,9 +445,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setPromptError("");
     try {
       switch (scope) {
-        case "fork":
-          await app.ForkRemoteTab(tabId, turn, "");
-          break;
+        // No fork scope: the serve's /fork switches the parent session; forkTurn creates a child instead.
         case "summ-from":
           await app.SummarizeRemoteTab(tabId, turn, "from");
           break;
@@ -707,9 +481,11 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   const setQualityFloor = useCallback(async (floor: QualityFloor) => {
     if (!tabId) return;
+    // Compatibility only. The new client never asks an old server to change
+    // policy behind the user's back; its next status remains authoritative.
+    if (floor !== "standard" && floor !== "delivery") throw new Error(`Unknown retired execution setting: ${floor}`);
     await app.SetRemoteTabQualityFloor(tabId, floor);
-    await refreshStatus();
-  }, [refreshStatus, tabId]);
+  }, [tabId]);
 
   const pauseGoal = useCallback(async () => {
     if (!tabId) return;
@@ -723,6 +499,12 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     await refreshStatus();
   }, [refreshStatus, tabId]);
 
+  const editGoal = useCallback(async (objective: string, maxGoalRounds: number | null) => {
+    if (!tabId) return;
+    await app.EditRemoteTabGoal(tabId, objective, maxGoalRounds);
+    await refreshStatus();
+  }, [refreshStatus, tabId]);
+
   const steer = useCallback(async (input: string) => {
     if (!tabId) return;
     await app.SteerRemoteTab(tabId, input);
@@ -733,9 +515,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   }, []);
 
   return {
-    state, error, transcript, liveStore, hydrated, syncMode, loadOlderHistory: () => olderRef.current?.() ?? Promise.resolve(false), running: transcript.running, modelLabel, commands,
-    composerProfile, goalRuntime, effort, surfaceGeneration, promptError, submit, runManagementCommand, compact, cancelTurn,
-    approve, resolvePlanDecision, answer, clearExtensionForm, rewind, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, steer, cancelJob,
+    state, error, transcript, liveStore, hydrated, syncMode: "v2", loadOlderHistory: (_targetTurn?: number, trigger?: HistoryLoadTrigger) => olderRef.current?.(trigger) ?? Promise.resolve("empty"), loadNewerHistory: () => newerRef.current?.() ?? Promise.resolve("empty"), running: transcript.running, modelLabel, commands,
+    composerProfile, goalRuntime, goalView, effort, surfaceGeneration, promptError, submit, runManagementCommand, compact, cancelTurn,
+    approve, resolvePlanDecision, answer, clearExtensionForm, rewind, forkTurn, acknowledgeFork, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, editGoal, steer, cancelJob,
     drainApprovals, retryHydration,
   };
 }

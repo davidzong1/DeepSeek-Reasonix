@@ -153,13 +153,11 @@ func TestWorkspaceGitBranchForMetaDoesNotBlockOnColdProbe(t *testing.T) {
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
-	start := time.Now()
 	if got := workspaceGitBranchForMeta("/tmp/reasonix-cold-probe"); got != "" {
 		t.Fatalf("cold branch = %q, want empty while async refresh runs", got)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("cold metadata branch probe blocked for %s", elapsed)
-	}
+	// The probe is still blocked here, so returning is the deterministic proof
+	// that the metadata read did not wait for its refresh.
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -194,13 +192,11 @@ func TestWorkspaceGitBranchForMetaReturnsStaleDuringRefresh(t *testing.T) {
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
-	start := time.Now()
 	if got := workspaceGitBranchForMeta("/tmp/reasonix-stale-probe"); got != "feature/stale" {
 		t.Fatalf("stale branch = %q, want feature/stale", got)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("stale metadata branch probe blocked for %s", elapsed)
-	}
+	// The probe is still blocked here, so returning the stale value proves that
+	// the read did not wait for its refresh.
 	select {
 	case <-started:
 	case <-time.After(time.Second):

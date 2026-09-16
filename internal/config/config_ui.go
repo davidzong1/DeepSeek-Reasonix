@@ -2,6 +2,8 @@ package config
 
 import (
 	"strings"
+
+	"reasonix/internal/permissionpreset"
 )
 
 // UIConfig controls CLI presentation-only settings. Desktop appearance is kept in
@@ -58,9 +60,9 @@ func (c *Config) UIThemeStyle() string {
 	return normalizeThemeStyle(c.UI.ThemeStyle)
 }
 
-// UIShortcutLayout normalizes the legacy CLI shortcut layout setting. It is kept
-// for compatibility; Shift+Tab toggles Plan and Ctrl+Y toggles YOLO in both
-// layouts.
+// UIShortcutLayout normalizes the legacy CLI shortcut layout setting. It is
+// retained for configuration compatibility; permission presets are selected
+// explicitly and are not encoded in this layout.
 func (c *Config) UIShortcutLayout() string {
 	switch strings.ToLower(strings.TrimSpace(c.UI.ShortcutLayout)) {
 	case "desktop", "dual", "dual-axis", "dual_axis":
@@ -214,27 +216,20 @@ func (c *Config) DesktopConversationWidth() string {
 	return "standard"
 }
 
-// NormalizeToolApprovalMode returns the canonical desktop/session tool approval
-// posture. Unknown or missing values fall back to ask for safety.
+// NormalizeToolApprovalMode returns the canonical execution permission preset.
+// Legacy ask/auto/yolo values are migrated conservatively.
 func NormalizeToolApprovalMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "auto":
-		return "auto"
-	case "yolo", "full", "full-access", "bypass":
-		return "yolo"
-	default:
-		return "ask"
-	}
+	return string(permissionpreset.Normalize(mode))
 }
 
-// DesktopDefaultToolApprovalMode is the Ask/Auto/YOLO default used only when
-// creating a new desktop session. Existing tabs and restored sessions keep their
-// own persisted runtime state.
+// DesktopDefaultToolApprovalMode is the permission preset for new desktop
+// sessions. An omitted value defaults to workspace-write; restored legacy
+// values use the conservative migration in permissionpreset.Normalize.
 func (c *Config) DesktopDefaultToolApprovalMode() string {
 	if c == nil {
-		return "ask"
+		return string(permissionpreset.WorkspaceWrite)
 	}
-	return NormalizeToolApprovalMode(c.Desktop.DefaultToolApprovalMode)
+	return string(permissionpreset.NormalizeDefault(c.Desktop.DefaultToolApprovalMode))
 }
 
 // DesktopStatusBarStyle normalizes the desktop status bar metric label style.

@@ -105,10 +105,9 @@ try {
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${port}/?mock=deepseek_upgrade&bench=1&platform=${platform}`, { waitUntil: "domcontentloaded" });
       await page.locator("textarea.composer__input:not([aria-hidden=true])").waitFor();
-      for (const layout of [["Creation", "app--creation"], ["Workbench", "app--workbench"]]) {
+      {
         await page.setViewportSize({ width: 1600, height: 1100 });
         await page.evaluate(() => { document.documentElement.style.zoom = "1"; });
-        await chooseAppLayout(page, ...layout);
         await page.locator('button:has(svg.lucide-settings)').last().click();
         await page.locator(".settings-page--general").waitFor();
         await page.getByRole("button", { name: "Expand sound settings", exact: true }).click();
@@ -123,9 +122,9 @@ try {
           }
           assert.equal(g.statusColumns, 1, `status bar editor owns one full-width column at ${width}px`);
         }
-        console.log(`PASS ${engineName}/${platform}/${layout[0]} general settings`);
+        console.log(`PASS ${engineName}/${platform} general settings`);
         await page.setViewportSize({ width: 1600, height: 1100 });
-        await verifySaveBars(page, `${engineName}/${platform}/${layout[0]}`);
+        await verifySaveBars(page, `${engineName}/${platform}`);
         await page.getByRole("button", { name: "Model preferences", exact: true }).click();
         await page.locator(".model-assignment-row").first().waitFor();
         for (const theme of themes) {
@@ -138,7 +137,7 @@ try {
               await page.setViewportSize({ width, height: 1100 });
               await settle(page);
               const g = await page.evaluate(geometry);
-              const context = `${engineName}/${platform}/${layout[0]}/${theme}/${width}px/${zoom}x`;
+              const context = `${engineName}/${platform}/${theme}/${width}px/${zoom}x`;
               if (g.navigation.searchVisible) {
                 assert.ok(g.navigation.list.top >= g.navigation.search.bottom, `${context}: navigation viewport stays below search`);
                 assert.equal(g.navigation.listOverflowY, "auto", `${context}: navigation list owns vertical scrolling`);
@@ -188,7 +187,7 @@ try {
         await page.getByRole("listbox", { name: "Default model", exact: true }).waitFor();
         await page.keyboard.press("Escape");
         await page.getByRole("listbox", { name: "Default model", exact: true }).waitFor({ state: "detached" });
-        console.log(`PASS ${engineName}/${platform}/${layout[0]} navigation, assignments and picker`);
+        console.log(`PASS ${engineName}/${platform} navigation, assignments and picker`);
         await page.locator(".settings-screen .management-screen__back").click();
       }
       assert.deepEqual(errors, [], `${engineName}/${platform}: no runtime errors`);

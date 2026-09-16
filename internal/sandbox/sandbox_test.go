@@ -49,18 +49,13 @@ func TestUnavailableMessageIsActionable(t *testing.T) {
 	msg := UnavailableMessage()
 	want := []string{
 		"refusing to run unconfined",
-		`[sandbox] bash = "off"`,
-		"Settings -> Sandbox",
+		"Full access",
 	}
 	if runtime.GOOS == "windows" {
 		// Windows ships no OS-level Bash backend and the effective mode is
 		// fixed to off, so the remediation states that fact instead of
 		// pointing at a config edit the platform would ignore.
-		want = []string{
-			"refusing to run unconfined",
-			"OS-level Bash sandbox",
-			`fixed to "off"`,
-		}
+		want = []string{"refusing to run unconfined", "Full access"}
 	}
 	for _, w := range want {
 		if !strings.Contains(msg, w) {
@@ -139,17 +134,17 @@ func TestResolveShellDecisionTable(t *testing.T) {
 		wantKind   ShellKind
 		wantPath   string
 	}{
-		{"bash on PATH wins", "windows", onPath("bash", "powershell"), gitBash, never, always, never, ShellBash, `C:\fake\bash.exe`},
+		{"native PowerShell precedes Bash", "windows", onPath("bash", "powershell"), gitBash, never, always, never, ShellPowerShell, `C:\fake\powershell.exe`},
 		{"bash on PATH but probe fails", "windows", onPath("bash", "powershell"), gitBash, never, never, never, ShellPowerShell, ""},
-		{"no bash, git-bash on disk", "windows", onPath("powershell"), gitBash, always, always, never, ShellBash, ""},
+		{"no Bash fallback when native shell absent", "windows", onPath(), gitBash, always, always, never, ShellPowerShell, "pwsh"},
 		{"git-bash on disk but probe fails", "windows", onPath("powershell"), gitBash, always, never, never, ShellPowerShell, ""},
 		{"no bash anywhere, pwsh", "windows", onPath("pwsh", "powershell"), gitBash, never, never, never, ShellPowerShell, ""},
 		{"no bash, only powershell", "windows", onPath("powershell"), gitBash, never, never, never, ShellPowerShell, ""},
-		{"windows, nothing found", "windows", onPath(), nil, never, never, never, ShellBash, ""},
+		{"windows, nothing found", "windows", onPath(), nil, never, never, never, ShellPowerShell, "pwsh"},
 		{"linux, no bash → no PS fallback", "linux", onPath("powershell"), gitBash, always, always, never, ShellBash, ""},
 		{"macOS, no bash → zsh", "darwin", onPath("zsh", "sh"), nil, never, always, never, ShellZsh, `C:\fake\zsh.exe`},
 		{"macOS, no bash or zsh → sh", "darwin", onPath("sh"), nil, never, always, never, ShellSh, `C:\fake\sh.exe`},
-		{"wsl bash on PATH skipped for git-bash", "windows", onPath("bash", "powershell"), gitBash, always, always, wslIsPathBash, ShellBash, `C:\fake\Git\bin\bash.exe`},
+		{"auto never falls back to WSL or Git Bash", "windows", onPath("bash"), gitBash, always, always, wslIsPathBash, ShellPowerShell, "pwsh"},
 		{"wsl bash on PATH, no git → powershell not wsl", "windows", onPath("bash", "powershell"), gitBash, never, always, wslIsPathBash, ShellPowerShell, ""},
 	}
 	for _, c := range cases {
@@ -187,10 +182,10 @@ func TestResolveShellPrefer(t *testing.T) {
 		t.Errorf(`prefer="powershell": kind = %s, want powershell`, got.Kind)
 	}
 
-	// prefer=bash forces bash even on a host where PowerShell exists.
+	// Legacy Bash preferences retain their stored value but resolve natively.
 	got = resolveShell("bash", "", nil, "windows", onPath("bash", "powershell"), never, gitBash, nil, always, noWSL)
-	if got.Kind != ShellBash {
-		t.Errorf(`prefer="bash": kind = %s, want bash`, got.Kind)
+	if got.Kind != ShellPowerShell {
+		t.Errorf(`prefer="bash": kind = %s, want powershell`, got.Kind)
 	}
 
 	// An explicit path is honoured for the forced kind.
@@ -220,17 +215,17 @@ func TestResolveShellPrefer(t *testing.T) {
 
 	// An unrecognised value is treated as auto, not an error.
 	got = resolveShell("fish", "", nil, "windows", onPath("bash"), never, gitBash, nil, always, noWSL)
-	if got.Kind != ShellBash {
-		t.Errorf("unknown prefer should auto-detect, got %s", got.Kind)
+	if got.Kind != ShellPowerShell {
+		t.Errorf("unknown prefer should use native Windows auto-selection, got %s", got.Kind)
 	}
 
-	// git-bash.exe is automatically rewritten to bin/bash.exe when present.
+	// A saved Git Bash path must not override the Windows Agent dialect.
 	existsWithBash := func(p string) bool {
 		return strings.EqualFold(p, `C:\Git\bin\bash.exe`)
 	}
 	got = resolveShell("bash", `C:\Git\git-bash.exe`, nil, "windows", onPath(), existsWithBash, nil, nil, always, noWSL)
-	if got.Kind != ShellBash || got.Path != `C:\Git\bin\bash.exe` {
-		t.Errorf("git-bash.exe should redirect to bin/bash.exe, got %+v", got)
+	if got.Kind != ShellPowerShell || got.Path != "pwsh" {
+		t.Errorf("git-bash.exe should resolve to native PowerShell, got %+v", got)
 	}
 }
 
@@ -300,6 +295,12 @@ func TestCommandNonDarwin(t *testing.T) {
 	}
 	spec := Spec{Mode: "enforce", WriteRoots: []string{"/tmp"}}
 	cmd, wrapped := Command(spec, Shell{Kind: ShellBash, Path: "sh"}, "echo hi")
+	if runtime.GOOS == "windows" {
+		if wrapped || len(cmd) != 0 {
+			t.Fatalf("restricted Windows Bash must be rejected before launch: %v wrapped=%v", cmd, wrapped)
+		}
+		return
+	}
 	if Available() {
 		if !wrapped || cmd[0] == "sh" {
 			t.Fatalf("non-darwin enforce with available sandbox should wrap: %v wrapped=%v", cmd, wrapped)

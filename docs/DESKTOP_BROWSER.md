@@ -8,7 +8,8 @@ that the user and the agent operate together. Websites render in Electron
 Go desktop service so that local and remote agents, approvals, cancellation,
 evidence and operation records share one implementation. This document is the
 contract between the browser panel, the shell's surface manager, the Go
-`BrowserExecutor` and the tools the agent sees.
+`BrowserExecutor` and the tools the agent sees. Sessions with no shell behind
+them get the same tools from the [CDP backend](BROWSER_CDP.md).
 
 ```text
 agent tool call ─▶ Go BrowserExecutor ─▶ ledger.reserve ─▶ host/browser.* ─▶ WebContentsView

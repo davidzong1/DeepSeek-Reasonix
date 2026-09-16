@@ -440,8 +440,17 @@ func TestE2ESessionListResumeAndDelete(t *testing.T) {
 	}
 	select {
 	case n := <-client2.notifs:
-		t.Fatalf("session/resume replayed an unexpected notification: %+v", n)
-	default:
+		// Resume publishes current host state after its response. This is
+		// not transcript replay: the saved conversation has no active plan.
+		requirePlanFrame(t, n)
+		var params struct {
+			Update planUpdate `json:"update"`
+		}
+		if err := json.Unmarshal(n.Params, &params); err != nil || len(params.Update.Entries) != 0 {
+			t.Fatalf("resumed plan = %+v, err = %v; want an empty current plan", params, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session/resume did not publish current plan state")
 	}
 
 	deleteResp := client2.call(t, "session/delete", SessionDeleteParams{SessionID: nr.SessionID})
@@ -587,6 +596,13 @@ func TestE2EApprovalRoundTrip(t *testing.T) {
 	defer stop()
 
 	sid := openSession(t, client)
+	if resp := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+		SessionID: sid,
+		ConfigID:  "tool_approval",
+		Value:     control.ToolApprovalReadOnly,
+	}); resp.Error != nil {
+		t.Fatalf("set read-only permission: %+v", resp.Error)
+	}
 	promptCh := client.callAsync("session/prompt", SessionPromptParams{
 		SessionID: sid,
 		Prompt:    []ContentBlock{{Type: "text", Text: "write README.md"}},

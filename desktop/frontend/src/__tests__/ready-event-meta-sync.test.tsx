@@ -143,6 +143,7 @@ const desktopStub = installDesktopHostStub(({
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => historyGate.promise,
       HistoryPageForTab: async () => {
         historyCalls += 1;

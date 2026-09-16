@@ -97,7 +97,7 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 		return inboxDispatchIdle
 	}
 	c.mu.Lock()
-	busy := c.running || c.finishing || c.rotating || c.closed
+	busy := c.bodyActiveLocked() || c.finalizingLocked() || c.rotating || c.closed
 	c.mu.Unlock()
 	if busy {
 		return inboxDispatchIdle
@@ -105,7 +105,7 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 	// Controllers without persistence cannot own a durable inbox. Rotation and
 	// turn-completion hooks are shared with those controllers, so treat the
 	// missing path as an empty queue instead of retrying a permanent condition.
-	if c.SessionPath() == "" {
+	if c.SessionPath() == "" && !c.sessionEngineEnabled() {
 		return inboxDispatchIdle
 	}
 	meta, ok, err := c.nextInboxDispatchItem()

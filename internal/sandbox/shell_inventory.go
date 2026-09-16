@@ -172,7 +172,8 @@ func shellInventoryKey(goos, prefer, configPath string) string {
 // a compatible configured Bash path first, then bash.exe on PATH (checked by
 // resolveShell before any candidate), then bash.exe derived from the installed
 // git.exe / git-bash.exe, then the Git for Windows registry InstallPath, then
-// the standard install roots; pwsh and powershell remain the auto fallback.
+// the standard install roots. Auto selection prefers native PowerShell; this
+// ordering applies when Bash is explicitly requested or no native shell exists.
 func buildShellSnapshot(goos, prefer, configPath string) *shellSnapshot {
 	snap := &shellSnapshot{
 		key:          shellInventoryKey(goos, prefer, configPath),

@@ -96,6 +96,27 @@ ok(
   !sameSessionHydrateIdentity({ sessionPath: "" }, { sessionPath: "" }),
   "empty identities cannot prove the same session",
 );
+ok(
+  sameSessionHydrateIdentity(
+    { session: { hostId: "local", sessionId: "canonical-a" }, sessionPath: "", sessionGeneration: 3 },
+    { session: { hostId: "local", sessionId: "canonical-a" }, sessionPath: "", sessionGeneration: 3 },
+  ),
+  "matching SessionRefs prove a canonical session even when both paths are empty",
+);
+ok(
+  !sameSessionHydrateIdentity(
+    { session: { hostId: "local", sessionId: "canonical-a" }, sessionPath: "" },
+    { session: { hostId: "local", sessionId: "canonical-b" }, sessionPath: "" },
+  ),
+  "different canonical SessionRefs never share an empty-path surface",
+);
+ok(
+  !sameSessionHydrateIdentity(
+    { session: { hostId: "local", sessionId: "canonical-a" }, sessionPath: "same.jsonl" },
+    { session: { hostId: "local", sessionId: "canonical-b" }, sessionPath: "same.jsonl" },
+  ),
+  "SessionRef disagreement outranks a matching compatibility path",
+);
 const sameSessionPlan = activeTabHydrationPlan(
   { sessionPath: "a.jsonl", sessionGeneration: 3, sessionRevision: 8, sessionDigest: "rev-8" },
   { sessionPath: "a.jsonl", sessionGeneration: 3 },

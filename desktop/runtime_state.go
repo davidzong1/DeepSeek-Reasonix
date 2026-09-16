@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 
 	"reasonix/internal/control"
@@ -14,6 +15,7 @@ type RuntimeSessionState struct {
 	Scope             string                     `json:"scope"`
 	WorkspaceRoot     string                     `json:"workspaceRoot"`
 	TopicID           string                     `json:"topicId"`
+	SessionID         string                     `json:"sessionId,omitempty"`
 	SessionPath       string                     `json:"sessionPath"`
 	SessionGeneration uint64                     `json:"sessionGeneration"`
 	Open              bool                       `json:"open"`
@@ -57,7 +59,7 @@ func (a *App) localRuntimeBindingsLocked() map[localRuntimeBindingKey]localRunti
 		}
 		bindings[localRuntimeBindingKey{key, open}] = localRuntimeBinding{tab: tab, ctrl: tab.Ctrl,
 			view: RuntimeSessionState{TabID: tab.ID, Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot,
-				TopicID: tab.TopicID, SessionPath: tab.SessionPath, SessionGeneration: tab.SessionGeneration, Open: open, Freshness: "synced"},
+				TopicID: tab.TopicID, SessionID: tab.SessionID, SessionPath: tab.SessionPath, SessionGeneration: tab.SessionGeneration, Open: open, Freshness: "synced"},
 			catalog: catalogRuntimeSnapshot{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
 				activity: tab.ActivityStatus, topicTitle: tab.TopicTitle, topicTitleSource: tab.topicTitleSource, open: open}}
 	}
@@ -86,7 +88,7 @@ func (a *App) sampleLocalRuntimeBindings() []localRuntimeBinding {
 		current := a.localRuntimeBindingsLocked()
 		valid := len(current) == len(bindings)
 		for key, binding := range bindings {
-			if current[key] != binding {
+			if !sameLocalRuntimeBinding(current[key], binding) {
 				valid = false
 				break
 			}
@@ -102,6 +104,48 @@ func (a *App) sampleLocalRuntimeBindings() []localRuntimeBinding {
 		}
 		return result
 	}
+}
+
+// sameLocalRuntimeBinding compares the immutable identity and display fields
+// copied while App.mu was held. reflect.DeepEqual is deliberately unsuitable
+// here: following tab or controller pointers recursively reads their live
+// mutex/atomic state and races the controller's runtime-state publisher.
+func sameLocalRuntimeBinding(current, sampled localRuntimeBinding) bool {
+	return current.tab == sampled.tab &&
+		sameSessionAPI(current.ctrl, sampled.ctrl) &&
+		current.view.TabID == sampled.view.TabID &&
+		current.view.Scope == sampled.view.Scope &&
+		current.view.WorkspaceRoot == sampled.view.WorkspaceRoot &&
+		current.view.TopicID == sampled.view.TopicID &&
+		current.view.SessionID == sampled.view.SessionID &&
+		current.view.SessionPath == sampled.view.SessionPath &&
+		current.view.SessionGeneration == sampled.view.SessionGeneration &&
+		current.view.Open == sampled.view.Open &&
+		current.view.Remote == sampled.view.Remote &&
+		current.view.HostID == sampled.view.HostID &&
+		current.view.Freshness == sampled.view.Freshness &&
+		current.catalog.scope == sampled.catalog.scope &&
+		current.catalog.workspaceRoot == sampled.catalog.workspaceRoot &&
+		current.catalog.topicID == sampled.catalog.topicID &&
+		current.catalog.sessionPath == sampled.catalog.sessionPath &&
+		current.catalog.activity == sampled.catalog.activity &&
+		current.catalog.topicTitle == sampled.catalog.topicTitle &&
+		current.catalog.topicTitleSource == sampled.catalog.topicTitleSource &&
+		current.catalog.open == sampled.catalog.open
+}
+
+func sameSessionAPI(current, sampled control.SessionAPI) bool {
+	if current == nil || sampled == nil {
+		return current == nil && sampled == nil
+	}
+	currentValue, sampledValue := reflect.ValueOf(current), reflect.ValueOf(sampled)
+	if currentValue.Type() != sampledValue.Type() {
+		return false
+	}
+	if currentValue.Type().Comparable() {
+		return currentValue.Interface() == sampledValue.Interface()
+	}
+	return false
 }
 
 func controllerRuntimeState(ctrl control.SessionAPI) event.RuntimeStateSnapshot {
@@ -158,12 +202,15 @@ func catalogStateStatus(state event.RuntimeStateSnapshot, activity string) (stri
 }
 
 // GetRuntimeStateSnapshot reads committed controller snapshots after copying
-// bindings off App.mu. A projection revision is allocated together with content.
+// bindings off App.mu. Controller and remote-tab sampling stay outside the
+// projection mutex: archive and runtime-state callbacks also enter here, and
+// holding that mutex across a controller read deadlocks a running turn.
 func (a *App) GetRuntimeStateSnapshot() RuntimeStateProjection {
+	bindings := a.sampleLocalRuntimeBindings()
+	remote := a.sampleRemoteRuntimeSessions()
 	r := &a.runtimeStateProjection
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	bindings := a.sampleLocalRuntimeBindings()
 	next := RuntimeStateProjection{Epoch: r.snapshot.Epoch, Sessions: []RuntimeSessionState{}}
 	catalog := []catalogRuntimeSnapshot{}
 	if next.Epoch == "" {
@@ -179,35 +226,7 @@ func (a *App) GetRuntimeStateSnapshot() RuntimeStateProjection {
 		}
 	}
 	next.Topics = a.projectTreeRuntimeTopics(catalog)
-	a.remoteTabMu.Lock()
-	for _, tab := range a.remoteTabs {
-		freshness := "synced"
-		if tab.state != "ready" || tab.session.takenOver || tab.runtime.syncFailed || tab.runtimeUnknown[tab.routing.currentPath] != 0 {
-			freshness = "unknown"
-		}
-		state := tab.runtimeStates[tab.routing.currentPath]
-		if state.SchemaVersion == 0 {
-			state = event.RuntimeStateSnapshot{Phase: "idle", Running: tab.runtime.running, PendingPrompt: tab.runtime.pendingPrompt,
-				BackgroundJobs: tab.runtime.backgroundJobs, Cancellable: tab.runtime.cancellable, CancelRequested: tab.runtime.cancelRequested}
-			if state.Running {
-				state.Phase = "executing"
-			}
-		}
-		next.Sessions = append(next.Sessions, RuntimeSessionState{TabID: tab.id, Scope: "remote", HostID: tab.ref.HostID, WorkspaceRoot: tab.ref.Workspace,
-			SessionPath: tab.routing.currentPath, Open: true, Remote: true, Freshness: freshness, State: state})
-		for path, background := range tab.runtimeStates {
-			if path == tab.routing.currentPath {
-				continue
-			}
-			freshness := "synced"
-			if tab.state != "ready" || tab.session.takenOver || tab.runtime.syncFailed || tab.runtimeUnknown[path] != 0 {
-				freshness = "unknown"
-			}
-			next.Sessions = append(next.Sessions, RuntimeSessionState{TabID: tab.id, Scope: "remote", HostID: tab.ref.HostID, WorkspaceRoot: tab.ref.Workspace,
-				SessionPath: path, Remote: true, Freshness: freshness, State: background})
-		}
-	}
-	a.remoteTabMu.Unlock()
+	next.Sessions = append(next.Sessions, remote...)
 	sort.Slice(next.Sessions, func(i, j int) bool {
 		if next.Sessions[i].TabID == next.Sessions[j].TabID {
 			return next.Sessions[i].SessionPath < next.Sessions[j].SessionPath
@@ -223,6 +242,54 @@ func (a *App) GetRuntimeStateSnapshot() RuntimeStateProjection {
 	result.Sessions = append([]RuntimeSessionState{}, result.Sessions...)
 	result.Topics = cloneRuntimeTopics(result.Topics)
 	return result
+}
+
+func (a *App) sampleRemoteRuntimeSessions() []RuntimeSessionState {
+	if a == nil {
+		return nil
+	}
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	sessions := make([]RuntimeSessionState, 0)
+	for _, tab := range a.remoteTabs {
+		freshness := "synced"
+		if tab.state != "ready" || tab.session.takenOver || tab.runtime.syncFailed || tab.runtimeUnknown[tab.routing.currentPath] != 0 {
+			freshness = "unknown"
+		}
+		state := tab.runtimeStates[tab.routing.currentPath]
+		if state.SchemaVersion == 0 {
+			state = event.RuntimeStateSnapshot{Phase: "idle", Running: tab.runtime.running, PendingPrompt: tab.runtime.pendingPrompt,
+				BackgroundJobs: tab.runtime.backgroundJobs, Cancellable: tab.runtime.cancellable, CancelRequested: tab.runtime.cancelRequested}
+			if state.Running {
+				state.Phase = "executing"
+			}
+		}
+		sessions = append(sessions, RuntimeSessionState{TabID: tab.id, Scope: "remote", HostID: tab.ref.HostID, WorkspaceRoot: tab.ref.Workspace,
+			SessionID: remoteRuntimeSessionID(tab.routing.currentPath, tab.session.sessionID, state), SessionPath: tab.routing.currentPath,
+			Open: true, Remote: true, Freshness: freshness, State: state})
+		for path, background := range tab.runtimeStates {
+			if path == tab.routing.currentPath {
+				continue
+			}
+			freshness := "synced"
+			if tab.state != "ready" || tab.session.takenOver || tab.runtime.syncFailed || tab.runtimeUnknown[path] != 0 {
+				freshness = "unknown"
+			}
+			sessions = append(sessions, RuntimeSessionState{TabID: tab.id, Scope: "remote", HostID: tab.ref.HostID, WorkspaceRoot: tab.ref.Workspace,
+				SessionID: remoteRuntimeSessionID(path, "", background), SessionPath: path, Remote: true, Freshness: freshness, State: background})
+		}
+	}
+	return sessions
+}
+
+func remoteRuntimeSessionID(route, fallback string, state event.RuntimeStateSnapshot) string {
+	if id := strings.TrimSpace(state.SessionID); id != "" {
+		return id
+	}
+	if id, ok := parseSessionRoute(route); ok {
+		return id
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func (a *App) emitRuntimeStateChanged() {

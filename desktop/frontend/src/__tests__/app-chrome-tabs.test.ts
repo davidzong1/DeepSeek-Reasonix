@@ -15,7 +15,6 @@ const topicShortcutOwnerSource = readFileSync(resolve(testDir, "../app-runtime/u
 const runtimeHandlersSource = readFileSync(resolve(testDir, "../app-runtime/useRuntimeEventHandlers.ts"), "utf8");
 const sessionNavigationSource = readFileSync(resolve(testDir, "../app-runtime/useSessionNavigationCommands.ts"), "utf8");
 const chromeCommandsSource = readFileSync(resolve(testDir, "../app-runtime/useAppChromeCommands.ts"), "utf8");
-const desktopNavigationSource = readFileSync(resolve(testDir, "../app-runtime/useDesktopNavigation.ts"), "utf8");
 const dockToggleSource = readFileSync(resolve(testDir, "../app-shell/DockToggleButton.tsx"), "utf8");
 const chatPaneSource = readFileSync(resolve(testDir, "../app-shell/ChatPaneRegion.tsx"), "utf8");
 const transcriptSurfaceSource = readFileSync(resolve(testDir, "../app-runtime/useTranscriptSurfaceProjection.ts"), "utf8");
@@ -252,7 +251,7 @@ ok(
 );
 
 ok(
-  /workbenchChromeHidden\s*=\s*sidebarWorkbench/.test(appViewSource),
+  /const workbenchChromeHidden = true/.test(appViewSource),
   "workbench chrome is hidden for every desktop platform",
 );
 
@@ -263,19 +262,10 @@ ok(
 
 // The app tab strip that consumed the tab reveal signal is gone; the transcript
 // keeps its own cell and the shared reveal still has to bump both independently.
-ok(
-  /const \[transcriptRevealSignal, setTranscriptRevealSignal\] = useState\(0\);/.test(appSource) &&
-    /revealSignal=\{transcript\.revealSignal\}/.test(chatPaneSource) &&
-    /input\.setTabRevealSignal\(value => value \+ 1\); input\.setTranscriptRevealSignal\(value => value \+ 1\);/.test(desktopNavigationSource),
-  "transcript bottom reveal keeps its own signal and still settles with the shared reveal",
-);
+ok(!appSource.includes("transcriptRevealSignal"), "retired transcript reveal state is removed");
 
 
-ok(
-  /aria-label=\{t\("transcript\.jumpToBottom"\)\}/.test(transcriptSource) &&
-    /title=\{t\("transcript\.jumpToBottom"\)\}/.test(transcriptSource),
-  "jump-to-bottom affordance uses localized transcript text",
-);
+ok(transcriptSource.includes('t("chat.toLatest")'), "jump-to-bottom affordance uses localized transcript text");
 
 ok(
   /setActive\(items\.length > 0 \? 0 : -1\)/.test(commandPaletteSource),
@@ -379,6 +369,29 @@ ok(
     finalDeclaration(".app--windows .sidebar", "--reasonix-draggable") === "no-drag" &&
     finalDeclaration(".sidebar-resizer", "--reasonix-draggable") === "no-drag",
   "Windows sidebar avoids native window drag without changing other platforms",
+);
+
+ok(
+  finalDeclaration(".topicbar", "--reasonix-draggable") === "drag" &&
+    finalDeclaration(".topicbar button", "--reasonix-draggable") === "no-drag" &&
+    finalDeclaration(".topicbar__actions", "--reasonix-draggable") === "no-drag",
+  "the shell bar is the window drag surface and opts its controls out",
+);
+
+ok(
+  finalDeclaration(".msg", "--reasonix-draggable") === undefined &&
+    finalDeclaration(".msg", "-webkit-app-region") === undefined &&
+    finalDeclaration(".reasoning__head", "-webkit-app-region") === undefined &&
+    finalDeclaration(".tool__head", "-webkit-app-region") === undefined &&
+    finalDeclaration(".process-card__head", "-webkit-app-region") === undefined &&
+    finalDeclaration(".compaction", "-webkit-app-region") === undefined,
+  "transcript content does not participate in native app-region subtraction",
+);
+
+ok(
+  finalDeclaration(".chat-pane", "overflow") === "hidden" &&
+    finalDeclaration(".chat-pane", "min-height") === "0",
+  "the chat pane clips overflow so zoomed transcript boxes cannot paint into the shell bar",
 );
 
 ok(

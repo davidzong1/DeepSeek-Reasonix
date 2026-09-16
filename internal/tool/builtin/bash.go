@@ -17,8 +17,8 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"reasonix/internal/i18n"
 	"reasonix/internal/jobs"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/proc"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
@@ -36,10 +36,7 @@ func init() { tool.RegisterBuiltin(bash{}) }
 
 var bashShellPATH = cachedBashShellPATH
 
-var (
-	bashSandboxCommand             = sandbox.Command
-	bashSandboxEscapePromptEnabled = func() bool { return runtime.GOOS == "windows" }
-)
+var bashSandboxCommand = sandbox.Command
 
 // cachedBashShellPATH memoizes the login-shell PATH probe per login shell so a
 // shell isn't spawned on every bash tool call (the probe runs up to three
@@ -92,6 +89,9 @@ type bash struct {
 	// and never for background jobs, which need the local job manager.
 	terminal    TerminalRunner
 	sessionTemp *sessiontemp.Manager
+	// persistent runs ordinary foreground commands in a session PTY. A
+	// context-attached manager isolates sub-agents. Nil keeps one-shot processes.
+	persistent *persistentshell.Manager
 }
 
 type bashParams struct {
@@ -100,6 +100,8 @@ type bashParams struct {
 	PreserveBackgroundProcesses bool     `json:"preserve_background_processes"`
 	AdditionalWriteDirs         []string `json:"additional_write_dirs,omitempty"`
 	Justification               string   `json:"justification,omitempty"`
+	SandboxPermissions          string   `json:"sandbox_permissions,omitempty"`
+	DenialID                    string   `json:"denial_id,omitempty"`
 }
 
 func (bash) Name() string { return "bash" }
@@ -107,6 +109,10 @@ func (bash) Name() string { return "bash" }
 func (b bash) Description() string {
 	sh := b.resolved()
 	if sh.Kind == sandbox.ShellPowerShell {
+		persistence := "Ordinary foreground calls share a persistent session: working directory, variables, functions and environment persist. Background or permission-specific calls are isolated. "
+		if os.Getenv("REASONIX_POWERSHELL_ONESHOT") == "1" {
+			persistence = "Calls run in isolated PowerShell processes; directory and variable changes do not persist. "
+		}
 		shellName := "Windows PowerShell"
 		chaining := "';' runs both regardless; 'if ($?) { ... }' is conditional. '&&' and '||' are NOT parsed."
 		if sh.SupportsChaining() {
@@ -114,7 +120,8 @@ func (b bash) Description() string {
 			chaining = "'&&' and '||' are parsed for conditional chaining; ';' runs both regardless."
 		}
 		return fmt.Sprintf("Execute a command in the shell and return combined stdout/stderr. "+
-			"NOTE: bash is not available on this host — commands run under %s, so write PowerShell, not bash:\n"+
+			persistence+
+			"Commands run under %s on this host, so write PowerShell, not bash:\n"+
 			"  - chaining: %s\n"+
 			"  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2>$null' drops stderr.\n"+
 			"  - file ops: Get-ChildItem (ls), Get-Content (cat), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n"+
@@ -188,14 +195,11 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	}
 
 	sh := b.resolved()
-	if !sh.SupportsChaining() && (hasUnquotedSeq(p.Command, "&&") || hasUnquotedSeq(p.Command, "||")) {
-		ex.State = tool.ShellStateNotRun
-		ex.FailurePhase = tool.ShellPhasePreflight
-		ex.MutationRisk = tool.ShellMutationNotStarted
-		ex.DurationMs = time.Since(start).Milliseconds()
-		return tool.DetailedResult{Execution: ex}, fmt.Errorf("this shell is Windows PowerShell, which does not parse '&&' or '||'. " +
-			"Sequence with ';' (both run regardless of the first's result), use 'if ($?) { ... }' for " +
-			"conditional chaining, or issue the commands as separate calls")
+	if err := sandbox.ValidateShellPolicy(b.specForCall(ctx), sh); err != nil {
+		return bashPreflightFailure(ex, start, err)
+	}
+	if res, err, reject := rejectPowerShellChaining(ex, start, sh, p.Command); reject {
+		return res, err
 	}
 
 	// Pin the session-private temporary generation before any launch path so
@@ -203,14 +207,7 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	// so a failed start still releases the lease.
 	prepared, lease, err := b.prepareLaunch(ctx, sh, p.Command, args)
 	if err != nil {
-		ex.State = tool.ShellStateNotRun
-		ex.FailurePhase = tool.ShellPhaseAuthorization
-		if strings.Contains(err.Error(), "session temporary") {
-			ex.FailurePhase = tool.ShellPhaseLaunch
-		}
-		ex.MutationRisk = tool.ShellMutationNotStarted
-		ex.DurationMs = time.Since(start).Milliseconds()
-		return tool.DetailedResult{Execution: ex}, err
+		return bashLaunchFailure(ex, start, err)
 	}
 	// Background jobs take ownership of the lease until the job goroutine ends.
 	// Foreground/terminal paths release after the process exits.
@@ -227,7 +224,7 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	// (the host terminal spawns with its own unfiltered environment, which
 	// would leak the credentials the user asked to strip), and never for
 	// background jobs. ok=false falls back to local execution unchanged.
-	if b.terminal != nil && !p.RunInBackground && !b.sb.Enforce() && !secrets.FilterSubprocessEnv() {
+	if b.terminal != nil && sh.Kind != sandbox.ShellPowerShell && !p.RunInBackground && !b.sb.Enforce() && !secrets.FilterSubprocessEnv() {
 		envMap := sandbox.SessionTempEnvMap(prepared.SessionTemp, prepared.LinuxSandboxed)
 		if out, ok, termErr := b.terminal.RunCommand(ctx, p.Command, b.workDir, b.timeout, envMap); ok {
 			out = appendSessionDataHint(out, b.guard.CommandHint(b.workDir, p.Command))
@@ -239,6 +236,13 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 
 	argv, wrapped := prepared.Argv, prepared.Wrapped
 	cmdEnv := applyEnvOverrides(bashCommandEnv(ctx), prepared.EnvOverrides)
+	if res, err, failed := b.checkLaunch(ctx, p, sh, prepared, cmdEnv, start, ex); failed {
+		return res, err
+	}
+
+	if res, err, used := b.tryPersistent(ctx, p, sh, prepared, persistEnv(cmdEnv), start, ex); used {
+		return res, err
+	}
 
 	if p.RunInBackground {
 		jm, ok := jobs.FromContext(ctx)
@@ -362,45 +366,23 @@ func (b bash) prepareLaunch(ctx context.Context, sh sandbox.Shell, command strin
 	// bashSandboxCommand is injectable for tests; production points at
 	// sandbox.Command. Attach SessionTemp so Linux bwrap binds the private dir.
 	spec := b.specForCall(ctx)
-	spec.SessionTemp = sessionDir
+	effectiveSessionDir := sessionDir
+	spec.SessionTemp = effectiveSessionDir
 	argv, wrapped := bashSandboxCommand(spec, sh, command)
-	linuxSB := wrapped && sessionDir != "" && runtime.GOOS == "linux"
+	linuxSB := wrapped && effectiveSessionDir != "" && runtime.GOOS == "linux"
 	prepared := sandbox.Prepared{
 		Argv:           argv,
 		Wrapped:        wrapped,
-		SessionTemp:    sessionDir,
-		EnvOverrides:   sandbox.SessionTempEnv(sessionDir, linuxSB),
+		SessionTemp:    effectiveSessionDir,
+		EnvOverrides:   sandbox.SessionTempEnv(effectiveSessionDir, linuxSB),
 		LinuxSandboxed: linuxSB,
 	}
 
-	if b.sb.Enforce() && bashSandboxEscapeSessionAllowed(ctx, command, rawArgs) {
-		prepared.Argv = unconfinedShellArgv(sh, command)
-		prepared.Wrapped = false
-		// Escaped commands still inherit private temp env vars pointing at the
-		// host private directory (no virtual /tmp mapping).
-		prepared.LinuxSandboxed = false
-		prepared.EnvOverrides = sandbox.SessionTempEnv(sessionDir, false)
-	} else if b.sb.Enforce() && !prepared.Wrapped {
-		allow, reason, err := approveBashSandboxEscape(ctx, command, rawArgs, i18n.M.SandboxEscapeWrapReason)
-		if err != nil {
-			if lease != nil {
-				lease.Release()
-			}
-			return sandbox.Prepared{}, nil, err
+	if spec.Enforce() && !prepared.Wrapped {
+		if lease != nil {
+			lease.Release()
 		}
-		if !allow {
-			if lease != nil {
-				lease.Release()
-			}
-			if reason != "" {
-				return sandbox.Prepared{}, nil, fmt.Errorf("%s", reason)
-			}
-			return sandbox.Prepared{}, nil, fmt.Errorf("%s", sandbox.UnavailableMessage())
-		}
-		prepared.Argv = unconfinedShellArgv(sh, command)
-		prepared.Wrapped = false
-		prepared.LinuxSandboxed = false
-		prepared.EnvOverrides = sandbox.SessionTempEnv(sessionDir, false)
+		return sandbox.Prepared{}, nil, fmt.Errorf("%s", sandbox.UnavailableMessage())
 	}
 	return prepared, lease, nil
 }
@@ -438,40 +420,6 @@ func appendSessionDataHint(out, hint string) string {
 func unconfinedShellArgv(sh sandbox.Shell, command string) []string {
 	argv, _ := sandbox.Command(sandbox.Spec{}, sh, command)
 	return argv
-}
-
-func approveBashSandboxEscape(ctx context.Context, command string, args json.RawMessage, reason string) (bool, string, error) {
-	if !bashSandboxEscapePromptEnabled() {
-		return false, "", nil
-	}
-	approver, ok := sandbox.EscapeApproverFrom(ctx)
-	if !ok {
-		return false, "", nil
-	}
-	return approver.ApproveSandboxEscape(ctx, sandbox.EscapeRequest{
-		Command: command,
-		Args:    append(json.RawMessage(nil), args...),
-		Reason:  reason,
-	})
-}
-
-func bashSandboxEscapeSessionAllowed(ctx context.Context, command string, args json.RawMessage) bool {
-	if !bashSandboxEscapePromptEnabled() {
-		return false
-	}
-	approver, ok := sandbox.EscapeApproverFrom(ctx)
-	if !ok {
-		return false
-	}
-	checker, ok := approver.(sandbox.EscapeSessionChecker)
-	if !ok {
-		return false
-	}
-	return checker.SandboxEscapeSessionAllowed(ctx, sandbox.EscapeRequest{
-		Command: command,
-		Args:    append(json.RawMessage(nil), args...),
-		Reason:  i18n.M.SandboxEscapeRuntimeReason,
-	})
 }
 
 // runForegroundDetailed uses the shared shellrun collector so model bash and

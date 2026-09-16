@@ -7,7 +7,7 @@ import { useOverlayStore } from "../store/overlays";
 import type { Translator } from "../lib/i18n";
 import type { Item, LiveStream } from "../lib/useController";
 
-export type SessionExportFormat = "markdown" | "json" | "pdf" | "image";
+export type SessionExportFormat = "markdown" | "json" | "pdf" | "image" | "diagnostic";
 
 /**
  * Owns the session export commands (markdown/json/pdf/image file pickers and
@@ -17,6 +17,8 @@ export type SessionExportFormat = "markdown" | "json" | "pdf" | "image";
  * it; the renderer chunks stay lazy behind the file dialog.
  */
 export function useSessionExportCommands(input: {
+  tabId?: string;
+  remote: boolean;
   sessionTitle: string;
   items: readonly Item[];
   live: LiveStream | undefined;
@@ -24,7 +26,7 @@ export function useSessionExportCommands(input: {
   t: Translator;
   showToast: (message: string, kind: "info" | "warn" | "error", options?: { durationMs?: number }) => void;
 }) {
-  const { sessionTitle, items, live, hasContent, t, showToast } = input;
+  const { tabId, remote, sessionTitle, items, live, hasContent, t, showToast } = input;
   const topicExportOpen = useOverlayStore((state) => state.topicExportOpen);
   const setTopicExportOpen = useOverlayStore((state) => state.setTopicExportOpen);
 
@@ -50,7 +52,10 @@ export function useSessionExportCommands(input: {
     const base = safeFilename(sessionTitle);
     setTopicExportOpen(false);
     try {
-      if (format === "json") {
+      if (format === "diagnostic") {
+        const path = await app.ExportGoalDiagnostics();
+        if (path) showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
+      } else if (format === "json") {
         const path = await app.PickExportFile(`${base}.json`, "application/json");
         if (path) {
           await app.SaveExportFile(path, await getSessionJson(), false);
@@ -78,7 +83,8 @@ export function useSessionExportCommands(input: {
       } else {
         const path = await app.PickExportFile(`${base}.md`, "text/markdown");
         if (path) {
-          await app.SaveExportFile(path, await getSessionMarkdown(), false);
+          if (tabId && !remote) await app.SaveSessionMarkdownForTab(tabId, path, sessionTitle);
+          else await app.SaveExportFile(path, await getSessionMarkdown(), false);
           showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
         }
       }

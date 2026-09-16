@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+node --test "$repo_root/scripts/verify-manual-desktop-producer.test.mjs"
+bash "$repo_root/scripts/manual-desktop-exception.test.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-release-workflow-test.XXXXXX")"
 cleanup() {
 	case "$test_root" in
@@ -13,6 +15,43 @@ trap cleanup EXIT
 
 # Stable tags have one entrypoint and one protected environment. Reusable
 # publishers must verify that only that entrypoint can claim prior approval.
+# The manual exception is immutable-candidate scoped and cannot advance any
+# Desktop update entry point. Keep normal signing as the default.
+python3 - "$repo_root" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+stable = (root / '.github/workflows/release-stable.yml').read_text()
+desktop = (root / '.github/workflows/release-desktop.yml').read_text()
+publisher = (root / 'scripts/publish-desktop-github-release.sh').read_text()
+exception = (root / 'scripts/manual-desktop-exception.sh').read_text()
+for workflow in (stable, desktop):
+    block = workflow.split('      desktop_manual_only:', 1)[1].split('\n\n', 1)[0]
+    assert 'default: false' in block
+    # One owner decides which tags may skip Authenticode, so an exception
+    # cannot drift between the orchestrator, the publisher, and the release.
+    assert 'scripts/manual-desktop-exception.sh validate' in workflow
+assert '7278072720a2dc7a31cce0eec18c1eacc149c0e0' in exception
+verifier = (root / 'scripts/verify-stable-release-artifacts.sh').read_text()
+# Postflight reads the same allowlist and asserts the update pointers never
+# serve the manual release, instead of naming one release's prior version.
+assert 'manual-desktop-exception.sh" validate "$desktop_tag"' in verifier
+assert '1.38.8' not in verifier and 'v1.38.7' not in verifier
+assert 'inputs.allow_recovery' in stable.split('name: Restrict manual Desktop distribution', 1)[1].split('- name:', 1)[0]
+assert stable.count('desktop_manual_only: ${{ inputs.desktop_manual_only || false }}') == 2
+assert "HAS_CERTUM: ${{ secrets.CERTUM_USERNAME != '' && secrets.CERTUM_OTP_URI != '' && secrets.CERTUM_KEY_ID != '' && !inputs.desktop_manual_only }}" in desktop
+assert desktop.index('name: Validate signing mode') < desktop.index('name: Build and package')
+assert "inputs.orchestrated }}\" != \"true\"" in desktop
+assert 'manual-download only' in desktop
+manual_exit = desktop.index('if [ "$DESKTOP_MANUAL_ONLY" = "true" ]; then', desktop.index('name: Mirror immutable assets'))
+assert manual_exit < desktop.index('validate_current_pointer()', manual_exit)
+assert 'pointer_moved=false' in desktop[manual_exit:manual_exit + 350]
+attach = desktop.split('name: Attach desktop manifest to matching CLI release', 1)[1].split('env:', 1)[0]
+assert '!inputs.desktop_manual_only' in attach
+manual_publish = publisher.split('if [ "${DESKTOP_MANUAL_ONLY:-false}" = "true" ]; then', 1)[1].split('elif', 1)[0]
+assert 'manual-desktop-exception.sh" validate "$tag"' in manual_publish
+assert 'args+=(--latest=false)' in manual_publish
+assert 'name: Sign artifacts (minisign)' in desktop
+PY
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
 relay="$repo_root/.github/workflows/release-stable-trigger.yml"
 grep -Eq 'actions: write' "$relay"
@@ -109,7 +148,7 @@ grep -Eq '^  resolve:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'sha:.*steps\.candidate\.outputs\.sha' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'name: Smoke-test packaged Electron startup' "$repo_root/.github/workflows/release-desktop.yml"
-sed -n '/name: Smoke-test packaged Electron startup/,/name: Upload unsigned Windows payload/p' \
+sed -n '/name: Smoke-test packaged Electron startup/,/name: Upload Windows signing inputs/p' \
 	"$repo_root/.github/workflows/release-desktop.yml" | grep -Fq "if: runner.os == 'Windows'"
 grep -Fq 'desktop/build/electron/${{ matrix.name }}/app' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'node desktop/packaging/smoke.mjs' "$repo_root/.github/workflows/release-desktop.yml"
@@ -153,13 +192,13 @@ done
 ! grep -Fq 'independent cross-boundary review' "$repo_root/.github/pull_request_template.md"
 desktop_build_line="$(grep -n -m1 'name: Build and package' "$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
 electron_smoke_line="$(grep -n -m1 'name: Smoke-test packaged Electron startup' "$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
-signpath_upload_line="$(grep -n -m1 'name: Upload unsigned Windows payload for SignPath' "$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+signing_upload_line="$(grep -n -m1 'name: Upload Windows signing inputs' "$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
 [ "$desktop_build_line" -lt "$electron_smoke_line" ]
-[ "$electron_smoke_line" -lt "$signpath_upload_line" ]
+[ "$electron_smoke_line" -lt "$signing_upload_line" ]
 [ "$(grep -Fc 'IN_ORCHESTRATOR: ${{ inputs.orchestrator }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
 [ "$(grep -Fc 'name: Revalidate immutable Desktop candidate' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ needs.resolve.outputs.sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 4 ]
-[ "$(grep -Ec '^          path: release-control$' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
+[ "$(grep -Ec '^          path: release-control$' "$repo_root/.github/workflows/release-desktop.yml")" = "4" ]
 grep -Fq 'name: Checkout protected release verifier' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'scripts/desktop-release-artifacts.mjs' "$repo_root/.github/workflows/release-desktop.yml"
 if grep -Fq 'test-webview2-native-smoke.ps1' "$repo_root/.github/workflows/release-desktop.yml"; then
@@ -232,11 +271,7 @@ if printf '%s\n' "$npm_control_step" | grep -q 'if:'; then
 	exit 1
 fi
 grep -Fq 'publishPackages' "$repo_root/npm/build.mjs"
-grep -Eq 'signing-policy-slug: release-signing' "$repo_root/.github/workflows/release-desktop.yml"
-if grep -Eq 'signing-policy-slug:.*test-signing' "$repo_root/.github/workflows/release-desktop.yml"; then
-	echo "public desktop workflow must not use the SignPath test certificate" >&2
-	exit 1
-fi
+grep -Fq 'thumbprint: ${{ secrets.CERTUM_KEY_ID }}' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'SIGNPATH_RELEASE_SIGNING_ATTESTATION does not match' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq '^      signing_preflight:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq '^      signing_preflight_verified:$' "$repo_root/.github/workflows/release-desktop.yml"
@@ -245,17 +280,11 @@ grep -Eq '^  attest-signing-contract:$' "$repo_root/.github/workflows/release-de
 grep -Eq '^      production_signing_smoke:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.build\.result == 'success'.*!inputs\.production_signing_smoke.*!inputs\.signing_preflight" \
 	"$repo_root/.github/workflows/release-desktop.yml"
-[ "$(grep -Ec 'wait-for-completion: false' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
-[ "$(grep -Ec 'complete-signpath-request\.ps1' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
-[ "$(grep -Ec -- '-WaitForExternalApproval:\$waitForExternalApproval' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
-[ "$(grep -Ec 'signpath-api-url' "$repo_root/.github/workflows/release-desktop.yml")" = "0" ]
-grep -Eq 'steps\.submit-windows-payload\.outputs\.signing-request-id' \
-	"$repo_root/.github/workflows/release-desktop.yml"
-grep -Eq 'steps\.submit-windows-installer\.outputs\.signing-request-id' \
-	"$repo_root/.github/workflows/release-desktop.yml"
-grep -Eq 'artifact-configuration-slug: windows-payload' "$repo_root/.github/workflows/release-desktop.yml"
-grep -Eq 'artifact-configuration-slug: windows-installer-v2' "$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq -- '-RequireTrusted:$true' "$repo_root/.github/workflows/release-desktop.yml"
+! grep -Eq 'signpath/github-action-submit-signing-request|secrets.SIGNPATH_API_TOKEN|complete-signpath-request\.ps1' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'uses: ./release-control/.github/actions/setup-certum' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'scripts/sign-certum.ps1 -PayloadDirectory signed-payload' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'scripts/sign-certum.ps1 -FilePath' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq -- '-ExpectedThumbprint $env:CERTUM_KEY_ID -RequireTrusted' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'signing_preflight_verified: true' "$repo_root/.github/workflows/release-stable.yml"
@@ -1066,6 +1095,8 @@ write_desktop_manifest() {
 				"linux-amd64": asset("Reasonix-linux-amd64.deb")
 			},
 			downloads: {
+				"Reasonix-darwin-arm64.dmg": asset("Reasonix-darwin-arm64.dmg"),
+				"Reasonix-darwin-amd64.dmg": asset("Reasonix-darwin-amd64.dmg"),
 				"Reasonix-darwin-universal.dmg": asset("Reasonix-darwin-universal.dmg"),
 				"Reasonix-windows-amd64.zip": asset("Reasonix-windows-amd64.zip")
 			}
@@ -1650,6 +1681,12 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 done
 grep -Fq 'reasonix/internal/productdocs.linkedVersion={{ .Tag }}' "$repo_root/.goreleaser.yaml"
 grep -Fq 'reasonix/internal/productdocs.linkedRevision={{ .Commit }}' "$repo_root/.goreleaser.yaml"
+# The Homebrew cask must keep stripping quarantine from the unsigned CLI, but
+# through Homebrew's current postflight_steps stanza, never the deprecated
+# `postflight do` that GoReleaser's hooks field renders.
+sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'postflight_steps do'
+sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'com.apple.quarantine'
+! sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Eq '^\s+hooks:|^\s+post:'
 grep -Fq 'reasonix/internal/productdocs.linkedVersion=${binaryVersion}' "$repo_root/npm/build.mjs"
 grep -Fq 'product_docs_ldflags="-X reasonix/internal/productdocs.linkedVersion=$VERSION' \
 	"$repo_root/scripts/desktop-build.sh"

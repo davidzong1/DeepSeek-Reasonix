@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"log/slog"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
@@ -44,6 +45,9 @@ func (c *Controller) ApplyExtensionSystemPrompt(prompt string) {
 	c.prompt.base = prompt
 	c.mu.Unlock()
 	c.executor.SetSession(agent.NewSession(prompt))
+	if err := c.replaceSessionEventProjection(context.Background(), "extension-system-prompt", c.executor.Session().Snapshot()); err != nil {
+		slog.Warn("controller: record extension system prompt", "err", err)
+	}
 }
 
 // SetSystemPromptPreservingHistory updates the authoritative system prompt
@@ -60,7 +64,14 @@ func (c *Controller) SetSystemPromptPreservingHistory(prompt string) {
 	c.mu.Lock()
 	c.prompt.base = prompt
 	c.mu.Unlock()
-	c.executor.Session().SetLeadingSystemPromptWithReason(prompt, "team_role_prompt_refresh")
+	if !c.executor.Session().SetLeadingSystemPromptWithReason(prompt, "team_role_prompt_refresh") {
+		return
+	}
+	// The v3 event projection is the authoritative transcript, so an in-memory
+	// rewrite is invisible to History until it is recorded there too.
+	if err := c.replaceSessionEventProjection(context.Background(), "team-role-system-prompt", c.executor.Session().Snapshot()); err != nil {
+		slog.Warn("controller: record team role system prompt", "err", err)
+	}
 }
 
 func (c *Controller) basePrompt() string {

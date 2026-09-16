@@ -97,7 +97,6 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
       connections: [],
     },
     desktopLanguage: "en",
-    desktopLayoutStyle: "workbench",
     desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     desktopTerminalTheme: "auto",

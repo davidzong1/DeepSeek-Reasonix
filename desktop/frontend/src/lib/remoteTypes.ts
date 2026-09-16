@@ -30,11 +30,13 @@ export interface RemoteTabRefView {
 export interface RemoteTabMetaFields {
   remote?: RemoteTabRefView;
   remoteState?: RemoteTabStateValue;
+  /** Host-emitted: this tab's serve advertised session-fork-targets-v1. */
+  forkTargetsSupported?: boolean;
 }
 
 export interface RemoteProjectNodeFields {
   remote?: RemoteTabRefView;
-  remoteSession?: { hostId: string; workspace: string; name: string; path?: string; title?: string };
+  remoteSession?: { hostId: string; workspace: string; name: string; path?: string; sessionId?: string; title?: string };
 }
 
 export interface RemoteSessionMetaFields {
@@ -50,6 +52,8 @@ export interface RemoteProjectView {
 }
 
 export interface RemoteSessionView {
+  hostId?: string;
+  sessionId?: string;
   name: string;
   path?: string;
   title: string;
@@ -71,6 +75,7 @@ export interface RemoteTabOpenOptions {
   newSession?: boolean;
   sessionName?: string;
   sessionPath?: string;
+  sessionId?: string;
   sessionTitle?: string;
 }
 

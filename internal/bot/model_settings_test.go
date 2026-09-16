@@ -54,7 +54,12 @@ func TestBotNewRunAppliesModelSettingsAndKeepsSessionOnFailure(t *testing.T) {
 	}
 	old := built.state
 	gw.controllers[key] = old
-	t.Cleanup(func() { gw.closeSessionState(gw.controllers[key]) })
+	t.Cleanup(func() {
+		gw.closeSessionState(gw.controllers[key])
+		// Retiring the state is not enough: the per-root session service caches
+		// the writer lease, and Stop is what normally releases it.
+		gw.closeSessionServices()
+	})
 	oldCtrl := old.ctrl
 	path := oldCtrl.SessionPath()
 	oldConcrete := built.state.ctrl

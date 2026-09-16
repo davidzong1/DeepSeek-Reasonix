@@ -5,7 +5,8 @@
 桌面浏览器是 Reasonix 窗口内由用户与 Agent 共同操作的原生 Chromium 表面。网站在壳
 拥有的 Electron `WebContentsView` 中渲染；Agent 的每项能力都经过 Go 桌面服务，因此
 本地与远程 Agent、审批、取消、证据与操作记录共享同一实现。本文是浏览器面板、壳的
-表面管理器、Go `BrowserExecutor` 与 Agent 可见工具之间的契约。
+表面管理器、Go `BrowserExecutor` 与 Agent 可见工具之间的契约。背后没有壳的会话由
+[CDP 后端](BROWSER_CDP.zh-CN.md)提供同一批工具。
 
 ```text
 Agent 工具调用 ─▶ Go BrowserExecutor ─▶ ledger.reserve ─▶ host/browser.* ─▶ WebContentsView

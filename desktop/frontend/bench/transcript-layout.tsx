@@ -9,7 +9,7 @@ import { installDesktopHostStub } from "../src/__tests__/desktopHostStub";
 import "../src/styles.css";
 
 type Options = {
-  layout: "creation" | "workbench";
+  layout: "workbench";
   width: "standard" | "full";
   sidebar: boolean;
   dock: boolean;
@@ -46,14 +46,15 @@ Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
   writeText: async (text: string) => { copied.push(text); },
 } });
 const commands = {
-  onPrompt: noAction, onDeliveryContinue: undefined, onAcceptDelivery: undefined,
+  onPrompt: noAction, onFork: undefined, onDeliveryContinue: undefined, onAcceptDelivery: undefined,
   onOpenChanges: undefined, onOpenVerification: undefined, onEditPrompt: undefined,
-  onRewind: undefined, onLoadOlderHistory: undefined, onSurfacePaintReady: undefined,
+  onRewind: undefined, onLoadOlderHistory: undefined, onLoadNewerHistory: undefined,
+  onSurfacePaintReady: undefined,
 };
 function Fixture() {
   const t = useT();
   const [options, setOptions] = useState<Options>({
-    layout: "creation", width: "full", sidebar: true, dock: false, launcher: false, long: true, turns: 2, text: null, streaming: false, shell: false,
+    layout: "workbench", width: "full", sidebar: true, dock: false, launcher: false, long: true, turns: 2, text: null, streaming: false, shell: false,
   });
   const [revision, setRevision] = useState(0);
   const items = useMemo(() => Array.from({ length: options.turns }, (_, index): Item[] => [
@@ -77,15 +78,15 @@ function Fixture() {
   }, [options.width, revision]);
   const transcript: ChatPaneTranscriptInput = {
     state: { ...initialState, items, running: options.streaming }, items, tabId: "layout-fixture", geometrySessionKey: "layout-fixture",
-    footerHeight: 100, revealSignal: undefined, invocationMetadata: undefined, surfaceCommitToken: undefined,
+    footerHeight: 100, invocationMetadata: undefined, surfaceCommitToken: undefined,
     liveStore: undefined, transcriptHydrating: false, navigationDataReady: true, readOnly: false,
     controllerReady: true, hydratePlaceholderActive: false, clearContextPending: false,
-    creation: options.layout === "creation", availability: { kind: "ready", source: "history" },
-    rewind: { stateActive: false, committing: false, signal: undefined },
+    availability: { kind: "ready", source: "history" },
+    rewind: { stateActive: false, committing: false },
   };
   return <div className={"app app--windows app--windows-frameless app--" + options.layout} data-fixture-revision={revision}>
     <div className={`layout${options.sidebar ? "" : " layout--sidebar-collapsed"}${options.dock ? " layout--workspace-open" : ""}`}
-      style={{ "--sidebar-expanded-width": options.layout === "creation" ? "236px" : "300px", "--workspace-width": "300px" } as CSSProperties}>
+      style={{ "--sidebar-expanded-width": "300px", "--workspace-width": "300px" } as CSSProperties}>
       <header className="topicbar">Transcript layout fixture</header>
       <aside className="sidebar">Sidebar</aside>
       <div className="chat-pane">

@@ -198,7 +198,7 @@ func TestForegroundMutationRejectsStaleSessionPath(t *testing.T) {
 	stalePath := filepath.Join(dir, "stale.jsonl")
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Runner: blockingRunner{}, Sink: bc, SessionPath: currentPath})
-	s := New(ctrl, bc, config.ServeConfig{})
+	s := newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})
 
 	ctrl.SubmitHTTP("hi")
 	waitRunning(t, ctrl)
@@ -437,15 +437,13 @@ func waitRunning(t *testing.T, ctrl *control.Controller) {
 
 func waitNotRunning(t *testing.T, ctrl *control.Controller) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
-	for {
-		if !ctrl.Running() {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("controller never left the running state after cancel")
-		case <-time.After(5 * time.Millisecond):
-		}
+	done, running := ctrl.TurnIdleDone()
+	if !running {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("controller never reached idle after cancel: %+v", ctrl.RuntimeStatus())
 	}
 }

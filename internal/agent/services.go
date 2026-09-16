@@ -44,15 +44,15 @@ type agentServices struct {
 	// controller generation; nil means every intercept point passes through
 	// byte-identically. See extensions.go.
 	extensions *dispatch.Dispatcher
-	// recoveryGate is the Auto Guard boundary, shared by root and sub-agents for
-	// one controller task. nil disables recovery checks.
-	recoveryGate RecoveryGate
 	// planTrust is retained for legacy controller wiring. The main Plan
 	// execution path no longer consults it.
 	planTrust PlanModeReadOnlyTrustGate
 	// sandboxEscape can ask the user whether one shell command may rerun
 	// unconfined after the OS sandbox failed to start.
 	sandboxEscape sandbox.EscapeApprover
+	// permissionPreset returns the host-authoritative execution preset for each
+	// call. Keeping it host-only avoids tool-schema and prompt-prefix churn.
+	permissionPreset func() string
 	// configWrite can ask the user whether a file tool may write a
 	// Reasonix-managed config file outside the workspace roots.
 	configWrite tool.ConfigWriteApprover
@@ -99,6 +99,9 @@ type agentServices struct {
 	// just-made memory change into the next turn, so it applies this session
 	// without touching the cache-stable prefix.
 	memQueue memory.Queue
+	// sessionCheckpointer flushes the accepted event prefix immediately before
+	// model and top-level tool side effects.
+	sessionCheckpointer SessionCheckpointer
 }
 
 func (s *agentServices) gateSnapshot() Gate {
@@ -128,13 +131,13 @@ func newAgentServices(
 		sink:                  sink,
 		gate:                  gate,
 		extensions:            opts.Extensions,
-		recoveryGate:          opts.RecoveryGate,
 		planTrust:             planTrust,
 		sandboxEscape:         sandboxEscape,
 		configWrite:           configWrite,
 		hooks:                 hooks,
 		jobs:                  opts.Jobs,
 		memQueue:              opts.MemoryQueue,
+		sessionCheckpointer:   opts.SessionCheckpointer,
 		writeScheduler:        opts.WriteScheduler,
 		workspaceLease:        opts.WorkspaceLease,
 		warnState:             missingReasoningWarnStateFor(opts.MissingReasoningWarnStateDir),

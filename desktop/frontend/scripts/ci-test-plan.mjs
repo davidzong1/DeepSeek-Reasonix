@@ -6,6 +6,7 @@ export const ciUnitScripts = [
   "test:terminal", "test:task-monitor", "test:mcp-app", "test:workspace",
   "test:stream", "test:motion", "test:composer", "test:todo-visibility",
   "test:app-lifecycle", "test:all", "test:transcript", "test:usage-stats",
+  "test:ci-contract",
 ];
 
 export function testPlan(scripts, discovered) {

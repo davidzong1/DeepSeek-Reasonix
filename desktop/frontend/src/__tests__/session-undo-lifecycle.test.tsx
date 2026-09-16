@@ -3,6 +3,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { useSessionUndo, type RewindResultView } from "../app-runtime/useSessionUndo";
+import type { ForkTargetView } from "../lib/forkTargets";
 import type { Item } from "../lib/useController";
 
 const dom = new JSDOM("<div id='root'></div>");
@@ -33,6 +34,7 @@ function Probe({ readOnly = false, hydrating = false }: { readOnly?: boolean; hy
         if (entry?.gate) return entry.gate.promise;
         return entry?.outcome ?? { ok: true };
       },
+      forkTurnForTab: async (tabId, target) => { calls.push(`fork:${tabId}:${target.turnId}`); return true; },
       refreshTabMetas: () => { calls.push("refresh-metas"); },
       undoRewindForTab: async () => { calls.push("undo"); return true; },
       sendToTab: async () => { calls.push("send"); },
@@ -103,5 +105,24 @@ try {
   assert.ok(calls.includes("detailed:A:0:conversation"), "allowed edit rewinds through the detailed backend");
   assert.ok(calls.includes("send"), "allowed edit resends the edited prompt after the conversation rewind");
 
-  console.log("session undo lifecycle: code transaction retention, banners, failed rewinds and edit gates passed");
+  const forkTarget: ForkTargetView = { sourceSessionId: "session-A", sessionGeneration: 1,
+    turnId: "turn-9", boundarySequence: 99, turnNumber: 9, status: "committed", available: true };
+  const forkTurn = async () => {
+    await act(async () => {
+      states.handleForkTurn(forkTarget);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  calls.length = 0;
+  await forkTurn();
+  assert.deepEqual(calls, ["fork:A:turn-9", "refresh-metas", "project"], "a turn fork creates the child from its turn identity and refreshes the tab list");
+
+  // A fork never writes into the source, so a read-only source still forks.
+  await paint({ readOnly: true });
+  calls.length = 0;
+  await forkTurn();
+  assert.ok(calls.includes("fork:A:turn-9"), "read-only sources fork: the child is written from the source, never into it");
+
+  console.log("session undo lifecycle: code transaction retention, banners, failed rewinds, edit gates and turn forks passed");
 } finally { dom.window.close(); }

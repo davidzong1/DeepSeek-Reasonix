@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/checkpoint"
@@ -28,16 +26,6 @@ import (
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
-
-// withSubagentSessionTemp installs a fresh session-private temporary directory
-// Manager for one sub-agent run. The returned release must be deferred by the
-// caller so the directory is retired when the run ends (including background
-// sub-agent completion).
-func withSubagentSessionTemp(ctx context.Context) (context.Context, func()) {
-	m := sessiontemp.New()
-	m.Retain()
-	return sessiontemp.WithManager(ctx, m), m.Release
-}
 
 // DefaultTaskSystemPrompt steers a sub-agent toward focused, terse delivery —
 // it doesn't see the parent's conversation so it must self-contain.
@@ -85,6 +73,9 @@ var subagentAlwaysHiddenTools = []string{
 	"set_session_title",
 	"install_skill",
 	"install_source",
+	// Kept in the parent registry only as a clear retirement tombstone for
+	// replayed/model-stale calls. New child contexts must never advertise it.
+	"complete_step",
 }
 
 var subagentJobTools = []string{
@@ -286,10 +277,7 @@ type TaskTool struct {
 	bashSandboxEnforced func() bool
 	// mutationObserver is shared with spawned sub-agents for checkpoint capture.
 	mutationObserver *checkpoint.MutationObserver
-	// recoveryGate is the shared Auto Guard boundary for
-	// this session (root + sub-agents). nil disables recovery in children.
-	recoveryGate RecoveryGate
-	writeRoots   *sandbox.WritableRootSet
+	writeRoots       *sandbox.WritableRootSet
 	// capabilityRuntime is the session-shared MCP Host/specs substrate. Each
 	// sub-agent gets its own use_capability frontend so ledger state stays
 	// isolated while connections reuse the parent Host.
@@ -999,7 +987,7 @@ func (t *TaskTool) prepareTranscriptRunWithPrompt(ctx context.Context, subReg *t
 }
 
 func childToolIdentityContext(ctx context.Context) context.Context {
-	ctx = tool.WithoutGoalTurnRecorder(ctx)
+	ctx = tool.WithoutGoalLifecycle(ctx)
 	ctx = memory.WithoutQueue(ctx)
 	ctx = jobs.WithoutManager(ctx)
 	return planmode.WithActive(ctx, PlanModeFromContext(ctx))
@@ -1054,7 +1042,7 @@ func FilterRegistry(parent *tool.Registry, names []string, exclude ...string) *t
 		src = expandToolPatterns(parent, src)
 	}
 	for _, name := range src {
-		if ex[name] {
+		if ex[name] || retiredTool(name) {
 			continue
 		}
 		// MCP never enters through the generic filter when named as capability
@@ -1134,7 +1122,7 @@ func (t *restrictedCapabilityProxy) check(args json.RawMessage) error {
 	if id == "" {
 		return fmt.Errorf("capability_id is required")
 	}
-	if id == sessionToolResultCapabilityID || id == sessionReadStrategyReceiptCapabilityID {
+	if id == sessionToolResultCapabilityID {
 		return nil
 	}
 	if !t.allowed[id] {
@@ -1381,7 +1369,7 @@ func ReadOnlySubagentToolRegistryForDepthWithRuntime(parent *tool.Registry, name
 		src = expandToolPatterns(parent, src)
 	}
 	for _, name := range src {
-		if ex[name] {
+		if ex[name] || retiredTool(name) {
 			continue
 		}
 		if strings.HasPrefix(name, "mcp-tool:") || strings.HasPrefix(name, "mcp-server:") {
@@ -1451,7 +1439,7 @@ func FilterReadOnlyRegistry(parent *tool.Registry, exclude ...string) *tool.Regi
 		return sub
 	}
 	for _, name := range parent.Names() {
-		if ex[name] {
+		if ex[name] || retiredTool(name) {
 			continue
 		}
 		tl, ok := parent.Get(name)
@@ -1515,7 +1503,6 @@ func subagentRecoveryTaskID(ctx context.Context, ref string) string {
 	return "subagent"
 }
 
-// WithRecoveryGate shares Auto Guard with spawned sub-agents.
 func (t *TaskTool) WithWriteRoots(set *sandbox.WritableRootSet) *TaskTool {
 	if t == nil {
 		return nil
@@ -1525,10 +1512,8 @@ func (t *TaskTool) WithWriteRoots(set *sandbox.WritableRootSet) *TaskTool {
 }
 
 func (t *TaskTool) WithRecoveryGate(g RecoveryGate) *TaskTool {
-	if t == nil {
-		return nil
-	}
-	t.recoveryGate = g
+	// Retired source-compatible option. Sub-agents inherit execution facts but
+	// never an Auto Guard admission policy.
 	return t
 }
 
@@ -1593,29 +1578,6 @@ func GuardSubagentHostDecisionText(answer string) string {
 	return tool.GuardSubagentHostDecisionText(answer)
 }
 
-// maxReviewReportNudges bounds the in-session completion nudges sent to a
-// review subagent that finished without submitting review_report. Each nudge is
-// one cheap continuation request on the same (cached) subagent session — far
-// cheaper than discarding the run and re-reviewing from scratch.
-// maxReviewReportNudges is the single in-session retry after the first failed
-// review run (plan: fail once, retry once). A second failure becomes Partial.
-const maxReviewReportNudges = 1
-
-// reviewReportTaskContract is appended to the task prompt of a review subagent
-// whose run must end with a typed report. The skill body describes how to
-// review; this states the non-negotiable submission protocol.
-func reviewReportTaskContract(kind evidence.ReviewKind) string {
-	return fmt.Sprintf(`<review-report-contract event="SubagentReviewReport">
-Before your final answer you MUST call the review_report tool exactly once with kind=%q, your verdict (pass | warn | block), reviewed_paths listing only files you actually read this run, and your findings. The host discards a review run that ends without a successful review_report call — your prose summary alone does not count.
-</review-report-contract>`, string(kind))
-}
-
-// reviewReportNudgePrompt asks an already-finished review subagent to submit
-// the missing typed report without redoing the review.
-func reviewReportNudgePrompt(kind evidence.ReviewKind) string {
-	return fmt.Sprintf("You finished the review without calling the review_report tool, so the host cannot accept the run yet. Do not redo the review. Call review_report now with kind=%q, your verdict (pass | warn | block), reviewed_paths listing only the files you actually read in this conversation, and the findings you already reported. Then restate your final verdict in one sentence.", string(kind))
-}
-
 // RunSubAgentWithSession continues an existing sub-agent session with prompt and
 // returns the latest final assistant answer. Fresh sub-agents pass a newly-created
 // session; continued sub-agents pass a loaded transcript session.
@@ -1629,7 +1591,7 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	}
 	ctx = WithoutTurnContextBundle(ctx)
 	// Isolate temporary files for this run before any tool execution.
-	ctx = tool.WithoutGoalTurnRecorder(ctx)
+	ctx = tool.WithoutGoalLifecycle(ctx)
 	if opts.MemoryQueue != nil {
 		ctx = memory.WithQueue(ctx, opts.MemoryQueue)
 	} else {
@@ -1657,52 +1619,16 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	if planWorkflow && !strings.Contains(prompt, planmode.Marker) {
 		prompt = planmode.Marker + "\n\n" + prompt
 	}
-	if kind := opts.RequireReviewReportKind; kind != "" {
-		prompt = prompt + "\n\n" + reviewReportTaskContract(kind)
-		opts.ContinuationPolicy = ContinuationExplicitFlow
-	}
+	opts.RequireReviewReportKind = ""
 	// Nested reasoning stays isolated; the parent consumes only final Content.
 	// Require it so a reasoning-only stop cannot fall back to older tool text.
 	opts.RequireVisibleFinal = true
 	sub := New(prov, reg, sess, opts, sink)
 	sub.SetPlanMode(planWorkflow)
 	if err := sub.Run(ctx, prompt); err != nil {
-		// Still merge any partial child evidence so parent gates see real writes.
+		// Preserve actual partial child execution even when the child fails.
 		mergeChildEvidence(ctx, sub)
-		if answer, ok := salvageReadinessExhaustedAnswer(sub, sess, opts, err); ok {
-			return composeSubagentAnswer(ctx, answer, sub, SubagentWriteClaim(ctx), opts.ClassifierTaskText), nil
-		}
 		return "", fmt.Errorf("sub-agent: %w", err)
-	}
-	// Review/security subagents must hand back a typed report the parent's
-	// delivery gate can verify; prose alone would leave the gate demanding a
-	// review forever with no way to tell why it never arrives. A run that
-	// finished without the report gets bounded completion nudges on the same
-	// session (evidence preserved, so review_report can still cite the reads it
-	// already earned) before the whole run is declared failed.
-	if kind := opts.RequireReviewReportKind; kind != "" {
-		nudges := 0
-		for !sub.HasSuccessfulReviewReport(kind) && nudges < maxReviewReportNudges {
-			nudges++
-			sub.pending.preserveEvidence = true
-			if err := sub.Run(ctx, reviewReportNudgePrompt(kind)); err != nil {
-				mergeChildEvidence(ctx, sub)
-				// A retry that fails still keeps local parent mutations; the
-				// parent turns this into Partial/Unverified rather than rolling back.
-				return "", fmt.Errorf("sub-agent: %w", err)
-			}
-		}
-		if !sub.HasSuccessfulReviewReport(kind) {
-			mergeChildEvidence(ctx, sub)
-			dumpRef := dumpFailedSubagentSession(opts.ArchiveDir, string(kind), sess)
-			// Partial path: local changes are retained; the parent readiness
-			// layer treats missing review as Partial/Unverified (not rollback).
-			return "", &ReviewUnavailableError{
-				Kind:   string(kind),
-				Nudges: nudges,
-				Dump:   dumpRef,
-			}
-		}
 	}
 	mergeChildEvidence(ctx, sub)
 	if answer := latestAssistantAnswer(sess); answer != "" {
@@ -1803,7 +1729,7 @@ func strictReadOnlyExecutionRegistry(reg *tool.Registry) *tool.Registry {
 	}
 	for _, name := range reg.Names() {
 		target, ok := reg.Get(name)
-		if !ok || !target.ReadOnly() || mcpDestructiveHint(target) {
+		if retiredTool(name) || !ok || !target.ReadOnly() || mcpDestructiveHint(target) {
 			continue
 		}
 		if isInstalledMCPTool(target) && !mcpServerAuthorized(target) {
@@ -1831,33 +1757,6 @@ func latestAssistantAnswer(sess *Session) string {
 		}
 	}
 	return ""
-}
-
-// dumpFailedSubagentSession best-effort persists a failed report-required
-// subagent transcript for post-hoc diagnosis (read-only skill subagents are
-// otherwise ephemeral, so a protocol failure leaves no trace). Returns a
-// human-readable suffix naming the dump, or "" when disabled/failed.
-func dumpFailedSubagentSession(archiveDir, kind string, sess *Session) string {
-	if strings.TrimSpace(archiveDir) == "" || sess == nil {
-		return ""
-	}
-	dir := filepath.Join(archiveDir, "subagent-report-failures")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
-	}
-	path := filepath.Join(dir, fmt.Sprintf("%s-%d.jsonl", kind, time.Now().UnixNano()))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	for _, m := range sess.Messages {
-		if err := enc.Encode(m); err != nil {
-			return ""
-		}
-	}
-	return "; transcript dumped to " + path
 }
 
 // mergeChildEvidence folds a sub-agent's real receipts into the parent ledger

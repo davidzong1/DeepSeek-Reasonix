@@ -66,8 +66,15 @@ func TestTeamRoleScopeMemberSeesOwnBaseAndSharedOnly(t *testing.T) {
 	if !ok || !strings.HasSuffix(base.Path, filepath.Join("team", "skills", "base", "member", "SKILL.md")) {
 		t.Fatalf("member skill must load the base/member playbook file, got %+v", base)
 	}
-	if strings.Contains(base.Body, "LDR-BASE") || !strings.Contains(base.Body, "MBR-BASE") {
-		t.Fatalf("member playbook body is wrong: %q", base.Body)
+	// List supplies catalog metadata; the body is read on demand (upstream moved
+	// eager body loading out of discovery), so assert it through the loader the
+	// role prompt actually uses.
+	loaded, ok := st.Read("member")
+	if !ok {
+		t.Fatal("member playbook must load by name")
+	}
+	if strings.Contains(loaded.Body, "LDR-BASE") || !strings.Contains(loaded.Body, "MBR-BASE") {
+		t.Fatalf("member playbook body is wrong: %q", loaded.Body)
 	}
 
 	slash := st.SlashList()

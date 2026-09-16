@@ -128,6 +128,7 @@ installDesktopHostStub(({
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       ReplayPendingPrompts: async () => {},
       ReportUIReady: async () => {},
     } as Partial<AppBindings> as AppBindings,

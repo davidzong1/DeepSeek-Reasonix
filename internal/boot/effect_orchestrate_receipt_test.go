@@ -44,9 +44,14 @@ type effectOrchestrateCapture struct {
 	audit    []event.CompletionReportAudit
 }
 
-// lastAudit is the turn's own completion report, content-free: a verdict, gap
+// lastAudit is the plan's own completion report, content-free: a verdict, gap
 // counts and gap kinds, no node bodies and no file contents.
 func (c effectOrchestrateCapture) lastAudit() (event.CompletionReportAudit, bool) {
+	for _, audit := range slices.Backward(c.audit) {
+		if audit.Gaps > 0 {
+			return audit, true
+		}
+	}
 	if len(c.audit) == 0 {
 		return event.CompletionReportAudit{}, false
 	}

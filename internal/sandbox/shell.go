@@ -56,8 +56,8 @@ type Shell struct {
 }
 
 // ResolveShell picks the interpreter the shell tool runs commands under. With
-// prefer "auto"/"" it favours a real bash so the model's POSIX habits work and
-// only falls back to PowerShell on Windows when bash is absent. prefer "bash" or
+// prefer "auto"/"" it favours Bash on POSIX and native PowerShell on Windows.
+// prefer "bash" or
 // "powershell"/"pwsh" forces that interpreter (path overrides the PATH lookup),
 // warning to warn and falling back to auto-detection if the forced one is
 // missing — so a typo or an uninstalled shell can never leave the tool broken.
@@ -66,6 +66,28 @@ type Shell struct {
 func ResolveShell(prefer, path string, warn io.Writer) Shell {
 	snap := defaultShellInventory.snapshot(runtime.GOOS, prefer, path)
 	return resolveShell(prefer, path, warn, snap.goos, snap.lookPath, snap.exists, snap.bashCands, snap.psCands, snap.probe, snap.isWSL)
+}
+
+// ResolveExplicitBash preserves the dialect of user-authored POSIX hooks.
+// Agent interpreter policy must not reinterpret an explicit hook command.
+func ResolveExplicitBash(path string) (Shell, bool) {
+	snap := defaultShellInventory.snapshot(runtime.GOOS, "bash", path)
+	return resolveExplicitBash(snap, path)
+}
+
+func resolveExplicitBash(snap *shellSnapshot, path string) (Shell, bool) {
+	path = configuredShellPath(snap.goos, ShellBash, path, snap.exists, snap.isWSL)
+	candidates := []string{path}
+	if found, err := snap.lookPath("bash"); err == nil {
+		candidates = append(candidates, found)
+	}
+	candidates = append(candidates, snap.bashCands...)
+	for _, candidate := range candidates {
+		if candidate != "" && !snap.isWSL(candidate) && snap.exists(candidate) && snap.probe(candidate) {
+			return Shell{Kind: ShellBash, Path: candidate}, true
+		}
+	}
+	return Shell{}, false
 }
 
 // resolveShell is ResolveShell with its environment lookups injected — including
@@ -115,6 +137,7 @@ func resolveShell(prefer, path string, warn io.Writer, goos string, lookPath fun
 		return Shell{}, false
 	}
 	auto := func() Shell { return autoDetectedShell(goos, findBash, findPOSIX, findPowerShell) }
+	prefer = effectiveShellPreference(goos, prefer, warn)
 
 	switch strings.ToLower(strings.TrimSpace(prefer)) {
 	case "", "auto":
@@ -151,17 +174,26 @@ func resolveShell(prefer, path string, warn io.Writer, goos string, lookPath fun
 	}
 }
 
-// autoShellWithConfiguredPath gives a compatible explicit Windows Bash path
-// priority over PATH while keeping resolveShell's decision table compact. Auto
-// accepts only well-known Bash names; arbitrary wrappers remain an explicit
-// opt-in through prefer="bash".
+func effectiveShellPreference(goos, prefer string, warn io.Writer) string {
+	legacy := goos == "windows" && strings.EqualFold(strings.TrimSpace(prefer), "bash")
+	if legacy && warn != nil {
+		fmt.Fprintln(warn, "Windows Agent now uses native PowerShell; the saved Bash preference is retained for older versions.")
+	}
+	if legacy {
+		return "auto"
+	}
+	return prefer
+}
+
+// Auto accepts native PowerShell paths on Windows. A persisted Git Bash path
+// cannot silently opt an auto-configured host back into the MSYS runtime.
 func autoShellWithConfiguredPath(goos, path string, exists, probe, isWSL func(string) bool, fallback func() Shell) Shell {
 	if goos == "windows" {
 		base := strings.TrimSuffix(strings.ToLower(pathBase(strings.TrimSpace(path))), ".exe")
-		if base == "bash" || base == "git-bash" {
-			configured := configuredShellPath(goos, ShellBash, path, exists, isWSL)
-			if configured != "" && exists(configured) && probe(configured) {
-				return Shell{Kind: ShellBash, Path: configured}
+		if base == "pwsh" || base == "powershell" {
+			configured := configuredShellPath(goos, ShellPowerShell, path, exists, isWSL)
+			if configured != "" && exists(configured) {
+				return Shell{Kind: ShellPowerShell, Path: configured}
 			}
 		}
 	}
@@ -169,6 +201,14 @@ func autoShellWithConfiguredPath(goos, path string, exists, probe, isWSL func(st
 }
 
 func autoDetectedShell(goos string, findBash func() (Shell, bool), findPOSIX func(string, ShellKind) (Shell, bool), findPowerShell func([]string) (Shell, bool)) Shell {
+	if goos == "windows" {
+		if sh, ok := findPowerShell([]string{"pwsh", "powershell"}); ok {
+			return sh
+		}
+		// Keep the dialect native even when it is missing: launch preflight
+		// reports the missing dependency instead of silently selecting Bash.
+		return Shell{Kind: ShellPowerShell, Path: "pwsh"}
+	}
 	if sh, ok := findBash(); ok {
 		return sh
 	}
@@ -180,11 +220,6 @@ func autoDetectedShell(goos string, findBash func() (Shell, bool), findPOSIX fun
 			if sh, ok := findPOSIX(fallback.name, fallback.kind); ok {
 				return sh
 			}
-		}
-	}
-	if goos == "windows" {
-		if sh, ok := findPowerShell([]string{"pwsh", "powershell"}); ok {
-			return sh
 		}
 	}
 	return Shell{Kind: ShellBash, Path: "bash"}

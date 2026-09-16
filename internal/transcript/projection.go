@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -25,11 +26,17 @@ type Identity struct {
 type ActiveAttempt struct {
 	ID        string `json:"id"`
 	MessageID string `json:"messageId"`
+	TurnID    string `json:"turnId"`
+	NextIndex uint64 `json:"nextIndex"`
 }
 
 // Runtime is reduced from the same ordered events as the visible records.
 // In particular it is never sampled independently after a history read.
 type Runtime struct {
+	FinalMessageID    string                       `json:"finalMessageId,omitempty"`
+	DurationMs        int64                        `json:"durationMs,omitempty"`
+	SamplingCount     int                          `json:"samplingCount"`
+	ToolCount         int                          `json:"toolCount"`
 	TurnID            string                       `json:"turnId,omitempty"`
 	SubmissionID      string                       `json:"submissionId,omitempty"`
 	Status            event.TurnStatus             `json:"status,omitempty"`
@@ -37,6 +44,7 @@ type Runtime struct {
 	StartedAt         int64                        `json:"startedAt,omitempty"`
 	PendingEvents     []eventwire.Event            `json:"pendingEvents"`
 	CompletionSummary *eventwire.CompletionSummary `json:"completionSummary,omitempty"`
+	TurnUsage         *TurnUsage                   `json:"turnUsage,omitempty"`
 }
 
 type Boundary struct {
@@ -45,6 +53,7 @@ type Boundary struct {
 	Identity           Identity `json:"identity"`
 	ProjectionRevision uint64   `json:"projectionRevision"`
 	CoveredThroughSeq  uint64   `json:"coveredThroughSeq"`
+	DurableSeq         uint64   `json:"durableSeq"`
 }
 
 // Projection has one commit boundary for rows, runtime and coverage. All
@@ -56,13 +65,22 @@ type Projection struct {
 	identity      Identity
 	revision      uint64
 	covered       uint64
+	durable       uint64
+	followers     map[string]*follower
+	results       map[string]uint64
 	buffer        Buffer
 	runtime       Runtime
+	startedTurnID string
 	attempts      map[string]ActiveAttempt
+	toolCalls     map[string]bool
 	prompts       map[string]eventwire.Event
 	snapshots     map[string]frozenSnapshot
 	snapshotOrder []string
 	snapshotBytes int
+	// outline is the complete turn index of a frozen cut. It is built by
+	// freezeLocked and read only from frozen cuts, so it always describes the
+	// same revision as the records paged beside it.
+	outline []OutlineEntry
 }
 
 func NewProjection(identity Identity, baseline []Message, covered uint64) (*Projection, error) {
@@ -127,6 +145,28 @@ func (p *Projection) Apply(envelope turnevent.Envelope) error {
 	if envelope.Sequence != p.covered+1 {
 		return errors.New("transcript projection sequence gap")
 	}
+	return p.applyLocked(envelope, envelope.Sequence)
+}
+
+// ApplyFrame uses an independent display revision. The caller supplies the
+// business cut; a token, phase or usage notification cannot allocate log sequence.
+func (p *Projection) ApplyFrame(envelope turnevent.Envelope, covered uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if (envelope.SessionID != "" && envelope.SessionID != p.identity.SessionID) || (envelope.RuntimeEpoch != "" && envelope.RuntimeEpoch != p.identity.RuntimeEpoch) {
+		return errors.New("transcript event identity mismatch")
+	}
+	if covered < p.covered {
+		return errors.New("transcript business coverage regression")
+	}
+	if err := p.applyLocked(envelope, covered); err != nil {
+		return err
+	}
+	p.trimSettledLocked()
+	return nil
+}
+
+func (p *Projection) applyLocked(envelope turnevent.Envelope, covered uint64) error {
 	// Detach pointer payloads before retaining them. Event publication cannot
 	// mutate a previously committed snapshot through an aliased tool slice.
 	encoded, err := json.Marshal(envelope)
@@ -151,52 +191,68 @@ func (p *Projection) Apply(envelope turnevent.Envelope) error {
 			}
 		}
 	}
+	p.applyRuntimeLocked(owned)
 	w := owned.Event
-	previousTurn := p.runtime.TurnID
-	p.runtime.TurnID, p.runtime.Status = owned.TurnID, owned.Status
-	p.runtime.SubmissionID = owned.SubmissionID
-	switch owned.Kind {
-	case "turn_started":
-		p.retireRecoveryNotices()
-		if previousTurn != owned.TurnID || p.runtime.StartedAt == 0 {
-			p.runtime.StartedAt = owned.CreatedAt
-		}
-		p.runtime.Phase = ""
-		p.runtime.CompletionSummary = nil
-		p.buffer.completion = nil
-	case "turn_phase":
-		p.runtime.Phase = w.Phase
-	case "completion_summary":
-		p.runtime.CompletionSummary = w.Completion
-	case "stream_attempt":
-		if w.StreamAttempt != nil {
-			if w.StreamAttempt.Action == "begin" {
-				p.attempts[w.StreamAttempt.ID] = ActiveAttempt{ID: w.StreamAttempt.ID, MessageID: w.MessageID}
-			} else {
-				delete(p.attempts, w.StreamAttempt.ID)
-			}
-		}
-	case "ask_request", "approval_request", "mcp_interaction":
-		id := w.PromptID
-		if id == "" {
-			id = owned.ItemID
-		}
-		if id != "" {
-			p.prompts[id] = w
-		}
-	case "prompt_answered":
-		delete(p.prompts, owned.ItemID)
-	case "turn_done":
-		clear(p.prompts)
-		clear(p.attempts)
-		if owned.TranscriptDigest != "" {
-			p.identity.HeadID = owned.HeadID
-			p.identity.RewriteEpoch = owned.RewriteEpoch
+	p.covered = covered
+	p.revision++
+	// Legacy ledger numbering is never a chat coverage cursor.
+	w.Sequence = 0
+	state := p.runtime
+	change := Change{Event: &w, Runtime: &state}
+	if owned.Kind == "text" || owned.Kind == "reasoning" || owned.Kind == "tool_call_delta" || (owned.Kind == "tool_dispatch" && w.Tool != nil && w.Tool.Partial) {
+		if attempt, ok := p.attempts[w.AttemptID]; ok {
+			change.AttemptID, change.Index = attempt.ID, attempt.NextIndex
+			attempt.NextIndex++
+			p.attempts[attempt.ID] = attempt
 		}
 	}
-	p.covered = owned.Sequence
-	p.revision++
+	if owned.Kind == "stream_attempt" && w.StreamAttempt != nil && w.StreamAttempt.Action == "commit" {
+		change.AttemptID, change.ResultSeq = w.StreamAttempt.ID, p.results[w.MessageID]
+		change.ResultKind = "message/complete"
+		if w.StreamAttempt.Reason == "interrupted" {
+			change.ResultKind = "message/interrupted"
+		}
+		change.ResetRequired = change.ResultSeq == 0
+	}
+	p.publishChangeLocked(change)
 	return nil
+}
+
+func mergeTurnUsage(current *TurnUsage, usage *eventwire.Usage) *TurnUsage {
+	if usage == nil {
+		return current
+	}
+	if current == nil {
+		zero := 0
+		current = &TurnUsage{CacheReadTokens: &zero, ReasoningTokens: &zero}
+	}
+	current.UncachedInputTokens += usage.CacheMissTokens
+	if usage.CacheMissTokens == 0 && usage.CacheHitTokens == 0 {
+		current.UncachedInputTokens += usage.PromptTokens
+	}
+	current.OutputTokens += usage.CompletionTokens
+	requestTotal := usage.TotalTokens
+	if requestTotal <= 0 {
+		requestTotal = usage.PromptTokens + usage.CompletionTokens
+	}
+	current.TotalTokens += requestTotal
+	cacheRead := valueOrZero(current.CacheReadTokens) + usage.CacheHitTokens
+	current.CacheReadTokens = &cacheRead
+	reasoning := valueOrZero(current.ReasoningTokens) + usage.ReasoningTokens
+	current.ReasoningTokens = &reasoning
+	if usage.CostQuote != nil && usage.CostQuote.ModelRef != "" {
+		if !slices.Contains(current.Routes, usage.CostQuote.ModelRef) {
+			current.Routes = append(current.Routes, usage.CostQuote.ModelRef)
+		}
+	}
+	return current
+}
+
+func valueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // SetRuntimeEpoch is called only by the controller's idle routing boundary.
@@ -208,13 +264,21 @@ func (p *Projection) SetRuntimeEpoch(epoch string) {
 		p.identity.RuntimeEpoch = epoch
 		p.incarnation = rand.Text()
 		p.revision++
+		for _, f := range p.followers {
+			f.reset = true
+			select {
+			case f.wake <- struct{}{}:
+			default:
+			}
+		}
+		clear(p.followers)
 	}
 }
 
 func (p *Projection) boundaryLocked() Boundary {
 	return Boundary{ProtocolVersion: ProtocolVersion,
 		SnapshotID: fmt.Sprintf("%s:%d", p.incarnation, p.revision),
-		Identity:   p.identity, ProjectionRevision: p.revision, CoveredThroughSeq: p.covered}
+		Identity:   p.identity, ProjectionRevision: p.revision, CoveredThroughSeq: p.covered, DurableSeq: p.durable}
 }
 
 func (p *Projection) Boundary() Boundary {
@@ -240,4 +304,73 @@ func (p *Projection) runtimeLocked() (Runtime, []ActiveAttempt) {
 	}
 	sort.Slice(attempts, func(i, j int) bool { return attempts[i].ID < attempts[j].ID })
 	return runtime, attempts
+}
+
+func (p *Projection) applyRuntimeLocked(owned turnevent.Envelope) {
+	w := owned.Event
+	if owned.TurnID != "" {
+		p.runtime.TurnID, p.runtime.Status = owned.TurnID, owned.Status
+		p.runtime.SubmissionID = owned.SubmissionID
+	}
+	switch owned.Kind {
+	case "turn_started":
+		p.runtime.FinalMessageID, p.runtime.DurationMs = "", 0
+		p.runtime.SamplingCount, p.runtime.ToolCount = 0, 0
+		p.toolCalls = make(map[string]bool)
+		p.retireRecoveryNotices()
+		if p.startedTurnID != owned.TurnID || p.runtime.StartedAt == 0 {
+			p.runtime.StartedAt = owned.CreatedAt
+			p.startedTurnID = owned.TurnID
+		}
+		p.runtime.Phase = ""
+		p.runtime.CompletionSummary = nil
+		p.runtime.TurnUsage = nil
+		p.buffer.completion = nil
+	case "usage":
+		p.runtime.TurnUsage = mergeTurnUsage(p.runtime.TurnUsage, w.Usage)
+	case "turn_phase":
+		p.runtime.Phase = w.Phase
+	case "completion_summary":
+		p.runtime.CompletionSummary = w.Completion
+	case "stream_attempt":
+		if w.StreamAttempt != nil {
+			if w.StreamAttempt.Action == "begin" {
+				p.runtime.SamplingCount++
+				p.attempts[w.StreamAttempt.ID] = ActiveAttempt{ID: w.StreamAttempt.ID, MessageID: w.MessageID, TurnID: owned.TurnID}
+			} else {
+				delete(p.attempts, w.StreamAttempt.ID)
+			}
+		}
+	case "tool_dispatch":
+		if w.Tool != nil && w.Tool.ID != "" && !p.toolCalls[w.Tool.ID] {
+			if p.toolCalls == nil {
+				p.toolCalls = make(map[string]bool)
+			}
+			p.toolCalls[w.Tool.ID] = true
+			p.runtime.ToolCount++
+		}
+	case "ask_request", "approval_request", "mcp_interaction":
+		id := w.PromptID
+		if id == "" {
+			id = owned.ItemID
+		}
+		if id != "" {
+			p.prompts[id] = w
+		}
+	case "prompt_answered":
+		delete(p.prompts, owned.ItemID)
+	case "turn_done":
+		durationMs := int64(0)
+		if p.runtime.StartedAt > 0 && owned.CreatedAt >= p.runtime.StartedAt {
+			durationMs = owned.CreatedAt - p.runtime.StartedAt
+		}
+		p.runtime.DurationMs = durationMs
+		p.buffer.attachTurnStats(owned.TurnID, p.runtime.TurnUsage, durationMs, owned.CreatedAt, p.runtime.FinalMessageID)
+		clear(p.prompts)
+		clear(p.attempts)
+		if owned.TranscriptDigest != "" {
+			p.identity.HeadID = owned.HeadID
+			p.identity.RewriteEpoch = owned.RewriteEpoch
+		}
+	}
 }

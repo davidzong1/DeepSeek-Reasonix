@@ -162,12 +162,12 @@ const readinessState = reducer(readinessStarted, {
 const readinessNotice = readinessState.items[readinessState.items.length - 1];
 eq(readinessNotice.kind, "notice", "final readiness appends a notice");
 eq(readinessNotice.kind === "notice" && readinessNotice.level, "info", "final readiness uses informational severity");
-eq(readinessNotice.kind === "notice" && readinessNotice.variant, "delivery", "final readiness uses the delivery status treatment");
-eq(readinessNotice.kind === "notice" && readinessNotice.title, "Delivery checks are not complete", "final readiness uses the explicit Delivery recovery title");
+eq(readinessNotice.kind === "notice" && readinessNotice.variant, "delivery", "final readiness keeps the compatibility notice variant");
+eq(readinessNotice.kind === "notice" && readinessNotice.title, "Checks are not complete", "final readiness uses the generic recovery title");
 eq(
   readinessNotice.kind === "notice" && readinessNotice.text,
-  "The response was generated, but verification and review still need to be completed.",
-  "final readiness explains the explicit Delivery recovery boundary",
+  "The response was generated, but required verification or review is still incomplete.",
+  "final readiness explains the recovery boundary",
 );
 eq(readinessNotice.kind === "notice" && readinessNotice.detail, "Still needed: verification, change review", "structured requirements produce localized detail");
 eq(readinessNotice.kind === "notice" && readinessNotice.action, "continue_delivery", "final readiness offers a recovery action");
@@ -273,7 +273,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../AppRuntime.tsx"), "utf8");
 const sessionCompositionSource = readFileSync(resolve(here, "../app-runtime/useAppSessionComposition.ts"), "utf8");
 const typesSource = readFileSync(resolve(here, "../lib/types.ts"), "utf8");
-const controllerSource = readFileSync(resolve(here, "../lib/useController.ts"), "utf8");
+const controllerSource = readFileSync(resolve(here, "../lib/useController.ts"), "utf8") + readFileSync(resolve(here, "../lib/useGoalControllerActions.ts"), "utf8");
 eq(typesSource.includes('"mcp_surface_ready"'), true, "TypeScript EventKind declares mcp_surface_ready");
 eq(controllerSource.includes('e.kind === "mcp_surface_ready"'), true, "reducer handles mcp_surface_ready before optimistic confirmation");
 {

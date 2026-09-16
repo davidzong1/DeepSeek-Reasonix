@@ -2,13 +2,17 @@
 
 [简体中文](COMPOSER_CONTROLS.zh-CN.md)
 
-Use the **+** menu to attach content or enable Plan, Goal, or Delivery mode.
-Normal execution and Standard delivery are the defaults. Active modes appear
-as removable chips; removing Delivery restores Standard without changing Plan
-or Goal. Approval policy remains a separate Ask/Auto/Yolo menu. Model and
+Use the **+** menu to attach content or enable Plan or Goal mode. Reasonix uses
+one standard execution behavior; there is no delivery-quality selector or
+mode chip. Permission remains a separate Read only/Workspace write/Full access menu. Model and
 reasoning effort have independent selectors; unsupported models hide effort.
 The status bar no longer repeats the model name. Its turn cost uses two decimal
 places; detailed cost values retain their existing precision.
+
+An active Goal can be edited from the **+** menu without replacing its identity
+or resetting admitted rounds. The optional maximum-round field is blank for
+unlimited execution. The same menu remains available during an automatic Goal
+round so the user can pause immediately.
 
 The context ring opens usage details. **Turn time** excludes waits on the user,
 whether an approval, an answer, or an MCP interaction, and stops at the

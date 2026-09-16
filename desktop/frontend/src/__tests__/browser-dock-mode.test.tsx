@@ -44,7 +44,7 @@ const electron: ReasonixDesktopHost = {
 const modes: RightDockMode[] = [];
 const picks: string[] = [];
 const props = (mode: RightDockMode): WorkspaceDockRegionProps => ({
-  visible: true, overlay: false, mode, creation: false, showContext: true,
+  visible: true, overlay: false, mode, showContext: true,
   t: ((key: string) => key) as Translator,
   onPickEntry: (entryId: string) => { picks.push(entryId); },
   remote: {} as WorkspaceDockRegionProps["remote"], context: {} as WorkspaceDockRegionProps["context"],

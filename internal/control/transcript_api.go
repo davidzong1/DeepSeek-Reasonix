@@ -1,8 +1,11 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"reasonix/internal/session"
+	"time"
 
 	"reasonix/internal/transcript"
 	"reasonix/internal/turnevent"
@@ -27,6 +30,75 @@ type TranscriptProjectionAPI interface {
 }
 
 var _ TranscriptProjectionAPI = (*Controller)(nil)
+
+type TranscriptFollowAPI interface {
+	TranscriptFollow(context.Context, transcript.FollowRequest) (TranscriptFollowResponse, error)
+}
+
+type TranscriptFollowResponse struct {
+	transcript.FollowResponse
+	History *session.HistoryWindowPage `json:"history,omitempty"`
+}
+
+func (c *Controller) TranscriptFollow(ctx context.Context, req transcript.FollowRequest) (TranscriptFollowResponse, error) {
+	service, runtime, exclusive := c.v3Binding()
+	if !exclusive || runtime == nil {
+		return TranscriptFollowResponse{}, ErrTranscriptProjectionUnavailable
+	}
+	view, err := runtime.FollowTranscript(ctx, req)
+	out := TranscriptFollowResponse{FollowResponse: view}
+	if err != nil || view.Snapshot == nil {
+		return out, err
+	}
+	// Make the frozen cut pageable even when accepted batches exceed the tail.
+	// The registered subscription queues concurrent commits during flush/read;
+	// no publisher lock is held.
+	cut := view.Snapshot.CoveredThroughSeq
+	if view.Snapshot.DurableSeq < cut {
+		receipt, flushErr := runtime.Session().Flush(ctx)
+		if flushErr != nil || receipt.DurableSequence < cut {
+			_, _ = runtime.Transcript().Follow(context.Background(), transcript.FollowRequest{Subscription: view.Subscription, Close: true})
+			if flushErr == nil {
+				flushErr = errors.New("transcript snapshot persistence is incomplete")
+			}
+			return out, flushErr
+		}
+		// Publish the new watermark in order, after already queued frames. Do
+		// not attach it to the older frozen view and then replay older watermarks.
+		runtime.Transcript().SetDurableSequence(receipt.DurableSequence)
+	}
+	var page session.HistoryWindowPage
+	for {
+		page, err = service.Query().ReadHistoryWindow(ctx, runtime.Ref(), session.HistoryWindowRequest{Anchor: "newest", Limit: 32, SnapshotSequence: &cut})
+		if err != nil || page.Status != "preparing" {
+			break
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			err = ctx.Err()
+		case <-timer.C:
+		}
+		if err != nil {
+			break
+		}
+	}
+	if err != nil {
+		_, _ = runtime.Transcript().Follow(context.Background(), transcript.FollowRequest{Subscription: view.Subscription, Close: true})
+	}
+	out.History = &page
+	return out, err
+}
+
+// TranscriptOutlineAPI is an optional capability beside TranscriptProjectionAPI.
+// It is deliberately separate so an existing controller implementation keeps
+// compiling and a client can negotiate the outline independently of the body.
+type TranscriptOutlineAPI interface {
+	TranscriptOutline(transcript.OutlineRequest) (transcript.OutlinePage, error)
+}
+
+var _ TranscriptOutlineAPI = (*Controller)(nil)
 
 // SetTurnSubmissionID is called under the transport's admission boundary.
 func (c *Controller) SetTurnSubmissionID(submissionID string) {
@@ -54,6 +126,9 @@ func (c *Controller) BindTranscriptRuntimeEpoch(epoch string) {
 }
 
 func (c *Controller) transcriptProjection() (*transcript.Projection, error) {
+	if _, runtime, exclusive := c.v3Binding(); exclusive && runtime != nil {
+		return runtime.Transcript(), nil
+	}
 	c.turnEvents.mu.RLock()
 	defer c.turnEvents.mu.RUnlock()
 	if c.turnEvents.err != nil {
@@ -74,6 +149,16 @@ func (c *Controller) TranscriptSnapshot(req transcript.PageRequest) (transcript.
 		return transcript.Snapshot{}, err
 	}
 	return p.Snapshot(req)
+}
+
+// TranscriptOutline pages the complete turn index of one snapshot. It reads the
+// same projection the body pages do, so both describe one immutable cut.
+func (c *Controller) TranscriptOutline(req transcript.OutlineRequest) (transcript.OutlinePage, error) {
+	p, err := c.transcriptProjection()
+	if err != nil {
+		return transcript.OutlinePage{}, err
+	}
+	return p.Outline(req)
 }
 
 func (c *Controller) TranscriptContent(req transcript.ContentRequest) (transcript.ContentChunk, error) {
@@ -105,6 +190,9 @@ func (c *Controller) TranscriptReplay(req TranscriptReplayRequest) (TranscriptRe
 }
 
 func (c *Controller) transcriptReplay(req TranscriptReplayRequest) (TranscriptReplay, error) {
+	if _, runtime, exclusive := c.v3Binding(); exclusive && runtime != nil {
+		return TranscriptReplay{}, errors.New("transcript v2 requires Follow; legacy replay is unavailable")
+	}
 	c.turnEvents.commitMu.Lock()
 	defer c.turnEvents.commitMu.Unlock()
 	p, err := c.transcriptProjection()

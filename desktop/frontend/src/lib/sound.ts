@@ -222,14 +222,19 @@ export function playAttentionChime(): void {
 export type AttentionChimeEvent = {
   kind?: string;
   tabId?: string;
-  approval?: { id?: string };
-  ask?: { id?: string };
+  turnId?: string;
+  approval?: { id?: string; turnId?: string };
+  ask?: { id?: string; turnId?: string };
 };
 
 export function attentionChimeEventKey(event: AttentionChimeEvent): string | undefined {
-  if (event.kind === "approval_request" && event.approval?.id) return `approval:${event.tabId ?? ""}:${event.approval.id}`;
-  if (event.kind === "ask_request" && event.ask?.id) return `ask:${event.tabId ?? ""}:${event.ask.id}`;
-  return undefined;
+  const kind = event.kind === "approval_request" ? "approval" : event.kind === "ask_request" ? "ask" : undefined;
+  const prompt = kind === "approval" ? event.approval : kind === "ask" ? event.ask : undefined;
+  if (!kind || !prompt?.id) return undefined;
+  // Turn ids are globally unique and survive detach/reattach. Tab ids and
+  // desktop runtime epochs are view bindings and can change during replay.
+  const turnId = prompt.turnId || event.turnId;
+  return turnId ? `turn:${JSON.stringify([kind, turnId, prompt.id])}` : `${kind}:${event.tabId ?? ""}:${prompt.id}`;
 }
 
 // attentionChimeSeenCap bounds the dedupe set. Prompt ids are unique per
@@ -241,14 +246,11 @@ const attentionChimeSeenCap = 512;
 // clearAttentionChimeKeys drops dedupe keys after a runtime rebuild. Approval
 // and ask ids are per-controller counters starting at "1", so a rebuilt
 // controller (model/effort/settings switch) reissues ids an earlier prompt on
-// the same tab already used — without this, the first prompt after a rebuild
-// is misread as a replay and stays silent. A ready event without a tab id
-// (settings rebuilds emit tab-less ready) clears everything: over-clearing
-// only re-chimes a replayed pending prompt, which is a desirable reminder,
-// while under-clearing mutes a live prompt.
+// the same tab already used. Only legacy tab-scoped keys need resetting;
+// turn-scoped identities must survive ready/rebuilt fences during reattach.
 export function clearAttentionChimeKeys(seen: Set<string>, tabId?: string): void {
   if (tabId === undefined || tabId === "") {
-    seen.clear();
+    for (const key of seen) if (!key.startsWith("turn:")) seen.delete(key);
     return;
   }
   for (const key of [...seen]) {

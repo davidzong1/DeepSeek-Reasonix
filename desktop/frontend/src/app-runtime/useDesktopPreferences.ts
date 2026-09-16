@@ -9,7 +9,7 @@ import { hydrateReasoningDisplayMode, setReasoningDisplayPending } from "../lib/
 import { hydrateSessionExperience } from "../lib/sessionExperience";
 import type { BotRuntimeStatusView } from "../lib/types";
 import { app } from "../lib/bridge";
-import { applyPreferencesAppearance, layoutStyleFromSnapshot, synchronizeDesktopPreferences, type DesktopPreferencesSnapshot } from "./desktopPreferencesAdapter";
+import { applyPreferencesAppearance, synchronizeDesktopPreferences, type DesktopPreferencesSnapshot } from "./desktopPreferencesAdapter";
 import { sidebarImConnectionsFromBot, sidebarImTopicSourcesFromBot } from "./sidebarImProjection";
 
 export function useDesktopPreferences() {
@@ -48,7 +48,6 @@ export function useDesktopPreferences() {
   const sidebarImConnections = useMemo(() => snapshot ? sidebarImConnectionsFromBot(snapshot.bot, t, botRuntime, nativeRuntime) : [], [snapshot, t, botRuntime, nativeRuntime]);
   const imTopicSources = useMemo(() => snapshot ? sidebarImTopicSourcesFromBot(snapshot.bot, t) : {}, [snapshot, t]);
   return {
-    desktopLayoutStyle: layoutStyleFromSnapshot(snapshot?.desktopLayoutStyle),
     startupUpdateChecksEnabled: snapshot ? snapshot.checkUpdates !== false : startupFailed ? true : null,
     statusBarStyle: snapshot?.statusBarStyle === "text" ? "text" as const : "icon" as const,
     statusBarItems: snapshot ? normalizeStatusBarItems(snapshot.statusBarItems) : DEFAULT_STATUS_BAR_ITEMS,

@@ -4,7 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reasonix/internal/agent"
+	"runtime"
+	"strings"
+	"time"
+
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
 	"reasonix/internal/command"
@@ -19,14 +27,6 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioninbox"
 	"reasonix/internal/skill"
-	"runtime"
-	"strings"
-	"time"
-
-	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
-	tea "charm.land/bubbletea/v2"
 )
 
 // chatTUI is a bubbletea Model that normally owns the terminal with an
@@ -34,7 +34,27 @@ import (
 // normal buffer and commits finalized output to native scrollback via
 // tea.Println so taps can still focus the soft keyboard.
 type chatTUI struct {
-	ctrl        control.SessionAPI
+	ctrl control.SessionAPI
+	// teamPick is the team roster overlay opened by the TEAM button (nil when closed).
+	teamPick *teamPicker
+
+	// teamBackends holds one assembled Agent backend per team member; binding a
+	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
+	teamBackends *teamBackends
+
+	// teamEscalations is the decider for a member's out-of-scope write: it queues
+	// the request for the leader agent and settles the blocked member. Window-
+	// scoped, because member backends outlive the overlay.
+	teamEscalations *writeAccessEscalations
+	memberEvents    chan memberEvent
+	// memberBackendBase yields the boot options a member backend inherits from
+	// this session's launch wiring; the member builder overrides model and sink.
+	memberBackendBase func() boot.Options
+
+	// ambient is the chat's own backend, saved when the window first binds a team
+	// member so leaving the team session hands the window back to it.
+	ambient control.SessionAPI
+
 	shutdownErr error // final save's failure; reported after terminal release
 	label       string
 	missing     string // missing-key warning surfaced once in the banner, "" when ready
@@ -104,6 +124,11 @@ type chatTUI struct {
 	// blocking the event loop.
 	balance string
 
+	// todos is copied only from a successful semantic todo result. The separate
+	// dismissal bit is a mounted-view preference and never changes host state.
+	// Both reset at the host's real turn_started boundary.
+	todos          []event.Todo
+	todosDismissed bool
 	// todoArgs is the latest todo_write call's raw args; it drives the task list
 	// pinned just above the input (see renderTodoPanel). "" when there's no list.
 	// Persists across turns until the work completes or a new session starts.
@@ -113,14 +138,14 @@ type chatTUI struct {
 	// marker rides in outgoing user messages so the cache-stable prompt prefix is
 	// left untouched.
 	planMode bool
+	// yoloRestoreToolApprovalMode remembers the safe permission preset that
+	// Ctrl+Y should restore after toggling the canonical danger-full-access
+	// preset under the user-facing YOLO label.
+	yoloRestoreToolApprovalMode string
 	// legacyScrollClear keeps the per-offset ClearScreen workaround only for Warp.
 	legacyScrollClear bool
 	// sessionSwitch suppresses that workaround during a transcript rebuild (#5441).
 	sessionSwitch bool
-	// yoloRestoreToolApprovalMode remembers the Ask/Auto base mode that Ctrl+Y
-	// should restore after a desktop-style YOLO toggle.
-	yoloRestoreToolApprovalMode string
-
 	// inboxSelectedID is the currently highlighted durable inbox item while
 	// browsing the queue in tuiRunning. Empty means "not browsing". Full bodies
 	// are never cached here — only the selected ID and the snapshot metadata.
@@ -313,23 +338,7 @@ type chatTUI struct {
 	// /provider. It never invokes a raw-mode prompt inside Bubble Tea.
 	quickPick *quickPicker
 	copyPick  *copyPicker
-	// teamPick is the team roster overlay opened by the TEAM button (nil when closed).
-	teamPick *teamPicker
-	// teamBackends holds one assembled Agent backend per team member; binding a
-	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
-	teamBackends *teamBackends
-	// teamEscalations is the decider for a member's out-of-scope write: it queues
-	// the request for the leader agent and settles the blocked member. Window-
-	// scoped, because member backends outlive the overlay.
-	teamEscalations *writeAccessEscalations
-	memberEvents    chan memberEvent
-	// memberBackendBase yields the boot options a member backend inherits from
-	// this session's launch wiring; the member builder overrides model and sink.
-	memberBackendBase func() boot.Options
-	// ambient is the chat's own backend, saved when the window first binds a team
-	// member so leaving the team session hands the window back to it.
-	ambient control.SessionAPI
-	lastEsc time.Time
+	lastEsc   time.Time
 
 	// mcp is the interactive "/mcp" manager overlay. mcpDisabled tracks servers
 	// turned off only for this chat session, matching the desktop connector
@@ -603,13 +612,15 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.FocusMsg:
-		// Terminal regained focus — ConPTY may have dropped mouse tracking (#7583); re-enable in Update.
+		// Terminal regained focus — ConPTY may have dropped mouse tracking
+		// while the pane was unfocused (#7583). Re-enable is issued from Update.
 		return m, nil
 
 	case tea.MouseWheelMsg:
 		if m.teamPick != nil && m.teamPick.handleWheel(msg.Button) {
 			return m, nil
-		} else if m.mouseOverComposer(msg.X, msg.Y) {
+		}
+		if m.mouseOverComposer(msg.X, msg.Y) {
 			delta := 0
 			switch msg.Button {
 			case tea.MouseWheelUp:
@@ -621,8 +632,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		// Outside the composer — or once its viewport has reached the requested
-		// edge — continue the gesture in the transcript: ordinary nested scroll.
+		// Outside the composer, or once its internal viewport has reached the
+		// requested edge, continue the gesture in the transcript. This mirrors
+		// ordinary nested-scroll behavior and avoids a dead wheel at boundaries.
 		switch msg.Button {
 		case tea.MouseWheelUp:
 			m.viewport.ScrollUp(3)
@@ -636,11 +648,31 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd, hit := m.teamStatusClick(msg); hit {
 			return m, cmd
 		}
-		if c, consumed := m.mouseCopyOrPaste(msg); consumed {
-			if c == nil {
+		// Match the complete terminal right-click convention while Reasonix owns
+		// the mouse: copy an active selection, otherwise paste clipboard text into
+		// the visible composer. Left-press begins a selection unless it lands on
+		// the transcript scrollbar or a shell-output hint line.
+		// Middle-click pastes tmux's current buffer when tmux owns the pane;
+		// otherwise it follows the X11/Wayland PRIMARY-selection convention.
+		if msg.Button == tea.MouseMiddle {
+			if m.hideComposer() {
 				return m, nil
 			}
-			cmds = append(cmds, c)
+			cmds = append(cmds, pasteMiddleClick())
+			return m, finalize(m, cmds)
+		}
+		if msg.Button == tea.MouseRight && m.validComposerSelection() && !m.composerSel.empty() {
+			cmds = append(cmds, m.copySelectionWithNotice(m.selectedComposerText()))
+			return m, finalize(m, cmds)
+		}
+		if msg.Button == tea.MouseRight && m.sel.active && !m.sel.empty() {
+			text := m.selectedText()
+			m.sel = selection{}
+			cmds = append(cmds, m.copySelectionWithNotice(text))
+			return m, finalize(m, cmds)
+		}
+		if msg.Button == tea.MouseRight && !m.hideComposer() {
+			cmds = append(cmds, pasteClipboardText())
 			return m, finalize(m, cmds)
 		}
 		if msg.Button == tea.MouseLeft {
@@ -1039,12 +1071,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pasteClipboardText())
 			return m, finalize(m, cmds)
 		}
-		// Shift+Tab encodings are recognized via modeToggleKey so both
-		// "shift+tab" and CSI-Z "backtab" stay covered by one helper (#6660).
-		if modeToggleKey(msg.String()) {
-			// Shift+Tab toggles Plan only. Tool approval stays on its own
-			// axis: Ask/Auto are explicit choices; YOLO is Ctrl+Y.
-			m.cycleMode()
+		// Mode shortcuts share one dispatcher so terminal-specific Shift+Tab
+		// encodings and Ctrl+Y stay consistent without duplicating state logic.
+		if m.handleModeShortcut(msg.String()) {
 			return m, nil
 		}
 		switch m.endSlashArgSnapshotForKey(msg.String()) {
@@ -1181,9 +1210,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notice(i18n.M.SlashClsDone)
 			}
 			return m, finalize(m, cmds)
-		case "ctrl+y", "super+y", "meta+y":
-			m.toggleYoloMode()
-			return m, nil
 		case "ctrl+o":
 			m.toggleVerboseReasoning(m.state != tuiRunning)
 			return m, finalize(m, cmds)
@@ -1425,7 +1451,17 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pre-switch snapshot, so the lease must follow it.
 			m.followSessionLease()
 		} else {
-			m.ctrl = msg.ctrl
+			if err := control.ActivateSessionAPIReplacement(msg.oldCtrl, msg.ctrl); err != nil {
+				if concrete, ok := msg.ctrl.(*control.Controller); ok {
+					concrete.ReleaseResources()
+				} else if msg.ctrl != nil {
+					msg.ctrl.Close()
+				}
+				m.notice("runtime activation: " + err.Error())
+				m.followSessionLease()
+				break
+			}
+			m.ctrl = activateGoalDriverAfterRebuild(msg.ctrl)
 			if m.takeover != nil {
 				m.takeover.AttachController(msg.ctrl)
 			}
@@ -1533,6 +1569,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clipboardTextPasteMsg:
 		return m.handleClipboardTextPaste(msg)
+
 	case memberEventMsg:
 		return m, m.handleMemberEvent(msg)
 	case teamRosterRefreshMsg:
@@ -1766,35 +1803,30 @@ func (m *chatTUI) beginToolRunning(id string) {
 }
 
 // handleApprovalKey resolves a pending approval from a keystroke and re-arms the
-// listener. 1/y/Enter allows once, 2/a allows for the rest of the session,
-// 3/p writes an "always allow" rule to the config file for ordinary tool
-// approvals. Fresh two-choice prompts use 2 for deny, while n/Esc and legacy 4
-// still deny. Plan prompts use 1 to execute, 2/n/Esc to keep planning, and 3 to
+// listener. 1/y/Enter allows once and 2/a allows the exact scope for the rest
+// of the session. Fresh two-choice prompts use 2 for deny, while n/Esc and
+// legacy 4 still deny. Plan prompts use 1 to execute, 2/n/Esc to keep planning, and 3 to
 // reject the pending plan and leave plan mode without executing it.
 // Ctrl-C cancels the whole turn via the run context. For a plan approval
 // (planApprovalTool), starting execution or explicitly exiting without execution
 // drops the local [plan] tag and turns plan mode off on the controller.
 func (m chatTUI) handleApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if isRecoveryApprovalEvent(m.pendingApproval) {
+		// Historical recovery requests are display-only. Escape and n dismiss the
+		// compatibility record locally; no recovery RPC or tool replay is issued.
+		if msg.String() == "esc" || strings.EqualFold(msg.String(), "n") {
+			m.pendingApproval = nil
+		}
+		return m, nil
+	}
 	choices := approvalChoices(m.pendingApproval)
 	answer := func(choice approvalChoice) (tea.Model, tea.Cmd) {
-		allow, session, persist := choice.allow, choice.allowForSession, choice.persistToConfig
-		if isRecoveryApprovalEvent(m.pendingApproval) {
-			action := agent.RecoveryActionRevise
-			if allow {
-				action = agent.RecoveryActionContinue
-				if session {
-					action = agent.RecoveryActionContinueTask
-				}
-			}
-			_ = m.ctrl.ResolveRecovery(m.pendingApproval.ID, action, "")
-			m.pendingApproval = nil
-			return m, nil
-		}
+		allow, session := choice.allow, choice.allowForSession
 		if m.pendingApproval.Tool == planApprovalTool && (allow || choice.exitPlan) {
 			m.planMode = false
 			m.ctrl.SetPlanMode(false)
 		}
-		m.ctrl.Approve(m.pendingApproval.ID, allow, session, persist)
+		m.ctrl.Approve(m.pendingApproval.ID, allow, session, false)
 		m.pendingApproval = nil
 		return m, nil
 	}
@@ -1843,13 +1875,7 @@ func (m chatTUI) handleApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a":
 		for _, choice := range choices {
-			if choice.allowForSession && !choice.persistToConfig {
-				return answer(choice)
-			}
-		}
-	case "p":
-		for _, choice := range choices {
-			if choice.persistToConfig {
+			if choice.allowForSession {
 				return answer(choice)
 			}
 		}
@@ -1864,7 +1890,11 @@ func (m chatTUI) View() tea.View {
 		v := tea.NewView(m.themeSweep.render())
 		if !m.nativeScrollback {
 			v.AltScreen = true
-			v.MouseMode = m.overlayMouseMode()
+			if m.mouseCaptureOff {
+				v.MouseMode = tea.MouseModeNone
+			} else {
+				v.MouseMode = tea.MouseModeCellMotion
+			}
 		}
 		return v
 	}
@@ -2003,7 +2033,14 @@ func (m chatTUI) View() tea.View {
 	}
 	v := tea.NewView(mainArea + "\n" + strings.Join(parts, "\n"))
 	v.AltScreen = true
-	v.MouseMode = m.overlayMouseMode()
+	if m.mouseCaptureOff || m.teamPick != nil {
+		// Release the mouse to the terminal: native click-drag selection and
+		// right-click context menu work again, at the cost of the in-app
+		// scrollbar, wheel-scroll, and drag-select while it's off.
+		v.MouseMode = tea.MouseModeNone
+	} else {
+		v.MouseMode = tea.MouseModeCellMotion // wheel targets the hovered scroll region; text selection is handled in-app
+	}
 	// Anchor the real terminal cursor at the textarea's insertion point only when
 	// the composer is visible. input.Cursor() is relative to the textarea; offset
 	// by the viewport height + rows above + the box's top border row (+1 column
@@ -2075,8 +2112,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.notice(i18n.M.SlashNewDone)
 	case "/clear":
 		m.echoLocalCommand(input)
-		if m.ctrl.ToolApprovalMode() == control.ToolApprovalYolo {
-			// YOLO is an explicit commitment to skip confirmations; /clear is
+		if m.ctrl.ToolApprovalMode() == control.ToolApprovalDangerFullAccess {
+			// Full access is an explicit commitment to skip ordinary confirmations; /clear is
 			// rarely mistyped and the damage is recoverable, so clear directly.
 			return m.clearContext()
 		} else {
@@ -2102,8 +2139,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.runRenameCommand(input)
 	case "/todo":
 		m.echoLocalCommand(input)
-		// Dismiss the pinned task list; a later todo_write brings it back.
-		m.todoArgs = ""
+		// Dismiss only this mounted view; a later committed write brings it back.
+		m.todosDismissed = true
 		m.notice(i18n.M.SlashTodoCleared)
 	case "/verbose":
 		m.toggleVerboseReasoning(true)
@@ -2243,7 +2280,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		if control.IsBuiltinDocsSlash(typedCmd, m.commands, m.skills) {
 			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
 			if query != "" {
-				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, m.injectTeamTurn(input)) })
+				return m.startControllerTurn(input, input, func() { m.ctrl.SubmitDisplay(input, input) })
 			}
 			m.echoLocalCommand(input)
 			text, err := control.DocsCommandOverviewFor(typedCmd)

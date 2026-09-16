@@ -27,14 +27,13 @@ const desktopStub = installDesktopHostStub(appStubTable);
 let current!: ReturnType<typeof useDesktopPreferences>;
 function Probe() { current = useDesktopPreferences(); return <div>{current.configLoadWarnings.join("|")}</div>; }
 const root = createRoot(document.getElementById("root")!);
-const snapshot = { sessionExperience: "deep", desktopLayoutStyle: "creation", desktopTheme: "light", desktopThemeStyle: "graphite",
+const snapshot = { sessionExperience: "deep", desktopTheme: "light", desktopThemeStyle: "graphite",
   desktopLanguage: "en", checkUpdates: true, configWarnings: ["warning"], configWarningsRevision: 3 } as DesktopStartupSettingsView;
 try {
   localStorage.setItem("reasonix-process-fold", "auto");
   await act(async () => root.render(<LocaleProvider><Probe /></LocaleProvider>));
   assert.equal(requests, 1);
   await act(async () => { resolveStartup(snapshot); await import("../lib/themeExperience"); });
-  assert.equal(current.desktopLayoutStyle, "creation");
   assert.equal(getSessionExperience(), "deep", "backend wins over an old localStorage mirror");
   assert.deepEqual(current.configLoadWarnings, ["warning"]);
   await act(async () => { desktopStub.emit("config:load-warnings", ["stale"], 2); });

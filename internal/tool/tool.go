@@ -113,11 +113,39 @@ type ImageTool interface {
 	ExecuteWithImages(ctx context.Context, args json.RawMessage) (text string, images []string, err error)
 }
 
+// PresentedFile is host-only metadata emitted by the built-in present tool.
+// Path is the exact stable resource reference recorded in the conversation; it
+// may be relative to the session workspace or an authorized absolute path.
+// File bytes never travel through this structure or provider requests.
+type PresentedFile struct {
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+}
+
+type presentedFilesCollectorKey struct{}
+
+// WithPresentedFilesCollector installs the per-call collector consumed by the
+// agent after a successful execution. Keeping this out of the model-visible
+// result lets presentation metadata share the tool-result commit boundary.
+func WithPresentedFilesCollector(ctx context.Context) (context.Context, func() []PresentedFile) {
+	var files []PresentedFile
+	ctx = context.WithValue(ctx, presentedFilesCollectorKey{}, &files)
+	return ctx, func() []PresentedFile { return append([]PresentedFile(nil), files...) }
+}
+
+// RecordPresentedFiles publishes a validated, successful present result to the
+// current call collector. It is intentionally a no-op outside an agent call.
+func RecordPresentedFiles(ctx context.Context, files []PresentedFile) {
+	target, _ := ctx.Value(presentedFilesCollectorKey{}).(*[]PresentedFile)
+	if target == nil {
+		return
+	}
+	*target = append((*target)[:0], files...)
+}
+
 // PlanModeClassifier is an optional capability a Tool may implement to declare
 // its stance on running during the planning phase. It is deliberately distinct
-// from ReadOnly(): a tool can be side-effect-free yet belong only to the
-// post-approval execution phase (complete_step reports ReadOnly()==true but must
-// not run while planning), or be a delegation that is safe only in a read-only
+// from ReadOnly(): a tool can be a delegation that is safe only in a read-only
 // variant (read_only_task). A false result is an explicit phase opt-out; tools
 // without this interface continue to the ordinary Permissions/Sandbox path.
 type PlanModeClassifier interface {
@@ -200,12 +228,6 @@ type readerExecutionIntentKey struct{}
 // drift returns a retryable error with zero execution.
 type nonDestructiveMCPExecutionIntentKey struct{}
 
-// planReplacementAuthorizationKey carries a one-call authorization from the
-// host's Auto plan gate. It lets todo_write replace the current in_progress
-// step after the plan transition has been reviewed, without weakening ordinary
-// todo continuity or exposing an authorization bit in the model-visible schema.
-type planReplacementAuthorizationKey struct{}
-
 // WithReaderExecutionIntent marks ctx as a reader-authorized MCP invocation.
 func WithReaderExecutionIntent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, readerExecutionIntentKey{}, true)
@@ -230,20 +252,6 @@ func WithNonDestructiveMCPExecutionIntent(ctx context.Context) context.Context {
 func HasNonDestructiveMCPExecutionIntent(ctx context.Context) bool {
 	intent, _ := ctx.Value(nonDestructiveMCPExecutionIntentKey{}).(bool)
 	return intent
-}
-
-// WithPlanReplacementAuthorization marks one reviewed todo_write invocation as
-// allowed to replace its current step. Callers must not reuse the returned
-// context for unrelated tool calls.
-func WithPlanReplacementAuthorization(ctx context.Context) context.Context {
-	return context.WithValue(ctx, planReplacementAuthorizationKey{}, true)
-}
-
-// HasPlanReplacementAuthorization reports whether the host approved replacing
-// the active step for this exact tool invocation.
-func HasPlanReplacementAuthorization(ctx context.Context) bool {
-	authorized, _ := ctx.Value(planReplacementAuthorizationKey{}).(bool)
-	return authorized
 }
 
 // SnipHint describes how context maintenance should shorten a stale, oversized
@@ -289,6 +297,9 @@ func RegisterBuiltin(t Tool) {
 func Builtins() []Tool {
 	names := make([]string, 0, len(builtins))
 	for n := range builtins {
+		if n == "complete_step" || n == "session_read_strategy_receipt" {
+			continue
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -301,6 +312,9 @@ func Builtins() []Tool {
 
 // LookupBuiltin returns a registered built-in by name.
 func LookupBuiltin(name string) (Tool, bool) {
+	if name == "complete_step" || name == "session_read_strategy_receipt" {
+		return nil, false
+	}
 	t, ok := builtins[name]
 	return t, ok
 }

@@ -57,13 +57,18 @@ interleavings with retirement, reconnect, host suspension and close.
 
 ## Independent memory screening
 
-The App memory workflow builds the requested clean commit once. Three isolated
-runner jobs download that same build; each starts a new Chromium process and
-executes 128 full, 128 windowed, 128 safety, and 512 mixed round trips. The
-aggregate requires all 2,688 trips, all checkpoints and heap snapshot metadata,
-three distinct shard identities, the same workflow attempt, source/build hashes,
-Node/platform/architecture, fixture configuration, and browser version. Missing,
-cancelled, mismatched, or failing shards cannot produce a passing final check.
+The App memory workflow builds the requested clean commit once. Ordinary frontend
+pull requests run one short process with 32 full, 32 windowed, 32 safety, and 128
+mixed round trips. App lifecycle, Transcript, navigation, subscription ownership,
+memory fixture and CI-routing changes run the full three-process protocol. Pushes
+to `main-v2`, daily schedules and manual dispatches also run the full protocol:
+each process executes 128 full, 128 windowed, 128 safety, and 512 mixed trips.
+
+The aggregate requires every checkpoint and heap snapshot, distinct shard
+identities, the same workflow attempt, source/build hashes, Node/platform/
+architecture, fixture configuration, browser version and declared profile.
+Missing, cancelled, mismatched, or failing shards cannot produce a passing final
+check. The result records `screeningLevel` so a short pass is not full qualification.
 
 The workflow runs for frontend changes and unknown paths. Known independent
 backend and documentation paths may skip this mock-frontend soak; existing

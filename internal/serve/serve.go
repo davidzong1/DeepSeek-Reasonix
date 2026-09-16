@@ -31,6 +31,8 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/session"
+	"reasonix/internal/sessiontitle"
 	"reasonix/internal/stats"
 	"reasonix/internal/store"
 )
@@ -46,14 +48,13 @@ var logoWordmarkSVG []byte
 type Server struct {
 	runtimeProjection serveRuntimeProjection
 	mu                sync.RWMutex // guards ctrl, which rebuild paths swap at runtime
-	// bindMu serializes every entry point that changes the active session
-	// path or controller generation — /resume, /new, /fork, switchModel, and
-	// extension reload. net/http runs handlers
-	// concurrently and serve serves multiple browser tabs, so without this
-	// two interleaved rebinds can leave the controller writing one session
-	// while the lease keeper guards another (the exact split this feature
-	// exists to prevent). It also keeps switchModel's Snapshot/Build/Close
-	// off s.mu, as the narrower switchMu did before it was widened.
+	// bindMu serializes every entry point that changes the active session path
+	// or controller generation — /resume, /new, /fork, switchModel, and extension
+	// reload — and fences the identity read of /fork-targets and /fork-session.
+	// Without it two interleaved rebinds can leave the controller writing one
+	// session while the lease keeper guards another (the exact split this feature
+	// exists to prevent). It also keeps switchModel's Snapshot/Build/Close off
+	// s.mu, as the narrower switchMu did before it was widened.
 	bindMu sync.Mutex
 	ctrl   control.SessionAPI
 	bc     *Broadcaster
@@ -285,7 +286,10 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 	// this session.
 	if prev, ok := cur.(*control.Controller); ok {
 		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-		newCtrl.InheritLifecycleFrom(prev)
+		if err := newCtrl.InheritLifecycleFrom(prev); err != nil {
+			s.closeTaggedController(newCtrl)
+			return fmt.Errorf("switch model: active Goal continuation must finish before rebuilding: %w", err)
+		}
 	}
 	// Persist before publishing the replacement. A failed write leaves cur and
 	// the on-disk transcript coherent and lets the caller retry; publishing first
@@ -333,6 +337,7 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 		s.closeTaggedController(newCtrl)
 		return fmt.Errorf("switch model: session changed during switch")
 	}
+	newCtrl.ActivateGoalDriverAfterRebuild()
 	tag.Activate()
 	s.refreshProviderSetup(currentModelRef(newCtrl))
 
@@ -399,6 +404,7 @@ func (s *Server) reloadExtensions(ctx context.Context) error {
 		s.closeTaggedController(newCtrl)
 		return fmt.Errorf("reload extensions: session changed during reload")
 	}
+	newCtrl.ActivateGoalDriverAfterRebuild()
 	if tag := s.tagFor(newCtrl); tag != nil {
 		tag.Activate()
 	}
@@ -572,6 +578,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /submit", s.submit)
 	s.registerInboxRoutes(mux)
 	mux.HandleFunc("POST /cancel", s.foregroundMutation(s.cancel))
+	mux.HandleFunc("POST /cancel-session", s.foregroundMutation(s.cancelSession))
 	mux.HandleFunc("POST /approve", s.foregroundMutation(s.approve))
 	mux.HandleFunc("POST /plan-decision", s.foregroundMutation(s.planDecision))
 	mux.HandleFunc("POST /plan", s.foregroundMutation(s.plan))
@@ -581,15 +588,21 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /clear", s.clearSession)
 	mux.HandleFunc("POST /rewind", s.rewind)
 	mux.HandleFunc("POST /fork", s.fork)
+	s.registerForkRoutes(mux)
 	mux.HandleFunc("POST /summarize", s.foregroundMutation(s.summarize))
 	mux.HandleFunc("POST /tool-approval-mode", s.foregroundMutation(s.toolApprovalMode))
+	mux.HandleFunc("GET /permission", s.permissionSnapshot)
+	mux.HandleFunc("POST /permission/preset", s.foregroundMutation(s.permissionPreset))
+	mux.HandleFunc("POST /permission/grants/revoke", s.foregroundMutation(s.permissionGrantRevoke))
 	mux.HandleFunc("POST /providers/reload", s.providersReload)
 	mux.HandleFunc("POST /browser/broker", s.browserBrokerRebind)
 	mux.HandleFunc("POST /auto-approve-tools", s.foregroundMutation(s.autoApproveTools))
 	mux.HandleFunc("POST /bypass", s.foregroundMutation(s.bypass))
 	mux.HandleFunc("POST /goal", s.foregroundMutation(s.goal))
+	mux.HandleFunc("POST /goal/edit", s.foregroundMutation(s.goalEdit))
 	mux.HandleFunc("POST /goal/pause", s.foregroundMutation(s.goalPause))
 	mux.HandleFunc("POST /goal/resume", s.foregroundMutation(s.goalResume))
+	mux.HandleFunc("GET /goal-diagnostics", s.goalDiagnostics)
 	mux.HandleFunc("POST /jobs/cancel", s.foregroundMutation(s.jobsCancel))
 	mux.HandleFunc("POST /answer", s.foregroundMutation(s.answer))
 	mux.HandleFunc("POST /mcp-interaction", s.foregroundMutation(s.mcpInteraction))
@@ -709,120 +722,56 @@ func (s *Server) logoWordmark(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(logoWordmarkSVG)
 }
 
-func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
-	body, trimmed, ok := decodeSubmitRequest(w, r)
-	if !ok {
-		return
-	}
-	// Session rotations must complete while bindMu is held. Controller.Submit
-	// dispatches these verbs asynchronously, which would let a following model,
-	// resume, or extension command cross the rotation generation boundary.
-	switch trimmed {
-	case "/new":
-		s.newSessionFromSubmit(w, r)
-		return
-	case "/clear":
-		s.clearSessionFromSubmit(w, r)
-		return
-	}
-	// Intercept /model <ref> for runtime model switching (the controller's
-	// Submit path only lists models — switching is frontend-specific).
-	if s.submitModelCommand(w, r, trimmed) {
-		return
-	}
-	// Intercept /effort <level> for reasoning effort switching.
-	if strings.HasPrefix(trimmed, "/effort ") {
-		level := strings.TrimSpace(strings.TrimPrefix(trimmed, "/effort"))
-		if level != "" {
-			if err := s.switchEffortExpected(r.Context(), level, r.Header.Get(expectedSessionPathHeader)); err != nil {
-				http.Error(w, err.Error(), runtimeSwitchErrorStatus(err))
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-	// Serialize turn admission with controller-generation rebuilds. Admission
-	// marks an ordinary turn running synchronously, so a reload that follows
-	// observes the busy state; a submit that follows a reload targets only the
-	// published replacement. This closes the check/build/swap race where a
-	// request could otherwise start on cur after reload's initial busy check.
-	s.bindMu.Lock()
-	if !s.admitModelSettingsRunLocked(w, r) {
-		s.bindMu.Unlock()
-		return
-	}
-	ctrl := s.ctl()
-	// Fix false 202 while a turn is active: SubmitHTTPFormat silently drops
-	// concurrent input. Clients must use POST /inbox/items for durable follow-up.
-	if ctrl.Running() {
-		s.bindMu.Unlock()
-		http.Error(w, "session is busy; use POST /inbox/items for durable follow-up", http.StatusConflict)
-		return
-	}
-	if body.Action == control.ProtocolRecoveryAction {
-		pending, ok := ctrl.(interface {
-			PendingProtocolRecovery() *provider.ProtocolRecoveryAction
-		})
-		var action *provider.ProtocolRecoveryAction
-		if ok {
-			action = pending.PendingProtocolRecovery()
-		}
-		if action == nil || action.ID != body.RecoveryID {
-			s.bindMu.Unlock()
-			http.Error(w, "protocol recovery is unavailable or stale", http.StatusConflict)
-			return
-		}
-	}
-	if routing, ok := ctrl.(interface{ SetTurnSubmissionID(string) }); ok {
-		routing.SetTurnSubmissionID(body.SubmissionID)
-	}
-	submitWithAction(ctrl, body.Input, body.Format, body.Action, body.RecoveryID)
-	if isServeManagementCommand(trimmed) && !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
-		// Management notices/status are successful non-turn operations.
-		s.bindMu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	// After synchronous admission, a successful start sets Running. A silent
-	// drop (rotating/closed) leaves Running false — return 409 instead of 202.
-	// Finishing-window park also leaves Running false briefly; prefer 202 only
-	// when Running or a pending prompt is observed, else durable-queue guidance.
-	if !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
-		s.bindMu.Unlock()
-		http.Error(w, "input was not admitted; session is rotating, closed, or finishing — use POST /inbox/items", http.StatusConflict)
-		return
-	}
-	s.bindMu.Unlock()
-	w.WriteHeader(http.StatusAccepted)
-}
-
 func (s *Server) cancel(w http.ResponseWriter, _ *http.Request) {
 	s.ctl().Cancel()
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) cancelSession(w http.ResponseWriter, _ *http.Request) {
+	ctrl := s.ctl()
+	receipt := control.CancelReceipt{SessionRef: ctrl.SessionPath(), HeadID: agent.BranchID(ctrl.SessionPath()), Accepted: true}
+	if cancellable, ok := ctrl.(interface{ CancelSession() control.CancelReceipt }); ok {
+		receipt = cancellable.CancelSession()
+	} else {
+		status := ctrl.RuntimeStatus()
+		receipt.AlreadyIdle = !status.Running && !status.PendingPrompt
+		ctrl.Cancel()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(receipt)
+}
+
 func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID      string `json:"id"`
-		Allow   bool   `json:"allow"`
-		Session bool   `json:"session"`
-		Persist bool   `json:"persist"`
+		ID                 string `json:"id"`
+		Allow              bool   `json:"allow"`
+		Session            bool   `json:"session"`
+		Persist            bool   `json:"persist"`
+		Generation         uint64 `json:"generation"`
+		PermissionRevision uint64 `json:"permissionRevision"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
+	if body.Persist {
+		http.Error(w, "permanent approval is no longer supported", http.StatusBadRequest)
+		return
+	}
 	scope := sandbox.ApprovalScopeOnce
 	if body.Allow {
-		switch {
-		case body.Persist:
-			scope = sandbox.ApprovalScopeProject
-		case body.Session:
+		if body.Session {
 			scope = sandbox.ApprovalScopeSession
 		}
 	}
-	if err := s.ctl().ResolveApproval(body.ID, body.Allow, scope); err != nil {
+	var err error
+	if ctrl, ok := s.ctl().(*control.Controller); ok && (body.Generation != 0 || body.PermissionRevision != 0) {
+		err = ctrl.ResolveApprovalAt(body.ID, body.Allow, scope, body.Generation, body.PermissionRevision)
+	} else {
+		err = s.ctl().ResolveApproval(body.ID, body.Allow, scope)
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -903,7 +852,7 @@ func corsMiddleware(next http.Handler, origin string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+expectedSessionPathHeader)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+expectedSessionPathHeader+", "+expectedSessionIDHeader)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -972,6 +921,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	if s.rejectMirroredForegroundLocked(w) {
 		return
 	}
+	sourcePath := s.ctl().SessionPath()
 	path, err := s.ctl().ForkNamed(body.Turn, body.Name)
 	if err != nil {
 		if control.IsSessionRotationBusy(err) {
@@ -985,6 +935,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		s.setControllerPath(ctrl, ctrl.SessionPath())
 	}
 	s.bc.ResetSessionPath(s.ctl().SessionPath())
+	s.cacheForkTitle(sourcePath, s.ctl().SessionPath())
 	// The controller switched to the fork (a fresh path); the lease follows it.
 	if err := s.rebindSessionLease(s.ctl().SessionPath()); err != nil {
 		http.Error(w, sessionInUseError(err), http.StatusConflict)
@@ -993,6 +944,43 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	// path is the session the controller is on now; branch is what the fork
 	// created: the same path for a file fork, a head id inside a schema-2 log.
 	writeJSON(w, map[string]string{"path": s.ctl().SessionPath(), "branch": path})
+}
+
+// cacheForkTitle gives a file-backed fork the same visible numbering as the
+// source conversation without introducing a title-generation request into the
+// fork transaction. If the source already has a generated title, reuse it;
+// otherwise use the same preview fallback shown by the session list.
+func (s *Server) cacheForkTitle(sourcePath, childPath string) {
+	if strings.TrimSpace(sourcePath) == "" || strings.TrimSpace(childPath) == "" || agent.CanonicalSessionPath(sourcePath) == agent.CanonicalSessionPath(childPath) {
+		return
+	}
+	sourceName := filepath.Base(sourcePath)
+	sourceFirst, sourceTurns, sourceCached := agent.SessionPreviewCached(sourcePath)
+	if !sourceCached {
+		sourceFirst, sourceTurns = agent.SessionPreview(sourcePath)
+	}
+	if sourceTurns == 0 {
+		return
+	}
+	sourceMod := agent.SessionContentModTime(sourcePath).UnixNano()
+	source := titleSource(sourceFirst)
+	sourceTitle, ok := s.titles.get(sourceName, source, sourceMod)
+	if !ok {
+		sourceTitle = previewTitle(source)
+	}
+	childTitle := sessiontitle.IncreaseFork(sourceTitle)
+	if childTitle == "" {
+		return
+	}
+	childName := filepath.Base(childPath)
+	childFirst, childTurns, childCached := agent.SessionPreviewCached(childPath)
+	if !childCached {
+		childFirst, childTurns = agent.SessionPreview(childPath)
+	}
+	if childTurns == 0 {
+		return
+	}
+	s.titles.put(childName, childTitle, titleSource(childFirst), agent.SessionContentModTime(childPath).UnixNano())
 }
 
 // summarize runs summarize-from or summarize-up-to on a turn.
@@ -1022,7 +1010,8 @@ func (s *Server) summarize(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// autoApproveTools toggles YOLO/full-access tool auto-approval.
+// autoApproveTools is a legacy compatibility endpoint. New clients set the
+// canonical permission preset through /permission-preset.
 func (s *Server) autoApproveTools(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		On bool `json:"on"`
@@ -1035,8 +1024,8 @@ func (s *Server) autoApproveTools(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// toolApprovalMode selects ask, auto, or yolo approval behavior for interactive
-// frontends. Plan remains a separate workflow governed by the selected mode.
+// toolApprovalMode selects the canonical permission preset for interactive
+// frontends. Legacy values are accepted only for conservative migration.
 func (s *Server) toolApprovalMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode string `json:"mode"`
@@ -1045,50 +1034,100 @@ func (s *Server) toolApprovalMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	switch strings.ToLower(strings.TrimSpace(body.Mode)) {
-	case control.ToolApprovalAsk, control.ToolApprovalAuto, control.ToolApprovalYolo:
-		s.ctl().SetToolApprovalMode(body.Mode)
+	raw := strings.ToLower(strings.TrimSpace(body.Mode))
+	switch raw {
+	case "read-only", "workspace-write", "danger-full-access", "ask", "auto", "yolo", "full", "full-access", "bypass":
+		s.ctl().SetToolApprovalMode(config.NormalizeToolApprovalMode(raw))
 	default:
-		http.Error(w, "mode must be ask, auto, or yolo", http.StatusBadRequest)
+		http.Error(w, "mode must be read-only, workspace-write, or danger-full-access", http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// bypass is the legacy HTTP endpoint for YOLO/full-access tool auto-approval.
-func (s *Server) bypass(w http.ResponseWriter, r *http.Request) {
-	s.autoApproveTools(w, r)
+func (s *Server) permissionSnapshot(w http.ResponseWriter, _ *http.Request) {
+	ctrl, ok := s.ctl().(*control.Controller)
+	if !ok {
+		http.Error(w, "permission snapshot is unavailable", http.StatusNotImplemented)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ctrl.PermissionSnapshot())
 }
 
-// goal sets or clears the active goal. An empty goal string clears it.
-// Setting a non-empty goal disables plan mode (matching the desktop behavior).
-func (s *Server) goal(w http.ResponseWriter, r *http.Request) {
+func (s *Server) permissionPreset(w http.ResponseWriter, r *http.Request) {
+	ctrl, ok := s.ctl().(*control.Controller)
+	if !ok {
+		http.Error(w, "permission presets are unavailable", http.StatusNotImplemented)
+		return
+	}
 	var body struct {
-		Goal string `json:"goal"`
+		Preset           string `json:"preset"`
+		ExpectedRevision uint64 `json:"expectedRevision"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	goal := strings.TrimSpace(body.Goal)
-	if goal == "" {
-		s.ctl().ClearGoal()
-		w.WriteHeader(http.StatusNoContent)
+	snapshot, drained, err := ctrl.SetPermissionPreset(body.Preset, body.ExpectedRevision)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "snapshot": snapshot})
 		return
 	}
-	// Disable plan mode before setting the goal, mirroring the desktop.
-	s.ctl().SetPlanMode(false)
-	s.ctl().SetGoal(goal)
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": snapshot, "resolvedApprovalIds": drained})
+}
+
+func (s *Server) permissionGrantRevoke(w http.ResponseWriter, r *http.Request) {
+	ctrl, ok := s.ctl().(*control.Controller)
+	if !ok {
+		http.Error(w, "permission grants are unavailable", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		Scope            string `json:"scope"`
+		Target           string `json:"target"`
+		ExpectedRevision uint64 `json:"expectedRevision"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	snapshot, err := ctrl.RevokeSessionGrant(body.Scope, body.Target, body.ExpectedRevision)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "snapshot": snapshot})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(snapshot)
+}
+
+// bypass is the legacy HTTP alias for autoApproveTools.
+func (s *Server) bypass(w http.ResponseWriter, r *http.Request) {
+	s.autoApproveTools(w, r)
 }
 
 // resume loads a previous session from a JSONL file.
 func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		HostID    string `json:"hostId"`
+		SessionID string `json:"sessionId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Path == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.SessionID) != "" {
+		s.resumeIdentitySession(w, r, body.HostID, body.SessionID)
+		return
+	}
+	if body.Path == "" {
+		http.Error(w, "missing path or sessionId", http.StatusBadRequest)
 		return
 	}
 	realPath, err := s.resolveSessionPath(body.Path)
@@ -1115,6 +1154,41 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	s.bindMu.Lock()
 	defer s.bindMu.Unlock()
 	s.resumeSession(w, r, realPath)
+}
+
+func (s *Server) resumeIdentitySession(w http.ResponseWriter, r *http.Request, hostID, sessionID string) {
+	s.bindMu.Lock()
+	defer s.bindMu.Unlock()
+	if !s.validateSwitchExpectedLocked(w, r) {
+		return
+	}
+	ctrl, ok := s.ctl().(*control.Controller)
+	if !ok || !ctrl.UsesExclusiveSession() {
+		http.Error(w, "session identity protocol is unavailable", http.StatusConflict)
+		return
+	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		http.Error(w, "cannot switch session while active work or background jobs are running", http.StatusConflict)
+		return
+	}
+	current, bound := ctrl.SessionRef()
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" && bound {
+		hostID = current.HostID
+	}
+	ref, err := ctrl.OpenSession(r.Context(), session.SessionRef{HostID: hostID, SessionID: strings.TrimSpace(sessionID)})
+	if err != nil {
+		http.Error(w, "open session: "+err.Error(), http.StatusConflict)
+		return
+	}
+	if s.leases != nil {
+		_ = s.leases.Rebind("")
+	}
+	s.setControllerPath(ctrl, "")
+	w.Header().Set(sessionIDHeader, ref.SessionID)
+	s.announceSessionChanged("", false)
+	w.WriteHeader(http.StatusNoContent)
+	s.replayPendingPromptsBroadcast()
 }
 
 // resolveSessionPathStatus keeps resume's historical status codes for the
@@ -1340,10 +1414,19 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"cacheHit":         hit,
 		"cacheMiss":        miss,
 	}
+	if reader, ok := ctrl.(control.RuntimeStateReader); ok {
+		sess["goalView"] = reader.RuntimeStateSnapshot().Goal
+	}
 	if ctrl.Goal() != "" {
 		sess["goalRuntime"] = ctrl.GoalRuntime()
 	}
 	sessionPath := strings.TrimSpace(ctrl.SessionPath())
+	if identity, ok := ctrl.(control.IdentityLifecycle); ok {
+		if ref, bound := identity.SessionRef(); bound {
+			sess["hostId"] = ref.HostID
+			sess["sessionId"] = ref.SessionID
+		}
+	}
 	if sessionPath != "" && store.IsSessionTranscriptName(filepath.Base(sessionPath)) {
 		sess["sessionName"] = strings.TrimSuffix(filepath.Base(sessionPath), ".jsonl")
 		sess["sessionPath"] = agent.CanonicalSessionPath(sessionPath)
@@ -1649,19 +1732,17 @@ func (s *Server) skills(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, out)
 }
 
-// todos returns the canonical task list (latest todo_write state merged with
-// complete_step advances) so the frontend can render a live task panel.
+// todos returns the host event projection. Empty is always [] and no legacy
+// presentation fields are synthesized from transcript tool cards.
 func (s *Server) todos(w http.ResponseWriter, _ *http.Request) {
 	type todoItem struct {
-		Content    string `json:"content"`
-		Status     string `json:"status"`
-		ActiveForm string `json:"activeForm,omitempty"`
-		Level      int    `json:"level,omitempty"`
+		Content string `json:"content"`
+		Status  string `json:"status"`
 	}
 	raw := s.ctl().Todos()
 	out := make([]todoItem, len(raw))
 	for i, t := range raw {
-		out[i] = todoItem{Content: t.Content, Status: t.Status, ActiveForm: t.ActiveForm, Level: t.Level}
+		out[i] = todoItem{Content: t.Content, Status: t.Status}
 	}
 	writeJSON(w, out)
 }

@@ -7,4 +7,4 @@ const files = readdirSync(directory, { recursive: true }).filter(file => path.ba
 const reports = files.map(file => JSON.parse(readFileSync(path.join(directory, file), "utf8")));
 const result = aggregateShards(reports, JSON.parse(readFileSync(manifestFile, "utf8")), sourceSHA);
 writeFileSync(output, JSON.stringify(result, null, 2));
-console.log("App memory: three independent 896-round-trip shards passed; heap attribution remains pending.");
+console.log(`App memory: ${result.screeningLevel} screening passed with ${result.protocol.shards} independent shard(s); heap attribution remains pending.`);

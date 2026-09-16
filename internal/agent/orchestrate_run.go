@@ -659,7 +659,7 @@ func (r *orchestrationRun) collect(cancelled bool) (OrchestrationResult, error) 
 	}
 	// Receipt honesty: the plan's verdict is the host's own completion report
 	// over the receipts the run produced, never the runner's bookkeeping.
-	result.Completion = completion.Build(nil, ledger)
+	result.Completion = orchestrationCompletion(ledger)
 	for _, node := range result.Nodes {
 		if node.State == NodeCancelled {
 			result.Cancelled = true

@@ -19,7 +19,8 @@ export function projectControllerProfiles(tabs: readonly TabMeta[], profiles: Re
   return [{ target: active.target, profile: runtimeProfile(active.profile), remote: active.remote },
     ...tabs.filter(tab => tab.id !== active.target.tabId).map(tab => ({
       target: { tabId: tab.id, sessionKey: sessionIdentityKey({ tabId: tab.id, sessionPath: tab.sessionPath,
-        sessionGeneration: tab.sessionGeneration, scope: tab.scope, workspaceRoot: tab.workspaceRoot, topicId: tab.topicId }) },
+        session: tab.session, sessionGeneration: tab.sessionGeneration,
+        scope: tab.scope, workspaceRoot: tab.workspaceRoot, topicId: tab.topicId }) },
       profile: runtimeProfile(profiles[tab.id] ?? composerProfileFromTab(tab)), remote: Boolean(tab.remote),
     }))];
 }

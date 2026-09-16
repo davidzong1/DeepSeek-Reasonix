@@ -23,7 +23,7 @@ function ok(condition: boolean, label: string) {
 
 console.log("\nsettings navigation contract");
 
-ok(panel.includes('["workbench", "creation"] as const'), "desktop settings expose only workbench and creation");
+ok(!panel.includes("settings.desktopLayoutStyle"), "desktop settings no longer offer a layout-style switch");
 ok(!panel.includes('["workbench", "classic", "creation"] as const'), "desktop settings no longer offer classic");
 ok(/useEffect\(\(\) => \{[\s\S]*?content\.scrollTop = 0;[\s\S]*?content\.scrollLeft = 0;[\s\S]*?\}, \[tab\]\);/.test(panel), "switching settings pages resets both content scroll axes");
 ok(navigation.includes('aria-current={activeTab === id ? "page" : undefined}'), "the active settings page is exposed semantically");

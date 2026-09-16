@@ -197,24 +197,6 @@ func mustGetwd(t *testing.T) string {
 	return cwd
 }
 
-func isolateCLIConfigHome(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// Keep tests on the default-path code path while preventing a caller's
-	// higher-priority REASONIX_HOME from escaping this temporary home.
-	t.Setenv("REASONIX_HOME", "")
-	if err := os.Unsetenv("REASONIX_HOME"); err != nil {
-		t.Fatalf("unset REASONIX_HOME: %v", err)
-	}
-	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
-	t.Chdir(t.TempDir())
-	return home
-}
-
 func TestIsolateCLIConfigHomeOverridesExistingReasonixHome(t *testing.T) {
 	externalHome := t.TempDir()
 	t.Setenv("REASONIX_HOME", externalHome)
@@ -535,10 +517,10 @@ func TestParsePermissionModeClaudeAliases(t *testing.T) {
 	tests := map[string]cliPermissionMode{
 		"ask":               {approval: control.ToolApprovalAsk},
 		"manual":            {approval: control.ToolApprovalAsk},
-		"acceptEdits":       {approval: control.ToolApprovalAsk, allow: []string{"write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol"}},
-		"dontAsk":           {approval: control.ToolApprovalDontAsk},
+		"acceptEdits":       {approval: control.ToolApprovalWorkspaceWrite},
+		"dontAsk":           {approval: control.ToolApprovalReadOnly},
 		"plan":              {approval: control.ToolApprovalAsk, plan: true},
-		"bypassPermissions": {approval: control.ToolApprovalYolo},
+		"bypassPermissions": {approval: control.ToolApprovalWorkspaceWrite},
 	}
 	for input, want := range tests {
 		got, err := parsePermissionMode(input)
@@ -552,8 +534,8 @@ func TestResolveRunPermissionModeRequiresExplicitAuto(t *testing.T) {
 	if got, err := resolveRunPermissionMode("ask", false, false); err != nil || got != "ask" {
 		t.Fatalf("default run permission mode = (%q, %v), want ask", got, err)
 	}
-	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "auto" {
-		t.Fatalf("-y run permission mode = (%q, %v), want auto", got, err)
+	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "workspace-write" {
+		t.Fatalf("legacy -y run permission mode = (%q, %v), want workspace-write", got, err)
 	}
 	if got, err := resolveRunPermissionMode("dontAsk", true, true); err == nil || got != "" {
 		t.Fatalf("combined permission flags = (%q, %v), want conflict", got, err)
@@ -2264,7 +2246,7 @@ func TestParseRuntimeProfile(t *testing.T) {
 	for input, want := range map[string]string{
 		"": "standard", "balanced": "standard", "standard": "standard", "full": "standard",
 		"economy": "standard", "light": "standard", "lite": "standard", "eco": "standard",
-		"delivery": "delivery", "deliver": "delivery", "quality": "delivery",
+		"delivery": "standard", "deliver": "standard", "quality": "standard",
 	} {
 		got, err := parseRuntimeProfile(input)
 		if err != nil || got != want {

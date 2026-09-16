@@ -193,7 +193,7 @@ type DingtalkBotConfig struct {
 	BotName          string          `toml:"bot_name"`           // 机器人昵称；群聊 @ 剥离时匹配
 	RequireMention   bool            `toml:"require_mention"`    // 群聊是否必须 @ 机器人
 	Model            string          `toml:"model"`              // 会话模型；空 = 全局默认
-	ToolApprovalMode string          `toml:"tool_approval_mode"` // ask|auto|yolo；空 = 全局默认
+	ToolApprovalMode string          `toml:"tool_approval_mode"` // read-only|workspace-write|danger-full-access；空 = 全局默认
 	WorkspaceRoot    string          `toml:"workspace_root"`     // 会话工作目录；空 = 启动 Bot 时的 cwd
 	Access           BotAccessConfig `toml:"access"`             // 该渠道访问控制（allowlist）
 	// SessionMappings 直配渠道的会话绑定（与 [[bot.connections]] 同构）。

@@ -144,7 +144,6 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 	app.runtimeRebuildMu.Lock()
 	defer app.runtimeRebuildMu.Unlock()
 
-	started := time.Now()
 	ticket, err := app.StartTopicActivation(TopicActivationRequest{
 		Scope:         "project",
 		WorkspaceRoot: projectRoot,
@@ -155,9 +154,8 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartTopicActivation: %v", err)
 	}
-	if time.Since(started) > 300*time.Millisecond {
-		t.Fatalf("StartTopicActivation blocked %s while MCP rebuild held the mutex", time.Since(started))
-	}
+	// runtimeRebuildMu remains held, so obtaining a ticket proves that activation
+	// publication does not wait for the MCP rebuild mutex.
 	deadline := time.After(400 * time.Millisecond)
 	for {
 		select {

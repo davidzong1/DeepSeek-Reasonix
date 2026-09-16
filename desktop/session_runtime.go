@@ -229,6 +229,12 @@ func (a *App) advanceSessionRuntimeEpochLocked(tab *WorkspaceTab) string {
 		rt = a.newSessionRuntimeLocked(tab, sessionRuntimeKey(tab.SessionPath))
 	}
 	rt.Epoch = newSessionRuntimeID("epoch")
+	// A final-format session already has the process-generation identity that
+	// fences late events and prompt answers. Reuse that exact epoch in the
+	// Desktop registry instead of inventing a second, UI-only generation.
+	if _, runtime, exclusive := exclusiveSessionBinding(tab.Ctrl); exclusive && runtime != nil {
+		rt.Epoch = runtime.StateSnapshot().Epoch
+	}
 	rt.Phase = sessionRuntimeReady
 	rt.Issue = nil
 	rt.suppressStartupRestore = false
@@ -283,8 +289,13 @@ func (a *App) bindSessionRuntimeKeyLocked(tab *WorkspaceTab, path string) bool {
 		a.newSessionRuntimeLocked(tab, key)
 		return true
 	}
-	if rt.Key != "" && rt.Key != key && a.runtimeBySessionKey[rt.Key] == rt {
-		delete(a.runtimeBySessionKey, rt.Key)
+	if rt.Key != key {
+		for alias, candidate := range a.runtimeBySessionKey {
+			if candidate == rt {
+				delete(a.runtimeBySessionKey, alias)
+			}
+		}
+		a.unregisterDetachedRuntimeLocked(tab)
 	}
 	rt.Key = key
 	a.runtimeBySessionKey[key] = rt
@@ -314,7 +325,7 @@ func (a *App) reserveSessionRuntimePath(tab *WorkspaceTab, path string) (session
 		// A path transition must retain the source identity until commit. Using
 		// targetKey here would make a failed first rebind forget the still-live
 		// source controller and its lease.
-		rt = a.newSessionRuntimeLocked(tab, sessionRuntimeKey(tab.currentSessionPath()))
+		rt = a.newSessionRuntimeLocked(tab, sessionRuntimeKey(tab.currentSessionIdentity()))
 	}
 	transition := sessionRuntimePathTransition{
 		runtime:       rt,
@@ -415,9 +426,10 @@ func (a *App) claimSessionRuntime(tab *WorkspaceTab, path string, ctx context.Co
 			// populated are a compatibility edge. Attach them before claiming
 			// the key so applyRuntimeTab can publish one authoritative runtime
 			// instead of leaving behind an unused placeholder.
-			if detached := a.detachedSessions[key]; detached != nil && detached.Ctrl != nil {
+			if matched := a.liveRuntimeTabMatchingLocked(tab, path); matched != nil && matched.Ctrl != nil {
+				identity := runtimeAttachIdentity(matched, path)
 				a.mu.Unlock()
-				return a.attachExistingSessionRuntime(tab, path, a.ctx)
+				return a.attachExistingSessionRuntime(tab, identity, a.ctx)
 			}
 			a.bindSessionRuntimeKeyLocked(tab, path)
 			a.mu.Unlock()

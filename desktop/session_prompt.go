@@ -122,7 +122,9 @@ func resumeWithFreshSystemPromptAndGoal(ctrl control.SessionAPI, messages []prov
 	_, sidecarErr := os.Stat(store.SessionGoalState(path))
 	resumeWithFreshSystemPrompt(ctrl, messages, path)
 	if os.IsNotExist(sidecarErr) && strings.TrimSpace(legacyGoal) != "" {
-		ctrl.SetGoal(strings.TrimSpace(legacyGoal))
+		if loader, ok := ctrl.(interface{ LoadInactiveGoal(string) }); ok {
+			loader.LoadInactiveGoal(strings.TrimSpace(legacyGoal))
+		}
 	}
 }
 
@@ -133,7 +135,9 @@ func resumeLoadedSessionAndGoal(ctrl control.SessionAPI, session *agent.Session,
 	_, sidecarErr := os.Stat(store.SessionGoalState(path))
 	ctrl.Resume(sessionWithFreshSystemPrompt(session, systemPromptFrom(ctrl.History())), path)
 	if os.IsNotExist(sidecarErr) && strings.TrimSpace(legacyGoal) != "" {
-		ctrl.SetGoal(strings.TrimSpace(legacyGoal))
+		if loader, ok := ctrl.(interface{ LoadInactiveGoal(string) }); ok {
+			loader.LoadInactiveGoal(strings.TrimSpace(legacyGoal))
+		}
 	}
 }
 
@@ -166,7 +170,9 @@ func normalizeRestoredControllerRuntime(ctrl control.SessionAPI, requested norma
 	if plan && ctrl.GoalStatus() == control.GoalStatusRunning {
 		// Explicit Plan wins over inconsistent legacy data. Clearing the running
 		// Goal also prevents a stale scope from being executed after approval.
-		ctrl.ClearGoal()
+		if err := ctrl.SetGoalDurable(""); err != nil {
+			return normalizedTabRuntime{}, fmt.Errorf("clear goal for Plan mode: %w", err)
+		}
 	}
 
 	actual := requested

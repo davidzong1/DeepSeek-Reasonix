@@ -50,6 +50,13 @@ func TestBoundArrayPayloadsAreNonNilBeforeStartup(t *testing.T) {
 	if got := app.HooksSettings("global"); got.Hooks == nil || got.Events == nil {
 		t.Fatalf("HooksSettings(global) arrays = hooks:%v events:%v, want non-nil", got.Hooks, got.Events)
 	}
+	forkTargets, forkTargetsErr := app.ForkTargetsForTab("__missing__")
+	if forkTargetsErr != nil {
+		t.Fatalf("ForkTargetsForTab(__missing__): %v", forkTargetsErr)
+	}
+	if forkTargets.Targets == nil {
+		t.Fatal("ForkTargetsForTab(__missing__).Targets is nil; frontend expects []")
+	}
 	if got := app.Settings(); got.Providers == nil || got.OfficialProviders == nil || got.ProviderPresets == nil || got.ProviderKinds == nil ||
 		got.Permissions.Allow == nil || got.Permissions.Ask == nil || got.Permissions.Deny == nil ||
 		got.Sandbox.AllowWrite == nil || got.Sandbox.EffectiveWriteRoots == nil ||

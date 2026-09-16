@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
+	"time"
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -13,6 +15,33 @@ import (
 // Test-only helpers for the desktop suite. They exercise production state
 // through the same package internals, so they live here instead of in the
 // shipped binary.
+
+func waitNotRunning(t *testing.T, ctrl control.SessionAPI) {
+	t.Helper()
+	if waiter, ok := ctrl.(interface {
+		TurnIdleDone() (<-chan struct{}, bool)
+	}); ok {
+		if done, running := waiter.TurnIdleDone(); running {
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("timed out waiting for controller idle boundary: %+v", ctrl.RuntimeStatus())
+			}
+		}
+		return
+	}
+
+	// Compatibility controllers may expose only SessionAPI. Keep a bounded
+	// fallback for those test doubles; production controllers use the explicit
+	// lifecycle boundary above.
+	deadline := time.Now().Add(30 * time.Second)
+	for ctrl.Running() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for compatibility controller: %+v", ctrl.RuntimeStatus())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // setSessionTitle sets (or, with an empty title, clears) a session's custom name.
 func setSessionTitle(dir, sessionPath, title string) error {

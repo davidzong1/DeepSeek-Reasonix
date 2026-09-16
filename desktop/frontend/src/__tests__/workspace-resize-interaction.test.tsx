@@ -94,6 +94,7 @@ installDesktopHostStub(({
       WorkspaceGitHistory: async () => [],
       WorkspaceChanges: async () => ({ files: [], gitAvailable: true }),
       WorkspaceChangeDetail: async () => ({}),
+      ResolveWorkspacePathForTab: async (_tabId, path) => path.startsWith("/") ? path : `/repo/${path}`,
       ReadFileForTab: async (_tabId, path) => ({ path, body: "const value = 1;", size: 16, truncated: false, binary: false }),
     } as Partial<AppBindings> as AppBindings,
   },

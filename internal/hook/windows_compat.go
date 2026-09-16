@@ -250,8 +250,8 @@ func resolveWindowsHookBash(preferredPath string) (string, error) {
 }
 
 func discoverWindowsHookBash(preferredPath string) (string, error) {
-	shell := sandbox.ResolveShell("bash", preferredPath, nil)
-	if shell.Kind != sandbox.ShellBash {
+	shell, ok := sandbox.ResolveExplicitBash(preferredPath)
+	if !ok {
 		return "", missingWindowsHookBashError()
 	}
 	path, err := resolvedHookShellPath(shell)

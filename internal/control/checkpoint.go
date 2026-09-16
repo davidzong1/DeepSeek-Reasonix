@@ -171,7 +171,7 @@ func (c *Controller) validatedCheckpointTurn(completion *guardedTurnCompletion) 
 	if !c.checkpoints.matchesBoundary(candidate.store, candidate.turn, candidate.messageIndex) {
 		return nil
 	}
-	messages := candidate.session.Snapshot()
+	messages := c.terminationMessages()
 	if candidate.messageIndex < 0 || candidate.messageIndex >= len(messages) {
 		return nil
 	}

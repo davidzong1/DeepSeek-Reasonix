@@ -27,3 +27,10 @@ func (m *chatTUI) setGoalCommand(cmd control.GoalCommand, input string) tea.Cmd 
 	m.notice(fmt.Sprintf(i18n.M.GoalSetFmt, control.ShortGoalForNotice(m.ctrl.Goal())))
 	return m.startTurn("Start pursuing the active goal now.", input, input)
 }
+
+func activateGoalDriverAfterRebuild(ctrl control.SessionAPI) control.SessionAPI {
+	if concrete, ok := ctrl.(*control.Controller); ok {
+		concrete.ActivateGoalDriverAfterRebuild()
+	}
+	return ctrl
+}

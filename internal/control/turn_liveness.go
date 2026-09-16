@@ -50,7 +50,7 @@ func (l *turnLiveness) stalledFor(now time.Time) (time.Duration, bool) {
 
 func (c *Controller) warnIfTurnStalled(now time.Time) {
 	c.mu.Lock()
-	running := c.running
+	running := c.bodyActiveLocked()
 	c.mu.Unlock()
 	if !running {
 		return

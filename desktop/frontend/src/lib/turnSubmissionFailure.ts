@@ -14,7 +14,7 @@ export function reduceSubmitFailure(
   const index = state.items.findIndex((item) => item.kind === "user" && item.submissionId === submissionId);
   const items = index < 0
     ? state.items
-    : state.items.map((item, itemIndex) => itemIndex === index ? { ...item, submissionId: undefined, failed: true } : item);
+    : state.items.map((item, itemIndex) => itemIndex === index ? { ...item, failed: true, submissionState: "failed" as const } : item);
   const next = {
     ...state,
     pendingUser: undefined,
@@ -22,7 +22,7 @@ export function reduceSubmitFailure(
     deliveryRecoveryActive: false,
     cancelRequested: false,
     seq: state.seq + 1,
-    items: [...removeEmptyAssistantItems(items), { kind: "notice", id: `n${state.seq}`, level: "warn", text: error } as Item],
+    items: [...(state.transcriptProtocol === 2 ? items : removeEmptyAssistantItems(items)), { kind: "notice", id: `n${state.seq}`, local: true, level: "warn", text: error } as Item],
   };
   return {
     ...next,

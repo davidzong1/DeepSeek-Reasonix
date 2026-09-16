@@ -191,16 +191,29 @@ func (st *sessionDAGState) reachable() map[string]struct{} {
 // ListSessionHeads replays a schema-2 log and returns its heads. A schema-1
 // session has no heads and returns nil, nil.
 func ListSessionHeads(path string) ([]SessionHead, error) {
-	probe, err := probeSessionEventLog(path)
+	return listSessionHeads(context.Background(), path, defaultSessionReplayLimits, false)
+}
+
+// ListSessionHeadsForMigration enumerates a frozen source without the cumulative
+// interactive replay budget. The migration owner must freeze the source first.
+func ListSessionHeadsForMigration(ctx context.Context, path string) ([]SessionHead, error) {
+	return listSessionHeads(ctx, path, migrationSessionReplayLimits(), true)
+}
+
+func listSessionHeads(ctx context.Context, path string, limits sessionReplayLimits, strict bool) ([]SessionHead, error) {
+	probe, err := probeSessionEventLogWithLimits(path, limits)
 	if err != nil {
 		return nil, err
 	}
 	if !probe.dag {
 		return nil, nil
 	}
-	st, err := replaySessionDAG(context.Background(), store.SessionEventLog(path), defaultSessionReplayLimits)
+	st, err := replaySessionDAG(ctx, store.SessionEventLog(path), limits)
 	if err != nil {
 		return nil, fmt.Errorf("list session heads: %w", err)
+	}
+	if strict && st.damaged {
+		return nil, fmt.Errorf("list session heads: incomplete legacy DAG")
 	}
 	heads := st.headList()
 	slices.SortStableFunc(heads, func(a, b SessionHead) int {

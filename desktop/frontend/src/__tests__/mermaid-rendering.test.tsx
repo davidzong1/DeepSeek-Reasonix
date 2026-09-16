@@ -205,7 +205,7 @@ console.log("\nmermaid rendering");
 {
   ok(markdownSource.includes("requestAnimationFrame"), "streaming markdown commits on an animation frame");
   ok(markdownSource.includes("streamingMarkdownCommitInterval"), "streaming markdown applies an adaptive parse budget");
-  ok(markdownSource.includes('className="md md--stream-tail"'), "streaming markdown exposes an immediate lightweight tail");
+  ok(markdownSource.includes('text.slice(renderedText.length)'), "streaming markdown exposes an immediate lightweight tail");
   ok(markdownSource.includes("requestIdleCallback"), "large Markdown finalization waits for browser idle time");
   ok(markdownSource.includes("reasonix:markdown-finalize"), "large Markdown finalization emits a performance measure");
   ok(markdownSource.includes("splitStableMarkdownSections"), "large Markdown retains completed top-level sections");
@@ -523,6 +523,22 @@ console.log("\nmermaid rendering");
 
   const renders: Array<{ definition: string; theme: string }> = [];
   const panZoomCalls: string[] = [];
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  dom.window.requestAnimationFrame = (callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  };
+  dom.window.cancelAnimationFrame = (id) => { frames.delete(id); };
+  const advanceFrame = async () => {
+    await act(async () => {
+      const current = [...frames.entries()];
+      for (const [id, callback] of current) {
+        if (!frames.delete(id)) continue;
+        callback(dom.window.performance.now());
+      }
+    });
+  };
 
   __setMermaidRenderAdapterForTest(async (_svgId, definition, theme, signal) => {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -570,7 +586,13 @@ console.log("\nmermaid rendering");
   ok(!document.querySelector(".mermaid-diagram__preview svg")?.hasAttribute("onload"), "rendered SVG root event handler is stripped");
   ok(!document.querySelector(".mermaid-diagram__preview script"), "rendered SVG script nodes are removed");
 
-  await waitFor("pan zoom instance initialized", () => panZoomCalls.includes("fit") && panZoomCalls.includes("center"));
+  // Initialization and layout sync own separate animation frames. Advance
+  // those frames explicitly instead of racing JSDOM's 60 Hz clock with timers.
+  eq(panZoomCalls.length, 0, "pan zoom waits for its initialization frame");
+  await advanceFrame();
+  ok(!panZoomCalls.includes("fit"), "pan zoom layout waits for the following frame");
+  await advanceFrame();
+  ok(panZoomCalls.includes("fit") && panZoomCalls.includes("center"), "pan zoom instance initialized");
 
   const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
   const zoomOut = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]');

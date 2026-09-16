@@ -47,7 +47,7 @@ func (t Target) Key() TargetKey {
 	if path == "" {
 		return TargetKey(targetKindName(t.Kind))
 	}
-	return TargetKey(targetKindName(t.Kind) + ":" + normalizeRiskPath(path))
+	return TargetKey(targetKindName(t.Kind) + ":" + normalizeTargetPath(path))
 }
 
 func targetKindName(k TargetKind) string {

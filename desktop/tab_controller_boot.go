@@ -6,6 +6,7 @@ import (
 
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
+	"reasonix/internal/session"
 )
 
 var errTabControllerExtensionsChanged = errors.New("desktop: controller extensions changed during build")
@@ -13,7 +14,54 @@ var errTabControllerExtensionsChanged = errors.New("desktop: controller extensio
 // buildTabControllerBoot is a thin wrapper around boot.Build so the large
 // controller assembly path can stay under function-size / complexity budgets.
 func (a *App) buildTabControllerBoot(ctx context.Context, opts boot.Options) (control.SessionAPI, error) {
+	if opts.SessionService == nil {
+		opts.SessionService = a.desktopSessionService(opts.SessionDir)
+	}
+	if opts.OnSessionRotation == nil {
+		opts.OnSessionRotation = a.prepareDesktopSessionRotation
+	}
 	return boot.Build(ctx, opts)
+}
+
+func desktopSessionRoot(sessionDir string) string {
+	return session.RootForLegacyDir(sessionDir)
+}
+
+func (a *App) desktopSessionService(sessionDir string) *session.Service {
+	if a == nil {
+		return nil
+	}
+	a.sessionServicesMu.Lock()
+	defer a.sessionServicesMu.Unlock()
+	root := a.desktopSessions.root
+	// Zero-value Apps in narrow tests retain an isolated legacy-derived root;
+	// NewApp always supplies the production v5 root.
+	if root == "" {
+		root = desktopSessionRoot(sessionDir)
+		a.desktopSessions.root = root
+	}
+	if root == "" {
+		return nil
+	}
+	if a.sessionServices == nil {
+		a.sessionServices = map[string]*session.Service{}
+	}
+	for _, service := range a.sessionServices {
+		// There is deliberately one local service even when a caller still
+		// carries a project-local legacy sessionDir during the cutover.
+		if service != nil {
+			return service
+		}
+	}
+	if service := a.sessionServices[root]; service != nil {
+		return service
+	}
+	service, err := session.NewService("local", session.NewFilesystemPersistence(root))
+	if err != nil {
+		return nil
+	}
+	a.sessionServices[root] = service
+	return service
 }
 
 // buildTabControllerBootFenced keeps optimistic builds concurrent with each

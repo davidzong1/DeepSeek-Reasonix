@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -118,7 +119,7 @@ func (s *Store) TeamRoleSkills() []Skill {
 	if r.Status != StatusOK {
 		return nil
 	}
-	return s.discoverRoot(r)
+	return s.discoverRoot(context.Background(), r)
 }
 
 // teamBaseDir is the branch whose siblings are role directories (base/leader,

@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"reasonix/internal/config"
-	"reasonix/internal/control"
 	"reasonix/internal/i18n"
 	"reasonix/internal/plugin"
 	"reasonix/internal/sessioninbox"
@@ -300,64 +299,8 @@ func (m *chatTUI) growInputToFit() {
 	}
 }
 
-// modeToggleKey reports whether s is a recognized Shift+Tab encoding for the
-// plan/approval mode cycle. Terminals may emit either "shift+tab" or CSI-Z
-// "backtab" (#6660); both must hit cycleMode.
-func modeToggleKey(s string) bool {
-	switch s {
-	case "shift+tab", "backtab":
-		return true
-	default:
-		return false
-	}
-}
-
-// cycleMode handles the Shift+Tab gesture using the same three safe modes users
-// see in Claude Code: Ask → Auto → Plan → Ask. YOLO stays outside this cycle and
-// remains an explicit Ctrl+Y choice.
-func (m *chatTUI) cycleMode() {
-	if m.ctrl == nil || m.ctrl.ToolApprovalMode() == control.ToolApprovalYolo {
-		return
-	}
-	switch {
-	case m.planMode:
-		m.planMode = false
-		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
-	case m.ctrl.ToolApprovalMode() == control.ToolApprovalDontAsk:
-		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
-	case m.ctrl.ToolApprovalMode() == control.ToolApprovalAsk:
-		m.ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
-	case m.ctrl.ToolApprovalMode() == control.ToolApprovalAuto:
-		m.planMode = true
-		m.ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
-		m.ctrl.ClearGoal()
-	}
-	m.ctrl.SetPlanMode(m.planMode)
-}
-
 func (m chatTUI) desktopShortcutLayout() bool {
 	return m.cfg != nil && m.cfg.UIShortcutLayout() == "desktop"
-}
-
-func (m *chatTUI) toggleYoloMode() {
-	if m.ctrl == nil {
-		return
-	}
-	if m.ctrl.ToolApprovalMode() == control.ToolApprovalYolo {
-		restore := m.yoloRestoreToolApprovalMode
-		if restore != control.ToolApprovalAuto {
-			restore = control.ToolApprovalAsk
-		}
-		m.ctrl.SetToolApprovalMode(restore)
-		m.yoloRestoreToolApprovalMode = ""
-		return
-	}
-	restore := m.ctrl.ToolApprovalMode()
-	if restore != control.ToolApprovalAuto {
-		restore = control.ToolApprovalAsk
-	}
-	m.yoloRestoreToolApprovalMode = restore
-	m.ctrl.SetToolApprovalMode(control.ToolApprovalYolo)
 }
 
 func (m *chatTUI) toggleVerboseReasoning(notify bool) {

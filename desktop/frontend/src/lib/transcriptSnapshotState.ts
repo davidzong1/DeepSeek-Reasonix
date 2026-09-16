@@ -29,8 +29,15 @@ type ApplyEvent = (state: State, event: WireEvent) => State;
 // Message identity survives optimistic keys, hydration and older-page merges.
 // Keep one matching rule for installation and delayed content patches.
 export function matchingSnapshotItem(items: Item[], item: Item): Item | undefined {
-  return items.find((candidate) => candidate.id === item.id || (item.kind === "user" && candidate.kind === "user" &&
-    ((item.messageId && candidate.messageId === item.messageId) || (item.submissionId && candidate.submissionId === item.submissionId))));
+  if (item.kind === "user") {
+    const users = items.filter((candidate): candidate is Extract<Item, { kind: "user" }> => candidate.kind === "user");
+    const message = item.messageId && users.find(candidate => candidate.messageId === item.messageId);
+    if (message) return message;
+    const submission = item.submissionId && users.find(candidate => candidate.submissionId === item.submissionId &&
+      (!candidate.messageId || !item.messageId || candidate.messageId === item.messageId));
+    if (submission) return submission;
+  }
+  return items.find(candidate => candidate.id === item.id);
 }
 
 function recordItemOrder(records: TranscriptRecord[], convert: Convert): Record<string, number> {
@@ -70,26 +77,34 @@ export function transcriptPageState(state: State, page: TranscriptSnapshot, conv
     seq: Math.max(state.seq, converted.seq), historyPrefixCount: state.historyPrefixCount + added,
     historyStartTurn: Math.min(state.historyStartTurn, ...users.map((turn) => turn - 1)),
     historyHasOlder: page.hasOlder, historyOlderLoading: false, historyOlderError: undefined,
+    historyHasNewer: false, historyNewerLoading: false, historyNewerError: undefined,
     historyMutation: { seq: state.historyMutation.seq + 1, kind: "prepend" } };
 }
 
 /** One reducer transaction installs rows, runtime and the active attempt.
  * The event projector advances coverage only after this function commits. */
-export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapshot, convert: Convert, applyEvent: ApplyEvent, clock: number): State {
+export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapshot, convert: Convert, applyEvent: ApplyEvent, clock: number, projectedItems?: Item[]): State {
   const records = snapshotRecords(snapshot);
   const messages = records.map((record) => ({ ...record.message, recordId: record.id }));
-  const converted = convert(messages, "snapshot:");
-  const order = recordItemOrder(records, convert);
+  const converted = projectedItems ? { items: projectedItems, seq: state.seq } : convert(messages, "snapshot:");
+  const order = projectedItems ? Object.fromEntries(projectedItems.map((item, index) => [item.id, index])) : recordItemOrder(records, convert);
   const users = state.items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
   const items = converted.items.map((item) => {
+    if (item.kind === "tool" && item.resultMissing && snapshot.runtime.status &&
+      ["queued", "in_progress", "waiting_user", "cancelling"].includes(snapshot.runtime.status) &&
+      messages.some(message => message.turnId === snapshot.runtime.turnId && message.toolCalls?.some(call => call.id === item.id))) {
+      return { ...item, status: "running" as const };
+    }
     if (item.kind !== "user") return item;
     const mounted = matchingSnapshotItem(users, item);
     if (mounted && mounted.id !== item.id) { order[mounted.id] = order[item.id]; delete order[item.id]; }
-    return mounted ? { ...item, id: mounted.id } : item;
+    if (!mounted) return item;
+    const next = { ...item, id: mounted.id };
+    return Object.entries(next).every(([key, value]) => (mounted as unknown as Record<string, unknown>)[key] === value) ? mounted : next;
   });
   const represented = new Set(messages.map((message) => message.submissionId).filter(Boolean));
-  if (snapshot.runtime.submissionId) represented.add(snapshot.runtime.submissionId);
-  const optimistic = users.filter((user) => user.submissionId && user.submissionId === state.pendingSubmissionId && !represented.has(user.submissionId));
+  const optimistic = users.filter((user) => user.submissionId &&
+    (user.submissionId === state.pendingSubmissionId || user.submissionId === snapshot.runtime.submissionId) && !represented.has(user.submissionId));
   const active = snapshot.runtime.status === "queued" || snapshot.runtime.status === "in_progress" ||
     snapshot.runtime.status === "waiting_user" || snapshot.runtime.status === "cancelling";
   let next: State = {
@@ -100,7 +115,9 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     assistantSegmentOrdinal: active ? 1 : 0,
     turnStartAt: snapshot.runtime.startedAt ?? (state.activeTurnId === snapshot.runtime.turnId ? state.turnStartAt : 0),
     resolvedPromptId: undefined,
-    items: [...items, ...optimistic],
+    items: [...items, ...optimistic, ...users.filter(user => user.failed && !items.some(item => item.id === user.id)),
+      ...state.items.filter(item => item.kind === "notice" && item.local)],
+    offscreenItems: undefined,
     seq: Math.max(state.seq, converted.seq),
     running: active || optimistic.length > 0,
     turnActive: active,
@@ -132,10 +149,14 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     hydratePlaceholderItems: undefined,
     historyPrefixCount: items.length,
     historyStartTurn: Math.max(0, Math.min(...messages.filter((m) => m.role === "user" && m.historyTurn).map((m) => m.historyTurn!), snapshot.totalTurns) - 1),
+    historyEndTurn: snapshot.totalTurns,
     historyTotalTurns: snapshot.totalTurns,
     historyHasOlder: snapshot.hasOlder,
+    historyHasNewer: false,
     historyOlderLoading: false,
     historyOlderError: undefined,
+    historyNewerLoading: false,
+    historyNewerError: undefined,
     historyRevision: undefined,
     historyDigest: undefined,
     historyMutation: { seq: state.historyMutation.seq + 1, kind: "replace" },

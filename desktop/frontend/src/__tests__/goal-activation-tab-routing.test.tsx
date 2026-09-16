@@ -130,6 +130,7 @@ const appStubTable = ({
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (): Promise<HistoryMessage[]> => [],
       HistorySliceForTab: async (tabId: string, request: HistorySliceRequest) =>
         historySliceFromMessages(tabId, [], request),

@@ -6,9 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/pflag"
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
+
+	"github.com/spf13/pflag"
 )
 
 func TestSplitAllowedToolRules(t *testing.T) {

@@ -152,11 +152,23 @@ func (o *OrchestrateTool) Execute(ctx context.Context, args json.RawMessage) (st
 		emitOrchestrateProgress(ctx, report)
 	}
 	result, err := RunOrchestration(ctx, plan, runOptions)
+	// A plan is the host's own decomposition, so its verdict is the host's to
+	// state; the enclosing turn's report stays facts-only.
+	event.RecordCompletionReport(orchestrationSink(ctx), completionReportAudit(result.Completion))
 	out := formatOrchestrationResult(result)
 	if err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+// orchestrationSink is the sink the plan's report is published to: the
+// caller's own when it supplied one.
+func orchestrationSink(ctx context.Context) event.Sink {
+	if _, sink, _, ok := CallContext(ctx); ok && sink != nil {
+		return sink
+	}
+	return event.Discard
 }
 
 // emitOrchestrateProgress renders one node's terminal state into the call's own

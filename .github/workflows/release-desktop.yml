@@ -2,7 +2,7 @@ name: Release desktop
 
 # Desktop (Electron) release line. Official releases are called by
 # release-stable.yml after its single GitHub environment approval. Production
-# SignPath requests therefore have the exact protected main-v2 origin.
+# Certum signing therefore runs from the protected main-v2 control plane.
 #
 # The Electron shell cannot cross-compile its native targets from one host, so
 # build/ fans out to one native runner per platform. Artifacts are
@@ -27,7 +27,7 @@ on:
         required: false
         type: string
       production_signing_smoke:
-        description: "Wait for external SignPath approval, verify trust, and do not publish"
+        description: "Verify production signing and trust without publishing"
         required: false
         default: false
         type: boolean
@@ -94,6 +94,16 @@ on:
         required: false
         default: ""
         type: string
+      desktop_manual_only:
+        description: "Approved manual Desktop distribution: unsigned Windows, no update pointer move"
+        required: false
+        default: false
+        type: boolean
+      reuse_manual_artifacts:
+        description: "Reuse the exact verified v1.38.8 manual producer run (v1.38.8 only)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # A channel pointer is a monotonic public state machine. Serialize every
@@ -117,7 +127,7 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       notes_version: ${{ steps.release.outputs.notes_version }}
       sha: ${{ steps.candidate.outputs.sha }}
-      artifact_prefix: desktop-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.signing_preflight && 'preflight' || 'release' }}
+      artifact_prefix: ${{ inputs.reuse_manual_artifacts && 'desktop-34816299501-1-preflight' || format('desktop-{0}-{1}-{2}', github.run_id, github.run_attempt, inputs.signing_preflight && 'preflight' || 'release') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -201,12 +211,13 @@ jobs:
         run: echo "Approved standalone desktop $RELEASE_CHANNEL release $RELEASE_TAG"
 
   signing-contract:
-    name: validate SignPath release contract
+    name: validate Windows release signing contract
     needs: [resolve, orchestration-guard, release-gate]
     if: ${{ always() && !cancelled() && needs.resolve.result == 'success' && ((inputs.orchestrated && needs.orchestration-guard.result == 'success') || (!inputs.orchestrated && needs.release-gate.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     outputs:
       fingerprint: ${{ steps.contract.outputs.fingerprint }}
     steps:
@@ -225,6 +236,21 @@ jobs:
         env:
           PREFLIGHT_ARTIFACT_PREFIX: ${{ inputs.preflight_artifact_prefix }}
         run: |
+          if [ "${{ inputs.reuse_manual_artifacts }}" = "true" ] && [ "${{ inputs.desktop_manual_only }}" != "true" ]; then
+            echo "::error::artifact recovery requires the scoped manual Desktop exception"
+            exit 1
+          fi
+          if [ "${{ inputs.desktop_manual_only }}" = "true" ]; then
+            if [ "${{ inputs.orchestrated }}" != "true" ] || [ "${{ inputs.channel }}" != "stable" ]; then
+              echo "::error::manual Desktop exception requires the approved stable orchestrator"
+              exit 1
+            fi
+            if ! bash scripts/manual-desktop-exception.sh validate \
+              "${{ needs.resolve.outputs.tag }}" "${{ needs.resolve.outputs.sha }}"; then
+              echo "::error::manual Desktop exception is restricted to approved candidates"
+              exit 1
+            fi
+          fi
           if [ "${{ inputs.production_signing_smoke }}" = "true" ] && [ "${{ inputs.signing_preflight }}" = "true" ]; then
             echo "::error::production_signing_smoke and signing_preflight are mutually exclusive"
             exit 1
@@ -238,14 +264,24 @@ jobs:
               echo "::error::artifact reuse requires a verified stable orchestrator preflight"
               exit 1
             fi
-            [[ "$PREFLIGHT_ARTIFACT_PREFIX" =~ ^desktop-${GITHUB_RUN_ID}-[1-9][0-9]*-preflight$ ]] || exit 1
+            if [ "${{ inputs.reuse_manual_artifacts }}" = "true" ]; then
+              test "$PREFLIGHT_ARTIFACT_PREFIX" = desktop-34816299501-1-preflight
+            else
+              [[ "$PREFLIGHT_ARTIFACT_PREFIX" =~ ^desktop-${GITHUB_RUN_ID}-[1-9][0-9]*-preflight$ ]] || exit 1
+            fi
           fi
 
       - name: Validate and fingerprint SignPath contract
         id: contract
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           go run ./cmd/signpath-contract validate
           fingerprint="$(go run ./cmd/signpath-contract fingerprint)"
+          if [ "${{ inputs.reuse_manual_artifacts }}" = "true" ]; then
+            node scripts/verify-manual-desktop-producer.mjs
+            fingerprint=v1:48c45e7bb52e5a9d0883b917c36e8cb0f4e7d34b6703ff44019d8ef5d52ebf21
+          fi
           echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
 
       - name: Require current standalone signing attestation
@@ -293,9 +329,10 @@ jobs:
           bash scripts/verify-embedded-docs.sh "$DOCS_BUILD_VERSION" "$DOCS_SOURCE_REVISION"
 
   build:
-    name: build (${{ matrix.name }})
+    # Recovery reads this exact per-platform, per-invocation name in attempt history.
+    name: build (${{ matrix.name }}, ${{ inputs.signing_preflight && 'preflight' || 'release' }})
     needs: [resolve, cache-guard, signing-contract]
-    if: ${{ always() && !cancelled() && needs.resolve.result == 'success' && needs.cache-guard.result == 'success' && inputs.preflight_artifact_prefix == '' }}
+    if: ${{ always() && !cancelled() && needs.resolve.result == 'success' && needs.cache-guard.result == 'success' && inputs.preflight_artifact_prefix == '' && !inputs.reuse_manual_artifacts }}
     permissions:
       contents: read # checkout only; the publish job holds contents: write
       actions: read # SignPath reads run details + downloads the unsigned artifact
@@ -305,15 +342,15 @@ jobs:
         include:
           # Keep preflight on the same complete native matrix as publication so
           # it cannot attest a release whose adjacent platform build is broken.
-          - { runner: macos-14, platform: darwin/universal, name: darwin-universal }
+          - { runner: macos-15, platform: darwin/arm64, name: darwin-arm64 }
+          - { runner: macos-15-intel, platform: darwin/amd64, name: darwin-amd64 }
+          - { runner: macos-15, platform: darwin/universal, name: darwin-universal }
           - { runner: windows-latest, platform: windows/amd64, name: windows-amd64 }
           - { runner: windows-11-arm, platform: windows/arm64, name: windows-arm64 }
           - { runner: ubuntu-22.04, platform: linux/amd64, name: linux-amd64 }
     runs-on: ${{ matrix.runner }}
     env:
-      # Windows Authenticode signing engages only when the SignPath token is set, so
-      # forks / token-less runs still build (unsigned), mirroring the APPLE_* gate.
-      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      HAS_CERTUM: ${{ secrets.CERTUM_USERNAME != '' && secrets.CERTUM_OTP_URI != '' && secrets.CERTUM_KEY_ID != '' && !inputs.desktop_manual_only }}
     defaults:
       run:
         shell: bash # desktop-build.sh is bash; windows runners default to pwsh otherwise
@@ -386,14 +423,13 @@ jobs:
           echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           rm -f "$RUNNER_TEMP/cert.p12"
 
-      # Official Windows releases must fail closed. Forks can still exercise
-      # unsigned packaging without repository secrets, but esengine releases
-      # may never publish an unsigned payload or installer.
+      # Official automatic-update releases require Authenticode. The guarded
+      # manual-only exception retains minisign without advancing updates.
       - name: Require Windows Authenticode signing
-        if: runner.os == 'Windows' && github.repository == 'esengine/DeepSeek-Reasonix'
+        if: runner.os == 'Windows' && github.repository == 'esengine/DeepSeek-Reasonix' && !inputs.desktop_manual_only
         run: |
-          if [ "$HAS_SIGNPATH" != "true" ]; then
-            echo "::error::SIGNPATH_API_TOKEN is required for public Windows Preview and Stable releases"
+          if [ "$HAS_CERTUM" != "true" ]; then
+            echo "::error::Certum credentials are required for public Windows Preview and Stable releases"
             exit 1
           fi
 
@@ -429,6 +465,7 @@ jobs:
           sparse-checkout: |
             scripts/verify-windows-authenticode.ps1
             scripts/desktop-release-artifacts.mjs
+            scripts/signpath-checkpoint.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -442,11 +479,18 @@ jobs:
             desktop/build/electron/${{ matrix.name }}/app \
             --service desktop/build/bin/reasonix-desktop.exe
 
-      - name: Smoke-test macOS archive startup
-        if: runner.os == 'macOS'
+      - name: Smoke-test native macOS archive startup
+        if: runner.os == 'macOS' && matrix.name != 'darwin-universal'
         run: |
-          ditto -xk dist/Reasonix-darwin-arm64.zip "$RUNNER_TEMP/desktop-startup"
+          ditto -xk "dist/Reasonix-${{ matrix.name }}.zip" "$RUNNER_TEMP/desktop-startup"
+          node desktop/packaging/verify.mjs "$RUNNER_TEMP/desktop-startup/Reasonix.app" --kind darwin-app-dir
           node desktop/packaging/smoke.mjs "$RUNNER_TEMP/desktop-startup/Reasonix.app"
+
+      - name: Smoke-test Universal macOS candidate on Apple Silicon
+        if: runner.os == 'macOS' && matrix.name == 'darwin-universal'
+        run: |
+          node desktop/packaging/verify.mjs desktop/build/candidate/darwin-universal/Reasonix.app --kind darwin-app-dir
+          node desktop/packaging/smoke.mjs desktop/build/candidate/darwin-universal/Reasonix.app
 
       - name: Smoke-test packaged Linux startup
         if: runner.os == 'Linux'
@@ -454,131 +498,66 @@ jobs:
           xvfb-run -a node desktop/packaging/smoke.mjs \
             desktop/build/bin/app --service desktop/build/bin/reasonix-desktop
 
-      # Sign every executable that users actually run before rebuilding the
-      # portable archive and NSIS installer. Signing only the finished NSIS
-      # container leaves reasonix-desktop.exe and its sidecars unsigned after
-      # installation, which can trigger Defender reputation/ML quarantine. The
-      # payload directory holds the flat Go executables, the Electron app/ tree
-      # and signing-files.txt (the PE enumeration the SignPath artifact
-      # configuration and the Authenticode verifier share).
-      - name: Upload unsigned Windows payload for SignPath
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        id: unsigned-windows-payload
+      # Same tree, no handed-over service path: a shell started directly (pinned
+      # taskbar icon, double-click) must find reasonix-desktop beside app/.
+      - name: Smoke-test packaged Linux startup without a configured service
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a node desktop/packaging/smoke.mjs desktop/build/bin/app
+
+      # Native runners smoke-test both architectures before handing the exact
+      # unsigned payload and generated NSIS inputs to the x64 signing runner.
+      - name: Archive Windows signing inputs
+        if: runner.os == 'Windows' && env.HAS_CERTUM == 'true'
+        run: |
+          tar -cf "$RUNNER_TEMP/windows-signing-inputs.tar" desktop/build/windows/signing-payload desktop/build/windows/installer/reasonix_project.nsh
+
+      - name: Upload Windows signing inputs
+        if: runner.os == 'Windows' && env.HAS_CERTUM == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: unsigned-payload-${{ matrix.name }}
-          path: desktop/build/windows/signing-payload
+          name: ${{ needs.resolve.outputs.artifact_prefix }}-unsigned-${{ matrix.name }}
+          path: ${{ runner.temp }}/windows-signing-inputs.tar
+          overwrite: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
-      - name: Submit Windows payload for Authenticode signing
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        id: submit-windows-payload
-        uses: signpath/github-action-submit-signing-request@v2
+      - name: Upload package size report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
         with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: DeepSeek-Reasonix
-          signing-policy-slug: release-signing
-          artifact-configuration-slug: windows-payload
-          github-artifact-id: ${{ steps.unsigned-windows-payload.outputs.artifact-id }}
-          github-token: ${{ github.token }}
-          wait-for-completion: false
+          name: package-size-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+          path: desktop/build/reports/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
 
-      # The release certificate requires an approval for every request. Public
-      # builds reach this step only after their GitHub environment has been
-      # approved; the dedicated SignPath CI identity records the corresponding
-      # request approval without adding another human gate.
-      - name: Approve and download signed Windows payload
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        shell: pwsh
-        env:
-          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-        run: |
-          $waitForExternalApproval = "${{ inputs.production_signing_smoke }}" -eq "true"
-          ./scripts/complete-signpath-request.ps1 `
-            -OrganizationId "${{ secrets.SIGNPATH_ORGANIZATION_ID }}" `
-            -SigningRequestId "${{ steps.submit-windows-payload.outputs.signing-request-id }}" `
-            -ExpectedSigningPolicySlug "release-signing" `
-            -OutputArtifactDirectory "signed-payload" `
-            -TimeoutSeconds 1800 `
-            -WaitForExternalApproval:$waitForExternalApproval
+      - name: Upload desktop source maps
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-sourcemaps-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+          path: |
+            desktop/build/sourcemaps/${{ matrix.name }}
+            desktop/frontend/sourcemaps
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Bind signed Windows payload to release manifest
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        working-directory: desktop
+      - name: Bind manual Windows payload and rebuild packages
+        if: runner.os == 'Windows' && inputs.desktop_manual_only
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          go run ./cmd/sign windows-payload ../signed-payload "${{ needs.resolve.outputs.version }}"
-          go run ./cmd/sign sign ../signed-payload/reasonix-payload.json
-          go run ./cmd/sign verify ../signed-payload/reasonix-payload.json
-
-      - name: Rebuild Windows packages from signed payload
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        env:
           REASONIX_REQUIRE_PAYLOAD_MANIFEST: "1"
-        run: scripts/package-windows-desktop.sh "${{ matrix.platform == 'windows/arm64' && 'arm64' || 'amd64' }}" signed-payload
-
-      # The second request signs the rebuilt NSIS container. Release signing
-      # also verifies every payload signature (flat executables and the app/
-      # tree) against a Windows trusted root.
-      - name: Upload unsigned installer for SignPath
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        id: unsigned-installer
-        uses: actions/upload-artifact@v7
-        with:
-          name: unsigned-${{ matrix.name }}
-          path: desktop/build/windows/installer-signing-bundle
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Submit installer for Authenticode signing
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        id: submit-windows-installer
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: DeepSeek-Reasonix
-          signing-policy-slug: release-signing
-          artifact-configuration-slug: windows-installer-v2
-          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
-          github-token: ${{ github.token }}
-          wait-for-completion: false
-
-      - name: Approve and download signed Windows installer
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        shell: pwsh
-        env:
-          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
         run: |
-          $waitForExternalApproval = "${{ inputs.production_signing_smoke }}" -eq "true"
-          ./scripts/complete-signpath-request.ps1 `
-            -OrganizationId "${{ secrets.SIGNPATH_ORGANIZATION_ID }}" `
-            -SigningRequestId "${{ steps.submit-windows-installer.outputs.signing-request-id }}" `
-            -ExpectedSigningPolicySlug "release-signing" `
-            -OutputArtifactDirectory "signed-installer" `
-            -TimeoutSeconds 1800 `
-            -WaitForExternalApproval:$waitForExternalApproval
-
-      - name: Replace installer with signed build
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        run: cp signed-installer/*installer*.exe dist/
-
-      - name: Verify Windows Authenticode release contract
-        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
-        shell: pwsh
-        run: |
-          $arch = if ("${{ matrix.platform }}" -eq "windows/arm64") { "arm64" } else { "amd64" }
-          ./release-control/scripts/verify-windows-authenticode.ps1 `
-            -PayloadDirectory signed-payload `
-            -InstallerPath "dist/Reasonix-windows-$arch-installer.exe" `
-            -PortableArchivePath "dist/Reasonix-windows-$arch.zip" `
-            -RequireTrusted:$true
+          cd desktop
+          go run ./cmd/sign windows-payload build/windows/signing-payload "${{ needs.resolve.outputs.version }}"
+          go run ./cmd/sign sign build/windows/signing-payload/reasonix-payload.json
+          go run ./cmd/sign verify build/windows/signing-payload/reasonix-payload.json
+          cd ..
+          scripts/package-windows-desktop.sh "${{ matrix.platform == 'windows/arm64' && 'arm64' || 'amd64' }}" desktop/build/windows/signing-payload
 
       - name: Sign artifacts (minisign)
+        if: runner.os != 'Windows' || env.HAS_CERTUM != 'true'
         working-directory: desktop
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
@@ -586,6 +565,7 @@ jobs:
         run: go run ./cmd/sign sign ../dist/*
 
       - name: Bind signed artifacts to candidate and workflow
+        if: runner.os != 'Windows' || env.HAS_CERTUM != 'true'
         env:
           RELEASE_SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
           RELEASE_CONTROL_SHA: ${{ github.workflow_sha }}
@@ -597,6 +577,7 @@ jobs:
         run: node release-control/scripts/desktop-release-artifacts.mjs pack dist "$RUNNER_TEMP/desktop-bundle" "${{ matrix.name }}"
 
       - uses: actions/upload-artifact@v7
+        if: runner.os != 'Windows' || env.HAS_CERTUM != 'true'
         with:
           name: ${{ needs.resolve.outputs.artifact_prefix }}-${{ matrix.name }}
           path: ${{ runner.temp }}/desktop-bundle
@@ -607,16 +588,189 @@ jobs:
           # Same-run handoff to the publish job only; 7 days covers debugging.
           retention-days: 7
 
+  windows-sign:
+    name: sign Windows (${{ matrix.arch }})
+    needs: [resolve, build, signing-contract]
+    if: ${{ needs.build.result == 'success' && github.repository == 'esengine/DeepSeek-Reasonix' && !inputs.desktop_manual_only }}
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arch: [amd64, arm64]
+    # Both architectures use the proven x64 virtual-card client. Native build
+    # and startup testing still happen on their original architecture runners.
+    concurrency:
+      group: certum-signing
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-control
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.resolve.outputs.artifact_prefix }}-unsigned-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/signing-inputs
+      - name: Restore native-tested Windows payload
+        run: |
+          tar -xf "$RUNNER_TEMP/signing-inputs/windows-signing-inputs.tar"
+          mkdir -p desktop/build/bin
+          cp -R desktop/build/windows/signing-payload signed-payload
+          node desktop/packaging/signing-files.mjs signed-payload --check
+      - name: Install NSIS
+        shell: pwsh
+        run: ./release-control/scripts/install-nsis.ps1
+      - name: Connect to Certum
+        uses: ./release-control/.github/actions/setup-certum
+        with:
+          username: ${{ secrets.CERTUM_USERNAME }}
+          otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+          thumbprint: ${{ secrets.CERTUM_KEY_ID }}
+      - name: Sign complete Windows payload
+        shell: pwsh
+        env:
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: ./release-control/scripts/sign-certum.ps1 -PayloadDirectory signed-payload
+      - name: Bind signed Windows payload and rebuild packages
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          REASONIX_REQUIRE_PAYLOAD_MANIFEST: "1"
+        run: |
+          cd desktop
+          go run ./cmd/sign windows-payload ../signed-payload "${{ needs.resolve.outputs.version }}"
+          go run ./cmd/sign sign ../signed-payload/reasonix-payload.json
+          go run ./cmd/sign verify ../signed-payload/reasonix-payload.json
+          cd ..
+          scripts/package-windows-desktop.sh "${{ matrix.arch }}" signed-payload
+      - name: Sign rebuilt Windows installer
+        shell: pwsh
+        env:
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: ./release-control/scripts/sign-certum.ps1 -FilePath "dist/Reasonix-windows-${{ matrix.arch }}-installer.exe"
+      - name: Verify Windows Authenticode release contract
+        shell: pwsh
+        env:
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: |
+          ./release-control/scripts/verify-windows-authenticode.ps1 `
+            -PayloadDirectory signed-payload `
+            -InstallerPath "dist/Reasonix-windows-${{ matrix.arch }}-installer.exe" `
+            -PortableArchivePath "dist/Reasonix-windows-${{ matrix.arch }}.zip" `
+            -ExpectedThumbprint $env:CERTUM_KEY_ID -RequireTrusted
+      - name: Refresh signed package size report
+        env:
+          REASONIX_COMMIT: ${{ needs.resolve.outputs.sha }}
+        run: >-
+          node desktop/packaging/size-report.mjs
+          --platform "windows/${{ matrix.arch }}"
+          --version "${{ needs.resolve.outputs.version }}"
+          --bundle signed-payload --dist dist
+          --output "desktop/build/reports/windows-${{ matrix.arch }}"
+      - name: Upload signed package size report
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-size-${{ github.run_id }}-${{ github.run_attempt }}-windows-${{ matrix.arch }}
+          path: desktop/build/reports/windows-${{ matrix.arch }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Sign artifacts (minisign)
+        working-directory: desktop
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: go run ./cmd/sign sign ../dist/*
+      - name: Bind signed artifacts to candidate and workflow
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_CONTROL_SHA: ${{ github.workflow_sha }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+          RELEASE_SIGNING_FINGERPRINT: ${{ needs.signing-contract.outputs.fingerprint }}
+          RELEASE_ARTIFACT_PREFIX: ${{ needs.resolve.outputs.artifact_prefix }}
+        run: node release-control/scripts/desktop-release-artifacts.mjs pack dist "$RUNNER_TEMP/desktop-bundle" "windows-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.artifact_prefix }}-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/desktop-bundle
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  mac-universal-intel:
+    name: verify Universal candidate on Intel
+    needs: [resolve, build, signing-contract, cache-guard]
+    if: ${{ always() && !cancelled() && needs.signing-contract.result == 'success' && needs.cache-guard.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.reuse_manual_artifacts)) && inputs.preflight_artifact_prefix == '' }}
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 10
+      - name: Install packaged smoke dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm --dir desktop install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.resolve.outputs.artifact_prefix }}-darwin-universal
+          path: ${{ runner.temp }}/universal-bundle
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_manual_artifacts && '34816299501' || github.run_id }}
+      - name: Mount and smoke-test the exact Universal DMG
+        run: |
+          mount_dir="$RUNNER_TEMP/reasonix-universal"
+          app_dir="$RUNNER_TEMP/reasonix-universal-app/Reasonix.app"
+          mkdir -p "$mount_dir" "$(dirname "$app_dir")"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$RUNNER_TEMP/universal-bundle/files/Reasonix-darwin-universal.dmg"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          ditto "$mount_dir/Reasonix.app" "$app_dir"
+          codesign --verify --deep --strict "$app_dir"
+          node desktop/packaging/verify.mjs "$app_dir" --kind darwin-app-dir
+          node desktop/packaging/smoke.mjs "$app_dir"
+
   publish:
     name: publish release
-    needs: [resolve, signing-contract, cache-guard, build]
-    if: ${{ always() && !cancelled() && needs.resolve.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.preflight_artifact_prefix != '' && inputs.orchestrated && inputs.signing_preflight_verified)) && needs.signing-contract.result == 'success' && needs.cache-guard.result == 'success' && !inputs.production_signing_smoke && !inputs.signing_preflight }}
+    needs: [resolve, signing-contract, cache-guard, build, windows-sign, mac-universal-intel]
+    if: ${{ always() && !cancelled() && needs.resolve.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.preflight_artifact_prefix != '' && inputs.orchestrated && inputs.signing_preflight_verified)) && ((inputs.preflight_artifact_prefix == '' && needs.mac-universal-intel.result == 'success') || (inputs.preflight_artifact_prefix != '' && needs.mac-universal-intel.result == 'skipped')) && needs.signing-contract.result == 'success' && needs.cache-guard.result == 'success' && (needs.windows-sign.result == 'success' || (needs.windows-sign.result == 'skipped' && (inputs.desktop_manual_only || inputs.preflight_artifact_prefix != ''))) && !inputs.production_signing_smoke && !inputs.signing_preflight }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     # Approved orchestrators have already passed the matching GitHub environment.
     # Direct prereleases and manual Stable recovery pass release-gate above. The
-    # SignPath CI identity records each payload and installer approval after it.
+    # Certum signing completes before either platform bundle reaches publication.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -663,17 +817,24 @@ jobs:
         with:
           path: ${{ runner.temp }}/desktop-bundles
           pattern: ${{ inputs.preflight_artifact_prefix || needs.resolve.outputs.artifact_prefix }}-*
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_manual_artifacts && '34816299501' || github.run_id }}
 
       - name: Verify complete signed artifact handoff
         env:
           RELEASE_SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
-          RELEASE_CONTROL_SHA: ${{ github.workflow_sha }}
+          RELEASE_CONTROL_SHA: ${{ inputs.reuse_manual_artifacts && '09cdab3866d77c6ff0d007ee61b6aca3128ebe54' || github.workflow_sha }}
           RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
           RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
           RELEASE_SIGNING_FINGERPRINT: ${{ needs.signing-contract.outputs.fingerprint }}
           RELEASE_ARTIFACT_PREFIX: ${{ inputs.preflight_artifact_prefix || needs.resolve.outputs.artifact_prefix }}
-        run: node release-control/scripts/desktop-release-artifacts.mjs collect "$RUNNER_TEMP/desktop-bundles" dist
+        run: |
+          if [ "${{ inputs.reuse_manual_artifacts }}" = "true" ]; then
+            GITHUB_RUN_ID=34816299501 GITHUB_RUN_ATTEMPT=1 node release-control/scripts/desktop-release-artifacts.mjs collect "$RUNNER_TEMP/desktop-bundles" dist
+          else
+            node release-control/scripts/desktop-release-artifacts.mjs collect "$RUNNER_TEMP/desktop-bundles" dist
+          fi
 
       # Generate latest.json with GitHub release download URLs; the mirror step
       # rewrites them to R2 afterwards. GITHUB_REPOSITORY is provided by the runner.
@@ -730,10 +891,27 @@ jobs:
           APPROVED_SHA: ${{ inputs.approved_sha }}
         run: bash scripts/verify-release-tag.sh
 
+      # Name the release being published instead of a fixed version, so the
+      # disclosure cannot outlive or misdescribe the exception it belongs to.
+      - name: Disclose manual Desktop distribution
+        if: ${{ inputs.desktop_manual_only }}
+        env:
+          MANUAL_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          cat >> /tmp/release-notes.md <<NOTES
+
+          ## Manual desktop downloads / 桌面版手动下载
+
+          This v${MANUAL_VERSION} desktop release is manual-download only on every platform. Windows packages do not carry Reasonix Authenticode signatures because SignPath signing is unavailable; Windows may show an unknown-publisher warning. Detached minisign signatures and SHA-256 checksums remain available. Desktop automatic-update channels are unchanged by this release and keep serving their previous version. CLI and npm distribution are unaffected.
+
+          本次 v${MANUAL_VERSION} 桌面版所有平台均需手动下载安装。因 SignPath 签名服务暂不可用，Windows 包不含 Reasonix Authenticode 签名，系统可能显示未知发布者提示；仍提供 minisign 签名和 SHA-256 校验。本次发布不改变桌面自动更新通道，其仍指向此前版本；CLI 和 npm 正常发布。
+          NOTES
+
       - name: Publish GitHub release
         if: needs.resolve.outputs.channel != 'preview'
         env:
           GH_TOKEN: ${{ github.token }}
+          DESKTOP_MANUAL_ONLY: ${{ inputs.desktop_manual_only || false }}
         # Keep the repository homepage focused on the installable desktop app;
         # the CLI release line is configured not to claim repository-wide latest.
         run: >-
@@ -755,9 +933,9 @@ jobs:
           retention-days: 7
 
   attest-signing-contract:
-    name: record standalone SignPath attestation
-    needs: [signing-contract, build]
-    if: ${{ always() && !cancelled() && inputs.signing_preflight && !inputs.orchestrated && github.repository == 'esengine/DeepSeek-Reasonix' && needs.signing-contract.result == 'success' && needs.build.result == 'success' }}
+    name: record standalone Windows signing attestation
+    needs: [signing-contract, build, windows-sign]
+    if: ${{ always() && !cancelled() && inputs.signing_preflight && !inputs.orchestrated && github.repository == 'esengine/DeepSeek-Reasonix' && needs.signing-contract.result == 'success' && needs.build.result == 'success' && needs.windows-sign.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -908,6 +1086,7 @@ jobs:
         id: mirror_r2
         if: env.HAS_R2 == 'true'
         env:
+          DESKTOP_MANUAL_ONLY: ${{ inputs.desktop_manual_only || false }}
           CHANNEL: ${{ needs.resolve.outputs.channel }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -1042,6 +1221,12 @@ jobs:
             /tmp/reasonix-desktop-tag-latest.json "$NOTES_VERSION"
           bash release-control/scripts/compare-desktop-release-manifests.sh \
             assets/latest.json /tmp/reasonix-desktop-tag-latest.json
+
+          if [ "$DESKTOP_MANUAL_ONLY" = "true" ]; then
+            echo "pointer_moved=false" >> "$GITHUB_OUTPUT"
+            echo "Manual Desktop release: immutable downloads verified; automatic update pointers unchanged"
+            exit 0
+          fi
 
           # Internal RCs retain their immutable record but never move a public
           # channel pointer.
@@ -1292,7 +1477,7 @@ jobs:
           esac
 
       - name: Attach desktop manifest to matching CLI release
-        if: env.HAS_R2 == 'true' && needs.resolve.outputs.channel != 'preview' && needs.resolve.outputs.prerelease != 'true'
+        if: env.HAS_R2 == 'true' && needs.resolve.outputs.channel != 'preview' && needs.resolve.outputs.prerelease != 'true' && !inputs.desktop_manual_only
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve.outputs.version }}

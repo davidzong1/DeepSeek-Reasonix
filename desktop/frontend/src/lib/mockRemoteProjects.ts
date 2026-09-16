@@ -30,7 +30,7 @@ export function createMockRemoteProjects(tabs: MockRemoteTabCatalog): {
   const status = (tabId: string) => ({
     sessionPath: tabs.get(tabId)?.sessionPath,
     label: tabs.get(tabId)?.label ?? "", running: false, pendingPrompt: false,
-    backgroundJobs: 0, plan: false, toolApprovalMode: "ask", goal: "",
+    backgroundJobs: 0, plan: false, toolApprovalMode: "workspace-write", goal: "",
   });
 
   const bindings: RemoteProjectBindings = {
@@ -137,6 +137,7 @@ export function createMockRemoteProjects(tabs: MockRemoteTabCatalog): {
     },
     async RewindRemoteTab() {},
     async SetRemoteTabGoal() {},
+    async EditRemoteTabGoal() {},
     async RemoteTabSnapshot(tabId) {
       if (disconnectedTab === tabId) {
         __emitMockRemoteTab(tabId, "state", { state: "serve_down", error: "Mock remote tunnel closed" });
@@ -157,6 +158,20 @@ export function createMockRemoteProjects(tabs: MockRemoteTabCatalog): {
     async CompactRemoteTab() {},
     async ReplayRemoteTabPrompts() { return []; },
     async ForkRemoteTab() {},
+    // The dev mock stands in for a serve that advertises the create-only fork
+    // capability: a target list that is always present, verifiable, and opens.
+    async ForkTargetsRemoteTab(tabId) {
+      if (!tabId) return { targets: [], verifiable: false };
+      return {
+        sourceSessionId: tabId, sessionGeneration: 1,
+        targets: [{ sourceSessionId: tabId, sessionGeneration: 1, turnId: `${tabId}:turn-1`, boundarySequence: 3, turnNumber: 1, status: "committed", available: true }],
+        verifiable: true,
+      };
+    },
+    async CreateForkRemoteTab(tabId, anchor) {
+      if (!tabId || !anchor.turnId) return { opened: false };
+      return { sessionId: `mock-remote-fork-${anchor.turnId}`, operationId: crypto.randomUUID(), opened: true };
+    },
     async SummarizeRemoteTab() {},
     async ForgetRemoteTab() {},
     async RemoteTabBranches() { return []; },

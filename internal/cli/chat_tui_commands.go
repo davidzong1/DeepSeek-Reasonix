@@ -23,7 +23,7 @@ import (
 func (m *chatTUI) showStatusDetails() {
 	var lines []string
 	lines = append(lines, viewHeader("%s", "Session status"))
-	mode := "Ask"
+	mode := "Workspace"
 	if m.ctrl != nil {
 		mode = m.modeTagText()
 	}

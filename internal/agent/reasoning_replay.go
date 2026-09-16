@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"slices"
 	"strings"
 
@@ -82,7 +83,11 @@ func (a *Agent) finishReasoningReplayOverflow(result streamedTurn, sink *deferre
 	}
 	result.usage = finalizeSamplingUsage(billable, result.usage)
 	terminal := a.finishUnreplayableReasoning(result, sink, issue)
-	a.emitReasoningReplayAttemptOutcome(attemptID, attempt, terminal.err)
+	if terminal.err != nil {
+		a.emitReasoningReplayAttemptOutcome(attemptID, attempt, terminal.err)
+	} else {
+		terminal.settledAttemptID, terminal.settledAttempt = attemptID, attempt
+	}
 	return terminal
 }
 
@@ -183,7 +188,7 @@ func (a *Agent) ensureUnreplayableHistoryRecovery() {
 			return
 		}
 	}
-	a.sess.conversation.Add(provider.Message{
+	_ = a.appendCommittedMessages(context.Background(), "reasoning-replay-recovery", provider.Message{
 		Role: provider.RoleTool, ToolCallID: provider.LocalOnlyToolID,
 		Name: provider.LocalOnlyToolName, LocalOnly: true, InterruptedTurn: recovery,
 	})

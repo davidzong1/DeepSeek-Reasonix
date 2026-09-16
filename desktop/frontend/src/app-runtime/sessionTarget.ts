@@ -1,5 +1,8 @@
+import { sessionIdentityStableKey, type SessionIdentityRef } from "../lib/sessionIdentity";
+
 export type SessionIdentityInput = {
   tabId?: string;
+  session?: SessionIdentityRef | null;
   sessionPath?: string;
   sessionGeneration?: number;
   scope?: string;
@@ -9,10 +12,8 @@ export type SessionIdentityInput = {
 
 /** Runtime session identity; intentionally distinct from draft/workspace keys. */
 export function sessionIdentityKey(input: SessionIdentityInput): string {
-  const sessionPath = (input.sessionPath ?? "").trim();
-  if (sessionPath) {
-    return ["session", sessionPath, String(input.sessionGeneration ?? 0)].join("\u0000");
-  }
+  const canonical = sessionIdentityStableKey(input);
+  if (canonical) return canonical;
   return [
     "topic",
     input.scope ?? "",

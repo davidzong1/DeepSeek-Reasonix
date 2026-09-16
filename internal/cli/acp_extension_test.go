@@ -15,6 +15,7 @@ import (
 
 	"reasonix/internal/acp"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
@@ -233,6 +234,12 @@ func TestACPSessionWithPluginModelStreamsAndSwitches(t *testing.T) {
 		ctrl.Close()
 		t.Fatalf("RebuildSession to config model: %v", err)
 	}
+	if err := control.ActivateControllerReplacement(ctrl, switched); err != nil {
+		ctrl.Close()
+		switched.ReleaseResources()
+		t.Fatalf("activate config-model replacement: %v", err)
+	}
+	ctrl.ReleaseResources()
 	if got := switched.ModelRef(); got != "local/fake-model" {
 		t.Fatalf("switched model ref = %q, want local/fake-model", got)
 	}
@@ -241,6 +248,12 @@ func TestACPSessionWithPluginModelStreamsAndSwitches(t *testing.T) {
 		switched.Close()
 		t.Fatalf("RebuildSession back to plugin model: %v", err)
 	}
+	if err := control.ActivateControllerReplacement(switched, back); err != nil {
+		switched.Close()
+		back.ReleaseResources()
+		t.Fatalf("activate plugin-model replacement: %v", err)
+	}
+	switched.ReleaseResources()
 	defer back.Close()
 	if got := back.ModelRef(); got != ref {
 		t.Fatalf("back-switched model ref = %q, want %q", got, ref)

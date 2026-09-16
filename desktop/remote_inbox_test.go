@@ -98,7 +98,8 @@ func TestRemoteRuntimeInboxReceiptSnapshotAndConsumptionOverHTTP(t *testing.T) {
 		t.Fatal("durable follow-up was not dispatched")
 	}
 	active, err := a.InboxSnapshot(tab.id)
-	if err != nil || len(active.Items) != 1 || active.Items[0].ID != receipt.ItemID || active.Items[0].State != "running" || active.Revision <= snapshot.Revision || !ctrl.RuntimeStateSnapshot().Running {
+	running := ctrl.RuntimeStateSnapshot()
+	if err != nil || len(active.Items) != 1 || active.Items[0].ID != receipt.ItemID || active.Items[0].State != "running" || active.Revision <= snapshot.Revision || !running.Running {
 		t.Fatalf("dispatched follow-up did not publish its composer-hidden state while still running: %+v, %v", active, err)
 	}
 	runner.release <- struct{}{}
@@ -107,7 +108,8 @@ func TestRemoteRuntimeInboxReceiptSnapshotAndConsumptionOverHTTP(t *testing.T) {
 	for {
 		select {
 		case state := <-sink.states:
-			if state.Phase != "idle" {
+			// The buffered sink also contains idle states from the first turn.
+			if state.Phase != "idle" || state.Revision <= running.Revision {
 				continue
 			}
 			consumed, err := a.InboxSnapshot(tab.id)

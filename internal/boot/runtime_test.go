@@ -12,6 +12,7 @@ import (
 
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 func TestBuildRuntimeDisablesImplicitSkillInvocation(t *testing.T) {
@@ -208,21 +209,25 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 	t.Chdir(dir)
 	writeRuntimeFixture(t, dir)
 
-	old := buildRuntimeFixture(t)
+	old, err := BuildRuntime(context.Background(), withTestSession(t, Options{}))
+	if err != nil {
+		t.Fatalf("BuildRuntime v3: %v", err)
+	}
+	t.Cleanup(old.Controller.Close)
 	oldCtrl := old.Controller
 
-	// Pin a session file and seed a conversation plus the session axes the
+	// Pin a v3 session and seed a conversation plus the session axes the
 	// rebuild must carry.
 	oldCtrl.EnsureSessionPath()
-	prevPath := oldCtrl.SessionPath()
-	if prevPath == "" {
-		t.Fatal("old controller pinned no session path")
+	prevRef, ok := oldCtrl.SessionRef()
+	if !ok {
+		t.Fatal("old controller pinned no v3 session")
 	}
 	oldCtrl.AdoptHistory([]provider.Message{
 		{Role: provider.RoleSystem, Content: systemMessage(oldCtrl.History())},
 		{Role: provider.RoleUser, Content: "hello"},
 		{Role: provider.RoleAssistant, Content: "hi there"},
-	}, prevPath)
+	}, "")
 	oldCtrl.SetToolApprovalMode(control.ToolApprovalYolo)
 	oldCtrl.SetPlanMode(true)
 	oldCtrl.SetGoal("ship the kernel")
@@ -244,11 +249,15 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 	}
 	defer res.Controller.Close()
 
-	// The conversation continues on the same session file with identical
+	// The conversation continues on the same immutable v3 identity with identical
 	// messages (the fixture rebuild produces the same system prompt, so the
 	// splice is invisible here).
-	if got := res.Controller.SessionPath(); got != prevPath {
-		t.Fatalf("session path = %q, want continued %q", got, prevPath)
+	gotRef, ok := res.Controller.SessionRef()
+	if !ok || gotRef != prevRef {
+		t.Fatalf("session ref = %+v, want continued %+v", gotRef, prevRef)
+	}
+	if got := res.Controller.SessionPath(); got != "" {
+		t.Fatalf("rebuilt v3 controller retained legacy path %q", got)
 	}
 	newHistory := res.Controller.History()
 	if len(newHistory) != len(oldHistory) {
@@ -287,6 +296,57 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 		t.Fatal("Rebuild closed the old runtime set")
 	}
 	oldCtrl.Close()
+}
+
+func TestRebuildImportsLegacySessionWithHostHeader(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+
+	old, err := BuildRuntime(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("BuildRuntime legacy: %v", err)
+	}
+	t.Cleanup(old.Controller.Close)
+	old.Controller.EnsureSessionPath()
+	old.Controller.AdoptHistory([]provider.Message{
+		{Role: provider.RoleSystem, Content: systemMessage(old.Controller.History())},
+		{Role: provider.RoleUser, Content: "legacy history"},
+	}, old.Controller.SessionPath())
+	if err := old.Controller.Snapshot(); err != nil {
+		t.Fatalf("Snapshot legacy: %v", err)
+	}
+
+	workspace := filepath.Join(dir, "workspace")
+	storeRoot := filepath.Join(dir, "desktop-sessions-v5", "by-id")
+	service, err := session.NewService("local", session.NewFilesystemPersistence(storeRoot))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+
+	rebuilt, err := Rebuild(context.Background(), old.Controller, Options{
+		SessionService: service,
+		SessionCreateOptions: session.CreateOptions{
+			CWD: workspace, Origin: session.SessionOriginLegacyImport,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	t.Cleanup(rebuilt.Controller.Close)
+	ref, ok := rebuilt.Controller.SessionRef()
+	if !ok {
+		t.Fatal("rebuilt controller has no canonical identity")
+	}
+	info, err := service.Query().Stat(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.CWD != workspace || info.Origin != session.SessionOriginLegacyImport {
+		t.Fatalf("import header = cwd:%q origin:%q", info.CWD, info.Origin)
+	}
 }
 
 // TestRebuildCarriesGoalWithoutSessionPath covers the in-memory fallback: an

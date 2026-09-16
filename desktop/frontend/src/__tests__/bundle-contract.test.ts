@@ -121,8 +121,8 @@ ok(
   "Trash and existing session search remain available",
 );
 ok(
-  /\.sidebar--workbench\s+\.sidebar__utility-row\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s.test(stylesSource),
-  "Workbench footer distributes its three utility actions evenly",
+  /\.sidebar--workbench\s+\.sidebar__utility-row\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s.test(stylesSource),
+  "Workbench footer distributes its four utility actions evenly",
 );
 ok(
   /\.app--creation\s+\.sidebar__nav,\s*:root\[data-theme-style\]\s+\.app--creation\s+\.sidebar__nav\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s.test(stylesSource),
@@ -155,7 +155,7 @@ ok(
   "Markdown wrapper keeps markdown/math vendor code out of the initial chunk",
 );
 ok(
-  markdownSource.includes('import("./MarkdownRenderer")'),
+  markdownSource.includes('import("./MarkdownHistory")'),
   "Markdown wrapper loads markdown renderer on demand",
 );
 ok(

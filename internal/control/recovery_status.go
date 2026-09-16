@@ -9,7 +9,7 @@ func (c *Controller) cancelledTurnWasSilent(completion *guardedTurnCompletion) b
 	if c == nil || c.executor == nil || completion == nil || completion.checkpoint == nil {
 		return false
 	}
-	msgs := c.executor.Session().Snapshot()
+	msgs := c.terminationMessages()
 	start := completion.checkpoint.messageIndex
 	if start < 0 || start > len(msgs) {
 		return false
@@ -33,25 +33,13 @@ func (c *Controller) applyToolRecoveryTurnStatus(done *event.Event, completion *
 		return
 	}
 	if len(c.executor.PendingToolRecovery()) > 0 {
-		done.Recovery = &event.RecoveryStatus{State: "recovery_required", Reason: "tool_effect_unconfirmed", RequiresUserDecision: true}
+		// Unknown effects are durable execution facts. They make the cancelled
+		// turn diagnosable, but must not create a separate terminal state or an
+		// admission requirement for the next turn.
+		done.Recovery = &event.RecoveryStatus{State: "unknown", Reason: "tool_effect_unconfirmed"}
 		return
 	}
 	if c.executor.SilentToolRecovery() || c.cancelledTurnWasSilent(completion) {
-		done.Recovery = &event.RecoveryStatus{State: "recovery_required", Reason: "silent_interruption"}
-	}
-}
-
-func (c *Controller) applyLedgerRecoveryFacts(r *provider.InterruptedTurnRecovery) {
-	if c == nil || r == nil {
-		return
-	}
-	e := c.ledgerTailEvidence()
-	if e == nil {
-		return
-	}
-	r.Cause = "runtime_restart"
-	r.TurnID = e.turnID
-	if len(r.ToolCalls) == 0 && len(r.CompletedTools) == 0 && !r.DroppedPartialText && !r.DroppedPartialReasoning {
-		r.SilentInterruption = true
+		done.Recovery = &event.RecoveryStatus{State: "interrupted", Reason: "silent_interruption"}
 	}
 }

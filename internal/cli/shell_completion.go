@@ -72,7 +72,8 @@ func cliCompletionRootSpec() cliCompletionSpec {
 	model := completionFlag("--model", cliCompletionModelValue)
 	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
 	effort := completionFlag("--effort", cliCompletionStaticValue, "auto", "low", "medium", "high", "max")
-	permissionMode := completionFlag("--permission-mode", cliCompletionStaticValue, "manual", "ask", "auto", "acceptEdits", "dontAsk", "plan", "bypassPermissions")
+	permissionMode := completionFlag("--permission-mode", cliCompletionStaticValue,
+		"read-only", "workspace-write", "danger-full-access", "plan")
 	help := completionFlag("--help -h", cliCompletionNoValue)
 
 	interactiveFlags := []cliCompletionFlag{
@@ -81,7 +82,6 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--continue -c", cliCompletionNoValue),
 		resume,
 		completionFlag("--copy", cliCompletionNoValue),
-		completionFlag("--dangerously-skip-permissions --yolo", cliCompletionNoValue),
 		completionFlag("--dir", cliCompletionPathValue),
 		effort, permissionMode,
 		completionFlag("--add-dir", cliCompletionPathValue),
@@ -100,7 +100,6 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		runResume,
 		completionFlag("--copy", cliCompletionNoValue),
 		effort, permissionMode,
-		completionFlag("--auto -y", cliCompletionNoValue),
 		completionFlag("--print -p", cliCompletionNoValue),
 		completionFlag("--events-jsonl", cliCompletionNoValue),
 		completionFlag("--output-format", cliCompletionStaticValue, "text", "json", "stream-json"),
@@ -116,7 +115,6 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionFlag("--continue -c", cliCompletionNoValue),
 		resume,
 		completionFlag("--copy", cliCompletionNoValue),
-		completionFlag("--dangerously-skip-permissions --yolo", cliCompletionNoValue),
 		permissionMode,
 		effort,
 		completionFlag("--dir", cliCompletionPathValue),
@@ -232,7 +230,7 @@ func cliCompletionRootSpec() cliCompletionSpec {
 				completionFlag("--json --apply", cliCompletionNoValue), completionFlag("--dir", cliCompletionPathValue), help,
 			}),
 		),
-		catalogCompletionSpec(help),
+		catalogCompletionSpec(help), teamCompletionSpec(help),
 		completionSpec("report", []cliCompletionFlag{help},
 			completionSpec("list", []cliCompletionFlag{help}),
 			completionSpec("show", []cliCompletionFlag{help}),
@@ -279,7 +277,6 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionSpec("review", []cliCompletionFlag{
 			completionFlag("--base --commit --instructions", cliCompletionStaticValue), model, help,
 		}),
-		teamCompletionSpec(help),
 		completionSpec("bot", []cliCompletionFlag{help},
 			completionSpec("start", []cliCompletionFlag{completionFlag("--channels --dir", cliCompletionStaticValue), model, help}),
 			completionSpec("doctor", []cliCompletionFlag{completionFlag("--json --deep", cliCompletionNoValue), help}),

@@ -54,6 +54,7 @@ type Config struct {
 	Skills           SkillsConfig        `toml:"skills"`
 	Statusline       StatuslineConfig    `toml:"statusline"`
 	LSP              LSPConfig           `toml:"lsp"`
+	Browser          BrowserConfig       `toml:"browser"`
 	Bot              BotConfig           `toml:"bot"`
 	Serve            ServeConfig         `toml:"serve"`
 	Secrets          SecretsConfig       `toml:"secrets"`
@@ -251,7 +252,7 @@ func Default() *Config {
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
 		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true},
-		Desktop:          DesktopConfig{DefaultToolApprovalMode: "auto", ConversationWidth: "standard"},
+		Desktop:          DesktopConfig{DefaultToolApprovalMode: "workspace-write", ConversationWidth: "standard"},
 		Billing:          BillingConfig{},
 		Notifications: NotificationsConfig{
 			Enabled:         false,
@@ -276,20 +277,20 @@ func Default() *Config {
 			MaxSubagentConcurrency: 6,
 			MaxParallelWriters:     3,
 		},
-		// Mode "ask" with no rules keeps `reasonix run` autonomous (no TTY → ask
-		// resolves to allow) while `reasonix` prompts before writers. Users add
-		// deny/allow rules to harden or quiet specific tools.
+		// The policy fallback remains an internal rule-engine input. The active
+		// PermissionPreset supplies the user-facing execution posture, while
+		// explicit deny/ask/allow rules remain authoritative refinements.
 		Permissions: PermissionsConfig{Mode: "ask"},
-		// Sandbox keeps platform defaults: macOS/Linux jail bash, Windows has
-		// no OS sandbox and forces bash off. Network=true here so an absent
-		// [sandbox] section keeps egress instead of denying it by zero value.
+		// Restricted permission presets select the platform sandbox at runtime:
+		// Seatbelt on macOS, bubblewrap on Linux, and the restricted-token helper
+		// on Windows. Network=true preserves normal egress inside that boundary.
 		Sandbox: SandboxConfig{Network: true},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.
 		LSP:     LSPConfig{Enabled: true},
 		Network: NetworkConfig{ProxyMode: netclient.ModeAuto},
 		Bot: BotConfig{
-			ToolApprovalMode:   "ask",
+			ToolApprovalMode:   "workspace-write",
 			MaxSteps:           0,
 			DebounceMs:         1500,
 			QueueMode:          "steer",

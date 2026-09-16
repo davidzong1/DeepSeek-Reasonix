@@ -129,6 +129,8 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
     if (element.classList.contains("transcript__window")) return Number.parseFloat(element.style.height) || 0;
     if (element.classList.contains("transcript__block")) return Math.max(rowHeight, element.querySelectorAll(".transcript__row").length * rowHeight);
     if (element.classList.contains("transcript__row")) return rowHeight;
+    if (element.classList.contains("tooltip-trigger")) return 24;
+    if (element.getAttribute("role") === "tooltip") return 24;
     return Array.from(element.children).reduce((height, child) => height + ((child as HTMLElement).style.position === "absolute" ? 0 : heightOf(child as HTMLElement)), 0);
   };
   const topOf = (element: HTMLElement): number => {

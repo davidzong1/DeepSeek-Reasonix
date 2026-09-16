@@ -4,7 +4,7 @@ import { pendingFollowups, confirmFollowup, followupNotSubmitted, followupSessio
 import { useAppNavigationStore } from "../store/appNavigation";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, Brain, Check, CornerDownRight, Eye, FileText, Folder, Lightbulb, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, Brain, Check, CornerDownRight, Eye, FileText, Folder, Lightbulb, List, MessageSquare, Plus, Search, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -21,7 +21,7 @@ import { canUsePromptHistory, composerEnterAction, composerEscapeAction, compose
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { sessionTurnsLabel } from "../lib/sessionTurnsPresentation";
 import { useI18n, type Translator } from "../lib/i18n";
-import { detectShortcutPlatform, formatShortcutCombo, isReservedComposerHistoryShortcut, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
+import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
 import { fallbackCopyText } from "../lib/clipboard";
 import {
   commandAvailableAtSlashPosition,
@@ -44,7 +44,8 @@ import { observeComposerMenuViewport } from "../lib/composerMenuViewport";
 import { resolveComposerContentSizing } from "../lib/composerSizing";
 import { useToast } from "../lib/toast";
 import { readStatusLabel, turnPhaseStatusLabel } from "../lib/readStatus";
-import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type QualityFloor, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type ToolApprovalMode, type BalanceInfo, type WireReadStatus } from "../lib/types";
+import { fullAccessProjectConfirmationKey } from "../lib/fullAccessConfirmation";
+import { normalizeToolApprovalMode, type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalLifecycleView, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type ToolApprovalMode, type BalanceInfo, type WireReadStatus } from "../lib/types";
 import { ComposerPinnedFilesShelf } from "./ComposerPinnedFilesShelf";
 import {
   formatWorkspaceReference,
@@ -56,6 +57,7 @@ import { SlashMenu, sortSlashCommandsForMenu } from "./SlashMenu";
 import { ArgMenu } from "./ArgMenu";
 import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
 import { ComposerChoice } from "./ComposerChoice";
+import { PermissionPresetChoice } from "./PermissionPresetChoice";
 const ModelSwitcher = lazy(() => import("./ModelSwitcher").then((module) => ({ default: module.ModelSwitcher })));
 import { Tooltip } from "./Tooltip";
 const RecoveryWaitBanner = lazy(() => import("./RecoveryWaitBanner").then((module) => ({ default: module.RecoveryWaitBanner })));
@@ -88,6 +90,7 @@ import {
 } from "../lib/selectedTextContext";
 import { formatGoalWorkTime } from "../lib/goalRuntime";
 import { ComposerContentMenuActions } from "./ComposerContentMenuActions";
+import { GoalLifecycleActions } from "./GoalLifecycleActions";
 
 interface Attachment {
   path: string;
@@ -542,14 +545,14 @@ export function Composer({
   running,
   collaborationMode,
   toolApprovalMode,
-  qualityFloor,
-  floorInferred,
   turnPhase,
   readStatuses,
   goal,
   goalStatus,
+  goalView,
   goalRuntime,
   cwd,
+  workspaceRoot,
   modelLabel,
   commandCatalog,
   imageInputEnabled = true,
@@ -565,9 +568,8 @@ export function Composer({
   onSetMode,
   onSetCollaborationMode,
   onSetToolApprovalMode,
-  onSetQualityFloor,
-  onToggleYoloApprovalMode,
   onClearGoal,
+  onEditGoal,
   onPauseGoal,
   onResumeGoal,
   onSwitchModel,
@@ -625,16 +627,16 @@ export function Composer({
   running: boolean;
   collaborationMode: CollaborationMode;
   toolApprovalMode: ToolApprovalMode;
-  qualityFloor?: QualityFloor;
-  floorInferred?: boolean;
   /** Host turn phase: working | checking | verifying | reviewing */
   turnPhase?: string;
   /** Live read progress keyed by read id; rendered as one status line. */
   readStatuses?: Record<string, WireReadStatus>;
   goal?: string;
   goalStatus?: string;
+  goalView?: GoalLifecycleView;
   goalRuntime?: GoalRuntime;
   cwd?: string;
+  workspaceRoot?: string;
   modelLabel: string;
   commandCatalog?: readonly CommandInfo[];
   imageInputEnabled?: boolean;
@@ -656,9 +658,8 @@ export function Composer({
   onSetMode: (mode: Mode) => void;
   onSetCollaborationMode: (mode: CollaborationMode) => void;
   onSetToolApprovalMode: (mode: ToolApprovalMode) => void;
-  onSetQualityFloor?: (floor: QualityFloor) => void;
-  onToggleYoloApprovalMode: () => void;
   onClearGoal: () => void;
+  onEditGoal: (objective: string, maxGoalRounds: number | null) => void;
   onPauseGoal: () => void;
   onResumeGoal: () => void;
   onSwitchModel: (name: string) => boolean | Promise<boolean>;
@@ -743,7 +744,11 @@ export function Composer({
   const sendComboLabel = useShortcutComboLabel("composer.send");
   const undoComboLabel = useShortcutComboLabel("composer.undo");
   const redoComboLabel = useShortcutComboLabel("composer.redo");
-  const yoloComboLabel = useShortcutComboLabel("toolApproval.yolo");
+  const permissionPreset = normalizeToolApprovalMode(toolApprovalMode);
+  const fullAccessConfirmationKey = fullAccessProjectConfirmationKey({
+    workspacePath: workspaceRoot || inboxWorkspace || cwd,
+    remoteHostId: inboxHostId,
+  });
   const draftKey = sessionKey || tabId || DEFAULT_COMPOSER_DRAFT_KEY;
   const runtimeState = useRuntimeSession(tabId, inboxSessionPath);
   const finishing = runtimeState.finishing;
@@ -3399,16 +3404,6 @@ export function Composer({
       return;
     }
 
-    if (
-      !composing
-      && !isReservedComposerHistoryShortcut(e.nativeEvent, shortcutPlatform)
-      && matchesShortcut(e.nativeEvent, "toolApproval.yolo", shortcutPlatform)
-    ) {
-      e.preventDefault();
-      onToggleYoloApprovalMode();
-      return;
-    }
-
     syncPromptHistoryGeneration();
 
     const inputSelection = getComposerSelection();
@@ -3705,10 +3700,6 @@ export function Composer({
       requestActiveDraftFrame(focusComposerInput);
     });
   };
-  const chooseQualityFloor = (floor: QualityFloor) => {
-    if (floor === qualityFloor) return;
-    onSetQualityFloor?.(floor);
-  };
   const stopGoalMode = () => {
     setContentMenuOpen(false);
     closeIntentMenu(() => {
@@ -3965,7 +3956,7 @@ export function Composer({
         }}
       />
       {!heroMode && <AnchoredPopover
-        open={(contentMenuOpen || intentMenuOpen) && !disabled && !readOnly && !running}
+        open={(contentMenuOpen || intentMenuOpen) && !disabled && !readOnly && (!running || (goalModeOn && Boolean(activeGoal)))}
         anchorRef={contentMenuOpen ? contentMenuAnchorRef : intentMenuAnchorRef}
         onClose={() => { setContentMenuOpen(false); closeIntentMenu(); }}
         className="composer-access-menu composer-content-menu composer-intent-menu composer-menu-surface"
@@ -4017,6 +4008,20 @@ export function Composer({
             {goalModeOn && activeGoal && (
             <div className="composer-intent-menu__goal-actions">
               <div className="composer-intent-menu__goal-runtime">
+                {goalView && (
+                  <span className="composer-intent-menu__goal-runtime-line">
+                    {goalView.phase === "active" && goalView.activation === "armed"
+                      ? running ? t("composer.goalRunning") : t("composer.goalWaitingNext")
+                      : goalView.phase === "active"
+                        ? t("composer.goalWaitingResume")
+                        : goalView.phase === "paused"
+                          ? t("composer.goalPaused")
+                          : goalView.phase === "blocked"
+                            ? t("composer.goalBlocked")
+                            : t("composer.goalComplete")}
+                    {goalView.blockedReason?.message ? ` — ${goalView.blockedReason.message}` : ""}
+                  </span>
+                )}
                 {goalRuntime && (
                   <span className="composer-intent-menu__goal-runtime-line">
                     {t("composer.goalRuntimeLine", {
@@ -4027,59 +4032,24 @@ export function Composer({
                     })}
                   </span>
                 )}
-                {goalStatus === "blocked" && !goalRuntime?.stopCause && (
+                {!goalView && goalStatus === "blocked" && !goalRuntime?.stopCause && (
                   <span className="composer-intent-menu__goal-runtime-line composer-intent-menu__goal-runtime-line--blocked">
                     {t("composer.goalBlocked")}
                   </span>
                 )}
-                {goalStatus === "blocked" && goalRuntime?.stopCause && (
+                {!goalView && goalStatus === "blocked" && goalRuntime?.stopCause && (
                   <span className="composer-intent-menu__goal-runtime-line composer-intent-menu__goal-runtime-line--paused">
                     {t("composer.goalPaused")}
                     {goalRuntime.lastReason ? ` — ${goalRuntime.lastReason}` : ""}
                   </span>
                 )}
               </div>
-              {goalStatus === "blocked" ? (
-                <button
-                  type="button"
-                  className="composer-intent-menu__stop"
-                  onClick={onResumeGoal}
-                  disabled={disabled}
-                >
-                  {t("composer.taskModeResumeGoal")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="composer-intent-menu__stop"
-                  onClick={onPauseGoal}
-                  disabled={disabled || running}
-                >
-                  {t("composer.taskModePauseGoal")}
-                </button>
-              )}
-              <button
-                type="button"
-                className="composer-intent-menu__stop"
-                onClick={stopGoalMode}
-                disabled={disabled || running}
-              >
-                {t("composer.taskModeStopGoal")}
-              </button>
+              <GoalLifecycleActions
+                goalView={goalView} goalStatus={goalStatus} disabled={disabled} running={running}
+                onEditGoal={onEditGoal} onPauseGoal={onPauseGoal} onResumeGoal={onResumeGoal} onStopGoal={stopGoalMode}
+              />
             </div>
           )}
-        </div>
-        <div className="composer-access-menu__section" role="menu" aria-label={t("composer.qualityFloor")} data-inferred={floorInferred || undefined}>
-          <div className="composer-access-menu__label">{t("composer.qualityFloor")}</div>
-            <button type="button" role="menuitemcheckbox"
-              aria-checked={qualityFloor === "delivery"}
-              className={`composer-access-menu__item${qualityFloor === "delivery" ? " composer-access-menu__item--active" : ""}`}
-              disabled={approvalBarDisabled || !onSetQualityFloor}
-              onClick={() => { chooseQualityFloor(qualityFloor === "delivery" ? "standard" : "delivery"); setContentMenuOpen(false); closeIntentMenu(); }}>
-              <ShieldCheck size={18} aria-hidden="true" />
-              <span className="composer-access-menu__copy"><span className="composer-access-menu__title">{t("composer.qualityFloorDelivery")}</span></span>
-              {qualityFloor === "delivery" && <Check size={14} aria-hidden="true" />}
-            </button>
         </div>
       </AnchoredPopover>}
       {menuMode === "slash" && (
@@ -4584,7 +4554,7 @@ export function Composer({
                     type="button"
                     className={`composer-content-trigger${contentMenuOpen ? " composer-content-trigger--open" : ""}`}
                     onClick={() => (contentMenuOpen ? setContentMenuOpen(false) : openContentMenu())}
-                    disabled={disabled || readOnly || running}
+                    disabled={disabled || readOnly || (running && !(goalModeOn && activeGoal))}
                     aria-haspopup="menu"
                     aria-expanded={contentMenuOpen}
                     aria-label={t("composer.contentMenuTitle")}
@@ -4595,16 +4565,14 @@ export function Composer({
               </div>
             )}
             {!heroMode && <div className="composer-meta__control composer-meta__control--approval">
-              <ComposerChoice key={`approval-${tabId}`} label={toolApprovalMode === "yolo" ? "Yolo" : t(toolApprovalMode === "ask" ? "composer.accessAskShort" : "common.auto")}
-                showChevron
-                icon={toolApprovalMode === "yolo" ? <ShieldAlert size={16} /> : toolApprovalMode === "auto" ? <ShieldCheck size={16} /> : <Shield size={16} />}
-                tone={`composer-choice--permission-${toolApprovalMode}`}
-                value={toolApprovalMode} disabled={approvalBarDisabled} onPick={value => chooseApprovalMode(value as ToolApprovalMode)}
-                options={[
-                  { value: "ask", label: t("composer.accessAskShort"), icon: <Shield size={18} />, description: t("composer.accessAskDesc") },
-                  { value: "auto", label: t("common.auto"), icon: <ShieldCheck size={18} />, description: t("composer.accessAutoDesc") },
-                  { value: "yolo", label: "Yolo", icon: <ShieldAlert size={18} />, description: t("composer.accessYoloDesc"), title: t("composer.accessYoloTitle", { shortcut: yoloComboLabel }) },
-                ]} />
+              <PermissionPresetChoice
+                key={`approval-${tabId}`}
+                value={permissionPreset}
+                disabled={approvalBarDisabled} dismissSignal={transientDismissSignal}
+                scopeKey={`${tabId ?? ""}:${sessionKey ?? ""}:${workspaceScopeKey ?? ""}`}
+                projectConfirmationKey={fullAccessConfirmationKey}
+                onPick={chooseApprovalMode}
+              />
             </div>}
             {!heroMode && collaborationMode !== "normal" && (
               <div className="composer-meta__control composer-meta__control--intent">
@@ -4624,24 +4592,10 @@ export function Composer({
                 </Tooltip>
               </div>
             )}
-            {!heroMode && qualityFloor === "delivery" && (
-              <div className="composer-meta__control composer-meta__control--delivery">
-                <Tooltip label={`${t("common.close")} ${t("composer.qualityFloorDelivery")}`}>
-                  <button type="button"
-                    className="composer-task-mode-trigger composer-task-mode-trigger--removable composer-delivery-trigger"
-                    aria-label={`${t("common.close")} ${t("composer.qualityFloorDelivery")}`}
-                    disabled={approvalBarDisabled || !onSetQualityFloor}
-                    onClick={() => { chooseQualityFloor("standard"); requestActiveDraftFrame(focusComposerInput); }}>
-                    <span className="composer-task-mode-trigger__icon"><ShieldCheck size={16} aria-hidden="true" /><X className="composer-task-mode-trigger__remove" size={14} aria-hidden="true" /></span>
-                    <span className="composer-task-mode-trigger__value">{t("composer.qualityFloorDelivery")}</span>
-                  </button>
-                </Tooltip>
-              </div>
-            )}
             <div className="composer-meta__control composer-meta__control--model">
               {!heroMode && (
                 <ContextWindowRing
-                  enabled
+                  enabled={!suspendedByDecision}
                   turnMetrics={runMetrics ?? undefined}
                   context={context}
                   tabId={tabId}
@@ -4650,10 +4604,10 @@ export function Composer({
                   currency={currency}
                   cacheHitTokens={cacheHitTokens}
                   cacheMissTokens={cacheMissTokens}
-                  balance={balance}
+                  balance={balance} dismissSignal={transientDismissSignal}
                 />
               )}
-              <Suspense fallback={<span className="modelsw__label">{modelLabel}</span>}><ModelSwitcher composerMenu label={modelLabel} tabId={tabId} ready={ready} sessionKey={sessionKey} onPick={onSwitchModel} onManage={() => {
+              <Suspense fallback={<span className="modelsw__label">{modelLabel}</span>}><ModelSwitcher composerMenu label={modelLabel} tabId={tabId} ready={ready} sessionKey={sessionKey} disabled={suspendedByDecision} dismissSignal={transientDismissSignal} onPick={onSwitchModel} onManage={() => {
                 useAppNavigationStore.getState().setSettingsFocus({ target: "model-access" });
                 useAppNavigationStore.getState().setSettingsTarget("models");
               }} /></Suspense>
@@ -4661,7 +4615,7 @@ export function Composer({
                 <ComposerChoice key={`effort-${tabId}`} label={effortLabel(currentEffort)}
                   ariaLabel={`${t("status.effortTitle")}: ${effortLabel(currentEffort)}`}
                   icon={<Brain size={16} />} showChevron
-                  value={currentEffort} disabled={disabled || readOnly || running}
+                  value={currentEffort} disabled={disabled || readOnly || running} dismissSignal={transientDismissSignal}
                   onPick={chooseEffortLevel}
                   options={effortLevels.map(level => ({ value: level, label: effortLabel(level) }))} />
               </div>}

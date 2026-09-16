@@ -158,6 +158,7 @@ const appStubTable = ({
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (tabID: string) => {
         if (tabID === "tab-o" && heldTabOHistory) {
           const promise = heldTabOHistory;

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/provider"
+	"reasonix/internal/session"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -28,6 +32,9 @@ func (a *App) AIRenameSession(topicID string) (string, error) {
 	if ctrl == nil {
 		return "", fmt.Errorf("session is not open; open it before using AI rename")
 	}
+	if ctrl.UsesExclusiveSession() {
+		return a.aiRenameCanonicalSession(topicID, ctrl)
+	}
 	sessionDir := ctrl.SessionDir()
 	sessionPath := strings.TrimSpace(ctrl.SessionPath())
 	if sessionPath == "" {
@@ -45,7 +52,10 @@ func (a *App) AIRenameSession(topicID string) (string, error) {
 	} else if ok {
 		expectedTitle = meta.CustomTitle
 	}
-	users := topicTitleUserTurnsFromSession(validated)
+	users, err := loadTopicTitleUserTurnsFromSession(validated)
+	if err != nil {
+		return "", fmt.Errorf("AI rename session: read conversation: %w", err)
+	}
 	if len(users) == 0 {
 		return "", fmt.Errorf("session has no user messages to analyze")
 	}
@@ -65,12 +75,87 @@ func (a *App) AIRenameSession(topicID string) (string, error) {
 	return title, nil
 }
 
+func (a *App) aiRenameCanonicalSession(topicID string, ctrl *control.Controller) (string, error) {
+	service, runtime, bound := ctrl.SessionBinding()
+	if !bound {
+		return "", fmt.Errorf("session has no user messages to analyze")
+	}
+	ref := runtime.Ref()
+	var topicRoot string
+	var hasTopic bool
+	a.mu.RLock()
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab != nil && tab.Ctrl == ctrl && tab.TopicID == topicID {
+			topicRoot, hasTopic = topicTitleRoot(tab.Scope, tab.WorkspaceRoot), true
+			break
+		}
+	}
+	a.mu.RUnlock()
+	expectedTopicTitle := ""
+	if hasTopic {
+		expectedTopicTitle = loadTopicTitle(topicRoot, topicID)
+	}
+	ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
+	defer cancel()
+	info, err := service.Query().Stat(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("AI rename session: read current title: %w", err)
+	}
+	// Publish accepted user turns before querying the durable history index.
+	if _, err := runtime.Session().Flush(ctx); err != nil {
+		return "", fmt.Errorf("AI rename session: flush conversation: %w", err)
+	}
+	messages, err := service.Query().TitleMessages(ctx, ref, aiSessionTitleMaxTurns)
+	if err != nil {
+		return "", fmt.Errorf("AI rename session: read conversation: %w", err)
+	}
+	var users []string
+	for _, message := range messages {
+		if content := topicTitleUserText(message); content != "" {
+			users = append(users, content)
+		}
+	}
+	if len(users) == 0 {
+		return "", fmt.Errorf("session has no user messages to analyze")
+	}
+	title, err := ctrl.GenerateSessionTitle(ctx, sessionTitleTranscript(users))
+	if err != nil {
+		return "", err
+	}
+	// The legacy sidebar still owns a topic label. Serialize its projection
+	// with manual/automatic topic renames, as well as guarding the session title.
+	a.topicTitleMutationMu.Lock()
+	defer a.topicTitleMutationMu.Unlock()
+	currentRef, stillBound := ctrl.SessionRef()
+	if a.controllerForTopic(topicID) != ctrl || !stillBound || currentRef != ref {
+		return "", fmt.Errorf("session changed while AI rename was running; try again")
+	}
+	if hasTopic && loadTopicTitle(topicRoot, topicID) != expectedTopicTitle {
+		return "", fmt.Errorf("session title changed while AI rename was running; try again")
+	}
+	if err := service.SetTitleIfUnchanged(ctx, ref, info.Title, title); err != nil {
+		if errors.Is(err, session.ErrSessionTitleChanged) {
+			return "", fmt.Errorf("session title changed while AI rename was running; try again")
+		}
+		return "", err
+	}
+	if hasTopic {
+		if err := setTopicTitle(topicRoot, topicID, title); err != nil {
+			return "", fmt.Errorf("AI rename session: update topic title: %w", err)
+		}
+		a.updateOpenTopicTitle(topicID, title, topicTitleSourceManual)
+	}
+	a.invalidatePromptHistoryCache()
+	a.emitProjectTreeChanged()
+	return title, nil
+}
+
 func (a *App) controllerForTopic(topicID string) *control.Controller {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	var found *control.Controller
 	for _, tab := range a.runtimeTabsLocked() {
-		if tab == nil || strings.TrimSpace(tab.TopicID) != topicID || tab.Ctrl == nil {
+		if tab == nil || (strings.TrimSpace(tab.TopicID) != topicID && tab.SessionID != topicID && sessionRoute(tab.SessionID) != topicID) || tab.Ctrl == nil {
 			continue
 		}
 		if ctrl, ok := tab.Ctrl.(*control.Controller); ok {
@@ -96,6 +181,14 @@ func (a *App) topicControllerOwnsSession(topicID string, ctrl *control.Controlle
 		return sessionRuntimeKey(tab.currentSessionPath()) == sessionRuntimeKey(sessionPath)
 	}
 	return false
+}
+
+func topicTitleUserText(message provider.Message) string {
+	if !agent.IsUserAuthoredTurnMessage(message) {
+		return ""
+	}
+	content := control.StripComposePrefixes(agent.UserPreviewText(agent.UserMessageText(message)))
+	return strings.TrimSpace(control.StripReferencedContextPrefix(content))
 }
 
 func sessionTitleTranscript(users []string) string {

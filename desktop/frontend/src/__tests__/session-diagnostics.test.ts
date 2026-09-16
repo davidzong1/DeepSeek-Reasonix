@@ -97,6 +97,9 @@ resetSessionDiagnostics();
     markdownBudgetBytes: 16 << 20,
     historyEvictions: 1,
     markdownEvictions: 0,
+    reclaimedPages: 2,
+    residentWindowEntries: 96,
+    windowMaxPages: 3,
   }));
   const snapshot = sessionPipelineDiagnostics();
   ok(snapshot.mountedRows?.mounted === 30 && snapshot.mountedRows.total === 412, "mounted row counts flow through");

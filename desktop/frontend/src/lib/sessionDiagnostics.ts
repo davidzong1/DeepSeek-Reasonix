@@ -80,6 +80,12 @@ export interface TranscriptCacheDiagnostic {
   markdownBudgetBytes: number;
   historyEvictions: number;
   markdownEvictions: number;
+  /** Pages of resident history the window budget has reclaimed. */
+  reclaimedPages: number;
+  /** Messages held across every resident window; the bounded reading cost. */
+  residentWindowEntries: number;
+  /** Adjacent pages the window keeps per session before reclaiming. */
+  windowMaxPages: number;
 }
 
 export interface MountedRowsDiagnostic {
@@ -215,6 +221,12 @@ export function noteResumeHistoryPage(
   }
   lastResumeHistory = { entries: page.messages.length, inlineBytes, durationMs, stale: false, source: snapshotMs === undefined ? "resume-loaded" : "transcript-snapshot" };
   resumeSwitchPhases = page.switch && Number.isSafeInteger(page.switch.durableReads) && page.switch.durableReads >= 0 ? { ...page.switch } : null;
+  resumeSnapshotMs = snapshotMs;
+}
+
+export function noteTranscriptFollowSwitch(phases: HistorySwitchPhases | void, metrics: { entries: number; inlineBytes: number }, durationMs: number, snapshotMs: number): void {
+  lastResumeHistory = { ...metrics, durationMs, stale: false, source: "transcript-v2" };
+  resumeSwitchPhases = phases ? { ...phases } : null;
   resumeSnapshotMs = snapshotMs;
 }
 

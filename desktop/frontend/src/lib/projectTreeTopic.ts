@@ -238,7 +238,7 @@ export function projectTreeTopicOpenRequest(node: ProjectNode): ProjectTreeTopic
     scope,
     workspaceRoot: scope === "global" ? "" : node.root ?? "",
     topicId: node.topicId ?? "",
-    sessionPath: node.sessionPath,
+    sessionPath: node.session ? `session-id:${node.session.sessionId}` : node.sessionPath,
   };
 }
 

@@ -47,6 +47,12 @@ export function EffortSwitcher({
   }, [clearCloseTimer]);
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+  useEffect(() => {
+    if (!disabled) return;
+    clearCloseTimer();
+    setOpen(false);
+    setClosing(false);
+  }, [clearCloseTimer, disabled]);
 
   const pick = (level: string) => {
     closeMenu(() => {

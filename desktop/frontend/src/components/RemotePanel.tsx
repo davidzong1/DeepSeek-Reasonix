@@ -1,11 +1,14 @@
 import { useAppNavigationStore } from "../store/appNavigation";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { isRemoteDegradedWarning, isRemoteTerminalFailure, remoteConnectionErrorSummaryKey } from "../lib/remoteErrors";
 import { resolveRemoteWorkspace } from "../lib/remoteWorkspace";
 import { publishNavigationIntent } from "../lib/useNavigationIntentFence";
+import { fileNavigationOwner } from "../lib/fileNavigationCommands";
+import type { FileNavigationOwner, FileNavigationScope, FileNavigationSnapshot } from "../lib/fileNavigationOwner";
+import { useFileNavigationRecord } from "../app-shell/useFileNavigation";
 import { useRemoteStore, type RemoteExplorerTab } from "../store/remote";
 import type { RemoteDirEntry, RemoteForwardView } from "../lib/types";
 import { CodeViewer } from "./CodeViewer";
@@ -15,7 +18,7 @@ const EMPTY_REMOTE_FORWARDS: RemoteForwardView[] = [];
 
 /** RemotePanel is the right-dock remote work surface: a host header with
  *  Files / Ports / Server tabs. */
-export function RemotePanel({ onClose }: { onClose: () => void }) {
+export function RemotePanel({ onClose, tabId, dockTabId, fileNavigation: fileNavigationProp, navigationSignal }: { onClose: () => void; tabId?: string; dockTabId?: string; fileNavigation?: FileNavigationOwner; navigationSignal?: AbortSignal }) {
   const t = useT();
   const hostId = useRemoteStore((s) => s.explorerHostId);
   const host = useRemoteStore((s) => s.hosts.find((item) => item.id === hostId));
@@ -23,6 +26,16 @@ export function RemotePanel({ onClose }: { onClose: () => void }) {
   const setTab = useRemoteStore((s) => s.setExplorerTab);
   const status = useRemoteStore((s) => (hostId ? s.statuses[hostId] : undefined));
   const setSettingsTarget = useAppNavigationStore((s) => s.setSettingsTarget);
+  const [fallbackFileNavigation] = useState(fileNavigationOwner);
+  const fileNavigation = fileNavigationProp ?? fallbackFileNavigation;
+  const fileScope = useMemo(() => ({ sessionTabId: tabId ?? "", dockTabId: dockTabId ?? "" }), [dockTabId, tabId]);
+  // Another host is another resource space: binding it replaces this dock's
+  // record, so no path or access context crosses between hosts.
+  const fileKey = useMemo(
+    () => ({ resource: hostId ?? "", session: `${tabId ?? ""}\u0000${hostId ?? ""}` }),
+    [hostId, tabId],
+  );
+  const fileRecord = useFileNavigationRecord(fileNavigation, fileScope, fileKey);
 
   if (!hostId) return null;
   const connected = status?.state === "connected" || status?.state === "degraded";
@@ -86,7 +99,17 @@ export function RemotePanel({ onClose }: { onClose: () => void }) {
       </nav>
 
       <div className="remote-panel__body">
-        {tab === "files" && <RemoteFilesTab hostId={hostId} connected={connected} />}
+        {tab === "files" && (
+          <RemoteFilesTab
+            key={hostId}
+            hostId={hostId}
+            connected={connected}
+            navigationSignal={navigationSignal}
+            fileNavigation={fileNavigation}
+            fileScope={fileScope}
+            record={fileRecord}
+          />
+        )}
         {tab === "ports" && <RemotePortsTab hostId={hostId} connected={connected} />}
         {tab === "server" && <RemoteServerTab hostId={hostId} connected={connected} defaultWorkspace={host?.defaultWorkspace} />}
       </div>
@@ -96,30 +119,77 @@ export function RemotePanel({ onClose }: { onClose: () => void }) {
 
 // ── Files tab: lean lazy tree + preview/edit ──
 
-function RemoteFilesTab({ hostId, connected }: { hostId: string; connected: boolean }) {
+function RemoteFilesTab({ hostId, connected, navigationSignal, fileNavigation, fileScope, record }: {
+  hostId: string;
+  connected: boolean;
+  navigationSignal?: AbortSignal;
+  fileNavigation: FileNavigationOwner;
+  fileScope: FileNavigationScope;
+  record: FileNavigationSnapshot | null;
+}) {
   const t = useT();
   const [entriesByDir, setEntriesByDir] = useState<Record<string, RemoteDirEntry[]>>({});
   const [openDirs, setOpenDirs] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<string | null>(null);
+  // One preview at a time, chosen by the dock's committed navigation: the panel
+  // reads a result rather than keeping a second selection of its own.
+  const selectedEntry = record?.selected ?? null;
+  const selected = selectedEntry?.resource.path ?? null;
+  const presentedSelection = selectedEntry?.resource.access.source === "presented" ? selected : null;
   const [loadErr, setLoadErr] = useState("");
   const rootPath = "."; // remote home; RealPath resolves it server-side
+  const lifetime = useRef(0);
+  const loads = useRef(new Map<string, number>());
+  useEffect(() => () => { lifetime.current++; loads.current.clear(); }, []);
 
   const loadDir = useCallback(
-    async (path: string) => {
+    async (path: string, signal?: AbortSignal) => {
+      const owner = lifetime.current;
+      const generation = (loads.current.get(path) ?? 0) + 1;
+      loads.current.set(path, generation);
+      const current = () => !signal?.aborted && !navigationSignal?.aborted && owner === lifetime.current && loads.current.get(path) === generation;
       try {
         const entries = await app.ListRemoteDir(hostId, path);
+        if (!current()) return;
         setEntriesByDir((m) => ({ ...m, [path]: entries }));
         setLoadErr("");
       } catch (e) {
+        if (!current()) return;
         setLoadErr(t("remote.tree.loadError", { err: String(e) }));
       }
     },
-    [hostId, t],
+    [hostId, t, navigationSignal],
   );
 
   useEffect(() => {
     if (connected) void loadDir(rootPath);
   }, [connected, loadDir]);
+
+  // Expanding the ancestors of a committed selection is the remote tree's whole
+  // reveal. It runs from the record's revision, so a remount re-expands the
+  // retained selection without replaying the command that opened it.
+  const appliedRevealRef = useRef("");
+  const revealRevision = selected ? `${record?.generation ?? 0}:${record?.contentRevision ?? 0}:${record?.treeReveal ?? 0}:${selected}` : "";
+  useEffect(() => {
+    if (!connected || !selected || !revealRevision) return;
+    if (appliedRevealRef.current === revealRevision) return;
+    appliedRevealRef.current = revealRevision;
+    const slashPath = selected.replaceAll("\\\\", "/");
+    const parts = slashPath.split("/").filter(Boolean);
+    const absolute = slashPath.startsWith("/");
+    const ancestors: string[] = [];
+    for (let i = 1; i < parts.length; i += 1) {
+      ancestors.push(`${absolute ? "/" : ""}${parts.slice(0, i).join("/")}`);
+    }
+    const lifetimeAtStart = lifetime.current;
+    void (async () => {
+      for (const dir of ancestors) {
+        if (lifetime.current !== lifetimeAtStart || navigationSignal?.aborted) return;
+        await loadDir(dir, record?.signal);
+        if (lifetime.current !== lifetimeAtStart || navigationSignal?.aborted) return;
+        setOpenDirs(prev => new Set(prev).add(dir));
+      }
+    })();
+  }, [connected, loadDir, navigationSignal, record?.signal, revealRevision, selected]);
 
   const toggleDir = (path: string) => {
     setOpenDirs((prev) => {
@@ -150,7 +220,7 @@ function RemoteFilesTab({ hostId, connected }: { hostId: string; connected: bool
         ) : (
           <button
             className={`remote-tree__row ${selected === e.path ? "is-selected" : ""}`}
-            onClick={() => setSelected(e.path)}
+            onClick={() => { void Promise.resolve(fileNavigation.selectPath(fileScope, { hostId, path: e.path })); }}
             role="treeitem"
           >
             {e.name}
@@ -166,16 +236,35 @@ function RemoteFilesTab({ hostId, connected }: { hostId: string; connected: bool
     <div className="remote-files">
       <div className="remote-files__tree" role="tree">
         {loadErr && <p className="remote-panel__error" role="alert">{loadErr}</p>}
+        {presentedSelection && (
+          <button
+            className="remote-tree__row is-selected remote-tree__presented"
+            onClick={() => { void Promise.resolve(fileNavigation.selectPath(fileScope, { hostId, path: presentedSelection })); }}
+            role="treeitem"
+            title={presentedSelection}
+          >
+            {presentedSelection.split(/[\\/]/).filter(Boolean).slice(-1)[0] || presentedSelection}
+          </button>
+        )}
         <ul>{renderDir(rootPath, 0)}</ul>
       </div>
       <div className="remote-files__view">
-        {selected ? <RemoteFileView hostId={hostId} path={selected} connected={connected} /> : null}
+        {selected ? (
+          <RemoteFileView
+            key={`${hostId}::${selected}`}
+            hostId={hostId}
+            path={selected}
+            connected={connected}
+            dockGeneration={record?.generation ?? 0}
+            forceReadOnly={selected === presentedSelection}
+          />
+        ) : null}
       </div>
     </div>
   );
 }
 
-function RemoteFileView({ hostId, path, connected }: { hostId: string; path: string; connected: boolean }) {
+function RemoteFileView({ hostId, path, connected, dockGeneration, forceReadOnly = false }: { hostId: string; path: string; connected: boolean; dockGeneration: number; forceReadOnly?: boolean }) {
   const t = useT();
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState<string | null>(null);
@@ -185,39 +274,67 @@ function RemoteFileView({ hostId, path, connected }: { hostId: string; path: str
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [err, setErr] = useState("");
+  const operation = useRef(0);
+  // This view's identity: a receipt is only applied while the same dock, host
+  // and path it was issued for are still the ones on screen.
+  const identity = `${dockGeneration}\u0000${hostId}\u0000${path}`;
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  useEffect(() => () => { operation.current++; }, []);
 
+  // The remote read entry point is host-scoped: it revalidates connectivity on
+  // the host the user authenticated, not the presented tool scope an entry was
+  // opened with. A presented remote file is therefore read with host
+  // credentials and shown read-only; parity with the local presented entry
+  // points needs a bridge entry point this change does not add.
   const load = useCallback(async () => {
-    const p = await app.ReadRemoteFile(hostId, path);
-    setBody(p.body);
-    setDraft(null);
-    setMtime(p.mtimeUnix);
-    setBinary(p.binary);
-    setTruncated(p.truncated);
-    setErr(p.err ?? "");
-  }, [hostId, path]);
+    const generation = ++operation.current;
+    const at = identity;
+    const current = () => operation.current === generation && identityRef.current === at;
+    try {
+      const p = await app.ReadRemoteFile(hostId, path);
+      if (!current()) return;
+      setBody(p.body);
+      setDraft(null);
+      setMtime(p.mtimeUnix);
+      setBinary(p.binary);
+      setTruncated(p.truncated);
+      setErr(p.err ?? "");
+    } catch (error) { if (current()) setErr(String(error)); }
+  }, [hostId, identity, path]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const editable = connected && !binary && !truncated && !err;
+  const editable = !forceReadOnly && connected && !binary && !truncated && !err;
   const dirty = draft !== null && draft !== body;
 
   const save = async (force: boolean) => {
     if (draft === null) return;
+    const generation = ++operation.current;
+    const submitted = draft;
+    // The write itself is issued for the file captured here and completes
+    // against it; navigating away only takes away the right to update this
+    // editor and to report the receipt to it.
+    const at = identity;
+    const ownsReceipt = () => operation.current === generation && identityRef.current === at;
     setSaving(true);
     try {
       const res = await app.WriteRemoteFile(hostId, path, draft, force ? 0 : mtime);
+      if (!ownsReceipt()) return;
       if (res.conflict) {
         setConflict(true);
         return;
       }
-      setBody(draft);
-      setDraft(null);
+      setBody(submitted);
+      setDraft(current => current === submitted ? null : current);
       setMtime(res.newMtimeUnix);
       setConflict(false);
+    } catch (error) {
+      if (ownsReceipt()) setErr(String(error));
     } finally {
-      setSaving(false);
+      if (ownsReceipt()) setSaving(false);
     }
   };
 

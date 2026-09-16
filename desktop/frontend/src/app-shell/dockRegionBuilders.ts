@@ -8,9 +8,8 @@ import type { useComposerInsertCommands } from "../app-runtime/useComposerInsert
 import type { WorkspaceVerificationRevealRequest } from "../components/WorkspacePanel";
 import type { WorkspaceDockRegionProps } from "./WorkspaceDockRegion";
 import type { AppBottomRegionsProps } from "./AppBottomRegions";
-import type { ComposerProfile } from "../lib/composerProfile";
 import type { RightDockMode } from "../store/layout";
-import { defaultCreationRightDockTreeWidth, defaultRightDockTreeWidth, TERMINAL_DEFAULT_HEIGHT, TERMINAL_MIN_HEIGHT } from "../store/layout";
+import { defaultRightDockTreeWidth, TERMINAL_DEFAULT_HEIGHT, TERMINAL_MIN_HEIGHT } from "../store/layout";
 
 type ShellGeometry = ReturnType<typeof useShellGeometry>;
 type WorkspacePanelApi = ReturnType<typeof useWorkspacePanelCommands>;
@@ -23,7 +22,6 @@ type StatusBarProps = NonNullable<AppBottomRegionsProps["status"]>;
 
 export function buildWorkspaceDockProps(input: {
   surface: { renderable: boolean; overlay: boolean; gridOpen: boolean };
-  creation: boolean;
   showContext: boolean;
   remote: boolean;
   t: Translator;
@@ -42,21 +40,17 @@ export function buildWorkspaceDockProps(input: {
   panels: WorkspacePanelApi;
   inserts: InsertCommands;
   verification: { verificationRevealRequest: WorkspaceVerificationRevealRequest | null; closeTurnResult?: () => void };
-  qualityFloor: ComposerProfile["qualityFloor"];
   onFileTreeRefresh: () => void;
   onSessionRevertCommitted: WorkspaceDockRegionProps["workspace"]["onSessionRevertCommitted"];
   onOpenInTerminal: WorkspaceDockRegionProps["workspace"]["onOpenInTerminal"];
 }): WorkspaceDockRegionProps {
   const { surface, geometry, panels } = input;
-  const workspacePanelResetWidth = input.creation
-    ? defaultCreationRightDockTreeWidth()
-    : defaultRightDockTreeWidth();
+  const workspacePanelResetWidth = defaultRightDockTreeWidth();
   const workspacePanelResizeMinWidth = workspacePanelAriaMinWidth(geometry.workspacePanelMinWidth, geometry.workspacePanelRenderWidth);
   return {
     visible: surface.renderable,
     overlay: surface.overlay,
     mode: input.mode,
-    creation: input.creation,
     showContext: input.showContext,
     t: input.t,
     onPickEntry: panels.openDockEntry,
@@ -80,8 +74,8 @@ export function buildWorkspaceDockProps(input: {
       initialViewMode: input.mode === "changed" ? "changed" : "files",
       completionSummary: input.completionSummary, turnStartAt: input.turnStartAt,
       sessionPath: input.meta?.sessionPath, onDismissTurnResult: input.verification.closeTurnResult,
-      verificationRevealRequest: input.verification.verificationRevealRequest, qualityFloor: input.qualityFloor,
-      showViewTabs: false, creationMode: input.creation,
+      verificationRevealRequest: input.verification.verificationRevealRequest,
+      showViewTabs: false,
     },
     resizer: surface.gridOpen ? {
       min: workspacePanelResizeMinWidth,

@@ -28,7 +28,7 @@ type topicArchiveTrace struct {
 }
 
 func (a *App) TrashTopic(topicID string) error {
-	return friendlySessionFileError(a.trashTopic(topicID))
+	return friendlySessionFileError(a.archiveCompatibleTopic(topicID))
 }
 
 func (a *App) topicHasActiveRuntimeWork(topicID string) bool {

@@ -10,16 +10,20 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3
 	github.com/BurntSushi/toml v1.6.0
+	github.com/UserExistsError/conpty v0.1.4
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	github.com/kevinburke/ssh_config v1.6.0
+	github.com/klauspost/compress v1.18.4
 	github.com/larksuite/oapi-sdk-go/v3 v3.11.0
 	github.com/mattn/go-runewidth v0.0.29
 	github.com/modelcontextprotocol/go-sdk v1.8.0-pre.2
@@ -36,6 +40,7 @@ require (
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/yuin/goldmark v1.8.6
 	github.com/zalando/go-keyring v0.2.8
+	go.etcd.io/bbolt v1.5.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
@@ -51,6 +56,7 @@ require (
 )
 
 require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect

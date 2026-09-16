@@ -434,6 +434,39 @@ func SessionDir() string {
 	return filepath.Join(dir, "sessions")
 }
 
+// SessionStoreDir is the execution-v2 session root. Keeping it physically
+// separate prevents older binaries from treating v3 commits as legacy JSONL
+// transcripts and writing a format they do not understand.
+func SessionStoreDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "sessions-v4")
+}
+
+// DesktopSessionStoreDir is the SessionID-only Desktop store. It is a new
+// generation so older binaries never mistake its layout for a project-local
+// sessions-v4 root. The persistence root is by-id: workspace ownership lives
+// in DesktopWorkspaceStatePath rather than in physical directories.
+func DesktopSessionStoreDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop-sessions-v5", "by-id")
+}
+
+// DesktopWorkspaceStatePath is the durable ordered Workspace -> SessionID
+// registry used by the Desktop sidebar and session lifecycle.
+func DesktopWorkspaceStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "workspace-state-v1.json")
+}
+
 // StatsDir is where usage statistics are persisted (one .jsonl per day, e.g.
 // stats/2026-08-02.jsonl). It lives under the user state root — not the install
 // directory, which is typically read-only and replaced on upgrade — so usage
@@ -460,6 +493,19 @@ func ProjectSessionDir(workspaceRoot string) string {
 		root = abs
 	}
 	return filepath.Join(base, "projects", WorkspaceSlug(root), "sessions")
+}
+
+// ProjectSessionStoreDir is the per-workspace execution-v2 session root.
+func ProjectSessionStoreDir(workspaceRoot string) string {
+	base := MemoryUserDir()
+	root := strings.TrimSpace(workspaceRoot)
+	if base == "" || root == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return filepath.Join(base, "projects", WorkspaceSlug(root), "sessions-v4")
 }
 
 // DesktopTopicStatePath returns the authoritative SQLite path for Desktop

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/netclient"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
 	"reasonix/internal/sessiontemp"
@@ -51,6 +52,17 @@ func BindSessionTemp(tl tool.Tool, m *sessiontemp.Manager) (tool.Tool, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// BindPersistentShell attaches a session-scoped PTY manager to a bash tool.
+// ok is false when tl is not a bash value (including wrappers that do not unwrap).
+func BindPersistentShell(tl tool.Tool, m *persistentshell.Manager) (tool.Tool, bool) {
+	b, ok := tl.(bash)
+	if !ok {
+		return nil, false
+	}
+	b.persistent = m
+	return b, true
 }
 
 // RebindBashWriteRoots returns a copy of bash with its complete write surface
@@ -153,6 +165,14 @@ func confineRead(forbidRoots []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// ReadPathForbidden applies the same resolved-path deny policy used by the
+// built-in readers. Host-side viewers call this when they re-open a resource
+// recorded by a trusted tool result so a later configuration or sensitive-file
+// policy change cannot be bypassed by an old presentation card.
+func ReadPathForbidden(forbidRoots []string, target string) bool {
+	return confineRead(realRoots(forbidRoots), target)
 }
 
 func sensitiveReadPath(abs string) bool {

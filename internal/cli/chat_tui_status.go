@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
-	turncomp "reasonix/internal/completion"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -230,27 +229,23 @@ func formatCompletionSummaryLine(c *event.CompletionSummaryInfo) string {
 	return line
 }
 
-func completionSummaryNeedsAttention(c *event.CompletionSummaryInfo, floor string) bool {
+func completionSummaryNeedsAttention(c *event.CompletionSummaryInfo, _ string) bool {
 	if c == nil {
 		return false
 	}
 	if strings.TrimSpace(c.Floor) != "" {
 		return c.Attention
 	}
-	return turncomp.NeedsAttention(turncomp.AttentionInput{
-		Verdict:            c.Verdict,
-		ChecksFailed:       c.ChecksFailed,
-		GapKinds:           c.GapKinds,
-		Floor:              floor,
-		RequiredSuppressed: c.ChecksSuppressed > 0,
-	})
-}
-
-func (m chatTUI) ctrlQualityFloor() string {
-	if m.ctrl == nil {
-		return ""
+	if strings.EqualFold(strings.TrimSpace(c.Verdict), "blocked") || c.ChecksFailed > 0 || c.ChecksSuppressed > 0 {
+		return true
 	}
-	return m.ctrl.QualityFloor()
+	for _, gap := range c.GapKinds {
+		switch strings.ToLower(strings.TrimSpace(gap)) {
+		case "unbacked_claim", "failed_verification":
+			return true
+		}
+	}
+	return false
 }
 
 func completionSummaryWarning(c *event.CompletionSummaryInfo) string {
@@ -301,47 +296,47 @@ func (m chatTUI) modeTagText() string {
 	toolApprovalMode := m.ctrl.ToolApprovalMode()
 	if m.desktopShortcutLayout() {
 		switch {
-		case m.planMode && toolApprovalMode == control.ToolApprovalYolo:
+		case m.planMode && toolApprovalMode == control.ToolApprovalDangerFullAccess:
 			return "Plan+YOLO"
-		case goalMode && toolApprovalMode == control.ToolApprovalYolo:
+		case goalMode && toolApprovalMode == control.ToolApprovalDangerFullAccess:
 			return "Goal+YOLO"
-		case toolApprovalMode == control.ToolApprovalYolo:
+		case toolApprovalMode == control.ToolApprovalDangerFullAccess:
 			return "YOLO"
 		case m.planMode:
 			return "Plan"
-		case goalMode && toolApprovalMode == control.ToolApprovalAuto:
-			return "Goal+Auto"
+		case goalMode && toolApprovalMode == control.ToolApprovalWorkspaceWrite:
+			return "Goal+Workspace"
 		case goalMode:
 			return "Goal"
-		case toolApprovalMode == control.ToolApprovalAuto:
-			return "Auto"
+		case toolApprovalMode == control.ToolApprovalWorkspaceWrite:
+			return "Workspace"
 		case toolApprovalMode == control.ToolApprovalDontAsk:
-			return "Don't Ask"
+			return "Read only"
 		default:
-			return "Ask"
+			return "Read only"
 		}
 	}
 	switch {
-	case m.planMode && toolApprovalMode == control.ToolApprovalYolo:
+	case m.planMode && toolApprovalMode == control.ToolApprovalDangerFullAccess:
 		return "Plan+YOLO"
-	case m.planMode && toolApprovalMode == control.ToolApprovalAuto:
-		return "Plan+Approve"
-	case goalMode && toolApprovalMode == control.ToolApprovalYolo:
+	case m.planMode && toolApprovalMode == control.ToolApprovalWorkspaceWrite:
+		return "Plan+Workspace"
+	case goalMode && toolApprovalMode == control.ToolApprovalDangerFullAccess:
 		return "Goal+YOLO"
-	case goalMode && toolApprovalMode == control.ToolApprovalAuto:
-		return "Goal+Approve"
-	case toolApprovalMode == control.ToolApprovalYolo:
+	case goalMode && toolApprovalMode == control.ToolApprovalWorkspaceWrite:
+		return "Goal+Workspace"
+	case toolApprovalMode == control.ToolApprovalDangerFullAccess:
 		return "YOLO"
-	case toolApprovalMode == control.ToolApprovalAuto:
-		return "Auto+Approve"
+	case toolApprovalMode == control.ToolApprovalWorkspaceWrite:
+		return "Workspace"
 	case toolApprovalMode == control.ToolApprovalDontAsk:
-		return "Don't Ask"
+		return "Read only"
 	case m.planMode:
 		return "Plan"
 	case goalMode:
 		return "Goal"
 	default:
-		return "Auto"
+		return "Read only"
 	}
 }
 

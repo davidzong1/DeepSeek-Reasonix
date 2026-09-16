@@ -134,6 +134,12 @@ console.log("diagnostics settings page");
           calls.push(includeSessionRuntime);
           return baseReport(includeSessionRuntime);
         },
+        RuntimeDoctor: async () => ({
+          text: "runtime ok", publishedGeneration: 2, allowResume: true, cleanRollback: true,
+          hasIrreversible: false, noOpRebuilds: 1, fullRebuilds: 0, subgraphRebuilds: 1,
+          staleDrops: 0, admissionRejected: 0, runtimeOwnerFallbacks: 0,
+          skillWatch: { physicalWatches: 3, logicalSubscriptions: 4, scans: 0, scannedEntries: 0, eventsReceived: 2, notifications: 1, degradedRoots: 0, helperRestarts: 0 },
+        }),
       } as Partial<AppBindings> as AppBindings,
     },
   }).main.App);
@@ -161,6 +167,7 @@ console.log("diagnostics settings page");
   ok(calls[0] === false, "initial load must request static report (includeSessionRuntime=false)");
   ok((rootEl.textContent || "").includes("skill.missing_description"), "warnings must render");
   ok(rootEl.querySelector(".diag-summary"), "health summary must render");
+  ok(rootEl.querySelector('[data-testid="skill-watch-diagnostics"]')?.textContent?.includes("physical watches"), "skill watcher resource counters render in the doctor panel");
   const frontendToggle = rootEl.querySelector('[data-testid="frontend-diagnostics-settings"] [role="switch"]');
   ok(frontendToggle, "frontend diagnostics switch must be visible in the production diagnostics settings page");
   ok(frontendToggle?.getAttribute("aria-checked") === "false", "frontend diagnostics switch starts off");

@@ -209,7 +209,7 @@ console.log("\nturn checkpoint submission binding");
   eq(state, unchanged, "stale send_failed is a complete no-op for a newer pending id");
   state = reducer(state, { type: "send_failed", submissionId: "s91", error: "current rejection" });
   eq(userById(state, "u91")?.failed, true, "current send_failed marks the exact pending user");
-  eq(userById(state, "u91")?.submissionId, undefined, "send_failed clears the rejected item's correlation");
+  eq(userById(state, "u91")?.submissionId, "s91", "send_failed preserves durable identity for a late canonical receipt");
   eq(userById(state, "u90")?.failed, undefined, "current send_failed cannot mark an older user");
 }
 
@@ -275,7 +275,7 @@ console.log("\nturn checkpoint submission binding");
   eq(source.includes("turnUserItemIds"), false, "FIFO ownership state is completely removed");
   eq(source.includes("HistoryCheckpointTurnsForTab(targetTabId)"), false, "TurnDone hot path does not refresh full checkpoint history");
   eq(source.includes('type: "history_checkpoint_turns"'), false, "positional checkpoint merge action remains removed");
-  eq(source.includes("void refreshCheckpoints(targetTabId)"), true, "TurnDone still refreshes checkpoint metadata");
+  eq(source.includes("void refreshTurnBoundaries(targetTabId)"), true, "TurnDone still refreshes checkpoint metadata");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

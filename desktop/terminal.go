@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/localeenv"
 	"reasonix/internal/secrets"
 )
 
@@ -468,6 +469,7 @@ func commandForShellPath(path, label string) terminalCommand {
 }
 
 func terminalEnvironment(base []string) []string {
+	base = localeenv.DefaultUTF8(base)
 	env := make([]string, 0, len(base)+2)
 	for _, item := range base {
 		key, _, ok := strings.Cut(item, "=")

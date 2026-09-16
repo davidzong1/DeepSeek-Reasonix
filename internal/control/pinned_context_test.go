@@ -15,7 +15,7 @@ import (
 func TestPinnedContextNeverChangesBasePrompt(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("legacy composed system"), agent.Options{}, event.Discard)
-	ctrl := New(Options{
+	ctrl := newOwnedTestController(t, Options{
 		Runner:       exec,
 		Executor:     exec,
 		SystemPrompt: "BASE",
@@ -52,6 +52,7 @@ func TestSetSystemPromptPreservingHistoryKeepsTranscript(t *testing.T) {
 	initial.Add(provider.Message{Role: provider.RoleUser, Content: "earlier turn"})
 	exec := agent.New(nil, nil, initial, agent.Options{}, event.Discard)
 	ctrl := New(Options{Runner: exec, Executor: exec, SystemPrompt: "OLD PROMPT", SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Sink: event.Discard})
+	t.Cleanup(ctrl.Close)
 
 	ctrl.SetSystemPromptPreservingHistory("NEW PROMPT")
 	h := ctrl.History()
@@ -76,7 +77,7 @@ func TestPinnedContextLoaderAppendsAtAdmittedTurns(t *testing.T) {
 	content := "A"
 	loads := 0
 	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
-	ctrl := New(Options{
+	ctrl := newOwnedTestController(t, Options{
 		Runner:       exec,
 		Executor:     exec,
 		SystemPrompt: "BASE",

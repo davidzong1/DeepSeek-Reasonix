@@ -1,4 +1,8 @@
-import { lazy, Suspense, useMemo, type CSSProperties } from "react";
+import { lazy, Suspense, useMemo, useState, useLayoutEffect, type CSSProperties } from "react";
+import { DockNavigation } from "./dockNavigation";
+import { useFileNavigationRuntime } from "../app-runtime/useFileNavigationRuntime";
+import { fileNavigationKey } from "../lib/fileNavigationOwner";
+import { useActivityBarStore } from "../store/activityBar";
 import { ShellExpandProvider } from "../lib/shellExpand";
 import { RemoteNavigationContext } from "../lib/remoteNavigationCommands";
 import { UpdaterProvider } from "../lib/useUpdater";
@@ -74,7 +78,6 @@ export type AppRuntimeViewProps = {
     sidebarImDetailConnectionId: string;
     setSidebarImDetailConnectionId: React.Dispatch<React.SetStateAction<string>>;
     tabRevealSignal: number;
-    transcriptRevealSignal: number;
     histView: HistoryViewState | null;
     projectRevision: number;
     dockRefreshKey: number;
@@ -92,10 +95,24 @@ export type AppRuntimeViewProps = {
  * beyond value memoization live here; ownership stays in the compositions.
  */
 export function AppRuntimeView(props: AppRuntimeViewProps) {
+  const [dockNavigation] = useState(() => new DockNavigation());
+  const fileNavigation = useFileNavigationRuntime();
+  useLayoutEffect(() => dockNavigation.attach(), [dockNavigation]);
+  useLayoutEffect(() => useActivityBarStore.subscribe(state => dockNavigation.reconcile(state.tabs.map(tab => tab.id))), [dockNavigation]);
+  // The open dock tabs are the set of live records: closing a tab, or switching
+  // to a project whose tab list has none of them, ends those records. A session
+  // change inside one project keeps the dock and only rebinds its credentials.
+  useLayoutEffect(() => {
+    const retain = () => fileNavigation.retain(
+      useActivityBarStore.getState().tabs.map(tab => fileNavigationKey({ sessionTabId: "", dockTabId: tab.id })),
+    );
+    retain();
+    return useActivityBarStore.subscribe(retain);
+  }, [fileNavigation]);
   useTopicbarHeightVar();
   const { core, shell, session, navigation, runtime, local } = props;
   const { state, activeTab, activeTabId, t, locale } = core;
-  const { sidebarWorkbench, sidebarCreation, windowsFramelessChrome, mainWindowMaximised } = shell;
+  const { windowsFramelessChrome, mainWindowMaximised } = shell;
   const {
     conversationView, visibleRuntimeState, sidebarImDetailConnection,
     surfaceWorkspacePanelRenderable, surfaceWorkspacePanelGridOpen, surfaceWorkspacePanelOverlay, terminalSurfaceOpen,
@@ -106,11 +123,11 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
   const runtimeTransitioning = core.surface.transitioning;
   const browserPreviewChrome = navigation.browserPreviewChrome;
 
-  const workbenchChromeHidden = sidebarWorkbench;
+  const workbenchChromeHidden = true;
   const sidebarClassName = [
     "sidebar",
     shell.sidebarCollapsed ? "sidebar--collapsed" : "",
-    sidebarWorkbench ? "sidebar--workbench" : "",
+    "sidebar--workbench",
   ].filter(Boolean).join(" ");
   const startupSplashHold = !activeTabId && state.meta?.ready !== true && !state.meta?.startupErr;
 
@@ -130,8 +147,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
     platform: shell.desktopPlatform,
     windowsFrameless: windowsFramelessChrome,
     browserPreview: browserPreviewChrome,
-    workbench: sidebarWorkbench,
-    creation: sidebarCreation,
     imDetailActive: Boolean(sidebarImDetailConnection),
     sidebarCollapsed: shell.sidebarCollapsed,
     sidebarResizing: shell.sidebarResizing,
@@ -214,34 +229,32 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
         </a>
 
         <SidebarRegion {...buildSidebarRegionProps({
-          automation: shell.page.kind === "automation",
           className: sidebarClassName,
-          toggleTitle: navigation.sidebarToggleTitle,
           shell,
           t,
           geometry: shellGeometry,
           projectTree: {
             activeTab, imTopicSources: shell.preferences.imTopicSources, refreshSignal: local.projectRevision,
             timeFilter: local.topicTimeFilter, onTimeFilterChange: local.setTopicTimeFilter,
-            searchExpanded: !sidebarCreation || shell.sidebarSearchOpen, searchFocusSignal: shell.sidebarSearchFocusSignal,
+            searchExpanded: true, searchFocusSignal: shell.sidebarSearchFocusSignal,
             showShortcutBadges: navigation.topicShortcuts.showTopicBadges, shortcutPlatform: shell.desktopPlatform,
             onVisibleTopicsChange: navigation.topicShortcuts.handleVisibleTopicsChange,
           },
           topics: navigation.projectTopicCommands,
+          paletteShortcut: navigation.commandPaletteShortcut,
           commands: {
             onNewSession: () => void navigationCommands.handleNewTab(),
+            onOpenPalette: () => void navigation.paletteCommands.openPalette(),
             onOpenTrash: () => void navigation.historyCommands.openTrash(),
             onOpenAutomation: () => shell.openPage({ kind: "automation" }),
             onOpenSettings: chromeCommands.openSidebarSettings,
-            onToggleSearch: chromeCommands.toggleSidebarSearch,
-            onToggle: shellGeometry.toggleSidebar,
             onOpenTopic: navigationCommands.handleOpenTopic,
           },
         })} />
 
         <TopicbarRegion view={buildTopicbarView({
             t, locale, activeTab, cwd: state.meta?.cwd, imDetail: sidebarImDetailConnection, imTopicSources: shell.preferences.imTopicSources,
-            creation: sidebarCreation, chromeHidden: workbenchChromeHidden, windowsBrand: windowsFramelessChrome,
+            chromeHidden: workbenchChromeHidden, windowsBrand: windowsFramelessChrome,
             automationReturn: shell.automationReturn,
             sidebar: { title: navigation.sidebarToggleTitle, blocked: navigation.sidebarExpandBlocked, pressed: shell.sidebarTogglePressed, collapsed: shell.sidebarCollapsed },
             rename: { editing: navigation.projectTopicCommands.topicbarEditing, draft: navigation.projectTopicCommands.topicTitleDraft },
@@ -252,8 +265,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
           }}>
             <TopicbarActionsStack
               t={t}
-              paletteShortcut={navigation.commandPaletteShortcut}
-              onOpenPalette={() => void navigation.paletteCommands.openPalette()}
               activeTab={activeTab}
               activeTabId={activeTabId}
               imDetailActive={Boolean(sidebarImDetailConnection)}
@@ -265,7 +276,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               setTasksOpen={local.setTasksOpen}
               onCloseTasks={() => local.setTasksOpen(false)}
               onOpenTaskSession={navigationCommands.openTaskMonitorSession}
-              creation={sidebarCreation}
               dockToggle={<DockToggleButton renderable={surfaceWorkspacePanelRenderable} t={t} onToggle={session.workspacePanelCommands.toggleWorkspacePanel} />}
               launcherToggle={<LauncherToggleButton
                 visible={session.workspacePanelCommands.launcherCard.visible}
@@ -320,7 +330,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               tabId: session.transcript.visibleTranscriptTabId,
               geometrySessionKey: session.transcript.visibleTranscriptGeometryKey,
               footerHeight,
-              revealSignal: local.transcriptRevealSignal,
               invocationMetadata: session.transcript.visibleTranscriptTabId ? session.invocation.invocationMetadataByTab[session.transcript.visibleTranscriptTabId] : undefined,
               surfaceCommitToken: core.surface.surfaceCommitToken,
               liveStore: core.liveStore,
@@ -330,28 +339,23 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               controllerReady,
               hydratePlaceholderActive: session.hydratePlaceholderActive,
               clearContextPending: session.clearCommands.clearContextPending,
-              creation: sidebarCreation,
               emptyHero: session.transcript.emptyHero,
               availability: session.transcript.availability,
-              rewind: { stateActive: session.sessionUndo.rewindState != null, committing: session.sessionUndo.rewindCommitting, signal: session.sessionUndo.rewindSignal },
+              rewind: { stateActive: session.sessionUndo.rewindState != null, committing: session.sessionUndo.rewindCommitting },
             }}
             onRetryHistory={() => runtime.sessionActions.retrySessionHistory(activeTabId)}
             commands={{
               onPrompt: session.transcript.handleTranscriptPrompt,
-              onDeliveryContinue: () => void session.delivery.handleDeliveryContinue(),
-              onAcceptDelivery: session.controlCommands.handleAcceptDelivery,
-              onOpenChanges: session.turnVerificationCommands.openTurnChanges,
-              onOpenVerification: session.turnVerificationCommands.openTurnVerification,
-              onEditPrompt: session.sessionUndo.handleEditPrompt,
-              onRewind: session.sessionUndo.handleMessageAction,
+              onFork: (turnId) => session.sessionUndo.handleForkTurn(turnId),
               onLoadOlderHistory: session.transcript.handleLoadOlderHistory,
+              onLoadNewerHistory: session.transcript.handleLoadNewerHistory,
               onSurfacePaintReady: session.transcript.handleSurfacePaintReady,
             }}
           />
 
           <DecisionFooterRegion
             hidden={Boolean(sidebarImDetailConnection)}
-            className={["footer", terminalSurfaceOpen && !sidebarCreation ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : "", runtimeTransitioning ? "footer--navigation-hidden" : ""].filter(Boolean).join(" ")}
+            className={["footer", terminalSurfaceOpen ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : "", runtimeTransitioning ? "footer--navigation-hidden" : ""].filter(Boolean).join(" ")}
             footerRef={footerRef}
             style={core.surface.surface?.phase === "source-retained" && footerHeight > 0 ? { height: footerHeight, minHeight: footerHeight, boxSizing: "border-box" } : undefined}
             todo={footerTodo}
@@ -371,7 +375,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
                 controllerReady: controllerReady && session.transcript.availability.kind === "ready",
                 submitDisabledReason: session.transcript.availability.kind !== "ready" && session.transcript.availability.source !== "runtime"
                   ? t("sessionRecovery.sendAfterRecovery") : undefined,
-                showContextWindowRing: sidebarCreation,
+                showContextWindowRing: false,
               },
               base: conversationView.composer,
               tab: activeTab,
@@ -404,9 +408,8 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
           />
         </section>
 
-        <WorkspaceDockRegion workspaceRoot={activeTab?.workspaceRoot ?? state.meta?.cwd ?? ""} {...buildWorkspaceDockProps({
+        <WorkspaceDockRegion navigation={dockNavigation} fileNavigation={fileNavigation} workspaceRoot={activeTab?.workspaceRoot ?? state.meta?.cwd ?? ""} {...buildWorkspaceDockProps({
           surface: { renderable: surfaceWorkspacePanelRenderable, overlay: surfaceWorkspacePanelOverlay, gridOpen: surfaceWorkspacePanelGridOpen },
-          creation: sidebarCreation,
           showContext: SHOW_CONTEXT_DOCK,
           remote: core.remoteSurfaceActive,
           t,
@@ -425,7 +428,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
           panels: session.workspacePanelCommands,
           inserts: session.insertCommands,
           verification: session.turnVerificationCommands,
-          qualityFloor: session.profileProjection.composerProfile.qualityFloor,
           onFileTreeRefresh: local.refreshComposerFileRefs,
           onSessionRevertCommitted: session.sessionUndo.handleSessionRevertCommitted,
           onOpenInTerminal: core.remoteSurfaceActive ? undefined : session.terminalPanelCommands.openTerminalForPath,
@@ -478,7 +480,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
         cwd: state.meta?.cwd,
         paletteItems: navigation.paletteCommands.paletteItems,
         startupSplashHold,
-        selectionEnabled: Boolean(activeTabId && !activeTab?.readOnly && !decisionSurface && !sidebarImDetailConnection && !session.hydratePlaceholderActive),
         automationTopic: session.automation.openAutomationTopic,
         shell,
         history: navigation.historyCommands,
@@ -486,7 +487,6 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
         chrome: chromeCommands,
         onboarding: navigation.onboardingCommands,
         worktree: navigation.worktreeMergeCommands,
-        onAddSelectedText: session.insertCommands.addSelectedTextToComposer,
         prefillSubagentCommand: session.insertCommands.prefillSubagentCommand,
         sessionActions: {
           previewSession: runtime.sessionActions.previewSession,

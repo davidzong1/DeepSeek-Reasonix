@@ -59,6 +59,7 @@ type Entry struct {
 	Profiles         []string // deprecated frontmatter labels; diagnostics only
 	AutoStart        bool     // MCP: configured auto_start
 	FailureReason    string   // host-proven failure detail
+	SkillRunAs       string   // skill candidate invocation mode; body-independent
 }
 
 type RouteCandidate struct {
@@ -80,6 +81,11 @@ type RouteDecision struct {
 func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
 	toolNames := map[string]bool{}
 	for _, t := range tools {
+		// Retired calls remain dispatchable for older clients, but must not be
+		// reintroduced through capability discovery.
+		if t.Name == "complete_step" {
+			continue
+		}
 		toolNames[t.Name] = true
 	}
 	skillToolReady := toolNames["run_skill"] || toolNames["read_skill"] || toolNames["read_only_skill"]
@@ -114,6 +120,7 @@ func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
 			ConnectSource:    connectSource,
 			Requires:         cleanList(sk.Requires),
 			Profiles:         cleanList(sk.Profiles),
+			SkillRunAs:       string(sk.RunAs),
 		})
 	}
 	return out

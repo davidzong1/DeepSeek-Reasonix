@@ -208,6 +208,17 @@ export function DiagnosticsSettingsPage({
                   <pre className="diag-path" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
                     {runtimeDoctor.text}
                   </pre>
+                  {runtimeDoctor.skillWatch && (
+                    <div className="diag-summary" data-testid="skill-watch-diagnostics">
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.physicalWatches}</strong><span>physical watches</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.logicalSubscriptions}</strong><span>subscriptions</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.scans}</strong><span>fallback scans</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.degradedRoots}</strong><span>degraded roots</span></div>
+                      <div className="diag-summary__meta">
+                        <span>entries={runtimeDoctor.skillWatch.scannedEntries} events={runtimeDoctor.skillWatch.eventsReceived} notifications={runtimeDoctor.skillWatch.notifications} helperRestarts={runtimeDoctor.skillWatch.helperRestarts}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </section>

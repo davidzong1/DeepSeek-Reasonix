@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { normalizeAddress, zoomStep } from "./browserAddress";
+import { app } from "./bridge";
 import type { BrowserDownloadView, BrowserNavigationTarget, BrowserTabView, DesktopBrowserHost } from "./browserHost";
 
 /** Tabs the user opens from the panel belong to this pseudo task and show beside every task's tabs. */
@@ -23,7 +24,7 @@ export type BrowserPanelState = Projection & {
   clearDraft(tabId: string | null): void;
   clearDownloads(): void;
   activate(tabId: string): void;
-  open(url: string, temporary?: boolean): Promise<void>;
+  open(url: string, temporary?: boolean, signal?: AbortSignal): Promise<void>;
   submitAddress(): Promise<void>;
   openDraft(): Promise<boolean>;
   close(tabId: string): Promise<void>;
@@ -43,6 +44,28 @@ export const shownTabs = (tabs: BrowserTabView[], taskId: string) =>
 export const selectActiveTab = (state: BrowserPanelState) => state.shown.find((tab) => tab.id === state.activeTabId);
 export const selectAddress = (state: BrowserPanelState) =>
   state.drafts[draftKey(state.activeTabId)] ?? selectActiveTab(state)?.url ?? "";
+
+export function waitForBrowserHost(timeoutMs = 2000): Promise<DesktopBrowserHost> {
+  const current = useBrowserPanelStore.getState().host;
+  if (current) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (host?: DesktopBrowserHost) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      if (host) resolve(host);
+      else reject(new Error("Built-in browser is not ready"));
+    };
+    const unsubscribe = useBrowserPanelStore.subscribe(state => {
+      if (state.host) finish(state.host);
+    });
+    const timer = setTimeout(() => finish(), timeoutMs);
+    const attached = useBrowserPanelStore.getState().host;
+    if (attached) finish(attached);
+  });
+}
 
 export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
   const call = (promise: Promise<unknown>) => promise.then(() => undefined, (error: unknown) => get().notify(errorText(error)));
@@ -107,10 +130,14 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
     clearDraft: (tabId) => clearDraft(draftKey(tabId)),
     clearDownloads: () => set((state) => ({ downloads: state.downloads.filter((entry) => entry.state === "progressing") })),
     activate: (tabId) => project({ activeTabId: tabId }),
-    async open(url, temporary = false) {
+    async open(url, temporary = false, signal) {
       const { host } = get();
-      if (!host) return;
-      await call(host.open(url, { taskId: USER_TASK_ID, temporary }).then((tab) => {
+      if (!host || signal?.aborted) return;
+      await call(host.open(url, { taskId: USER_TASK_ID, temporary }).then(async (tab) => {
+        if (signal?.aborted || get().host !== host) {
+          await host.close(tab.id);
+          return;
+        }
         const tabs = get().tabs;
         project({ tabs: tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab], activeTabId: tab.id });
       }));
@@ -136,7 +163,10 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
     async close(tabId) {
       const { host } = get();
       if (!host) return;
+      const closingURL = get().tabs.find(tab => tab.id === tabId)?.url;
       await call(host.close(tabId).then(() => project({ tabs: get().tabs.filter((tab) => tab.id !== tabId) })));
+      const revokePreview = (app as Partial<typeof app>).RevokeWorkspaceBrowserPreview;
+      if (closingURL && typeof revokePreview === "function") void revokePreview.call(app, closingURL).catch(() => undefined);
     },
     async navigate(tabId, target) {
       const { host } = get();

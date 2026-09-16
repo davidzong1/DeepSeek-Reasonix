@@ -2,11 +2,16 @@
 import Base from '../layouts/Base.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import community from '../data/community.json';
+import { desktopDownloadVersion } from '../data/desktop-download.js';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const repo = 'https://github.com/esengine/DeepSeek-Reasonix';
 const repoReleases = `${repo}/releases`;
-const desktopStableFallback = repoReleases;
+const desktopStableFallback = desktopDownloadVersion
+  ? `${repoReleases}/tag/desktop-${desktopDownloadVersion}` : repoReleases;
+const desktopVersionLabel = desktopDownloadVersion || 'latest';
+const desktopNotes = desktopDownloadVersion
+  ? `${base}/changelog/${desktopDownloadVersion}/` : `${base}/changelog/`;
 const vscodeMarketplace = 'https://marketplace.visualstudio.com/items?itemName=SivanLiu.reasonix-agent';
 const openVsx = 'https://open-vsx.org/extension/SivanLiu/reasonix-agent';
 const vscodeExtensionRepo = 'https://github.com/SivanCola/reasonix-vscode';
@@ -297,22 +302,22 @@ const ld = {
 
       <div class="dl-pane active" id="download-pane-desktop" data-pane="desktop" role="tabpanel" aria-labelledby="download-tab-desktop">
         <div class="release-channel-summary" data-release-summary="desktop" aria-live="polite">
-          <span><span class="l-en">Current official version <span data-release-version="desktop">latest</span></span><span class="l-zh">当前正式版本 <span data-release-version="desktop">latest</span></span></span>
+          <span><span class="l-en">Desktop download <span data-release-version="desktop">{desktopVersionLabel}</span></span><span class="l-zh">桌面端下载 <span data-release-version="desktop">{desktopVersionLabel}</span></span></span>
         </div>
         <div class="os-grid">
           <div class="os-card" data-os="mac">
             <h4>macOS</h4>
             <span class="meta"><span class="l-en">Universal DMG · Apple Silicon &amp; Intel</span><span class="l-zh">通用 DMG · Apple Silicon 与 Intel</span></span>
-            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-universal.dmg"><span class="l-en">Download Universal · <span data-release-version="desktop">latest</span></span><span class="l-zh">下载通用版 · <span data-release-version="desktop">latest</span></span></a>
-            <div class="os-options" aria-label="macOS alternate downloads">
-              <a href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-arm64.zip">Apple Silicon zip</a>
-              <a href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-amd64.zip">Intel zip</a>
-            </div>
+            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-universal.dmg"><span class="l-en">Download Universal · <span data-release-version="desktop">{desktopVersionLabel}</span></span><span class="l-zh">下载通用版 · <span data-release-version="desktop">{desktopVersionLabel}</span></span></a>
+            {!desktopDownloadVersion && <div class="os-options" aria-label="macOS alternate downloads">
+              <a href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-arm64.dmg">Apple Silicon DMG</a>
+              <a href={desktopStableFallback} data-desktop-asset="Reasonix-darwin-amd64.dmg">Intel DMG</a>
+            </div>}
           </div>
           <div class="os-card" data-os="win">
             <h4>Windows</h4>
             <span class="meta"><span class="l-en">Installer · Windows 10+ · x64 / ARM64</span><span class="l-zh">安装器 · Windows 10+ · x64 / ARM64</span></span>
-            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-windows-amd64-installer.exe"><span class="l-en">Download · <span data-release-version="desktop">latest</span></span><span class="l-zh">下载 · <span data-release-version="desktop">latest</span></span></a>
+            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-windows-amd64-installer.exe"><span class="l-en">Download · <span data-release-version="desktop">{desktopVersionLabel}</span></span><span class="l-zh">下载 · <span data-release-version="desktop">{desktopVersionLabel}</span></span></a>
             <div class="os-options" aria-label="Windows alternate downloads">
               <a href={desktopStableFallback} data-desktop-asset="Reasonix-windows-arm64-installer.exe">ARM64 installer</a>
               <a href={desktopStableFallback} data-desktop-asset="Reasonix-windows-amd64.zip">Portable zip</a>
@@ -321,14 +326,14 @@ const ld = {
           <div class="os-card" data-os="linux">
             <h4>Linux</h4>
             <span class="meta"><span class="l-en">Debian / Ubuntu package · amd64</span><span class="l-zh">Debian / Ubuntu 安装包 · amd64</span></span>
-            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-linux-amd64.deb"><span class="l-en">Download .deb · <span data-release-version="desktop">latest</span></span><span class="l-zh">下载 .deb · <span data-release-version="desktop">latest</span></span></a>
+            <a class="btn btn-light" href={desktopStableFallback} data-desktop-asset="Reasonix-linux-amd64.deb"><span class="l-en">Download .deb · <span data-release-version="desktop">{desktopVersionLabel}</span></span><span class="l-zh">下载 .deb · <span data-release-version="desktop">{desktopVersionLabel}</span></span></a>
             <div class="os-options" aria-label="Linux alternate downloads">
               <a href={desktopStableFallback} data-desktop-asset="Reasonix-linux-amd64.tar.gz">Generic tar.gz</a>
               <a href={`${repo}/releases`}><span class="l-en">All releases</span><span class="l-zh">全部版本</span></a>
             </div>
           </div>
         </div>
-        <div class="dl-note"><span class="l-en">Reasonix checks official releases automatically · <a href={`${base}/changelog/`} data-release-notes="desktop">release notes →</a> · <a href={`${repo}/releases`}>all releases →</a></span><span class="l-zh">Reasonix 会自动检查正式版本 · <a href={`${base}/changelog/`} data-release-notes="desktop">更新日志 →</a> · <a href={`${repo}/releases`}>全部版本 →</a></span></div>
+        <div class="dl-note"><span class="l-en">Reasonix checks official releases automatically · <a href={desktopNotes} data-release-notes="desktop">release notes →</a> · <a href={`${repo}/releases`}>all releases →</a></span><span class="l-zh">Reasonix 会自动检查正式版本 · <a href={desktopNotes} data-release-notes="desktop">更新日志 →</a> · <a href={`${repo}/releases`}>全部版本 →</a></span></div>
         <div class="dl-help">
           <strong><span class="l-en">macOS opens with a quarantine warning?</span><span class="l-zh">macOS 提示无法打开或已损坏?</span></strong>
           <span><span class="l-en">If the app was installed from the official download and placed in <code>/Applications</code>, quit Reasonix, then run:</span><span class="l-zh">如果来自官网下载并已放入 <code>/Applications</code>,先退出 Reasonix,再运行:</span></span>
@@ -336,6 +341,10 @@ const ld = {
           <button type="button" data-copy="sudo xattr -rd com.apple.quarantine /Applications/Reasonix.app">Copy</button>
           <a href={`${base}/docs/#macos-quarantine`}><span class="l-en">When to use this →</span><span class="l-zh">查看适用场景 →</span></a>
         </div>
+        {!desktopDownloadVersion && <div class="dl-help">
+          <strong><span class="l-en">Updating from 1.38.3 or earlier?</span><span class="l-zh">从 1.38.3 或更早版本升级?</span></strong>
+          <span><span class="l-en">The in-app updater cannot cross the Electron shell change and reports <code>unsupported install_layout "electron-v1"</code>. Quit Reasonix, then install the full package above (Windows installer, macOS DMG, Linux .deb or tar.gz) over the current version. Configuration, sessions and history are kept.</span><span class="l-zh">应用内更新无法跨越 Electron 壳切换,会提示 <code>unsupported install_layout "electron-v1"</code>。请退出 Reasonix,然后用上方的完整安装包(Windows 安装程序、macOS DMG、Linux .deb 或 tar.gz)覆盖安装。配置、会话与历史记录原样保留。</span></span>
+        </div>}
       </div>
 
       <div class="dl-pane" id="download-pane-cli" data-pane="cli" role="tabpanel" aria-labelledby="download-tab-cli" hidden>

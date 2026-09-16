@@ -28,7 +28,7 @@ func (p *Projection) freezeLocked(id string) (*Projection, error) {
 	if cached, ok := p.snapshots[id]; ok {
 		return cached.projection, nil
 	}
-	frozen := &Projection{incarnation: p.incarnation, identity: p.identity, revision: p.revision, covered: p.covered,
+	frozen := &Projection{incarnation: p.incarnation, identity: p.identity, revision: p.revision, covered: p.covered, durable: p.durable,
 		runtime: p.runtime, attempts: maps.Clone(p.attempts), prompts: maps.Clone(p.prompts)}
 	frozen.buffer.userTurns = p.buffer.userTurns
 	used := 0
@@ -42,6 +42,11 @@ func (p *Projection) freezeLocked(id string) (*Projection, error) {
 		}
 		frozen.buffer.messages = append(frozen.buffer.messages, copy)
 	}
+	// The turn index is derived once per cut and shares this cut's lifetime, so
+	// paging the body never shrinks navigation and repeated outline reads reuse
+	// one pass. Its previews count against the same cache budget.
+	frozen.outline = buildOutline(frozen.buffer.messages)
+	used += retainedBytes(reflect.ValueOf(frozen.outline))
 	runtime, _ := frozen.runtimeLocked()
 	used += retainedBytes(reflect.ValueOf(runtime))
 	if p.snapshots == nil {

@@ -370,7 +370,7 @@ func (a *App) emitProjectTreeChangedV2(revision uint64, roots []string, reason s
 	if roots == nil {
 		roots = []string{}
 	}
-	a.emitRuntimeEvent("project-tree:changed-v2", ProjectTreeChangedV2{Revision: revision, Roots: roots, Reason: reason})
+	a.emitRuntimeEvent("project-tree:changed-v2", ProjectTreeChangedV2{Revision: a.unifiedProjectRevision(revision), Roots: roots, Reason: reason})
 	// One-release compatibility event. Its wrapper is catalog-only, so legacy
 	// frontends refresh without making current frontends rebuild the whole tree
 	// after they already consumed the targeted v2 revision.
@@ -492,7 +492,11 @@ func sessionDirectoryForPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	return filepath.Dir(path)
+	clean := filepath.Clean(path)
+	if clean == "." || filepath.Base(clean) == clean {
+		return ""
+	}
+	return filepath.Dir(clean)
 }
 
 func (a *App) saveTabSessionMetaSnapshotAndIndex(snap tabSessionMetaSnapshot) error {
@@ -602,10 +606,11 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 	if remoteNodes, err := a.remoteProjectNodes(); err == nil {
 		projects = append(projects, remoteNodes...)
 	}
+	projects = a.mergeCanonicalWorkspaceShells(projects)
 	projects = applyPinnedProjectOrder(applyProjectTreeOrder(projects, f.SidebarOrder), f.PinnedProjects)
 	status := a.currentSessionCatalogStatus()
 	return ProjectTreeSnapshot{
-		Revision: status.Revision, Projects: projects, Catalog: status,
+		Revision: a.unifiedProjectRevision(status.Revision), Projects: projects, Catalog: status,
 		Indexed: status.Indexed, Total: status.Total,
 		IndexingDone: a.catalogIndexingDone(status),
 	}

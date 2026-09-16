@@ -8,7 +8,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     modeHasAutoApproveTools(tab.mode),
     (tab.toolApprovalMode ?? "").trim() === "" ? existing?.toolApprovalMode : undefined,
   );
-  const autoApproveTools = toolApprovalMode === "yolo";
+  const autoApproveTools = toolApprovalMode === "danger-full-access";
   return {
     label: tab.label || existing?.label || "",
     ready: tab.ready,
@@ -20,6 +20,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     workspaceName: tab.workspaceName || existing?.workspaceName,
     workspacePath: tab.workspacePath || tab.workspaceRoot || existing?.workspacePath,
     sessionPath: tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath,
+    session: tab.session !== undefined ? tab.session : existing?.session,
     sessionRevision: tab.sessionRevision !== undefined ? tab.sessionRevision : existing?.sessionRevision,
     sessionDigest: tab.sessionDigest !== undefined ? tab.sessionDigest : existing?.sessionDigest,
     sessionGeneration: tab.sessionGeneration !== undefined ? tab.sessionGeneration : existing?.sessionGeneration,
@@ -36,6 +37,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     floorInferred: tab.floorInferred ?? existing?.floorInferred,
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
-    canonicalTodos: existing?.canonicalTodos, dismissedTodoBatches: (tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath) === existing?.sessionPath ? existing?.dismissedTodoBatches : undefined,
+    goalView: tab.goalView ?? existing?.goalView,
+    canonicalTodos: existing?.canonicalTodos,
   };
 }

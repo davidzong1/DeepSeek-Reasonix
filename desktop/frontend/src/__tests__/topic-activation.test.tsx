@@ -174,6 +174,7 @@ const desktopStub = installDesktopHostStub(({
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (tabID: string) => historyFor(tabID),
       HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) => {
         if (tabID === failedHistoryTabId) throw new Error(`/private/${tabID}/history.jsonl could not be read`);
@@ -406,7 +407,7 @@ await act(async () => {
   });
   await flushPromises();
 });
-eq(controller?.state.ask?.id, "ask-tab-ask", "Ask is visible before activation history hydrates");
+eq(controller?.state.ask?.id, undefined, "Ask waits for the consistent activation snapshot");
 await act(async () => {
   // Production emits agent:ready before topic:activation ready. Hold the
   // startup hydration open so activation-ready must supersede it without

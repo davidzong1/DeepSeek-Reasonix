@@ -354,6 +354,26 @@ func TestServeCancelEndpoint(t *testing.T) {
 	}
 }
 
+func TestServeCancelSessionReturnsIdempotentReceipt(t *testing.T) {
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc})
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/cancel-session", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var receipt control.CancelReceipt
+	if err := json.NewDecoder(resp.Body).Decode(&receipt); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || !receipt.Accepted || !receipt.AlreadyIdle {
+		t.Fatalf("cancel receipt status=%d receipt=%+v", resp.StatusCode, receipt)
+	}
+}
+
 func TestServeApproveMissingID(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
@@ -375,6 +395,17 @@ func TestServeApproveMissingID(t *testing.T) {
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Errorf("approve bad json = %d, want 400", resp2.StatusCode)
+	}
+
+	// Permanent approval was removed from the protocol. Reject it before trying
+	// to resolve an ID so legacy clients cannot accidentally persist a grant.
+	resp3, err := http.Post(srv.URL+"/approve", "application/json", strings.NewReader(`{"id":"legacy","allow":true,"persist":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("approve persistent grant = %d, want 400", resp3.StatusCode)
 	}
 }
 
@@ -690,7 +721,7 @@ func TestResumeRequiresSessionPathInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	post := func(path string) int {
@@ -735,7 +766,7 @@ func TestResumeRejectsCleanupPendingSession(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	body, err := json.Marshal(map[string]string{"path": pending})
@@ -770,7 +801,7 @@ func TestSessionsSkipsCleanupPending(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -819,7 +850,7 @@ func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	post := func(body string) int {

@@ -59,8 +59,10 @@ func (a *App) NewSessionForTab(tabID string) error {
 	}
 
 	if err := ctrl.NewSession(); err != nil {
+		a.syncTabSessionIdentity(tab, ctrl)
 		return err
 	}
+	a.syncTabSessionIdentity(tab, ctrl)
 	if path := ctrl.SessionPath(); path != "" {
 		if err := savePinnedContextState(path, []string{}); err != nil {
 			return fmt.Errorf("initialize empty pinned context for new session: %w", err)
@@ -70,17 +72,47 @@ func (a *App) NewSessionForTab(tabID string) error {
 	// The rotated session starts with zero spend: without this reset the tab
 	// telemetry keeps the previous session's totals and the status bar 会话费用
 	// silently turns into an all-sessions running total (#5850).
-	tab.resetTelemetry(ctrl.SessionPath())
+	tab.resetTelemetry(tab.currentSessionIdentity())
 	// Mirror the controller: NewSession cleared the active goal, and the tab's
 	// persisted copy must follow — otherwise the next rebuild/restart would
 	// re-seed the old goal into the fresh session via SetGoal(tab.goal).
 	a.clearTabGoal(tab)
-	a.assignFreshSessionTopic(tab)
+	if err := a.assignFreshSessionTopic(tab); err != nil {
+		return fmt.Errorf("session created; persist topic presentation: %w", err)
+	}
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
 	a.emitProjectTreeChangedForSessionDirs(ctrl.SessionDir())
 	releaseAdmission()
 	return a.applyNewSessionDefaultModel(tab)
+}
+
+func (a *App) syncTabSessionIdentity(tab *WorkspaceTab, ctrl control.SessionAPI) {
+	if a == nil || tab == nil || ctrl == nil {
+		return
+	}
+	identity, ok := ctrl.(control.IdentityLifecycle)
+	if !ok || !identity.UsesExclusiveSession() {
+		return
+	}
+	ref, bound := identity.SessionRef()
+	if !bound {
+		return
+	}
+	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current == tab {
+		if tab.SessionID != ref.SessionID {
+			tab.SessionGeneration++
+			if tab.sink != nil {
+				tab.sink.setSessionGeneration(tab.SessionGeneration)
+			}
+		}
+		tab.SessionID = ref.SessionID
+		tab.SessionPath = ""
+		a.bindSessionRuntimeKeyLocked(tab, tab.currentSessionIdentity())
+	}
+	a.mu.Unlock()
+	a.saveTabsFromRemote()
 }
 
 func clearBlankSessionPinnedContext(tab *WorkspaceTab, ctrl control.SessionAPI) error {
@@ -97,7 +129,7 @@ func clearBlankSessionPinnedContext(tab *WorkspaceTab, ctrl control.SessionAPI) 
 	return nil
 }
 
-func installClearedTabRuntime(tab *WorkspaceTab, ctrl *control.Controller, sink *tabEventSink, path string) {
+func installClearedTabRuntime(tab *WorkspaceTab, ctrl control.SessionAPI, sink *tabEventSink, path string) {
 	tab.Ctrl = ctrl
 	tab.sink = sink
 	tab.SessionPath = path

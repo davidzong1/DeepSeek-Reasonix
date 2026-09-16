@@ -4,6 +4,7 @@
 // host.invoke through it, and mutating the table between calls is observed
 // immediately (mirroring how the retired window.go seam behaved).
 import type { AppBindings } from "../lib/bridge";
+import { makeMockSessionReaderBindings, publishMockTranscriptEvent, setMockTranscriptMetadata } from "../lib/sessionReaderBridge";
 import type { NativePerformanceActions, ProcessDiagnosticsSnapshot } from "../lib/processDiagnostics";
 import type { DesktopBrowserHost } from "../lib/browserHost";
 import type { BrowserControlApi, BrowserControlState, ChromeImportOutcome, ReasonixDesktopHost } from "../lib/desktopHost";
@@ -76,6 +77,7 @@ export interface DesktopHostStub {
 
 export function installDesktopHostStub(commands: object, options: DesktopHostStubOptions = {}): DesktopHostStub {
   const ref = { current: commands as Record<string, unknown> };
+  const readerFallback = () => typeof ref.current.SessionOpenForTab === "function" || typeof ref.current.TranscriptSnapshotForTab === "function" ? {} : makeMockSessionReaderBindings();
   const events = new Map<string, Set<(...data: unknown[]) => void>>();
   const host: ReasonixDesktopHost = {
     kind: "electron",
@@ -84,14 +86,19 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
       digest: "sha256:test",
       // Live view: tests mutating the command table between calls must be seen.
       get commands() {
-        return Object.keys(ref.current).filter((name) => typeof ref.current[name] === "function");
+        return [...new Set([...Object.keys(ref.current), ...Object.keys(readerFallback())])]
+          .filter((name) => typeof ref.current[name] === "function" || name in readerFallback());
       },
     },
     platform: { os: "darwin", arch: "arm64", versions: {} },
     invoke: (method, args) => {
-      const fn = ref.current[method];
+      const fn = ref.current[method] ?? (readerFallback() as Record<string, unknown>)[method];
       if (typeof fn !== "function") return Promise.reject(new Error(`unstubbed desktop command ${method}`));
-      return Promise.resolve((fn as (...a: unknown[]) => unknown)(...args));
+      return Promise.resolve((fn as (...a: unknown[]) => unknown).apply(ref.current, args)).then(result => {
+        if (method === "ListTabs" && Array.isArray(result)) for (const tab of result) setMockTranscriptMetadata(tab.id, tab);
+        if (method === "MetaForTab" && result) setMockTranscriptMetadata(String(args[0]), result);
+        return result;
+      });
     },
     on: (name, cb) => {
       let set = events.get(name);
@@ -157,6 +164,13 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
     },
     events,
     emit(name, ...data) {
+      if (name === "runtime:rebuilt" && data[0] && data[1]) setMockTranscriptMetadata(String(data[0]), { runtime: { epoch: String(data[1]) } });
+      if (name === "agent:event" && data[0]) publishMockTranscriptEvent(data[0] as import("../lib/types").WireEvent);
+      const remote = /^remote-tab:(.+):event$/.exec(name);
+      if (remote && data[0]) {
+        const event = data[0] as import("../lib/types").WireEvent & { reasoning?: string };
+        publishMockTranscriptEvent({ ...event, tabId: remote[1], text: event.kind === "reasoning" ? event.reasoning ?? event.text : event.text });
+      }
       for (const cb of [...(events.get(name) ?? [])]) cb(...data);
     },
     replaceCommands(next) {

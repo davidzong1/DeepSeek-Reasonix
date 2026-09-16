@@ -9,11 +9,15 @@ import { refreshHistoryProjection, type HistoryViewState } from "./historyViewPr
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { enqueueNavigationRequest, type NavigationCoalescingRefs } from "../lib/openTopicCoalescing";
 import { useResourceOperations, type SessionResource, type SessionOperationAuthority } from "./useResourceOperations";
-import { executeDesktopNavigation, type DesktopNavigationCapture, type DesktopNavigationIntent, type DesktopNavigationPorts, type NavigationNotice } from "./desktopNavigationOwner";
+import type { DesktopNavigationCapture, DesktopNavigationIntent, DesktopNavigationPorts, NavigationNotice } from "./desktopNavigationOwner";
 
 type QueueInput = { capture: DesktopNavigationCapture; authority: SessionOperationAuthority; result: { error?: unknown; tab?: TabMeta } };
+let executeNavigation: typeof import("./desktopNavigationOwner").executeDesktopNavigation | undefined;
 async function runQueuedRequest(request: QueueInput) {
-  try { request.result.tab = await executeDesktopNavigation(request.capture, request.authority); }
+  try {
+    executeNavigation ??= (await import("./desktopNavigationOwner")).executeDesktopNavigation;
+    request.result.tab = await executeNavigation(request.capture, request.authority);
+  }
   catch (error) { request.result.error = error; }
 }
 async function executeQueuedNavigation(input: { capture: DesktopNavigationCapture; queue: NavigationCoalescingRefs<QueueInput> }, authority: SessionOperationAuthority) {
@@ -40,7 +44,6 @@ export function useDesktopNavigation(input: {
   visible: SessionResource;
   ports: Omit<DesktopNavigationPorts, "reveal" | "projectChanged" | "closeHistory" | "notice" | "applyHistorySessions">;
   setTabRevealSignal: Dispatch<SetStateAction<number>>;
-  setTranscriptRevealSignal: Dispatch<SetStateAction<number>>;
   setProjectRevision: Dispatch<SetStateAction<number>>;
   setHistory: Dispatch<SetStateAction<HistoryViewState | null>>;
   t: Translator;
@@ -51,7 +54,7 @@ export function useDesktopNavigation(input: {
   showChat(): void;
 }) {
   const operations = useResourceOperations({ visible: input.visible });
-  const reveal = useCommittedCommand(() => { input.setTabRevealSignal(value => value + 1); input.setTranscriptRevealSignal(value => value + 1); });
+  const reveal = useCommittedCommand(() => { input.setTabRevealSignal(value => value + 1); });
   const projectChanged = useCommittedCommand(() => input.setProjectRevision(value => value + 1));
   const closeHistory = useCommittedCommand(() => input.setHistory(null));
   const applyHistorySessions = useCommittedCommand((sessions: SessionMeta[]) => input.setHistory(current => refreshHistoryProjection(current, sessions)));

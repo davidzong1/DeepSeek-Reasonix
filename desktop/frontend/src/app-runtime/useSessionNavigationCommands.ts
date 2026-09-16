@@ -7,6 +7,7 @@ import type { WorkspaceNavigationPorts } from "./navigationOwner";
 import type { ControlResult, SessionMeta, TabMeta } from "../lib/types";
 import type { TopicShortcutEntry } from "../lib/topicShortcuts";
 import type { Dispatch, SetStateAction } from "react";
+import type { SessionRef } from "../lib/sessionRef";
 
 const loadNavigationOwner = () => import("./navigationOwner");
 
@@ -72,6 +73,9 @@ export function useSessionNavigationCommands(input: SessionNavigationCommandsInp
   const handleOpenTopic = useCommittedCommand((scope: string, workspaceRoot: string, topicId: string, sessionPath?: string): Promise<void> => {
     input.closeTransientOverlays();
     input.clearImDetail();
+    if (sessionPath?.startsWith("session-id:")) {
+      return navigation.enqueueNavigation({ kind: "canonical-session", ref: { hostId: "local", sessionId: sessionPath.slice("session-id:".length) } });
+    }
     return navigation.enqueueNavigation({ kind: "topic", scope, workspaceRoot, topicId, sessionPath });
   });
 
@@ -82,6 +86,11 @@ export function useSessionNavigationCommands(input: SessionNavigationCommandsInp
 
   const onResumeSession = useCommittedCommand((session: SessionMeta): Promise<void> =>
     navigation.enqueueNavigation({ kind: "resume-session", session }));
+  const openCanonicalSession = useCommittedCommand((ref: SessionRef): Promise<void> => {
+    input.closeTransientOverlays();
+    input.clearImDetail();
+    return navigation.enqueueNavigation({ kind: "canonical-session", ref });
+  });
 
   const onRecoveryCreated = useCommittedCommand(() => {
     input.markProjectChanged((value) => value + 1);
@@ -143,6 +152,7 @@ export function useSessionNavigationCommands(input: SessionNavigationCommandsInp
   });
 
   return {
+    openCanonicalSession,
     openBlankSession,
     handleNewTab,
     handleOpenTopic,
