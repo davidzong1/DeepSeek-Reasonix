@@ -1890,11 +1890,7 @@ func (m chatTUI) View() tea.View {
 		v := tea.NewView(m.themeSweep.render())
 		if !m.nativeScrollback {
 			v.AltScreen = true
-			if m.mouseCaptureOff {
-				v.MouseMode = tea.MouseModeNone
-			} else {
-				v.MouseMode = tea.MouseModeCellMotion
-			}
+			v.MouseMode = m.overlayMouseMode()
 		}
 		return v
 	}
@@ -2033,14 +2029,10 @@ func (m chatTUI) View() tea.View {
 	}
 	v := tea.NewView(mainArea + "\n" + strings.Join(parts, "\n"))
 	v.AltScreen = true
-	if m.mouseCaptureOff || m.teamPick != nil {
-		// Release the mouse to the terminal: native click-drag selection and
-		// right-click context menu work again, at the cost of the in-app
-		// scrollbar, wheel-scroll, and drag-select while it's off.
-		v.MouseMode = tea.MouseModeNone
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion // wheel targets the hovered scroll region; text selection is handled in-app
-	}
+	// Modality, not the overlay's mere existence, decides capture: a bound member
+	// session keeps clicks for the [ TEAM ]/member buttons; only the modal page
+	// releases the mouse to the terminal (native selection, right-click menu).
+	v.MouseMode = m.overlayMouseMode()
 	// Anchor the real terminal cursor at the textarea's insertion point only when
 	// the composer is visible. input.Cursor() is relative to the textarea; offset
 	// by the viewport height + rows above + the box's top border row (+1 column

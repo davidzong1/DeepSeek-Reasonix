@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -208,6 +209,13 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	}
 
 	p.session.current = memberID
+	// The roster's cursor and the persisted selection follow the bound member,
+	// exactly as a Ctrl+Up/Down step leaves them: a click must not strand the
+	// panel's marker on the previous member, nor a restart on it.
+	if i := slices.Index(p.session.members, memberID); i >= 0 {
+		p.session.focus = i
+	}
+	p.persistSessionSelection()
 	p.session.errMsg = ""
 	p.hub.setTeam(p.sessionTeamName())
 	delete(p.session.unread, memberID) // showing a member is consuming it
