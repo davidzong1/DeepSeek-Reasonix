@@ -10,7 +10,7 @@ import "reasonix/internal/provider/openai"
 // vocabulary so an endpoint's own supported_efforts stays authoritative; the
 // stored value is never rewritten.
 func migrateStoredDeepSeekEffort(e *ProviderEntry, effort string) string {
-	if (effort == "medium" || effort == "xhigh") && (ReasoningProtocolForEntry(e) == ReasoningProtocolDeepSeek || (explicitReasoningProtocol(e) == "" && openai.IsDeepSeek(e.BaseURL))) && len(e.SupportedEfforts) == 0 {
+	if (effort == "medium" || effort == "xhigh") && (ReasoningProtocolForEntry(e) == ReasoningProtocolDeepSeek || (explicitReasoningProtocol(e) == "" && openai.IsDeepSeek(e.BaseURL))) && (len(e.SupportedEfforts) == 0 || e.reasoningAutomatic) {
 		cap := ReasoningCapabilityForEntry(e)
 		if cap.Validate(e.Model, "high") == nil {
 			return "high"

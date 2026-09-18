@@ -3,10 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
-	"testing"
-	"time"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -14,6 +10,9 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
 	"reasonix/internal/tool"
+	"strings"
+	"testing"
+	"time"
 )
 
 func carryingController(carried []provider.Message, path string) *control.Controller {

@@ -217,6 +217,9 @@ func (s *Server) buildTagged(ctx context.Context, ref string, inheritTemp bool) 
 		opts.ModelSettings = s.managedModels
 	}
 	opts.Model = ref
+	if cur := s.ctl(); cur != nil {
+		opts.EffortModel = currentModelRef(cur)
+	}
 	opts.BeforeInboxDispatch = s.beforeInboxDispatch
 	opts.Sink = tag
 	opts.BrowserExecutor = s.sessionBrowserExecutor(tag)

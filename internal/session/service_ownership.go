@@ -105,7 +105,10 @@ func (s *Service) PrepareCreate(ctx context.Context, options CreateOptions) (*Pr
 	}
 	session.externalizeDurableHistory()
 	ref := SessionRef{HostID: s.hostID, SessionID: session.ID()}
-	candidate := newRuntime(ref, session)
+	candidate, err := newRuntime(ref, session)
+	if err != nil {
+		return nil, errors.Join(err, session.Close(context.Background()))
+	}
 	candidate.owner = s
 	return &PreparedRuntime{service: s, runtime: candidate, instance: randomID()}, nil
 }
@@ -260,7 +263,12 @@ func (s *Service) openRuntime(ctx context.Context, ref SessionRef) (*Runtime, er
 		return nil, fmt.Errorf("session: close interrupted runtime: %w", recoverErr)
 	}
 	session.externalizeDurableHistory()
-	candidate := newRuntime(ref, session)
+	candidate, err := newRuntime(ref, session)
+	if err != nil {
+		closeErr := session.Close(context.Background())
+		s.finishPrepare(ref)
+		return nil, errors.Join(err, closeErr)
+	}
 	candidate.owner = s
 	s.mu.Lock()
 	pending := s.preparing[ref]

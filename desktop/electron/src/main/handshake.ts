@@ -1,6 +1,6 @@
 import { RpcError } from "./rpc.js";
 
-export const DEFAULT_PROTOCOL_VERSION = 3;
+export const DEFAULT_PROTOCOL_VERSION = 11;
 
 export const HANDSHAKE_CODES = {
   protocol_mismatch: -32001,
@@ -47,6 +47,9 @@ export interface HelloResult {
   contractDigest: string;
   service: { version: string; channel: string; commit: string; pid: number };
   runtimeGeneration: string;
+  runId: string;
+  incidentId: string;
+  diagnosticsEnabled: boolean;
   resources: { origin: string; token: string };
   window: HelloWindow;
 }
@@ -138,6 +141,9 @@ export function validateHelloResult(value: unknown, expectedProtocolVersion = DE
       pid: num(service, "pid", "result.service"),
     },
     runtimeGeneration: str(root, "runtimeGeneration", "result"),
+    runId: str(root, "runId", "result", true),
+    incidentId: str(root, "incidentId", "result", true),
+    diagnosticsEnabled: root.diagnosticsEnabled === true,
     resources: { origin: str(resources, "origin", "result.resources"), token: str(resources, "token", "result.resources") },
     window: geometry,
   };

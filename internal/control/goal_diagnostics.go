@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -50,6 +51,11 @@ func (c *Controller) ExportGoalDiagnostics(ctx context.Context, metadata GoalDia
 // attempting a Flush checkpoint. A failed Flush is exported as evidence, and
 // credential-like material is redacted one commit at a time.
 func (c *Controller) WriteGoalDiagnostics(ctx context.Context, dst io.Writer, metadata GoalDiagnosticMetadata) error {
+	return c.WriteSessionDiagnostics(ctx, dst, metadata, nil)
+}
+
+// WriteSessionDiagnostics preserves the goal schema while adding host observations.
+func (c *Controller) WriteSessionDiagnostics(ctx context.Context, dst io.Writer, metadata GoalDiagnosticMetadata, extra map[string]any) error {
 	if c == nil {
 		return session.ErrSessionNotRunning
 	}
@@ -57,7 +63,22 @@ func (c *Controller) WriteGoalDiagnostics(ctx context.Context, dst io.Writer, me
 	if !exclusive || runtime == nil {
 		return errors.New("goal diagnostics require a canonical session")
 	}
-	_, flushErr := runtime.Session().Flush(ctx)
+	cut := runtime.Session().EventSequence()
+	var exportSnapshot session.ExportSnapshot
+	if value, ok := extra["exportSnapshot"]; ok {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if err = json.Unmarshal(raw, &exportSnapshot); err != nil {
+			return err
+		}
+		if exportSnapshot.Ref != runtime.Ref() || exportSnapshot.SnapshotSequence > cut {
+			return errors.New("diagnostic export source changed")
+		}
+		cut = exportSnapshot.SnapshotSequence
+	}
+	_, flushErr := runtime.Session().FlushThrough(ctx, cut)
 	if metadata.Capabilities == nil {
 		metadata.Capabilities = []string{}
 	}
@@ -86,10 +107,32 @@ func (c *Controller) WriteGoalDiagnostics(ctx context.Context, dst io.Writer, me
 		{"observation", observation},
 		{"submissionDiagnostics", map[string]uint64{"reused": c.submissions.reused.Load(), "conflicts": c.submissions.conflicts.Load(), "unknown": c.submissions.unknown.Load()}},
 		{"shellDiagnostics", c.persistentShell.Diagnostics()},
-		{"acceptedThrough", state.Session.EventSequence},
+		{"lifecycleDiagnostics", c.lifecycleDiagnosticSnapshot()},
+		{"acceptedThrough", cut},
+		{"runtimeObservedAt", time.Now().UTC()},
+		{"runtimeObservedThrough", state.Session.EventSequence},
 		{"durableThrough", state.Session.DurableSequence},
 		{"persistenceStatus", state.Session.PersistenceStatus},
 		{"persistenceError", state.Session.PersistenceError},
+	}
+	if exportSnapshot.Ref.SessionID != "" {
+		exportSnapshot.DurableThrough = state.Session.DurableSequence
+		extra = cloneDiagnosticExtras(extra)
+		extra["exportSnapshot"] = exportSnapshot
+	}
+	for name, value := range extra {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		redacted := json.RawMessage(secrets.Redact(string(encoded)))
+		if !json.Valid(redacted) {
+			return errors.New("invalid redacted diagnostic field")
+		}
+		fields = append(fields, struct {
+			name  string
+			value any
+		}{name, redacted})
 	}
 	for _, field := range fields {
 		if err := writeGoalDiagnosticField(dst, field.name, field.value, true); err != nil {
@@ -99,10 +142,15 @@ func (c *Controller) WriteGoalDiagnostics(ctx context.Context, dst io.Writer, me
 	if _, err := io.WriteString(dst, "  \"commits\": ["); err != nil {
 		return err
 	}
+	return writeSessionDiagnosticCommits(ctx, dst, runtime.Session(), cut, unavailable)
+}
+
+func writeSessionDiagnosticCommits(ctx context.Context, dst io.Writer, store *session.Session, cut uint64, unavailable []string) error {
 	first := true
+	var destinationError error
 	changes := []goalDiagnosticTransition{}
 	activation := goaldomain.ActivationDisarmed
-	err := visitAcceptedGoalDiagnosticCommits(ctx, runtime.Session(), state.Session.EventSequence, func(commit session.Commit) error {
+	err := visitAcceptedGoalDiagnosticCommits(ctx, store, cut, func(commit session.Commit) error {
 		encoded, err := json.MarshalIndent(commit, "    ", "  ")
 		if err != nil {
 			return err
@@ -116,17 +164,25 @@ func (c *Controller) WriteGoalDiagnostics(ctx context.Context, dst io.Writer, me
 			separator = ",\n    "
 		}
 		if _, err := io.WriteString(dst, separator); err != nil {
+			destinationError = err
 			return err
 		}
 		if _, err := dst.Write(encoded); err != nil {
+			destinationError = err
 			return err
 		}
 		first = false
 		changes = append(changes, goalActivationChangesForCommit(commit, &activation)...)
 		return nil
 	})
+	if destinationError != nil {
+		return destinationError
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
-		return err
+		unavailable = append(unavailable, "accepted event traversal failed: "+secrets.RedactError(err))
 	}
 	if !first {
 		if _, err := io.WriteString(dst, "\n  "); err != nil {
@@ -251,4 +307,10 @@ func goalActivationChangesForCommit(commit session.Commit, activation *goaldomai
 		changes = append(changes, transition)
 	}
 	return changes
+}
+
+func cloneDiagnosticExtras(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input))
+	maps.Copy(out, input)
+	return out
 }

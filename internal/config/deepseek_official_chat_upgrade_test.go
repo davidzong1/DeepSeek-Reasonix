@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -89,5 +90,111 @@ func TestOfficialDeepSeekV9EndpointBoundary(t *testing.T) {
 		if isOfficialDeepSeekChatUpgrade(&p) {
 			t.Errorf("accepted %s", endpoint)
 		}
+	}
+}
+
+func TestCurrentConfigRepairsExactProviderEndpointContract(t *testing.T) {
+	raw := fmt.Sprintf(`config_version = %d # preserve current version
+# preserve comment
+[[providers]]
+name = "deepseek-anthropic"
+display_name = "Deepseek2"
+preset_id = "deepseek-anthropic"
+kind = "responses"
+base_url = "https://api.deepseek.com"
+request_url = "https://api.deepseek.com/anthropic/v1/messages"
+chat_url = "https://stale.example/chat/completions"
+api_key_env = "MY_KEY"
+models = ["deepseek-v4-flash"]
+default = "deepseek-v4-flash"
+responses_mode = "stateful" # preserve mode comment
+responses_stateful = true # preserve legacy comment
+future = { value = "keep" }
+`, Default().ConfigVersion)
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := ApplyUserConfigUpgradesOnStartup(path); err != nil || !changed {
+		t.Fatalf("repair: changed=%v err=%v", changed, err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"# preserve current version",
+		"# preserve comment",
+		`kind = "anthropic"`,
+		`base_url = "https://api.deepseek.com/anthropic"`,
+		`request_url = ""`,
+		`chat_url = ""`,
+		`api_key_env = "MY_KEY"`,
+		`future = { value = "keep" }`,
+		"# preserve mode comment",
+		"# preserve legacy comment",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("repaired config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "responses_mode") || strings.Contains(text, "responses_stateful") {
+		t.Fatalf("responses-only fields survived repair:\n%s", text)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+		t.Fatalf("config mode = %o, want 640", info.Mode().Perm())
+	}
+	loaded := LoadForEdit(path)
+	p, ok := loaded.Provider("deepseek-anthropic")
+	if !ok || p.Kind != "anthropic" || ProviderEffectiveRequestURL(p) != "https://api.deepseek.com/anthropic/v1/messages" ||
+		p.APIKeyEnv != "MY_KEY" || p.DefaultModel() != "deepseek-v4-flash" {
+		t.Fatalf("reloaded provider = %+v found=%v", p, ok)
+	}
+	if changed, err := ApplyUserConfigUpgradesOnStartup(path); err != nil || changed {
+		t.Fatalf("second startup rewrote config: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestCurrentConfigRepairAddsMissingOfficialBaseURL(t *testing.T) {
+	for _, inline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inline=%v", inline), func(t *testing.T) {
+			provider := `[[providers]]
+name = "deepseek-anthropic"
+preset_id = "deepseek-anthropic"
+kind = "responses"
+request_url = "https://api.deepseek.com/anthropic/v1/messages"
+`
+			if inline {
+				provider = `providers = [{ name = "deepseek-anthropic", preset_id = "deepseek-anthropic", kind = "responses", request_url = "https://api.deepseek.com/anthropic/v1/messages" }]
+`
+			}
+			raw := fmt.Sprintf("config_version = %d\n%s", Default().ConfigVersion, provider)
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := ApplyUserConfigUpgradesOnStartup(path); err != nil || !changed {
+				t.Fatalf("repair: changed=%v err=%v", changed, err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), `kind = "anthropic"`) ||
+				!strings.Contains(string(got), `base_url = "https://api.deepseek.com/anthropic"`) {
+				t.Fatalf("missing repaired protocol fields:\n%s", got)
+			}
+			loaded := LoadForEdit(path)
+			entry, ok := loaded.Provider("deepseek-anthropic")
+			if !ok || entry.Kind != "anthropic" ||
+				ProviderEffectiveRequestURL(entry) != "https://api.deepseek.com/anthropic/v1/messages" {
+				t.Fatalf("reloaded provider = %+v found=%v", entry, ok)
+			}
+		})
 	}
 }

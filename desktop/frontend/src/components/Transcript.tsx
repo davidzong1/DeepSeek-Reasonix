@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { ArrowDown } from "lucide-react";
 import { getTranscriptStore } from "../lib/transcriptStore";
 import type { ControllerLiveStore, HistoryLoadOutcome, HistoryLoadTrigger, Item, LiveStream } from "../lib/useController";
+import type { LocalSubmission } from "../lib/localSubmissionState";
 import { forkTargetForAnswer, type ForkBlockReason, type ForkTargetSetView, type ForkTargetView } from "../lib/forkTargets";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib/markdownWorkerClient";
@@ -25,6 +26,9 @@ export { NoticeCard } from "./TranscriptCards";
 
 export type TranscriptProps = {
   items: Item[];
+  localSubmissions?: readonly LocalSubmission[];
+  localSubmissionSendRevision?: number;
+  visibleSubmissionHandoffs?: Readonly<Record<string, { submissionId: string }>>;
   live?: LiveStream;
   liveStore?: ControllerLiveStore;
   tabId?: string;
@@ -103,9 +107,11 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
     } : undefined }), [openDetails, recover, onFork, props.forkTargets, props.forkBlocked]);
   useLayoutEffect(() => {
     source.update({ items, live: props.hasNewerHistory ? undefined : liveStore?.getSnapshot(tabId) ?? live, running, hydrating,
+      localSubmissions: props.hasNewerHistory ? [] : props.localSubmissions,
+      visibleSubmissionHandoffs: props.visibleSubmissionHandoffs,
       hasOlder: hasOlderHistory, loadingOlder: loadingOlderHistory, error: olderHistoryError,
       startedAt: turnStartAt, historyStartTurn: props.historyStartTurn });
-  }, [source, items, live, liveStore, tabId, running, hydrating, hasOlderHistory, loadingOlderHistory, olderHistoryError, turnStartAt, props.historyStartTurn, props.hasNewerHistory]);
+  }, [source, items, props.localSubmissions, props.visibleSubmissionHandoffs, live, liveStore, tabId, running, hydrating, hasOlderHistory, loadingOlderHistory, olderHistoryError, turnStartAt, props.historyStartTurn, props.hasNewerHistory]);
   useEffect(() => liveStore?.subscribe(tabId, () => source.updateLive(props.hasNewerHistory ? undefined : liveStore.getSnapshot(tabId))), [source, liveStore, tabId, props.hasNewerHistory]);
   useLayoutEffect(() => {
     if (scroller.current && column.current) scroll.attach(scroller.current, column.current);
@@ -126,12 +132,12 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
     const frame = requestAnimationFrame(() => { paint = requestAnimationFrame(() => onSurfacePaintReady?.(surfaceCommitToken, "ready")); });
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(paint); };
   }, [hydrating, surfaceCommitToken, onSurfacePaintReady, items.length, order.length]);
-  const lastUser = [...items].reverse().find(item => item.kind === "user")?.id;
-  const previousUser = useRef(lastUser);
+  const submissionRevision = props.localSubmissionSendRevision ?? 0;
+  const previousSubmissionRevision = useRef(submissionRevision);
   useLayoutEffect(() => {
-    if (previousUser.current !== lastUser && running && !hydrating) scroll.toBottom();
-    previousUser.current = lastUser;
-  }, [lastUser, running, hydrating, scroll]);
+    if (previousSubmissionRevision.current !== submissionRevision && running && !hydrating && !props.hasNewerHistory) scroll.toBottom();
+    previousSubmissionRevision.current = submissionRevision;
+  }, [submissionRevision, running, hydrating, scroll, props.hasNewerHistory]);
   const position = useSyncExternalStore(scroll.subscribe, scroll.getSnapshot, scroll.getSnapshot);
   const activeDetails = details && source.getNodeSnapshot(details)?.kind === "tool" ? details : undefined;
   const drawerWasOpen = useRef(false);
@@ -249,7 +255,7 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
             }}
             onRetryJump={() => { void jump.retry(); }}
             onCancelJump={() => jump.cancel()} /></Suspense>
-          <div ref={scroller} className="transcript chat-flow-scroll" tabIndex={0} data-transcript-render-mode="full"
+          <div ref={scroller} id={`reasonix-chat-transcript-${tabId ?? "local"}`} className="transcript chat-flow-scroll" tabIndex={0} data-transcript-render-mode="full"
             data-transcript-hydrating={hydrating} data-scroll-mode={position.following ? "tail" : "reader"}>
             <div ref={column} className="chat-column">
               <TranscriptConnection tabId={tabId} />

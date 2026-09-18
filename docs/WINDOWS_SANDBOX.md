@@ -55,10 +55,14 @@ Reasonix helper process remains hidden by the desktop process launcher.
 ## Direct-tool and protected-read lane
 
 The existing AppContainer path remains for direct read-only tools and is the
-only Windows lane that can remove network capabilities. Existing
+only Windows lane that can remove network capabilities. Explicitly configured
 `forbid_read` roots remain temporary deny ACEs because `WRITE_RESTRICTED` does
 not isolate reads. Those mutations are snapshotted, crash-marked, restored, and
-serialized for their mutation lifetime.
+serialized for their mutation lifetime. Reasonix's global credential `.env` is
+not automatically added to Windows `forbid_read`: doing so would deny the same
+user identity used by the host settings process. Credential values are still
+filtered from model-controlled child-process environments, but Windows local
+tools can deliberately read files available to the current user.
 
 Standing capability ACE creation uses short named-mutex critical sections.
 Parent and child paths share a lock domain, preventing concurrent DACL updates
@@ -72,6 +76,16 @@ descendant and does not grant its parent. Session temp must be disjoint from
 both workspace and protected roots.
 
 ## Migration from the earlier Windows backend
+
+Credential reads first try normal file access. On access denied, Reasonix can
+remove one explicit current-user `DENY RX` entry from its global `.env` only
+when a matching sandbox crash-residue record has a provably exited owner and
+no matching record has a live or unverifiable owner. The repair takes the
+sandbox path locks and rechecks the ACL. Missing residue records, additional
+current-user deny entries, or unsupported ACE types prevent automatic repair;
+the denied access remains visible. An identical mask alone does not establish
+that a rule belongs to Reasonix. A successful repair consumes the dead run's
+residue record so it cannot authorize a later, unrelated ACL change.
 
 The previous shell path used a low-integrity token and recursively changed
 workspace integrity labels. The new shell path does not relabel the workspace

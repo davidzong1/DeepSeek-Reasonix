@@ -104,12 +104,20 @@ func (a *App) ensureDesktopWorkspace(ctx context.Context, scope, workspaceRoot s
 }
 
 func (a *App) bindFreshDesktopSession(ctx context.Context, scope, workspaceRoot string, creator freshSessionCreator) (session.SessionRef, string, error) {
+	return a.bindFreshDesktopSessionWithIDs(ctx, scope, workspaceRoot, creator, "", "")
+}
+
+func (a *App) bindFreshDesktopSessionWithIDs(ctx context.Context, scope, workspaceRoot string, creator freshSessionCreator, sessionID, operationID string) (session.SessionRef, string, error) {
 	workspaceID, err := a.ensureDesktopWorkspace(ctx, scope, workspaceRoot)
 	if err != nil {
 		return session.SessionRef{}, "", err
 	}
-	sessionID := "desktop-" + strings.TrimPrefix(newTabID(), "tab_")
-	operationID := "create-" + strings.TrimPrefix(newTabID(), "tab_")
+	if sessionID = strings.TrimSpace(sessionID); sessionID == "" {
+		sessionID = "desktop-" + strings.TrimPrefix(newTabID(), "tab_")
+	}
+	if operationID = strings.TrimSpace(operationID); operationID == "" {
+		operationID = "create-" + strings.TrimPrefix(newTabID(), "tab_")
+	}
 	store := a.workspaceRegistry()
 	if err := store.BeginCreate(ctx, workspacestate.PendingCreate{OperationID: operationID, WorkspaceID: workspaceID, SessionID: sessionID}); err != nil {
 		return session.SessionRef{}, "", err

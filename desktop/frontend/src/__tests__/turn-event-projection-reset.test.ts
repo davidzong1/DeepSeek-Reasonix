@@ -79,11 +79,12 @@ assert.deepEqual(staleProjection, [], "a replay response that returns after tab 
 
 const persistedAssistant = { kind: "assistant", id: "assistant-live", text: "partial", reasoning: "", streaming: false } as const;
 const persistedUser = { kind: "user", id: "persisted-user-live", text: "persisted question" } as const;
-const optimisticUser = { kind: "user", id: "optimistic-user", text: "new question" } as const;
 const oldHistory = { kind: "user", id: "history-old", text: "old question" } as const;
+const optimisticState = reducer(initialState, { type: "user", text: "new question", seq: 0, submissionId: "optimistic-submission" });
+const optimisticUser = optimisticState.localSubmissions["optimistic-submission"];
 const state = {
-  ...initialState,
-  items: [oldHistory, persistedUser, persistedAssistant, optimisticUser],
+  ...optimisticState,
+  items: [oldHistory, persistedUser, persistedAssistant],
   historyPrefixCount: 1,
   historyRevision: 6,
 };
@@ -102,7 +103,7 @@ const rebased = reducer(state, {
 });
 assert.equal(rebased.historyPrefixCount, 3);
 assert.equal(rebased.items.filter((item) => item.id === "assistant-live").length, 1, "transcript/live overlap is deduplicated");
-assert.equal(rebased.items.find((item) => item.id === "optimistic-user"), optimisticUser, "optimistic user item identity survives rebase");
+assert.equal(rebased.localSubmissions["optimistic-submission"], optimisticUser, "local submission identity survives rebase");
 assert.equal(rebased.historyLayoutRevision, initialState.historyLayoutRevision + 1);
 
 const older = reducer(rebased, {
@@ -126,13 +127,15 @@ assert.equal(
 console.log("turn event projection reset tests passed");
 
 const optimistic = reducer(initialState, { type: "user", text: "question", seq: 0, submissionId: "submission" });
-const optimisticID = optimistic.items.find((item) => item.kind === "user")!.id;
+const optimisticID = optimistic.localSubmissions.submission.localId;
 const admitted = reducer(optimistic, { type: "event", e: { kind: "user_message", messageId: "backend-user", submissionId: "submission", text: "question" } });
 assert.equal(admitted.items.filter((item) => item.kind === "user").length, 1);
-assert.equal(admitted.items.find((item) => item.kind === "user")!.id, optimisticID, "admission preserves mounted optimistic identity");
+assert.equal(admitted.items.find((item) => item.kind === "user")!.id, "m:backend-user", "admission installs the canonical user identity");
+assert.equal(admitted.localSubmissions.submission, undefined, "admission retires the matched local submission");
+assert.equal(optimisticID, "u0", "the local submission keeps its presentation identity until admission");
 const userRebased = reducer(admitted, { type: "history_rebase", items: [{ kind: "user", id: "m:backend-user", text: "question" }], startTurn: 0, totalTurns: 1, hasOlder: false });
 assert.equal(userRebased.items.filter((item) => item.kind === "user").length, 1, "history deduplicates the admitted user by identity");
-assert.equal(userRebased.items[0].id, optimisticID, "history retains the mounted user key");
+assert.equal(userRebased.items[0].id, "m:backend-user", "history retains the canonical user identity");
 
 // A snapshot and the live suffix share one ownership boundary. No runtime
 // poll or pending replay may advance coverage before its rows are installed.

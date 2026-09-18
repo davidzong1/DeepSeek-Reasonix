@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type desktopRemoteTabEntry struct {
 	ID           string `json:"id"`
@@ -12,6 +15,7 @@ type desktopRemoteTabEntry struct {
 	SessionPath  string `json:"sessionPath,omitempty"`
 	SessionID    string `json:"sessionId,omitempty"`
 	SessionReset bool   `json:"sessionReset,omitempty"`
+	extra        map[string]json.RawMessage
 }
 
 func singleSurfaceTabsFile(f desktopTabsFile) desktopTabsFile {
@@ -26,19 +30,20 @@ func singleSurfaceTabsFile(f desktopTabsFile) desktopTabsFile {
 				RemoteTabs:     []desktopRemoteTabEntry{entry},
 				RemoteTabOrder: []string{entry.ID},
 				TabOrder:       []string{entry.ID},
+				extra:          cloneDesktopJSONFields(f.extra),
 			}
 		}
 	}
 	for _, entry := range f.Tabs {
 		if entry.ID == active {
-			return desktopTabsFile{Tabs: []desktopTabEntry{entry}, ActiveTab: entry.ID, TabOrder: []string{entry.ID}}
+			return desktopTabsFile{Tabs: []desktopTabEntry{entry}, ActiveTab: entry.ID, TabOrder: []string{entry.ID}, extra: cloneDesktopJSONFields(f.extra)}
 		}
 	}
 	if len(f.Tabs) > 0 {
-		return desktopTabsFile{Tabs: []desktopTabEntry{f.Tabs[0]}, ActiveTab: f.Tabs[0].ID, TabOrder: []string{f.Tabs[0].ID}}
+		return desktopTabsFile{Tabs: []desktopTabEntry{f.Tabs[0]}, ActiveTab: f.Tabs[0].ID, TabOrder: []string{f.Tabs[0].ID}, extra: cloneDesktopJSONFields(f.extra)}
 	}
 	chosen := f.RemoteTabs[0]
-	return desktopTabsFile{ActiveTab: chosen.ID, RemoteTabs: []desktopRemoteTabEntry{chosen}, RemoteTabOrder: []string{chosen.ID}, TabOrder: []string{chosen.ID}}
+	return desktopTabsFile{ActiveTab: chosen.ID, RemoteTabs: []desktopRemoteTabEntry{chosen}, RemoteTabOrder: []string{chosen.ID}, TabOrder: []string{chosen.ID}, extra: cloneDesktopJSONFields(f.extra)}
 }
 
 // saveTabsFromRemote snapshots local state before joining it with the remote

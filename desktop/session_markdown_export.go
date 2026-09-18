@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reasonix/internal/sessionexport"
 	"strings"
 
 	"reasonix/internal/fileutil"
@@ -18,9 +20,31 @@ func (a *App) SaveSessionMarkdownForTab(tabID, path, title string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	messages := a.HistoryForTab(tabID)
+	query, ref, err := a.canonicalSessionQuery(tabID)
+	if err != nil {
+		return err
+	}
+	snapshot, err := query.CaptureExportSnapshot(context.Background(), ref)
+	if err != nil {
+		return err
+	}
+	snapshot.Title = title
+	dir, err := os.MkdirTemp("", "reasonix-markdown-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	if _, err = sessionexport.Build(context.Background(), query, snapshot, dir, nil); err != nil {
+		return err
+	}
 	return writeStreamingExport(path, func(dst io.Writer) error {
-		return writeSessionMarkdown(dst, title, messages)
+		file, err := os.Open(filepath.Join(dir, "markdown"))
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(dst, file)
+		return err
 	})
 }
 
@@ -82,14 +106,10 @@ func writeSessionMarkdownMessage(dst io.Writer, message HistoryMessage) error {
 }
 
 func writeMarkdownFence(dst io.Writer, label, body string) error {
-	body = strings.TrimSpace(body)
 	if body == "" {
 		return nil
 	}
-	fence := "```"
-	if strings.Contains(body, fence) {
-		fence = "````"
-	}
+	fence := sessionexport.Fence(body)
 	_, err := fmt.Fprintf(dst, "%s\n%s\n%s\n%s\n\n", label, fence, body, fence)
 	return err
 }

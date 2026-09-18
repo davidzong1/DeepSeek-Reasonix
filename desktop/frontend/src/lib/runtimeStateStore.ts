@@ -1,11 +1,13 @@
 import type { ProjectRuntimeTopic } from "./types";
 import type { PendingInteraction, RecoveryStatus, Todo } from "../generated/desktopContract.generated";
+import { sameSessionIdentity, type SessionIdentity } from "./sessionIdentity";
 
 export interface RuntimeState {
   schemaVersion: number;
   hostId?: string;
   sessionId?: string;
   sessionCodec?: string;
+  projectionEpoch?: string;
   runtimeEpoch: string;
   activityRevision: number;
   revision: number;
@@ -29,6 +31,13 @@ export interface RuntimeState {
   activity: string;
   recovery?: RecoveryStatus | null;
 }
+
+export function acceptSessionRuntimeSnapshot(current: RuntimeState | undefined, next: RuntimeState, allowProducerBaseline = false): RuntimeState {
+  if (!current) return next;
+  if (current.projectionEpoch !== next.projectionEpoch) return allowProducerBaseline ? next : current;
+  if (next.revision < current.revision) return current;
+  return next.revision === current.revision ? current : next;
+}
 export interface RuntimeSession {
   tabId: string;
   scope: string;
@@ -48,6 +57,21 @@ export interface RuntimeProjection {
   revision: number;
   sessions: RuntimeSession[];
   topics: ProjectRuntimeTopic[];
+}
+
+/** A tab is a reusable surface, not a session identity. Unknown/blank bindings
+ * must not adopt the previous session while navigation metadata catches up. */
+export function selectRuntimeSession(snapshot: RuntimeProjection | undefined, tabId: string | undefined, identity: SessionIdentity | string | undefined) {
+  const target = typeof identity === "string" ? { sessionPath: identity } : identity;
+  if (!tabId || !target) return undefined;
+  if (typeof identity !== "string" && target.sessionGeneration == null) return undefined;
+  return snapshot?.sessions.find(session => session.open && session.tabId === tabId && sameSessionIdentity(target, {
+    session: target.session?.sessionId && session.sessionId
+      ? { hostId: session.hostId || "local", sessionId: session.sessionId }
+      : undefined,
+    sessionPath: session.sessionPath,
+    sessionGeneration: session.sessionGeneration,
+  }));
 }
 
 export function selectRuntime(session?: RuntimeSession, failed = false) {

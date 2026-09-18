@@ -28,13 +28,14 @@ let current!: ReturnType<typeof useDesktopPreferences>;
 function Probe() { current = useDesktopPreferences(); return <div>{current.configLoadWarnings.join("|")}</div>; }
 const root = createRoot(document.getElementById("root")!);
 const snapshot = { sessionExperience: "deep", desktopTheme: "light", desktopThemeStyle: "graphite",
-  desktopLanguage: "en", checkUpdates: true, configWarnings: ["warning"], configWarningsRevision: 3 } as DesktopStartupSettingsView;
+  desktopLanguage: "en", checkUpdates: true, updaterEnabled: true, configWarnings: ["warning"], configWarningsRevision: 3 } as DesktopStartupSettingsView;
 try {
   localStorage.setItem("reasonix-process-fold", "auto");
   await act(async () => root.render(<LocaleProvider><Probe /></LocaleProvider>));
   assert.equal(requests, 1);
   await act(async () => { resolveStartup(snapshot); await import("../lib/themeExperience"); });
   assert.equal(getSessionExperience(), "deep", "backend wins over an old localStorage mirror");
+  assert.equal(current.startupUpdateChecksEnabled, true, "stable build and enabled preference allow automatic checks");
   assert.deepEqual(current.configLoadWarnings, ["warning"]);
   await act(async () => { desktopStub.emit("config:load-warnings", ["stale"], 2); });
   assert.deepEqual(current.configLoadWarnings, ["warning"], "stale runtime warning cannot replace startup snapshot");
@@ -42,6 +43,10 @@ try {
   assert.deepEqual(current.configLoadWarnings, ["current"]);
   await act(async () => { await current.reload({ ...snapshot, sessionExperience: undefined }); });
   assert.equal(getSessionExperience(), "standard", "old backend missing field resolves standard");
+  await act(async () => { await current.reload({ ...snapshot, sessionExperience: undefined, updaterEnabled: undefined }); });
+  assert.equal(current.startupUpdateChecksEnabled, false, "old backend missing updater capability fails closed");
+  await act(async () => { await current.reload({ ...snapshot, sessionExperience: undefined, updaterEnabled: false }); });
+  assert.equal(current.startupUpdateChecksEnabled, false, "disabled build capability overrides the user preference");
   assert.equal(fullSettings, 0, "preferences and IM projection never request full Settings");
   const oldReload = current.reload;
   await act(async () => root.unmount());
@@ -57,7 +62,7 @@ try {
     await act(async () => failedRoot.render(<LocaleProvider><Probe /></LocaleProvider>));
     await act(async () => { await current.reload(); });
     assert.equal(getSessionExperience(), "standard", "failed first snapshot uses canonical standard, not a legacy local preference");
-    assert.equal(current.startupUpdateChecksEnabled, true);
+    assert.equal(current.startupUpdateChecksEnabled, false, "startup RPC failure disables automatic checks");
   } finally { await act(async () => failedRoot.unmount()); console.warn = originalWarn; }
   console.log("desktop preferences: lightweight snapshot, legacy mirror, warning revision and disposal passed");
 } finally { dom.window.close(); }

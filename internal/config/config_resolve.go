@@ -55,7 +55,7 @@ func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 			cp.Model = model
 			cp.applyModelPrice()
 			cp.applyModelOverride()
-			return &cp, true
+			return ResolveReasoningEntry(&cp), true
 		}
 	}
 	// a provider name → its default model
@@ -64,7 +64,7 @@ func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 		cp.Model = e.DefaultModel()
 		cp.applyModelPrice()
 		cp.applyModelOverride()
-		return &cp, true
+		return ResolveReasoningEntry(&cp), true
 	}
 	// a bare model name → the provider that lists it
 	for i := range c.Providers {
@@ -73,7 +73,7 @@ func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 			cp.Model = ref
 			cp.applyModelPrice()
 			cp.applyModelOverride()
-			return &cp, true
+			return ResolveReasoningEntry(&cp), true
 		}
 	}
 	return nil, false

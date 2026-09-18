@@ -25,10 +25,11 @@ export function buildTopicbarView(input: {
   automationReturn: boolean;
   sidebar: { title: string; blocked: boolean; pressed: boolean; collapsed: boolean };
   rename: { editing: boolean; draft: string };
+  draft?: { title: string; workspaceLabel: string };
 }): TopicbarView {
   const { t, locale, activeTab, imDetail } = input;
-  const topicbarTitle = imDetail ? t("botDetail.title", { name: imDetail.title }) : topicDisplayTitle(activeTab);
-  const topicbarWorkspaceLabel = imDetail ? t("botDetail.subtitle") : activeTab ? tabWorkspaceTitle(activeTab) : "";
+  const topicbarTitle = input.draft?.title ?? (imDetail ? t("botDetail.title", { name: imDetail.title }) : topicDisplayTitle(activeTab));
+  const topicbarWorkspaceLabel = input.draft?.workspaceLabel ?? (imDetail ? t("botDetail.subtitle") : activeTab ? tabWorkspaceTitle(activeTab) : "");
   const topicbarWorkspacePath = activeTab?.scope === "project" ? activeTab.workspaceRoot || input.cwd : "";
   const topicbarImSource = activeTab?.scope === "global" && activeTab.topicId ? input.imTopicSources[activeTab.topicId] : undefined;
   const topicbarImSourceLabel = imDetail
@@ -39,7 +40,7 @@ export function buildTopicbarView(input: {
   const topicbarSubtitleTitle = imDetail
     ? [topicbarWorkspaceLabel, topicbarImSourceLabel, sidebarImScopeLabel(imDetail, t)].filter(Boolean).join(" · ")
     : [topicbarWorkspacePath || topicbarWorkspaceLabel, topicbarImSourceLabel].filter(Boolean).join(" · ");
-  const topicbarCanRename = !imDetail && (Boolean(activeTab?.topicId) || Boolean(activeTab?.remote));
+  const topicbarCanRename = !input.draft && !imDetail && (Boolean(activeTab?.topicId) || Boolean(activeTab?.remote));
   return {
     automationReturn: input.automationReturn,
     automationReturnLabel: locale === "en" ? "Back to automation" : locale === "zh-TW" ? "返回自動化" : "返回自动化",

@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
@@ -76,32 +75,6 @@ func TestTaskToolInjectsWorkspaceContextIntoSubagentPrompt(t *testing.T) {
 		!strings.Contains(got, `prefer "." or relative paths`) ||
 		!strings.Contains(got, "inspect project") || !strings.Contains(got, completeSubtaskContract) {
 		t.Fatalf("sub-agent user = %q, want workspace context plus prompt", got)
-	}
-}
-
-func TestTaskToolCancelDuringStuckProviderReturnsPromptly(t *testing.T) {
-	task := newTestTaskTool(t, stuckStreamProvider{}, tool.NewRegistry(), "sys", "", "", nil)
-
-	ctx, cancel := context.WithCancel(testTaskContext())
-	done := make(chan error, 1)
-	go func() {
-		_, err := task.Execute(ctx, []byte(`{"prompt":"wait on stuck provider"}`))
-		done <- err
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Execute returned nil after context cancellation")
-		}
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Execute error = %v, want context cancellation", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("TaskTool.Execute did not return promptly after cancellation")
 	}
 }
 

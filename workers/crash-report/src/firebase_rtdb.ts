@@ -59,6 +59,11 @@ export type FirebaseCrashGroupMeta = {
   lastBuildCommit: string;
   lastChannel: string;
   regressedAt: string;
+  regressionReview?: string;
+  resolutionPlatform?: string;
+  resolutionRuntime?: string;
+  resolutionBasis?: string;
+  lastCategory?: string;
   writerGeneration?: number;
   sampleEpoch?: number;
   sampleState?: "active" | "compacted" | "archiving" | "archived";

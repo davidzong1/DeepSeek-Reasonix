@@ -15,16 +15,21 @@ import (
 
 const StatusLimit = 16 * 1024
 const QuitRequest = "--reasonix-lifecycle-request=quit"
+const unsupportedPortableLocationMessage = "Reasonix portable cannot run from a network or virtual shared folder.\n" +
+	"Copy the entire extracted folder to a local Windows drive, then start Reasonix.exe, or use the installer.\n\n" +
+	"Reasonix 便携版无法从网络或虚拟机共享目录启动。\n" +
+	"请将整个解压目录复制到 Windows 本地磁盘后运行 Reasonix.exe，或使用安装器。"
 
 type Code string
 
 const (
-	UnknownOwner         Code = "unknown_owner"
-	ConfirmationRequired Code = "confirmation_required"
-	Cancelled            Code = "cancelled"
-	ExitTimeout          Code = "exit_timeout"
-	StartupFailed        Code = "startup_failed"
-	OtherInstallation    Code = "other_installation"
+	UnknownOwner                Code = "unknown_owner"
+	ConfirmationRequired        Code = "confirmation_required"
+	Cancelled                   Code = "cancelled"
+	ExitTimeout                 Code = "exit_timeout"
+	StartupFailed               Code = "startup_failed"
+	OtherInstallation           Code = "other_installation"
+	UnsupportedPortableLocation Code = "unsupported_portable_location"
 )
 
 type Error struct {
@@ -33,6 +38,21 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.Detail }
+
+// NewUnsupportedPortableLocationError reports a portable launch from storage
+// whose execution semantics cannot support the desktop service lifecycle.
+func NewUnsupportedPortableLocationError(locationType string) error {
+	return outcome(UnsupportedPortableLocation, "%s\nlocation_type=%s", unsupportedPortableLocationMessage, portableLocationType(locationType))
+}
+
+func portableLocationType(locationType string) string {
+	switch locationType {
+	case "unc", "remote_drive":
+		return locationType
+	default:
+		return "unknown"
+	}
+}
 
 // ExitCode preserves a machine-readable distinction for silent installers.
 func ExitCode(err error) int {

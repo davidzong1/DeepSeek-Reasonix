@@ -426,6 +426,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
           )}
           {item.status === "error" && <span className="tool__status-icon tool__status-icon--err">✗</span>}
           {item.status === "done" && <span className="tool__status-icon tool__status-icon--ok">✓</span>}
+          {item.status === "unknown" && <span className="tool__status-icon" title={t("tool.statusUnknown")}>?</span>}
           {item.status === "stopped" && <span className="tool__status-icon tool__status-icon--stopped">—</span>}
           <span className="tool__name">{isShellCard ? shellName : (displayName ?? item.name)}</span>
           {subject && <span className="tool__subject">{subject}</span>}

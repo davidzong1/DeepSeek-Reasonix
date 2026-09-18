@@ -12,7 +12,7 @@ func TestExitCodesPreserveWrappedBlockers(t *testing.T) {
 		code Code
 		exit int
 	}{
-		{ConfirmationRequired, 1618}, {Cancelled, 1602}, {UnknownOwner, 1618}, {OtherInstallation, 1618}, {ExitTimeout, 1618}, {StartupFailed, 1603},
+		{ConfirmationRequired, 1618}, {Cancelled, 1602}, {UnknownOwner, 1618}, {OtherInstallation, 1618}, {ExitTimeout, 1618}, {StartupFailed, 1603}, {UnsupportedPortableLocation, 1},
 	} {
 		if got := ExitCode(fmt.Errorf("activation: %w", outcome(tc.code, "test"))); got != tc.exit {
 			t.Errorf("%s: got %d", tc.code, got)

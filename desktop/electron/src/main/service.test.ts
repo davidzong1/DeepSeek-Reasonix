@@ -21,7 +21,8 @@ class FakeChild extends EventEmitter {
   requests: Array<{ id: number; method: string; params: unknown }> = [];
   private buffered = "";
 
-  constructor(readonly generation: string, readonly behaviour: { helloError?: { code: number; message: string }; exitOnStdinEnd?: boolean }) {
+  constructor(readonly generation: string, readonly behaviour: { helloError?: { code: number; message: string }; exitOnStdinEnd?: boolean;
+      shutdownResults?: Array<Record<string, unknown>>; },) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
       this.buffered += chunk.toString("utf8");
@@ -29,7 +30,7 @@ class FakeChild extends EventEmitter {
       while ((index = this.buffered.indexOf("\n")) >= 0) {
         const line = this.buffered.slice(0, index);
         this.buffered = this.buffered.slice(index + 1);
-        this.handle(JSON.parse(line) as { id?: number; method?: string; params?: unknown });
+        this.handle(JSON.parse(line) as { id?: number; method?: string; params?: unknown; },);
       }
     });
     this.stdin.on("end", () => {
@@ -53,12 +54,12 @@ class FakeChild extends EventEmitter {
   }
 
   event(name: string, generation = this.generation): void {
-    this.send({ method: "desktop/event", params: { seq: 1, generation, name, args: [{ ok: true }] } });
+    this.send({ method: "desktop/event", params: { seq: 1, generation, name, args: [{ ok: true }] }, });
   }
 
   private handle(frame: { id?: number; method?: string; params?: unknown }): void {
     if (typeof frame.id !== "number" || typeof frame.method !== "string") return;
-    this.requests.push({ id: frame.id, method: frame.method, params: frame.params });
+    this.requests.push({ id: frame.id, method: frame.method, params: frame.params, });
     if (frame.method === "desktop/hello") {
       if (this.behaviour.helloError) {
         this.send({ id: frame.id, error: this.behaviour.helloError });
@@ -67,27 +68,46 @@ class FakeChild extends EventEmitter {
       this.send({
         id: frame.id,
         result: {
-          protocolVersion: 3,
+          protocolVersion: 11,
           contractDigest: "sha256:abc",
           service: { version: "dev", channel: "dev", commit: "dev", pid: 1 },
           runtimeGeneration: this.generation,
+          runId: `run-${this.generation}`,
+          incidentId: `incident-${this.generation}`,
+          diagnosticsEnabled: true,
           resources: { origin: "http://127.0.0.1:1", token: "t" },
-          window: { width: 1000, height: 700, minWidth: 760, minHeight: 480, frameless: false, zoomFactor: 1 },
+          window: { width: 1000, height: 700, minWidth: 760, minHeight: 480, frameless: false, zoomFactor: 1, },
         },
       });
       return;
     }
     if (frame.method === "desktop/invoke") {
       const params = frame.params as { method: string; args: unknown[] };
-      if (params.method === "Fail") this.send({ id: frame.id, error: { code: -32000, message: "workspace not found", data: { method: "Fail" } } });
-      else this.send({ id: frame.id, result: { method: params.method, args: params.args } });
+      if (params.method === "Fail") this.send({ id: frame.id, error: { code: -32000, message: "workspace not found", data: { method: "Fail" }, }, });
+      else this.send({ id: frame.id, result: { method: params.method, args: params.args }, });
       return;
     }
-    this.send({ id: frame.id, result: {} });
+    if (frame.method === "desktop/shutdown" || frame.method === "desktop/shutdownStatus") {
+      const params = frame.params as { requestId?: string; reason?: string };
+      const configured =
+    this.behaviour.shutdownResults?.shift();
+      this.send({ id: frame.id, result: {
+          requestId: params.requestId ?? "",
+          reason: params.reason ?? "user_quit",
+          phase: "completed",
+          outcome: "success",
+          completed: true,
+          retryable: false,
+          updatedAt: new Date().toISOString(),
+          ...configured,}, });
+      return;
+  }
+    this.send({ id: frame.id, result: {
+} });
   }
 }
 
-function harness(options: { children?: FakeChild[]; budget?: RestartBudget; onState?(state: ServiceState): void } = {}) {
+function harness(options: { children?: FakeChild[]; budget?: RestartBudget; onState?(state: ServiceState): void; } = {},) {
   const spawned: FakeChild[] = [];
   const states: ServiceState[] = [];
   const events: string[] = [];
@@ -125,12 +145,12 @@ test("start runs hello then desktop/start and exposes the generation", async () 
   const h = harness();
   const hello = await h.supervisor.start();
   assert.equal(hello.runtimeGeneration, "g-1");
-  assert.deepEqual(h.spawned[0]?.requests.map((r) => r.method), ["desktop/hello", "desktop/start"]);
+  assert.deepEqual(h.spawned[0]?.requests.map((r) => r.method), ["desktop/hello", "desktop/start"],);
   assert.equal(h.supervisor.ready, true);
   assert.equal(h.supervisor.generation, "g-1");
-  assert.deepEqual(h.states.map((s) => s.phase), ["starting", "ready"]);
+  assert.deepEqual(h.states.map((s) => s.phase), ["starting", "ready"],);
   assert.deepEqual(h.ready, [{ generation: "g-1", restarted: false }]);
-  assert.deepEqual(await h.supervisor.invoke("OpenProjectTab", ["/p", true]), { method: "OpenProjectTab", args: ["/p", true] });
+  assert.deepEqual(await h.supervisor.invoke("OpenProjectTab", ["/p", true]), { method: "OpenProjectTab", args: ["/p", true], });
   await assert.rejects(h.supervisor.invoke("Fail", []), /workspace not found/);
 });
 
@@ -140,14 +160,14 @@ test("events from the live generation are forwarded and stale ones dropped", asy
   h.spawned[0]?.event("agent:event");
   h.spawned[0]?.event("agent:event", "g-old");
   h.spawned[0]?.event("duplicate");
-  h.spawned[0]?.send({ method: "desktop/event", params: { seq: 3, generation: "g-1", name: "after-gap", args: [] } });
-  h.spawned[0]?.send({ method: "desktop/event", params: { seq: 2, generation: "g-1", name: "late", args: [] } });
+  h.spawned[0]?.send({ method: "desktop/event", params: { seq: 3, generation: "g-1", name: "after-gap", args: [] }, });
+  h.spawned[0]?.send({ method: "desktop/event", params: { seq: 2, generation: "g-1", name: "late", args: [] }, });
   await tick();
   assert.deepEqual(h.events, ["g-1:agent:event", "g-1:after-gap"]);
 });
 
 test("a handshake error fails the service without a restart and terminates the process", async () => {
-  const child = new FakeChild("g-1", { helloError: { code: -32003, message: "digest differs" } });
+  const child = new FakeChild("g-1", { helloError: { code: -32003, message: "digest differs" }, });
   const h = harness({ children: [child] });
   await assert.rejects(h.supervisor.start(), /digest differs/);
   await tick();
@@ -165,7 +185,7 @@ test("an unexpected exit restarts automatically until the budget is exhausted", 
   await tick(8);
   assert.equal(h.spawned.length, 2);
   assert.equal(h.supervisor.generation, "g-2");
-  assert.deepEqual(h.ready.map((r) => r.restarted), [false, true]);
+  assert.deepEqual(h.ready.map((r) => r.restarted), [false, true],);
   h.spawned[1]?.exit(1, null);
   await tick(8);
   assert.equal(h.spawned.length, 3);
@@ -178,7 +198,7 @@ test("an unexpected exit restarts automatically until the budget is exhausted", 
   await h.supervisor.restart();
   assert.equal(h.spawned.length, 4, "a manual restart is always allowed");
   assert.equal(h.supervisor.generation, "g-4");
-  assert.deepEqual(h.states.map((s) => s.phase), ["starting", "ready", "restarting", "ready", "restarting", "ready", "failed", "restarting", "ready"]);
+  assert.deepEqual(h.states.map((s) => s.phase), ["starting", "ready", "restarting", "ready", "restarting", "ready", "failed", "restarting", "ready"],);
 });
 
 test("shutdown sends desktop/shutdown, closes stdin and waits for the exit", async () => {
@@ -186,7 +206,7 @@ test("shutdown sends desktop/shutdown, closes stdin and waits for the exit", asy
   await h.supervisor.start();
   await h.supervisor.shutdown();
   const child = h.spawned[0] as FakeChild;
-  assert.deepEqual(child.requests.map((r) => r.method), ["desktop/hello", "desktop/start", "desktop/shutdown"]);
+  assert.deepEqual(child.requests.map((r) => r.method), ["desktop/hello", "desktop/start", "desktop/shutdown"],);
   assert.equal(child.alive, false);
   assert.equal(h.supervisor.current.phase, "exited");
   assert.equal(h.spawned.length, 1, "a deliberate exit never restarts");
@@ -199,6 +219,70 @@ test("a service that ignores stdin close is killed after the grace period", asyn
   await h.supervisor.shutdown();
   assert.equal(child.alive, false);
   assert.equal(h.supervisor.current.phase, "exited");
+});
+
+test("a retryable save failure keeps the service alive and retry uses the same request identity", async () => {
+  const child = new FakeChild("g-1", {
+    shutdownResults: [
+      {
+        phase: "saving",
+        outcome: "failed",
+        completed: false,
+        retryable: true,
+        errorCode: "session_save_failed",
+        error: "disk full",
+      },
+      {
+        phase: "completed",
+        outcome: "success",
+        completed: true,
+        retryable: false,
+      },
+    ],
+  });
+  const h = harness({ children: [child] });
+  await h.supervisor.start();
+  await assert.rejects(h.supervisor.shutdown(), /session_save_failed/);
+  assert.equal(child.alive, true, "failed durable save must not close stdin or kill the service");
+  await h.supervisor.shutdown();
+  const shutdowns = child.requests.filter((request) => request.method === "desktop/shutdown");
+  assert.equal(shutdowns.length, 2);
+  assert.equal((shutdowns[0].params as { requestId: string }).requestId, (shutdowns[1].params as { requestId: string }).requestId);
+  assert.equal(child.alive, false);
+});
+
+test("shutdown status polling waits through in-progress cleanup", async () => {
+  const child = new FakeChild("g-1", {
+    shutdownResults: [
+      {
+        phase: "saving",
+        outcome: "in_progress",
+        completed: false,
+        retryable: false,
+      },
+      {
+        phase: "closing",
+        outcome: "in_progress",
+        completed: false,
+        retryable: false,
+      },
+      {
+        phase: "completed",
+        outcome: "success",
+        completed: true,
+        retryable: false,
+      },
+    ],
+  });
+  const h = harness({ children: [child] });
+  const phases: string[] = [];
+  await h.supervisor.start();
+  await h.supervisor.shutdown("user_quit", (phase) => phases.push(phase));
+  assert.deepEqual(phases, ["saving", "closing", "completed"]);
+  assert.deepEqual(
+    child.requests.slice(2).map((request) => request.method),
+    ["desktop/shutdown", "desktop/shutdownStatus", "desktop/shutdownStatus"],
+  );
 });
 
 test("shutdown fences a hello completion queued before shutdown", async () => {
@@ -214,7 +298,7 @@ test("shutdown fences a hello completion queued before shutdown", async () => {
 });
 
 test("a destroyed renderer throwing during exit notification cannot prevent shutdown", async () => {
-  const h = harness({ onState: (state) => { if (state.phase === "exited") throw new Error("Object has been destroyed"); } });
+  const h = harness({ onState: (state) => { if (state.phase === "exited") throw new Error("Object has been destroyed"); }, });
   await h.supervisor.start();
   await h.supervisor.shutdown();
   assert.equal(h.supervisor.current.phase, "exited");

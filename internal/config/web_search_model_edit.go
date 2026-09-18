@@ -30,5 +30,5 @@ func (c *Config) SaveWebSearchModelTo(path string) error {
 		return err
 	}
 	body := upsertTOMLSectionKey(string(raw), "agent", "web_search_model", fmt.Sprintf("web_search_model = %q", c.Agent.WebSearchModel))
-	return writeConfigFileResolved(resolved, body, configFilePerm(path))
+	return c.writeModelConfigResolved(resolved, body, configFilePerm(path))
 }

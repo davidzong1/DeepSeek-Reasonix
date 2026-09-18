@@ -605,15 +605,16 @@ type ContextMaintenance struct {
 
 // ExtensionSurface is the JSON form of an event.ExtensionSurfacePayload.
 type ExtensionSurface struct {
-	PluginID     string                 `json:"pluginId"`
-	SurfaceID    string                 `json:"surfaceId"`
-	SessionID    string                 `json:"sessionId,omitempty"`
-	Generation   uint64                 `json:"generation,omitempty"`
-	Kind         string                 `json:"kind"`
-	Status       *ExtensionStatus       `json:"status,omitempty"`
-	Card         *ExtensionCard         `json:"card,omitempty"`
-	Form         *ExtensionForm         `json:"form,omitempty"`
-	Notification *ExtensionNotification `json:"notification,omitempty"`
+	PluginID       string                 `json:"pluginId"`
+	SurfaceID      string                 `json:"surfaceId"`
+	SessionID      string                 `json:"sessionId,omitempty"`
+	Generation     uint64                 `json:"generation,omitempty"`
+	FormInstanceID string                 `json:"formInstanceId,omitempty"`
+	Kind           string                 `json:"kind"`
+	Status         *ExtensionStatus       `json:"status,omitempty"`
+	Card           *ExtensionCard         `json:"card,omitempty"`
+	Form           *ExtensionForm         `json:"form,omitempty"`
+	Notification   *ExtensionNotification `json:"notification,omitempty"`
 }
 
 // ExtensionStatus is the JSON form of an event.ExtensionStatusView.
@@ -681,7 +682,7 @@ func ToWireExtensionSurface(p *event.ExtensionSurfacePayload) *ExtensionSurface 
 	}
 	out := &ExtensionSurface{
 		PluginID: p.PluginID, SurfaceID: p.SurfaceID, SessionID: p.SessionID,
-		Generation: p.Generation, Kind: p.Kind,
+		Generation: p.Generation, FormInstanceID: p.FormInstanceID, Kind: p.Kind,
 	}
 	if s := p.Status; s != nil {
 		out.Status = &ExtensionStatus{Label: s.Label, Detail: s.Detail, Severity: s.Severity, Progress: s.Progress}

@@ -182,9 +182,9 @@ func collectHTMLPreviewDependencies(absPath, allowedRoot string, rootSize int64)
 			if strings.HasPrefix(ref.Path, "/") {
 				return nil, errors.New("HTML preview contains an unsupported root-relative local resource: " + ref.Path)
 			}
-			decoded, decodeErr := url.PathUnescape(ref.Path)
-			if decodeErr != nil {
-				return nil, errors.New("HTML preview contains an invalid escaped resource path")
+			decoded := ref.Path
+			if strings.ContainsRune(decoded, 0) {
+				return nil, errors.New("HTML preview contains an invalid local resource path")
 			}
 			key := filepath.ToSlash(filepath.Clean(filepath.FromSlash(decoded)))
 			if key == "." || key == ".." || strings.HasPrefix(key, "../") || filepath.IsAbs(key) {
@@ -341,8 +341,8 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 			modTime := entry.modTime
 			isRoot := true
 			if len(parts) == 2 {
-				requested, unescapeErr := url.PathUnescape(parts[1])
-				if unescapeErr != nil {
+				requested := parts[1]
+				if strings.ContainsRune(requested, 0) {
 					http.NotFound(w, r)
 					return
 				}

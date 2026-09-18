@@ -86,7 +86,7 @@ const missingResult = toolItems([
     toolCalls: [{ id: "step-pending", name: "complete_step", arguments: "{\"step\":\"A\"}" }],
   },
 ]);
-eq(missingResult[0]?.kind === "tool" && missingResult[0].status, "stopped", "missing tool result restores as stopped");
+eq(missingResult[0]?.kind === "tool" && missingResult[0].status, "unknown", "missing tool result stays unknown without authoritative termination evidence");
 
 const positionalResult = toolItems([
   {

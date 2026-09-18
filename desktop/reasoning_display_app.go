@@ -15,7 +15,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			Bot: botSettingsView(config.BotConfig{}), DesktopLayoutStyle: "workbench",
 			DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
 			DisplayMode: "standard", SessionExperience: "standard", ReasoningDisplayMode: "auto", StatusBarStyle: "icon",
-			StatusBarItems: config.DefaultDesktopStatusBarItems(), CheckUpdates: true,
+			StatusBarItems: config.DefaultDesktopStatusBarItems(), CheckUpdates: false, UpdaterEnabled: desktopUpdaterEnabled(),
 			UpdateChannel: "stable", ConversationWidth: "standard",
 		}
 	}
@@ -25,7 +25,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		DesktopThemeStyle: cfg.DesktopThemeStyle(), DesktopTerminalTheme: cfg.DesktopTerminalTheme(),
 		DisplayMode: cfg.DesktopDisplayMode(), SessionExperience: cfg.DesktopSessionExperience(), ReasoningDisplayMode: cfg.DesktopReasoningDisplayMode(),
 		ReasoningDisplayModeExplicit: cfg.DesktopReasoningDisplayModeExplicit(), StatusBarStyle: cfg.DesktopStatusBarStyle(),
-		StatusBarItems: cfg.DesktopStatusBarItems(), CheckUpdates: cfg.DesktopCheckUpdates(),
+		StatusBarItems: cfg.DesktopStatusBarItems(), CheckUpdates: cfg.DesktopCheckUpdates(), UpdaterEnabled: desktopUpdaterEnabled(),
 		UpdateChannel: cfg.DesktopUpdateChannel(), ConversationWidth: cfg.DesktopConversationWidth(),
 		ConfigWarnings: cfg.LoadWarnings(), ConfigPath: config.UserConfigPath(),
 	}
@@ -57,7 +57,7 @@ func (a *App) defaultSettingsView() SettingsView {
 		DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
 		CloseBehavior: "background", DisplayMode: "standard", ReasoningDisplayMode: "auto",
 		StatusBarStyle: "icon", StatusBarItems: config.DefaultDesktopStatusBarItems(), SessionExperience: "standard",
-		DefaultToolApprovalMode: "workspace-write", CheckUpdates: true, UpdateChannel: "stable",
+		DefaultToolApprovalMode: "workspace-write", CheckUpdates: false, UpdaterEnabled: desktopUpdaterEnabled(), UpdateChannel: "stable",
 		Telemetry: true, Metrics: true, ExpandThinking: false, ConversationWidth: "standard",
 	}
 }

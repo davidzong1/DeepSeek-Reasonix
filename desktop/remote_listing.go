@@ -207,6 +207,8 @@ const serveCapabilitySessionContentV1 = "session-content-v1"
 const serveCapabilitySessionReadV2 = "session-read-v2"
 
 const serveCapabilityHistoryWindowV1 = "history-window-v1"
+const serveCapabilityExtensionFormInstanceV1 = "extension-form-instance-v1"
+const serveCapabilityInteractionTargetV1 = "interaction-target-v1"
 const serveCapabilitySessionIdentityV1 = "session-identity-v1"
 const serveCapabilitySessionOwnershipV1 = "session-ownership-v1"
 const serveCapabilityGoalLifecycleV2 = servecontract.GoalLifecycleV2

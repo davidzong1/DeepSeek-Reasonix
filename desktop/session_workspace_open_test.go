@@ -179,14 +179,20 @@ func TestCanonicalOpenRecoversFailedSurface(t *testing.T) {
 
 func TestCanonicalOpenCommitsTargetWorkspace(t *testing.T) {
 	app, tab, target, rootB, workspaceB := canonicalWorkspaceOpenFixture(t)
+	if err := app.workspaceRegistry().EnsureSessionTopic(t.Context(), target.Ref().SessionID, "topic-B", "Target topic"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := app.OpenSession(target.Ref()); err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if tab.SessionID != target.Ref().SessionID || !sameDesktopPath(tab.WorkspaceRoot, rootB) || tab.SessionWorkspace.ID != workspaceB {
 		t.Fatalf("wrong destination binding; got session=%s root=%s workspace=%s", tab.SessionID, tab.WorkspaceRoot, tab.SessionWorkspace.ID)
 	}
+	if tab.TopicID != "topic-B" || tab.TopicTitle != "Target topic" {
+		t.Fatalf("wrong destination topic; got id=%q title=%q", tab.TopicID, tab.TopicTitle)
+	}
 	persisted := loadTabsFile()
-	if len(persisted.Tabs) != 1 || persisted.Tabs[0].SessionID != "session-B" || !sameDesktopPath(persisted.Tabs[0].WorkspaceRoot, rootB) {
+	if len(persisted.Tabs) != 1 || persisted.Tabs[0].SessionID != "session-B" || persisted.Tabs[0].TopicID != "topic-B" || !sameDesktopPath(persisted.Tabs[0].WorkspaceRoot, rootB) {
 		t.Fatalf("destination binding not persisted: %+v", persisted)
 	}
 	err := app.validateDesktopWorkspaceMembership(t.Context(), workspaceB, target.Ref())

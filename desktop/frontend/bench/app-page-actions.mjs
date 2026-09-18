@@ -10,11 +10,21 @@ export function sessionButton(page, label) {
   return page.locator(".project-tree__topic-main").filter({ hasText: label }).first();
 }
 
-export async function revealSession(page, label) {
+export async function revealSession(page, label, projectLabel = "reasonix") {
   // Composer readiness and sidebar data readiness are independent. Wait for
   // the first projected row before deciding whether the target is truncated.
   await page.locator(".project-tree__topic-main").first().waitFor({ state: "visible" });
   const button = sessionButton(page, label);
+  const showMore = page.getByRole("button", { name: `Show more in ${projectLabel}`, exact: true });
+  while (await button.count() === 0 || !await button.isVisible()) {
+    if (await showMore.count() === 0 || !await showMore.isVisible()) break;
+    const renderedCount = await page.locator(".project-tree__topic-main").count();
+    await showMore.click();
+    await page.waitForFunction(({ targetLabel, previousCount }) => {
+      const rows = [...document.querySelectorAll(".project-tree__topic-main")];
+      return rows.some((row) => row.textContent?.includes(targetLabel)) || rows.length > previousCount;
+    }, { targetLabel: label, previousCount: renderedCount });
+  }
   await button.waitFor({ state: "visible" });
   return button;
 }

@@ -19,8 +19,8 @@ import (
 // staged NSIS payload whose signed manifest names every member:
 //
 //	InstallRoot/
-//	  reasonix-launcher.exe
-//	  Reasonix.exe              (launcher alias when present or portable)
+//	  Reasonix.exe              (canonical GUI entry)
+//	  reasonix-launcher.exe     (only when preserving an existing entry)
 //	  reasonix-cli.exe          (small CLI entry)
 //	  current.json
 //	  versions/<version>/
@@ -91,12 +91,10 @@ func activateVersionedWindowsFromStaging(claimed *repair.UpdateTransaction, stag
 		CheckProcesses: func() error { return desktopinstance.CheckInstallVacant(installRoot, config.ReasonixHomeDir()) },
 		Members:        members,
 		RequiredNames:  versionNames,
-		RootMembers: []installlayout.Member{
-			{Name: "reasonix-launcher.exe", Path: launcherSrc, Mode: 0o700},
-			{Name: "Reasonix.exe", Path: launcherSrc, Mode: 0o700},
-			{Name: "reasonix-cli.exe", Path: cliSrc, Mode: 0o700},
+		WindowsRootEntries: &installlayout.WindowsRootEntrySources{
+			LauncherPath: launcherSrc,
+			CLIEntryPath: cliSrc,
 		},
-		RequiredRootNames: []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-cli.exe"},
 	}); err != nil {
 		return err
 	}

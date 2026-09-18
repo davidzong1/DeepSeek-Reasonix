@@ -2,9 +2,17 @@
 
 [简体中文](TRANSCRIPT_OUTLINE_NAVIGATION.zh-CN.md)
 
-Acceptance record for the change that makes the chat turn navigation read the
-complete conversation instead of the loaded body. Architecture and product
-behavior are described in [Natural-flow chat](TRANSCRIPT_ARCHITECTURE.md).
+> **Historical acceptance record — superseded by PR #10385 (Follow v2).**
+> This document records PR #10276's complete-outline implementation and the
+> validation performed at that time. Its before/after comparisons and results
+> are not acceptance evidence for current production wiring.
+
+Current behavior uses a bounded bidirectional history window and a loaded-turn
+rail; complete persisted history remains accessible through canonical
+search/locate. See [Transcript v2](TRANSCRIPT_V2.md), the
+[scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md), and
+[Natural-flow chat](TRANSCRIPT_ARCHITECTURE.md). The historical design and
+validation below are preserved for traceability.
 
 ## Reported problem
 

@@ -51,6 +51,16 @@ on:
         required: false
         default: false
         type: boolean
+      candidate_artifact_name:
+        description: "Same-run artifact containing a verified sealed release candidate"
+        required: false
+        default: ""
+        type: string
+      candidate_verified:
+        description: "Protected Stable preflight verified candidate provenance and bytes"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write # create the release and upload archives
@@ -146,12 +156,16 @@ jobs:
           CALLER_SHA: ${{ github.sha }}
           APPROVED_CLI_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
-          APPROVED_CHANNEL: ${{ inputs.orchestrator }}
+          APPROVED_CHANNEL: ${{ inputs.orchestrator == 'promote' && 'stable' || inputs.orchestrator }}
           RELEASE_TAG: ${{ inputs.tag }}
           VERIFY_RELEASE_CHECKOUT: false
         run: |
           bash scripts/verify-release-authorization.sh
           bash scripts/verify-release-tag.sh
+          if [ -n "${{ inputs.candidate_artifact_name }}" ] && [ "${{ inputs.candidate_verified }}" != "true" ]; then
+            echo "::error::prepared CLI artifacts require verified candidate provenance"
+            exit 1
+          fi
 
   release-gate:
     name: approve standalone CLI release
@@ -175,11 +189,14 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-go@v7
+        if: ${{ !inputs.candidate_verified }}
         with:
           go-version-file: go.mod
           cache: true
-      - run: ./scripts/cache-guard.sh
+      - if: ${{ !inputs.candidate_verified }}
+        run: ./scripts/cache-guard.sh
       - name: Verify embedded documentation identity
+        if: ${{ !inputs.candidate_verified }}
         env:
           DOCS_BUILD_VERSION: ${{ needs.resolve.outputs.tag }}
           DOCS_SOURCE_REVISION: ${{ needs.resolve.outputs.sha }}
@@ -232,6 +249,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Download sealed release candidate
+        if: ${{ inputs.candidate_artifact_name != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.candidate_artifact_name }}
+          path: ${{ runner.temp }}/release-candidate
+      - name: Verify prepared CLI checksums
+        if: ${{ inputs.candidate_artifact_name != '' }}
+        working-directory: ${{ runner.temp }}/release-candidate/cli
+        run: sha256sum -c SHA256SUMS
       - name: Download orchestrator-reviewed release notes
         if: ${{ inputs.orchestrated }}
         uses: actions/download-artifact@v8
@@ -278,6 +305,12 @@ jobs:
                 "$validation_channel" "$TAG" "${{ github.repository }}" \
                 "$release_json" "$checksums"
             )"
+            if [ -n "${{ inputs.candidate_artifact_name }}" ]; then
+              cmp -s "$checksums" "$RUNNER_TEMP/release-candidate/cli/SHA256SUMS" || {
+                echo "::error::existing CLI release differs from the sealed candidate"
+                exit 1
+              }
+            fi
             echo "existing CLI release $TAG is complete and checksum-bound; reusing it"
           elif grep -Eiq 'HTTP 404|Not Found' "$release_error"; then
             decision="$(
@@ -292,7 +325,7 @@ jobs:
           test "$decision" = "publish" -o "$decision" = "reuse"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
       - uses: goreleaser/goreleaser-action@v7
-        if: ${{ steps.publication.outputs.decision == 'publish' }}
+        if: ${{ steps.publication.outputs.decision == 'publish' && inputs.candidate_artifact_name == '' }}
         with:
           version: '~> v2'
           args: release --clean
@@ -303,6 +336,28 @@ jobs:
           # though checkout is on the release tag. Pin GoReleaser explicitly, and
           # avoid ambiguity from the three release tags sharing one commit.
           GORELEASER_CURRENT_TAG: ${{ needs.resolve.outputs.tag }}
+
+      - name: Publish prepared CLI archives
+        if: ${{ steps.publication.outputs.decision == 'publish' && inputs.candidate_artifact_name != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-darwin-amd64.tar.gz" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-darwin-arm64.tar.gz" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-linux-amd64.tar.gz" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-linux-arm64.tar.gz" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-windows-amd64.zip" \
+            "$RUNNER_TEMP/release-candidate/cli/reasonix-windows-arm64.zip" \
+            "$RUNNER_TEMP/release-candidate/cli/SHA256SUMS" \
+            --title "Reasonix CLI $TAG" --notes-file /tmp/release-notes.md --latest=false
+
+      - name: Publish prepared Homebrew cask
+        if: ${{ inputs.candidate_artifact_name != '' && needs.resolve.outputs.channel == 'stable' }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: node release-control/scripts/publish-homebrew-cask.mjs "$RUNNER_TEMP/release-candidate/cli/reasonix.rb"
 
       - name: Publish product release notes
         env:

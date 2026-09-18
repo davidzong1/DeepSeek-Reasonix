@@ -81,7 +81,11 @@ func TestGoalEditRoutePreservesGoalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), session.CreateOptions{SessionID: "goal-edit-route"})
 	if err != nil {
 		t.Fatal(err)

@@ -6383,6 +6383,12 @@ body > .mermaid-diagram--fullscreen {
   max-width: var(--maxw);
   margin: 0 auto;
 }
+.composer-workspace-bar-fallback {
+  min-height: 42px;
+}
+.composer-workspace-frame--plain {
+  display: contents;
+}
 .composer-card {
   container-type: inline-size;
   position: relative;
@@ -23135,19 +23141,10 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.96;
 }
 
-/* Header-action-btn in the header-actions row uses min-width so it can
-/* Header-action-btn in the header-actions row uses min-width so it can
-   expand when a time-filter label is shown alongside the clock icon. */
 .project-tree__header-actions .project-tree__header-action-btn {
   width: auto;
   min-width: 22px;
   padding: 0 4px;
-}
-
-/* Time-filter action slot: no fixed width so the button can grow when label shown. */
-.project-tree__header-action-slot--filter {
-  flex-basis: auto !important;
-  width: auto !important;
 }
 
 .project-tree__header-action-btn--active {
@@ -23157,68 +23154,24 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.96;
 }
 
-.project-tree__time-filter {
-  display: inline-flex;
-  position: relative;
-}
-
-.project-tree__time-filter-label {
-  font-size: 9px;
-  line-height: 1;
-  margin-left: 3px;
-  font-weight: 500;
-}
-
-.project-tree__time-filter-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  /* Right-aligned: the trigger sits in the right-aligned header inside the
-     overflow:hidden sidebar, so opening leftward keeps the menu unclipped. */
-  right: 0;
-  z-index: var(--z-menu);
-  min-width: 84px;
-  padding: 4px;
-  border: none;
-  border-radius: 8px;
-  background: var(--bg-elev);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-}
-
-.project-tree__time-filter-opt {
-  --reasonix-draggable: no-drag;
+.project-tree__topic-window-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  width: 100%;
-  height: 28px;
-  padding: 0 8px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
+  min-height: 24px;
+  gap: 10px;
+}
+
+.project-tree__topic-window-actions .project-tree__topic-window-toggle {
+  width: auto;
+  padding: 0;
+}
+
+.project-tree__topic-window-status {
   color: var(--fg-faint);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  font-size: 11px;
 }
 
-.project-tree__time-filter-opt:hover {
-  background: var(--sidebar-hover);
-  color: var(--fg);
-}
-
-.project-tree__time-filter-opt--on {
-  color: var(--accent);
-  font-weight: 400;
-}
-
-.project-tree__time-filter-sep {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--border-soft);
-}
-
-/* Classic per-folder show-more toggle and empty-folder placeholder rows. */
+/* Per-list show-more toggle and empty-folder placeholder rows. */
 .project-tree__topic-window-toggle {
   --reasonix-draggable: no-drag;
   display: flex;
@@ -23237,7 +23190,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__topic-window-toggle:hover {
-  color: var(--fg-faint);
+  color: var(--fg);
 }
 
 .project-tree__topic-window-toggle:focus-visible {
@@ -28161,7 +28114,7 @@ body > .mermaid-diagram--fullscreen {
 
 .sidebar--workbench .project-tree__header-actions {
   display: grid;
-  grid-template-columns: auto repeat(3, var(--project-tree-action-column));
+  grid-template-columns: repeat(3, var(--project-tree-action-column));
   gap: var(--project-tree-action-gap);
   justify-content: end;
   align-items: center;
@@ -28216,13 +28169,6 @@ body > .mermaid-diagram--fullscreen {
   height: var(--project-tree-action-column);
 }
 
-.sidebar--workbench .project-tree__header-action-slot--filter,
-:root[data-theme-style] .sidebar--workbench .project-tree__header-action-slot--filter {
-  flex-basis: auto;
-  width: auto;
-  min-width: var(--project-tree-action-column);
-}
-
 .sidebar--workbench .project-tree__header-icon-btn {
   --reasonix-draggable: no-drag;
   width: var(--project-tree-action-column);
@@ -28244,19 +28190,6 @@ body > .mermaid-diagram--fullscreen {
   background: var(--sidebar-hover);
   color: var(--fg);
   opacity: 1;
-}
-
-.sidebar--workbench .project-tree__header-action-slot--filter .project-tree__header-icon-btn,
-:root[data-theme-style] .sidebar--workbench .project-tree__header-action-slot--filter .project-tree__header-icon-btn {
-  flex-basis: auto;
-  width: auto;
-  min-width: var(--project-tree-action-column);
-  padding: 0 6px;
-}
-
-.sidebar--workbench .project-tree__header-action-slot--filter .project-tree__time-filter-label {
-  font-size: 10px;
-  font-weight: 620;
 }
 
 .sidebar--workbench .project-tree__header-icon-btn:disabled {
@@ -38233,3 +38166,152 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
   color: var(--fg-faint);
   cursor: default;
 }
+
+.main--draft {
+  min-height: 0;
+  overflow: auto;
+}
+.session-draft-surface {
+  width: min(760px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: clamp(28px, 8vh, 88px) 0 140px;
+}
+.session-draft-surface__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.session-draft-surface__heading h1 {
+  margin: 5px 0 3px;
+  color: var(--fg);
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+.session-draft-surface__heading p {
+  max-width: min(620px, 75vw);
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.session-draft-surface__eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+}
+.session-draft-surface__status {
+  min-height: 18px;
+  margin-top: 14px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.session-draft-surface__status--error,
+.session-draft-surface__status--conflict,
+.session-draft-surface__error {
+  color: var(--danger);
+}
+.project-tree__draft-badge {
+  flex: none;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border-soft));
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+}
+.project-tree__draft-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.project-tree__draft-badge--dirty,
+.project-tree__draft-badge--saving {
+  border-color: color-mix(in srgb, var(--warning, #d69a32) 48%, var(--border-soft));
+  color: var(--warning, #d69a32);
+}
+.project-tree__draft-badge--error,
+.project-tree__draft-badge--conflict {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border-soft));
+  color: var(--danger);
+}
+.session-draft-surface__conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.session-draft-surface__conflict span {
+  flex: 1;
+}
+.session-draft-surface__conflict button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.session-draft-surface__error {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.session-draft-surface__error button {
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.session-draft-surface__mcp {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+.session-draft-surface__mcp summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.session-draft-surface__mcp summary span {
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+.session-draft-surface__mcp-list {
+  display: grid;
+  padding: 0 0 8px 21px;
+}
+.session-draft-surface__mcp-list label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  color: var(--fg);
+  font-size: 12px;
+}
+.session-draft-surface__mcp-list small {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.session-export-progress { position: fixed; right: 20px; bottom: 32px; z-index: var(--z-popover); max-width: min(480px, 90vw); padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--fg); box-shadow: 0 4px 18px #0002; }
+.session-export-progress > div { display: flex; align-items: center; gap: 12px; }
+.session-export-progress button { flex-shrink: 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); color: var(--fg); cursor: pointer; }

@@ -130,7 +130,7 @@ func Call(ctx context.Context, cfg Config, system, evidence string) (string, err
 		}
 	}()
 
-	ch, err := cfg.Provider.Stream(callCtx, req)
+	ch, err := provider.StreamForModel(callCtx, cfg.Provider, req, cfg.ModelRef)
 	if err != nil {
 		return "", err
 	}

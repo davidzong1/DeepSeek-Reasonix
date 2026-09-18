@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createRuntimeStateStore, selectRuntime, type RuntimeProjection, type RuntimeState } from "../lib/runtimeStateStore";
+import { acceptSessionRuntimeSnapshot, createRuntimeStateStore, selectRuntime, selectRuntimeSession, type RuntimeProjection, type RuntimeState } from "../lib/runtimeStateStore";
 import { startRuntimeStateSync } from "../lib/runtimeStateSync";
 import { acceptRuntimeState } from "../lib/runtimeStateReducer";
 
@@ -8,6 +8,49 @@ const state: RuntimeState = { schemaVersion: 1, runtimeEpoch: "controller-a", ac
 const projection = (revision: number, changes: Partial<RuntimeState> = {}): RuntimeProjection => ({ epoch: "app-a", revision, topics: [],
   sessions: [{ tabId: "a", scope: "project", workspaceRoot: "/fixture", topicId: "topic", sessionPath: "/fixture/session", sessionGeneration: 1,
     open: true, remote: false, freshness: "synced", state: { ...state, revision, ...changes } }] });
+
+{
+  const versioned = (projectionEpoch: string, revision: number, todos: RuntimeState["todos"]): RuntimeState => ({
+    ...state, projectionEpoch, revision, todos,
+  });
+  const newest = versioned("producer-a", 20, [{ content: "new", status: "in_progress" }]);
+  assert.equal(acceptSessionRuntimeSnapshot(newest, versioned("producer-a", 10, [])), newest,
+    "an old empty snapshot cannot clear a newer list");
+  const cleared = acceptSessionRuntimeSnapshot(newest, versioned("producer-a", 21, []));
+  assert.deepEqual(cleared.todos, [], "a newer empty snapshot is an authoritative clear");
+  const replacement = versioned("producer-b", 1, [{ content: "replacement", status: "pending" }]);
+  assert.equal(acceptSessionRuntimeSnapshot(cleared, replacement), cleared,
+    "an ordinary frame cannot replace the current producer");
+  assert.equal(acceptSessionRuntimeSnapshot(cleared, replacement, true), replacement,
+    "a binding-validated baseline can establish a replacement producer");
+  assert.equal(acceptSessionRuntimeSnapshot(replacement, versioned("producer-a", 99, [])), replacement,
+    "the retired producer cannot overwrite its replacement");
+}
+
+{
+  const frame = projection(1, { todos: [{ content: "A's task", status: "in_progress" }] });
+  const session = frame.sessions[0];
+  assert.equal(selectRuntimeSession(frame, "a", session.sessionPath), session);
+  assert.equal(selectRuntimeSession(frame, "b", session.sessionPath), undefined, "a different tab cannot borrow the runtime");
+  assert.equal(selectRuntimeSession(frame, "a", "/fixture/other"), undefined, "reusing a tab cannot borrow the previous session's runtime");
+  for (const identity of [undefined, "", {}, { sessionPath: "" }]) {
+    assert.equal(selectRuntimeSession(frame, "a", identity), undefined, "unbound and empty sessions never act as wildcards");
+  }
+  assert.equal(selectRuntimeSession(frame, "a", { sessionPath: session.sessionPath, sessionGeneration: 2 }), undefined, "ABA navigation rejects the old binding generation");
+  assert.equal(selectRuntimeSession(frame, "a", { sessionPath: session.sessionPath, sessionGeneration: 1 }), session);
+  session.open = false;
+  assert.equal(selectRuntimeSession(frame, "a", session.sessionPath), undefined, "detached runtimes are not visible sessions");
+  session.open = true;
+  session.sessionId = "canonical-a";
+  const canonical = { session: { hostId: "local", sessionId: "canonical-a" }, sessionPath: "session-id:canonical-a", sessionGeneration: 1 };
+  assert.equal(selectRuntimeSession(frame, "a", canonical), session, "canonical references match even when route and physical path differ");
+  assert.equal(selectRuntimeSession(frame, "a", { ...canonical, session: { hostId: "local", sessionId: "other" }, sessionPath: session.sessionPath }), undefined, "matching legacy paths cannot override distinct canonical identities");
+  session.remote = true;
+  session.hostId = "remote-host";
+  assert.equal(selectRuntimeSession(frame, "a", canonical), undefined, "the same session ID on another host is not the same session");
+  assert.equal(selectRuntimeSession(frame, "a", { ...canonical, session: { ...canonical.session, hostId: "remote-host" } }), session);
+  assert.equal(selectRuntimeSession(frame, "a", session.sessionPath), session, "remote path callers keep their scoped selection");
+}
 const rawStore = createRuntimeStateStore();
 const store = { ...rawStore, accept: (next: RuntimeProjection, authoritative = false) => acceptRuntimeState(rawStore, next, authoritative) };
 let updates = 0;

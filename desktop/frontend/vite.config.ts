@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { defineConfig, searchForWorkspaceRoot, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { execSync } from "node:child_process";
-import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rewriteDragRegions, shellFromEnv } from "./scripts/shell-css.mjs";
@@ -58,15 +58,32 @@ function archiveHiddenSourcemaps(commit: string): Plugin {
 
       const archiveDir = resolve(configDir, "sourcemaps", commit);
       await mkdir(archiveDir, { recursive: true });
+      const records = await Promise.all(maps.map(async (mapPath) => {
+        const map = mapPath.slice(distDir.length + 1).replaceAll("\\", "/");
+        return {
+          source: mapPath,
+          archive: map.replaceAll("/", "__"),
+          map,
+          bundle: map.slice(0, -4),
+          bundleExists: await access(mapPath.slice(0, -4)).then(() => true, () => false),
+        };
+      }));
       await Promise.all(
-        maps.map(async (mapPath) => {
-          const rel = mapPath.slice(distDir.length + 1).replace(/[\\/]+/g, "__");
-          await rename(mapPath, resolve(archiveDir, rel));
+        records.map(async (record) => {
+          await rename(record.source, resolve(archiveDir, record.archive));
         }),
       );
+      const manifestRecord = ({ archive, map, bundle }: (typeof records)[number]) => ({ archive, map, bundle });
       await writeFile(
         resolve(archiveDir, "manifest.json"),
-        JSON.stringify({ commit, channel: buildChannel(), archivedAt: new Date().toISOString() }, null, 2) + "\n",
+        JSON.stringify({
+          schemaVersion: 1,
+          commit,
+          channel: buildChannel(),
+          archivedAt: new Date().toISOString(),
+          maps: records.filter((record) => record.bundleExists).map(manifestRecord),
+          orphanMaps: records.filter((record) => !record.bundleExists).map(manifestRecord),
+        }, null, 2) + "\n",
       );
     },
   };

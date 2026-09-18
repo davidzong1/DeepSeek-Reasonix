@@ -7,6 +7,39 @@ import (
 )
 
 func indexTurnEvent(ctx context.Context, content *sessioncontent.Store, state *historyBuildState, event Event) error {
+	if event.Kind == "tool/call" || event.Kind == "tool/start" || event.Kind == "tool/result" {
+		payload := event.Payload
+		if event.PayloadRef != nil {
+			var err error
+			payload, err = resolveContentPayload(ctx, content, *event.PayloadRef)
+			if err != nil {
+				return err
+			}
+		}
+		var body struct {
+			ID       string `json:"id"`
+			RunState string `json:"runState"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			return err
+		}
+		status := body.RunState
+		if event.Kind == "tool/call" {
+			status = "pending"
+		}
+		if event.Kind == "tool/start" {
+			status = "running"
+		}
+		if status == "" {
+			status = "unknown"
+		}
+		if body.ID != "" {
+			if _, err := state.tx.ExecContext(ctx, `INSERT OR REPLACE INTO tool_states(call_id,sequence,state) VALUES(?,?,?)`, body.ID, event.Sequence, status); err != nil {
+				return err
+			}
+		}
+	}
+
 	if state.commitTurn != "" && (event.Kind == "assistant/attempt" || event.Kind == "tool/call") {
 		payload := event.Payload
 		if event.PayloadRef != nil {

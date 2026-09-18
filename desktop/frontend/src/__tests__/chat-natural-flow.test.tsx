@@ -33,6 +33,7 @@ try {
   await harness.render(items);
   await harness.settle();
   assert.ok(harness.container.querySelector(".chat-column"));
+  assert.ok(harness.container.querySelector('[id^="reasonix-chat-transcript-"] .chat-column'), "native upgrade evidence scopes history to the transcript");
   assert.equal(harness.container.querySelectorAll(".transcript__window-item").length, 0);
   assert.equal(harness.container.querySelectorAll(".chat-tool").length, 0, "completed process unmounts heavy rows");
   const disclosure = harness.container.querySelector<HTMLButtonElement>(".chat-process");

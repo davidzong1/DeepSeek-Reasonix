@@ -5,6 +5,8 @@ import "fmt"
 // SetActiveTab switches the frontend's active tab. Restored remote shells
 // reconnect only when activated.
 func (a *App) SetActiveTab(tabID string) error {
+	// Even selecting the already-visible tab cancels a slower source adoption.
+	a.desktopSessions.navigationSeq.Add(1)
 	a.tabSelectionMu.Lock()
 	defer a.tabSelectionMu.Unlock()
 

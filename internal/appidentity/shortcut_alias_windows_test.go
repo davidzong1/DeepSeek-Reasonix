@@ -52,3 +52,34 @@ func TestShortcutMigrationAcceptsShortAndLongPathsForTheSameFile(t *testing.T) {
 		t.Fatal("different files with the same executable name must not compare equal")
 	}
 }
+
+func TestCanonicalShortcutMigratesShortLegacyFilename(t *testing.T) {
+	migrationTestCOM(t)
+	root := filepath.Join(t.TempDir(), "Reasonix long installation path")
+	legacy := filepath.Join(root, "reasonix-launcher.exe")
+	canonical := filepath.Join(root, "Reasonix.exe")
+	migrationTestFile(t, legacy)
+	migrationTestFile(t, canonical)
+	ptr, err := windows.UTF16PtrFromString(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]uint16, windowsPathBuffer)
+	n, err := windows.GetShortPathName(ptr, &buffer[0], uint32(len(buffer)))
+	if err != nil || n >= uint32(len(buffer)) {
+		t.Fatalf("short path length=%d error=%v", n, err)
+	}
+	short := windows.UTF16ToString(buffer[:n])
+	if strings.EqualFold(filepath.Base(short), filepath.Base(legacy)) {
+		t.Skip("volume does not create DOS short filenames")
+	}
+	link := filepath.Join(root, "Reasonix.lnk")
+	migrationTestShortcut(t, link, migrationShortcutState{target: short, icon: short, id: AppUserModelID, workingDirectory: root, showCmd: 1})
+	if changed, err := repairOwnedShortcut(link, root); err != nil || !changed {
+		t.Fatalf("repair=%v, %v", changed, err)
+	}
+	got := migrationReadShortcut(t, link)
+	if !migrationSamePath(got.target, canonical) || !migrationSamePath(got.icon, canonical) {
+		t.Fatalf("short legacy entry was not migrated: %+v", got)
+	}
+}

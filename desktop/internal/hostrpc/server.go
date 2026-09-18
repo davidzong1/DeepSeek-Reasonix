@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,8 @@ type Hooks struct {
 	DOMReady         func(ctx context.Context) error
 	RendererAttached func(ctx context.Context, generation int) error
 	BeforeClose      func(ctx context.Context, reason string) (prevent bool)
-	Shutdown         func(ctx context.Context) error
+	Shutdown         func(ctx context.Context, params ShutdownParams) (ShutdownResult, error)
+	ShutdownStatus   func(ctx context.Context, params ShutdownStatusParams) (ShutdownResult, error)
 	HostEvent        func(ctx context.Context, name string, payload json.RawMessage) error
 	BrowserControl   func(ctx context.Context, enabled bool) error
 }
@@ -68,6 +70,7 @@ func NewServer(conn *rpcwire.Conn, cfg ServerConfig) *Server {
 	conn.Handle("desktop/rendererAttached", s.gated(s.rendererAttached))
 	conn.Handle("desktop/beforeClose", s.gated(s.beforeClose))
 	conn.Handle("desktop/shutdown", s.gated(s.shutdown))
+	conn.Handle("desktop/shutdownStatus", s.gated(s.shutdownStatus))
 	conn.Handle("desktop/hostEvent", s.gated(s.hostEvent))
 	conn.Handle("desktop/browserControl", s.gated(s.browserControl))
 	conn.Handle("desktop/invoke", s.gated(s.invoke))
@@ -84,6 +87,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	case <-s.done:
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -190,13 +195,41 @@ func (s *Server) beforeClose(ctx context.Context, raw json.RawMessage) (any, err
 	return map[string]bool{"prevent": prevent}, nil
 }
 
-func (s *Server) shutdown(ctx context.Context, _ json.RawMessage) (any, error) {
-	if err := runHook(ctx, s.cfg.Hooks.Shutdown); err != nil {
-		return nil, internalError(err)
+func (s *Server) shutdown(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params ShutdownParams
+	if err := decodeParams(raw, &params); err != nil {
+		return nil, err
 	}
-	return rpcwire.RespondThen(struct{}{}, func(error) {
+	if s.cfg.Hooks.Shutdown == nil {
+		return ShutdownResult{RequestID: params.RequestID, Reason: params.Reason, Phase: "completed", Outcome: "success", Completed: true}, nil
+	}
+	result, err := s.cfg.Hooks.Shutdown(ctx, params)
+	if err != nil {
+		// Shutdown failures are returned as typed results so the shell can retain
+		// the window and offer a retry without parsing an RPC error string.
+		return result, nil
+	}
+	if !result.Completed {
+		return result, nil
+	}
+	return rpcwire.RespondThen(result, func(error) {
 		s.doneOnce.Do(func() { close(s.done) })
 	}), nil
+}
+
+func (s *Server) shutdownStatus(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params ShutdownStatusParams
+	if err := decodeParams(raw, &params); err != nil {
+		return nil, err
+	}
+	if s.cfg.Hooks.ShutdownStatus == nil {
+		return ShutdownResult{RequestID: params.RequestID, Phase: "idle", Outcome: "not_started", Retryable: true}, nil
+	}
+	result, err := s.cfg.Hooks.ShutdownStatus(ctx, params)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	return result, nil
 }
 
 func (s *Server) hostEvent(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -244,6 +277,10 @@ func (s *Server) invoke(ctx context.Context, raw json.RawMessage) (any, error) {
 		return result, nil
 	}
 	data := map[string]any{"method": p.Method}
+	var detailed interface{ RPCErrorData() map[string]any }
+	if errors.As(err, &detailed) {
+		maps.Copy(data, detailed.RPCErrorData())
+	}
 	var unknown *UnknownMethodError
 	var invalid *InvalidArgsError
 	var panicked *PanicError

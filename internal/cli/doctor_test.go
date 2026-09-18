@@ -43,8 +43,8 @@ func TestDoctorSessionsIsReadOnly(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("REASONIX_CACHE_HOME", cache)
 	out := captureStdout(t, func() {
-		if rc := doctorCommand([]string{"sessions", "--json"}, "test-version"); rc != 0 {
-			t.Fatalf("doctor sessions rc = %d, want 0", rc)
+		if rc := doctorCommand([]string{"sessions", "--json"}, "test-version"); rc != 1 {
+			t.Fatalf("doctor sessions rc = %d, want 1 for missing catalog", rc)
 		}
 	})
 	var decoded map[string]any

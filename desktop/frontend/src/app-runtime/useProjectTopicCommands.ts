@@ -33,7 +33,8 @@ export function useProjectTopicCommands(input: Input) {
       { target, title: title.trim(), activeTabId: input.visible.tabId, ports: input.ports }, renameProjectTopic);
     if (outcome.status === "failed") report(outcome.error);
   });
-  const renameTopic = useCommittedCommand((topicId: string, title: string) => topicId ? rename({ kind: "local", topicId }, title) : Promise.resolve());
+  const renameTopic = useCommittedCommand((topicId: string, title: string) => input.topic?.target.kind === "local" && input.topic.id === topicId
+    ? rename(input.topic.target, title) : Promise.resolve());
   const refreshProjectsAndTabs = useCommittedCommand(async () => {
     const outcome = await operations({ kind: "application" }, "project-refresh", { activeTabId: input.visible.tabId, ports: input.ports }, refreshProjectTopics);
     if (outcome.status === "failed") report(outcome.error);

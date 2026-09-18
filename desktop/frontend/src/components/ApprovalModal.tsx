@@ -20,45 +20,14 @@ import {
 import { WriteAccessApprovalDetails, writeAccessDecisionActions, type DecisionAction } from "./WriteAccessApproval";
 import { RetiredRecoveryApproval } from "./RetiredRecoveryApproval";
 import type { ApprovalModalProps } from "./approvalTypes";
+import { approvalToolLabel } from "./approvalToolLabel";
+export { approvalToolLabel } from "./approvalToolLabel";
 
 function requiresFreshHumanApproval(tool: string): boolean {
   return tool === "remember" || tool === "forget" || tool === "exit_plan_mode" || tool === "sandbox_escape" || tool === "config_write";
 }
 
 const APPROVAL_MODE_RANK = { "read-only": 0, "workspace-write": 1, "danger-full-access": 2 } as const;
-
-export function approvalToolLabel(tool: string, t: Translator): string {
-  switch (tool) {
-    case "bash":
-      return t("approval.toolLabelBash");
-    case "edit_file":
-      return t("approval.toolLabelEditFile");
-    case "write_file":
-      return t("approval.toolLabelWriteFile");
-    case "multi_edit":
-      return t("approval.toolLabelMultiEdit");
-    case "move_file":
-      return t("approval.toolLabelMoveFile");
-    case "web_fetch":
-      return t("approval.toolLabelWebFetch");
-    case "run_skill":
-      return t("approval.toolLabelRunSkill");
-    case "remember":
-      return t("approval.toolLabelRemember");
-    case "forget":
-      return t("approval.toolLabelForget");
-    case "sandbox_escape":
-      return t("approval.toolLabelSandboxEscape");
-    case "config_write":
-      return t("approval.toolLabelConfigWrite");
-    case "plan_mode_read_only_command":
-      return t("approval.toolLabelPlanModeReadOnly");
-    case "exit_plan_mode":
-      return t("approval.toolLabelExitPlan");
-    default:
-      return tool;
-  }
-}
 
 const sandboxEscapeEnglishSubjectFallback = "run shell command unconfined once";
 const sandboxEscapeEnglishSubjectPrefix = "run unconfined once: ";
@@ -298,21 +267,24 @@ function InteractiveApprovalModal({
   const closingRef = useRef(false);
   const fileMenu = useFileReferenceMenu(revisionText, cwd, tabId, workspaceScopeKey);
 
-  const answerWithExit = (fn: () => void) => {
+  const answerWithExit = (fn: () => void | Promise<void>) => {
     if (closingRef.current || submitting) return;
     closingRef.current = true;
     setSubmitting(true);
-    const el = shelfRef.current;
-    if (el) {
-      animateElementExit(el, {
-        opacity: 0,
-        y: 8,
-        duration: DUR_FAST,
-        onComplete: fn,
-      });
-    } else {
-      fn();
+    let result: void | Promise<void>;
+    try {
+      result = fn();
+    } catch {
+      closingRef.current = false;
+      setSubmitting(false);
+      return;
     }
+    void Promise.resolve(result).catch(() => {
+      closingRef.current = false;
+      setSubmitting(false);
+    });
+    const el = shelfRef.current;
+    if (el) animateElementExit(el, { opacity: 0, y: 8, duration: DUR_FAST, onComplete: () => undefined });
   };
 
   const resolveRecovery = useCallback(
@@ -320,10 +292,9 @@ function InteractiveApprovalModal({
       const resolve = onResolveRecovery ?? ((a: "continue" | "continue_task" | "revise") => onAnswer(a !== "revise", false, false));
       if (action === "revise") {
         const text = feedback?.trim().slice(0, RECOVERY_FEEDBACK_MAX) ?? "";
-        resolve("revise", text || undefined);
-        return;
+        return resolve("revise", text || undefined);
       }
-      resolve(action);
+      return resolve(action);
     },
     [onResolveRecovery, onAnswer],
   );

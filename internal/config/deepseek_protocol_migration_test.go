@@ -649,13 +649,16 @@ func TestNormalizeOfficialDeepSeekResponsesPresetAddsPro(t *testing.T) {
 	if p.Default != "deepseek-v4-flash" {
 		t.Fatalf("default = %q, want deepseek-v4-flash", p.Default)
 	}
-	flash := p.ModelOverrides["deepseek-v4-flash"]
+	flash, _ := c.ResolveModel("deepseek-responses/deepseek-v4-flash")
 	if !containsString(flash.SupportedEfforts, "low") {
 		t.Fatalf("Flash effort override = %+v", flash)
 	}
-	pro := p.ModelOverrides["deepseek-v4-pro"]
+	pro, _ := c.ResolveModel("deepseek-responses/deepseek-v4-pro")
 	if !containsString(pro.SupportedEfforts, "low") || !containsString(pro.SupportedEfforts, "max") {
 		t.Fatalf("Pro effort override = %+v", pro)
+	}
+	if len(p.ModelOverrides) != 0 {
+		t.Fatal("built-in reasoning defaults must not become saved overrides")
 	}
 }
 

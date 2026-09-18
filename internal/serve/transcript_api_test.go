@@ -174,7 +174,11 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), canonical.CreateOptions{SessionID: "canonical"})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +226,7 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		t.Fatalf("close follow status=%d", closed.StatusCode)
 	}
 	var page canonical.MessageHistoryPage
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for {
 		response, requestErr := http.Get(server.URL + "/session-history/page?sessionId=canonical&limit=10")
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -235,9 +239,10 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		if page.Status == "ready" {
 			break
 		}
-		if page.Status != "preparing" || time.Now().After(deadline) {
+		if page.Status != "preparing" {
 			t.Fatalf("history preparation = %+v", page)
 		}
+		waitHistoryPreparation(t)
 	}
 	if len(page.Messages) != 1 || page.Messages[0].ContentRef == nil {
 		t.Fatalf("history page=%+v", page)
@@ -252,7 +257,7 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		t.Fatalf("location status=%d response=%+v err=%v", locationResponse.StatusCode, location, err)
 	}
 	var search canonical.SearchHistoryPage
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for {
 		response, requestErr := http.Get(server.URL + "/session-history/search?sessionId=canonical&q=range&limit=10")
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -265,9 +270,10 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		if search.Status == "ready" {
 			break
 		}
-		if search.Status != "preparing" || time.Now().After(deadline) {
+		if search.Status != "preparing" {
 			t.Fatalf("search preparation = %+v", search)
 		}
+		waitHistoryPreparation(t)
 	}
 	if len(search.Hits) != 1 || search.Hits[0].MessageID != "large" {
 		t.Fatalf("search page=%+v", search)
@@ -503,7 +509,11 @@ func newWindowTestServer(t *testing.T) (*httptest.Server, *control.Controller) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), canonical.CreateOptions{SessionID: "canonical"})
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +553,6 @@ func newWindowTestServer(t *testing.T) (*httptest.Server, *control.Controller) {
 // cold session kicks off the locator build in the background.
 func getWindow(t *testing.T, server *httptest.Server, query string, into *canonical.HistoryWindowPage) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for {
 		response, err := http.Get(server.URL + "/session-history/window?sessionId=canonical&" + query)
 		if err != nil {
@@ -557,10 +566,18 @@ func getWindow(t *testing.T, server *httptest.Server, query string, into *canoni
 		if into.Status != "preparing" {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("window stayed preparing for %q", query)
-		}
-		time.Sleep(time.Millisecond)
+		waitHistoryPreparation(t)
+	}
+}
+
+// Readiness is a lifecycle condition; the package alarm bounds a stuck build.
+// Pace HTTP polling so it does not compete with the index worker for the runner.
+func waitHistoryPreparation(t *testing.T) {
+	t.Helper()
+	select {
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	case <-time.After(25 * time.Millisecond):
 	}
 }
 

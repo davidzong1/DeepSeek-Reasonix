@@ -23,10 +23,13 @@ func (c *Config) SaveModelSettingsTo(path, baseline string) error {
 	if c.editLoadErr != nil {
 		return c.editLoadErr
 	}
-	if err := currentUserConfigEditLockError(); err != nil {
-		return err
+	userConfig := IsUserConfigPath(path)
+	if userConfig {
+		if err := currentUserConfigEditLockError(); err != nil {
+			return err
+		}
 	}
-	resolved, err := resolveConfigAccessPath(path, true)
+	resolved, err := resolveConfigAccessPath(path, userConfig)
 	if err != nil {
 		return err
 	}
@@ -51,7 +54,7 @@ func (c *Config) SaveModelSettingsTo(path, baseline string) error {
 	if err := toml.NewEncoder(&encoded).Encode(doc); err != nil {
 		return err
 	}
-	return writeConfigFileResolved(resolved, encoded.String(), configFilePerm(path))
+	return c.writeModelConfigResolved(resolved, encoded.String(), configFilePerm(path))
 }
 
 func mergeModelSettingsDelta(doc, before, after map[string]any) {
@@ -75,7 +78,7 @@ func mergeModelSettingsDelta(doc, before, after map[string]any) {
 			doc[key] = target
 			continue
 		}
-		if key == "providers" {
+		if key == "providers" || key == "hosts" || key == "projects" {
 			oldEntries, oldOK := previous.([]map[string]any)
 			newEntries, newOK := next.([]map[string]any)
 			if oldOK && newOK {
@@ -94,10 +97,18 @@ func mergeModelSettingsDelta(doc, before, after map[string]any) {
 }
 
 func mergeModelProviderEntries(raw, before, after []map[string]any) []map[string]any {
+	identity := func(entry map[string]any) string {
+		if host, ok := entry["host_id"].(string); ok {
+			workspace, _ := entry["workspace"].(string)
+			return host + "\x00" + workspace
+		}
+		name, _ := entry["name"].(string)
+		return name
+	}
 	index := func(entries []map[string]any) map[string]map[string]any {
 		result := map[string]map[string]any{}
 		for _, entry := range entries {
-			if name, ok := entry["name"].(string); ok {
+			if name := identity(entry); name != "" {
 				result[name] = entry
 			}
 		}
@@ -106,7 +117,7 @@ func mergeModelProviderEntries(raw, before, after []map[string]any) []map[string
 	rawByName, beforeByName := index(raw), index(before)
 	result := make([]map[string]any, 0, len(after))
 	for _, entry := range after {
-		name, _ := entry["name"].(string)
+		name := identity(entry)
 		target, exists := rawByName[name]
 		if !exists {
 			target = map[string]any{}

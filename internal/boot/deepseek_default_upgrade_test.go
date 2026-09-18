@@ -76,3 +76,47 @@ api_key_env = "DEEPSEEK_API_KEY"
 		}
 	}
 }
+
+func TestProviderEndpointRepairNoticeIsActionableAndContentFree(t *testing.T) {
+	var notices []event.Event
+	sink := event.FuncSink(func(e event.Event) { notices = append(notices, e) })
+	emitUserConfigUpgradeNotice(sink, config.Default(), true, nil, []config.ProviderEndpointRepair{{
+		ProviderName: "Deepseek2",
+		RequestURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		FromProtocol: "responses",
+		ToProtocol:   "anthropic",
+	}})
+	if len(notices) != 1 {
+		t.Fatalf("notices = %+v", notices)
+	}
+	notice := notices[0]
+	if notice.Text != "Provider connection settings were repaired." ||
+		!strings.Contains(notice.Detail, "Deepseek2") ||
+		!strings.Contains(notice.Detail, "Responses → Anthropic Messages") ||
+		!strings.Contains(notice.Detail, "https://api.deepseek.com/anthropic/v1/messages") ||
+		!strings.Contains(notice.Detail, "prefix-cache") {
+		t.Fatalf("repair notice = %+v", notice)
+	}
+	if strings.Contains(strings.ToLower(notice.Detail), "api_key") ||
+		strings.Contains(strings.ToLower(notice.Detail), "authorization") {
+		t.Fatalf("repair notice leaked credential metadata: %+v", notice)
+	}
+}
+
+func TestProviderEndpointRepairNoticeUsesConfiguredChinese(t *testing.T) {
+	cfg := config.Default()
+	cfg.Desktop.Language = "zh"
+	var notice event.Event
+	emitUserConfigUpgradeNotice(event.FuncSink(func(e event.Event) { notice = e }), cfg, false, nil, []config.ProviderEndpointRepair{{
+		ProviderName: "Deepseek2",
+		RequestURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		FromProtocol: "responses",
+		ToProtocol:   "anthropic",
+	}})
+	if notice.Text != "已自动修复供应商连接设置。" ||
+		!strings.Contains(notice.Detail, "供应商连接“Deepseek2”") ||
+		!strings.Contains(notice.Detail, "协议由 Responses 调整为 Anthropic Messages") ||
+		!strings.Contains(notice.Detail, "请求地址为 https://api.deepseek.com/anthropic/v1/messages") {
+		t.Fatalf("Chinese repair notice = %+v", notice)
+	}
+}

@@ -1,7 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRuntimeStateSync } from "./lib/useRuntimeState";
 import { useCommittedCommand } from "./lib/useCommittedCommand";
-import { openExternal } from "./lib/bridge";
+import { app, onLegacyEmptySessionCleanupChanged, openExternal } from "./lib/bridge";
+import type { LegacyEmptySessionCleanupStatus } from "./generated/desktopContract.generated";
 import { useT, useI18n } from "./lib/i18n";
 import { useToast } from "./lib/toast";
 import { useGoalActionHandler } from "./lib/goalAction";
@@ -20,8 +21,23 @@ import { useAppRuntimeAdapter } from "./app-runtime/useAppRuntimeAdapter";
 import { useAppShellStores } from "./app-runtime/useAppShellStores";
 import { useAppSessionComposition } from "./app-runtime/useAppSessionComposition";
 import { useAppNavigationComposition } from "./app-runtime/useAppNavigationComposition";
-import { useTopicTimeFilter } from "./app-runtime/useLocalUiLifecycles";
-import { AppRuntimeView } from "./app-shell/AppRuntimeView";
+import { useSessionDraftSurface } from "./app-runtime/useSessionDraftSurface";
+import { useRetiredProjectTreeUiMigration } from "./app-runtime/useLocalUiLifecycles";
+import logoSymbol from "./assets/logo-symbol.svg";
+
+const AppRuntimeView = lazy(() => import("./app-shell/AppRuntimeView").then((module) => ({ default: module.AppRuntimeView })));
+
+function AppRuntimeViewFallback() {
+  return (
+    <div className="boot-shell" role="status" aria-label="Reasonix is starting">
+      <div className="boot-shell__card">
+        <div className="boot-shell__mark" aria-hidden="true"><img src={logoSymbol} alt="" draggable={false} /></div>
+        <div className="boot-shell__name">Reasonix</div>
+        <div className="boot-shell__dots" aria-hidden="true"><span /><span /><span /></div>
+      </div>
+    </div>
+  );
+}
 
 // Hold reasoning UI until the authoritative desktop startup settings arrive;
 // this prevents a hidden preference from flashing content during first paint.
@@ -87,7 +103,7 @@ export function AppRuntime() {
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const [sidebarImDetailConnectionId, setSidebarImDetailConnectionId] = useState("");
-  const [topicTimeFilter, setTopicTimeFilter] = useTopicTimeFilter();
+  useRetiredProjectTreeUiMigration();
   const [tasksOpen, setTasksOpen] = useState<false | "session" | "all">(false);
   const workspaceScopeActiveTabRef = useRef(activeTabId);
   const [workspaceControllerEpoch, setWorkspaceControllerEpoch] = useState(0);
@@ -98,6 +114,29 @@ export function AppRuntime() {
   const refreshComposerFileRefs = useCommittedCommand(() => setFileRefRefreshKey((value) => value + 1));
   const composerFileRefRefreshKey = `${dockRefreshKey}:${fileRefRefreshKey}`;
   const [projectRevision, setProjectRevision] = useState(0);
+  const acceptedDraftSessionRef = useRef<((ref: import("./lib/sessionRef").SessionRef) => Promise<void>) | null>(null);
+  const openAcceptedDraftSession = useCommittedCommand(async (ref: import("./lib/sessionRef").SessionRef) => {
+    await acceptedDraftSessionRef.current?.(ref);
+  });
+  const markDraftChanged = useCommittedCommand(() => setProjectRevision((value) => value + 1));
+  const drafts = useSessionDraftSurface({
+    onAccepted: openAcceptedDraftSession,
+    onChanged: markDraftChanged,
+    claimNavigationIntent: runtime.navigation.noteNavigationIntent,
+    currentNavigationIntent: runtime.navigation.currentNavigationIntent,
+    isNavigationIntentCurrent: runtime.navigation.isNavigationIntentCurrent,
+  });
+  useEffect(() => { void drafts.initializeEmptySurface(); }, [drafts.initializeEmptySurface]);
+  const hadFormalSurfaceRef = useRef(false);
+  useEffect(() => {
+    if (tabMetas.length > 0) {
+      hadFormalSurfaceRef.current = true;
+      return;
+    }
+    if (!hadFormalSurfaceRef.current) return;
+    hadFormalSurfaceRef.current = false;
+    void drafts.open("global", "");
+  }, [drafts.open, tabMetas.length]);
 
   const session = useAppSessionComposition({
     runtime,
@@ -138,9 +177,39 @@ export function AppRuntime() {
       setSidebarImDetailConnectionId, setTasksOpen,
     },
     session,
+    draft: drafts,
   });
+  const openCleanupTrash = useCommittedCommand(() => navigation.historyCommands.openTrash());
+  const cleanupNoticeBatchRef = useRef("");
+  useEffect(() => {
+    let live = true;
+    const showCleanupNotice = (status: LegacyEmptySessionCleanupStatus) => {
+      if (!live || status.removed <= 0 || !status.batchId) return;
+      const storageKey = `reasonix.legacy-empty-session-cleanup.notice.${status.batchId}`;
+      let shown = false;
+      try {
+        shown = window.localStorage.getItem(storageKey) === "shown";
+      } catch {
+        // Hardened webviews may disable storage. The in-memory fence still
+        // prevents duplicate notices for this renderer lifetime.
+      }
+      if (cleanupNoticeBatchRef.current === status.batchId || shown) return;
+      cleanupNoticeBatchRef.current = status.batchId;
+      try { window.localStorage.setItem(storageKey, "shown"); } catch { /* best effort */ }
+      showToast(t("history.legacyCleanupComplete", { n: status.removed }), "info", {
+        actionLabel: t("history.viewTrash"),
+        onAction: () => void openCleanupTrash(),
+        durationMs: 8000,
+      });
+    };
+    const unsubscribe = onLegacyEmptySessionCleanupChanged(showCleanupNotice);
+    void app.GetLegacyEmptySessionCleanupStatus().then(showCleanupNotice).catch(() => {});
+    return () => { live = false; unsubscribe(); };
+  }, [openCleanupTrash, showToast, t]);
+  acceptedDraftSessionRef.current = navigation.navigationCommands.openCanonicalSession;
 
   return (
+    <Suspense fallback={<AppRuntimeViewFallback />}>
     <AppRuntimeView
       core={{
         state, activeTab, activeTabId, liveStore, remoteSurfaceActive, remoteSession, remoteComposerReady,
@@ -150,13 +219,15 @@ export function AppRuntime() {
       session={session}
       navigation={navigation}
       runtime={runtime}
+      draft={drafts}
       local={{
-        tasksOpen, setTasksOpen, topicTimeFilter, setTopicTimeFilter,
+        tasksOpen, setTasksOpen,
         sidebarImDetailConnectionId, setSidebarImDetailConnectionId,
         tabRevealSignal, histView,
         projectRevision, dockRefreshKey, composerFileRefRefreshKey, refreshComposerFileRefs,
         terminalContentVisible, terminalFitEnabled, prefetchTerminalPanel,
       }}
     />
+    </Suspense>
   );
 }

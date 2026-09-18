@@ -33,6 +33,7 @@ import { record } from "./params.js";
 import { APP_INDEX_URL, APP_SCHEME, registerAppProtocol, resolveDistRoot } from "./protocol.js";
 import { RemoteWindowHost } from "./remoteWindows.js";
 import { ServiceSupervisor } from "./service.js";
+import { ShellLifecycle } from "./shellLifecycle.js";
 import { resolveServiceBinary } from "./serviceBinary.js";
 import { claimShellInstance } from "./singleInstance.js";
 import { TrayHost } from "./tray.js";
@@ -57,7 +58,7 @@ app.setName("Reasonix");
 applyAppUserModelId(app, process.platform);
 registerTaskbarRelaunch(app, process.platform, process.execPath, app.isPackaged);
 const dev = (process.env.REASONIX_DEV ?? "").trim() !== "";
-const home = reasonixHome({ env: process.env, platform: process.platform, homedir, cwd: () => process.cwd() });
+const home = reasonixHome({ env: process.env, platform: process.platform, homedir, cwd: () => process.cwd(), });
 if (home === "") {
   console.error("reasonix-desktop-shell: cannot resolve the Reasonix data home (set REASONIX_HOME)");
   app.exit(1);
@@ -76,13 +77,23 @@ function bootstrap(dataHome: string): void {
   const graphics = new GraphicsSettingsStore(graphicsBootstrap.configPath, graphicsBootstrap);
   const logsDir = join(app.getPath("userData"), "logs");
   const log = createLogger(new RotatingFile(join(logsDir, "shell.log")), !app.isPackaged);
-  log.info(`graphics acceleration: saved=${graphics.current.hardwareAcceleration} startup=${graphics.current.startupEnabled} override=${graphics.current.override} warning=${graphics.current.warning ?? "none"}`);
+  log.info(
+    `graphics acceleration: saved=${graphics.current.hardwareAcceleration} startup=${graphics.current.startupEnabled} override=${graphics.current.override} warning=${graphics.current.warning ?? "none"}`,
+  );
   app.on("gpu-info-update", () => {
-    try { log.info(`graphics feature status: ${JSON.stringify(app.getGPUFeatureStatus())}`); } catch (error) { log.warn(`graphics status unavailable: ${errorText(error)}`); }
+    try {
+      log.info(`graphics feature status: ${JSON.stringify(app.getGPUFeatureStatus())}`);
+    } catch (error) {
+      log.warn(`graphics status unavailable: ${errorText(error)}`);
+    }
   });
   const serviceLog = new RotatingFile(join(logsDir, "service.log"));
   let buildVersion = "unknown";
-  try { buildVersion = loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env).version; } catch { /* Handshake owns the visible metadata error. */ }
+  try {
+    buildVersion = loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env).version;
+  } catch {
+    /* Handshake owns the visible metadata error. */
+  }
   const status = initialShellStatus(app.getPath("userData"), buildVersion);
   let firstHeartbeat = 0;
   const startingPage = { code: null, name: "starting", title: "Reasonix is starting / 正在启动", detail: "Please wait. / 请稍候。" };
@@ -111,8 +122,26 @@ function bootstrap(dataHome: string): void {
   const zoomStore = new AppZoomStore(join(dataHome, "electron-app-zoom.json"), join(dataHome, "desktop-zoom.json"));
   const icons = iconCandidates({ platform: process.platform, appPath: app.getAppPath(), resourcesPath: process.resourcesPath, packaged: app.isPackaged });
   const windowIcon = process.platform === "darwin" ? undefined : (firstExisting(icons.window) ?? undefined);
-  const serviceLookup = resolveServiceBinary({ env: process.env, platform: process.platform, execPath: process.execPath, resourcesPath: process.resourcesPath });
+  const serviceLookup = resolveServiceBinary({
+    env: process.env,
+    platform: process.platform,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+  });
   const serviceBinary = serviceLookup.binary;
+
+  let shellBuild = { version: buildVersion, channel: "", commit: "" };
+  try {
+    const identity = loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env);
+    shellBuild = {
+      version: identity.version,
+      channel: identity.channel,
+      commit: identity.commit,
+    };
+  } catch {
+    /* Handshake reports invalid packaged identity. */
+  }
+  const shellLifecycle = new ShellLifecycle(dataHome, shellBuild);
 
   let domReadyGeneration = "";
 
@@ -137,15 +166,17 @@ function bootstrap(dataHome: string): void {
     onAppDomReady: (rendererGeneration) => {
       const generation = service.generation;
       if (generation === "") return;
-      const attach = () => service.request("desktop/rendererAttached", { rendererGeneration }).catch((error: unknown) => {
-        log.warn(`rendererAttached failed: ${errorText(error)}`);
-      });
+      const attach = () =>
+        service.request("desktop/rendererAttached", { rendererGeneration }).catch((error: unknown) => {
+          log.warn(`rendererAttached failed: ${errorText(error)}`);
+        });
       if (domReadyGeneration === generation) {
         void attach();
         return;
       }
       domReadyGeneration = generation;
-      void service.request("desktop/domReady", {})
+      void service
+        .request("desktop/domReady", {})
         .catch((error: unknown) => log.warn(`domReady failed: ${errorText(error)}`))
         .then(attach);
     },
@@ -158,8 +189,7 @@ function bootstrap(dataHome: string): void {
         const launcher = process.platform === "win32" ? supersededLauncher(process.execPath, buildVersion) : undefined;
         if (launcher) lifecycle.relaunch(process.argv.slice(1), launcher);
         else void service.restart().catch(() => undefined);
-      }
-      else lifecycle.approve();
+      } else lifecycle.approve();
     },
     zoomStore,
   });
@@ -182,7 +212,9 @@ function bootstrap(dataHome: string): void {
       });
     },
   });
-  log.info(`browser control: enabled=${browserControlBootstrap.state.controlEnabled} ignoreCertificateErrors=${browserControlBootstrap.state.ignoreCertificateErrors} warning=${browserControlBootstrap.state.warning ?? "none"}`);
+  log.info(
+    `browser control: enabled=${browserControlBootstrap.state.controlEnabled} ignoreCertificateErrors=${browserControlBootstrap.state.ignoreCertificateErrors} warning=${browserControlBootstrap.state.warning ?? "none"}`,
+  );
 
   const downloads = new DownloadTracker({
     tabForWebContents: (id) => {
@@ -205,8 +237,18 @@ function bootstrap(dataHome: string): void {
   browser = new BrowserSurfaceManager({
     views: guestViews,
     contentSize: () => mainWindow.contentSize(),
-    onTakeover: (tab, reason) => void service.hostEvent("browser.takeover", { tabId: tab.id, epoch: tab.epoch, reason }),
-    onCrash: (tab, reason) => void service.hostEvent("browser.crash", { tabId: tab.id, epoch: tab.epoch, reason }),
+    onTakeover: (tab, reason) =>
+      void service.hostEvent("browser.takeover", {
+        tabId: tab.id,
+        epoch: tab.epoch,
+        reason,
+      }),
+    onCrash: (tab, reason) =>
+      void service.hostEvent("browser.crash", {
+        tabId: tab.id,
+        epoch: tab.epoch,
+        reason,
+      }),
     log,
   });
   browser.subscribe((tabs) => mainWindow.send(IPC.browserTabs, tabs));
@@ -235,7 +277,7 @@ function bootstrap(dataHome: string): void {
   lifecycle = new QuitSequencer({
     service: {
       beforeClose: async (reason) => record(await service.request("desktop/beforeClose", { reason })).prevent === true,
-      shutdown: () => service.shutdown(),
+      shutdown: (reason, onProgress) => service.shutdown(reason, onProgress),
     },
     app: {
       quit: () => app.quit(),
@@ -244,6 +286,23 @@ function bootstrap(dataHome: string): void {
         if (execPath) delete process.env.REASONIX_DESKTOP_SERVICE;
         app.relaunch({ args, ...(execPath ? { execPath } : {}) });
       },
+    },
+    flushRenderer: () => mainWindow.flushSessionDraft(),
+    resumeRenderer: () => mainWindow.resumeSessionDraftEditing(),
+    onShutdownFailed: async (message) => {
+      const options = {
+        type: "error" as const,
+        title: "Exit incomplete / 退出未完成",
+        message: "Reasonix could not safely finish saving and closing. / Reasonix 未能安全完成保存与收尾。",
+        detail: `${message}\n\nYou can retry the remaining steps or keep this window open. / 你可以重试未完成的步骤，或保留当前窗口。`,
+        buttons: ["Retry exit / 重试退出", "Keep open / 保留窗口"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      };
+      const parent = mainWindow.browserWindow;
+      const result = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+      return result.response === 0;
     },
     // Website views go first: a WebContents closing after its window is
     // gone is the ordering that left orphaned renderers in the prototype.
@@ -255,6 +314,7 @@ function bootstrap(dataHome: string): void {
       { name: "tray", run: () => tray.destroy() },
       { name: "startup deadline", run: () => clearTimeout(startupTimer) },
       { name: "startup presentation", run: () => startupDelay.cancel() },
+      { name: "shell lifecycle", run: () => shellLifecycle.complete() },
     ],
     log,
   });
@@ -284,7 +344,13 @@ function bootstrap(dataHome: string): void {
         primary: display.id === primary,
       }));
     },
-    browser: buildBrowserHostCalls({ surfaces: browser, grants, documents, actions, downloads }),
+    browser: buildBrowserHostCalls({
+      surfaces: browser,
+      grants,
+      documents,
+      actions,
+      downloads,
+    }),
   });
 
   const service = new ServiceSupervisor(
@@ -299,23 +365,32 @@ function bootstrap(dataHome: string): void {
       log,
     },
     {
-      hello: async (client) => validateHelloResult(await client.request("desktop/hello", buildHelloParams({
-        protocolVersion: contract.protocolVersion,
-        contractDigest: contract.digest,
-        ...loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env),
-        hostVersion: process.versions.electron,
-        chromeVersion: process.versions.chrome,
-        platform: process.platform,
-        arch: process.arch,
-        home: dataHome,
-        dev,
-      }), 10_000), contract.protocolVersion),
+      hello: async (client) =>
+        validateHelloResult(
+          await client.request(
+            "desktop/hello",
+            buildHelloParams({
+              protocolVersion: contract.protocolVersion,
+              contractDigest: contract.digest,
+              ...loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env),
+              hostVersion: process.versions.electron,
+              chromeVersion: process.versions.chrome,
+              platform: process.platform,
+              arch: process.arch,
+              home: dataHome,
+              dev,
+            }),
+            10_000,
+          ),
+          contract.protocolVersion,
+        ),
       onRequest: (method, params) => {
         if (lifecycle.isQuitting) return Promise.reject(new Error("Reasonix is shutting down"));
         return dispatchHostCall(hostCalls, method, params);
       },
       onEvent: (frame) => mainWindow.send(IPC.event, frame),
       onState: (state) => {
+        shellLifecycle.mark(`service_${state.phase}`);
         log.info(`startup ${status.generation}: service=${state.phase} generation=${state.generation}`);
         status.service = state.phase;
         status.healthy = false;
@@ -331,7 +406,12 @@ function bootstrap(dataHome: string): void {
           clearTimeout(startupTimer);
           startupTimer = setTimeout(() => {
             if (lifecycle.isQuitting || status.healthy || status.lifecycle === "failed") return;
-            lastFailure = { code: null, name: "startup_timeout", title: "Startup incomplete / 启动未完成", detail: "Reasonix did not become ready within 30 seconds. Open logs or retry. / 30 秒内未完成启动，请打开日志或重试。" };
+            lastFailure = {
+              code: null,
+              name: "startup_timeout",
+              title: "Startup incomplete / 启动未完成",
+              detail: "Reasonix did not become ready within 30 seconds. Open logs or retry. / 30 秒内未完成启动，请打开日志或重试。",
+            };
             status.lifecycle = "failed";
             startupDelay.cancel();
             log.error(`startup ${status.generation}: readiness timeout`);
@@ -348,17 +428,25 @@ function bootstrap(dataHome: string): void {
         }
       },
       onReady: async (hello: HelloResult) => {
+        shellLifecycle.start(hello);
         startupDelay.cancel();
         if (lifecycle.isQuitting) return;
         status.lifecycle = "ready";
         status.servicePID = hello.service.pid;
         log.info(`desktop service ready: generation ${hello.runtimeGeneration}, pid ${hello.service.pid}`);
-        try { await zoomStore.load(); } catch (error) { log.warn(`app zoom initialization failed: ${errorText(error)}`); }
+        try {
+          await zoomStore.load();
+        } catch (error) {
+          log.warn(`app zoom initialization failed: ${errorText(error)}`);
+        }
         if (lifecycle.isQuitting || service.generation !== hello.runtimeGeneration) return;
         mainWindow.prepareApp(hello.window);
         // A restarted service starts with the capability on, so the persisted
         // switch is replayed before any session can be built.
-        void service.request("desktop/browserControl", { enabled: browserControl.state().controlEnabled })
+        void service
+          .request("desktop/browserControl", {
+            enabled: browserControl.state().controlEnabled,
+          })
           .catch((error: unknown) => log.warn(`browser control push failed: ${errorText(error)}`));
         if (!mainWindow.browserWindow) {
           try {
@@ -388,14 +476,20 @@ function bootstrap(dataHome: string): void {
 
   // Session end and scripted shutdowns deliver SIGTERM; quit through the same
   // sequence as the menu so Go snapshots sessions before the process ends.
-  process.on("SIGTERM", () => lifecycle.requestQuit());
+  process.on("SIGTERM", () => lifecycle.requestQuit("system_signal"));
   app.on("second-instance", (_event, argv) => {
-    if (argv.includes(QUIT_REQUEST)) { lifecycle.requestQuit(); return; }
+    if (argv.includes(QUIT_REQUEST)) {
+      lifecycle.requestQuit();
+      return;
+    }
     presentInstance(argv, "second-instance");
   });
   function presentInstance(argv: string[] = [], reason: StartupPresentReason = "second-instance"): void {
     if (lifecycle.isQuitting) return;
-    if (!app.isReady()) { void app.whenReady().then(() => presentInstance(argv, reason)); return; }
+    if (!app.isReady()) {
+      void app.whenReady().then(() => presentInstance(argv, reason));
+      return;
+    }
     const action = startupPresentation({
       serviceReady: service.ready,
       hasWindow: Boolean(mainWindow.browserWindow),
@@ -416,100 +510,126 @@ function bootstrap(dataHome: string): void {
   app.on("window-all-closed", () => {
     if (!service.ready) lifecycle.requestQuit();
   });
-  const statusServer = process.platform === "win32" ? listenShellStatus(() => ({
-    ...status,
-    lifecycle: lifecycle.currentPhase === "done" ? "done" : lifecycle.isQuitting ? "quitting" : status.lifecycle,
-    visible: mainWindow.browserWindow?.isVisible() ?? false,
-  }), log) : undefined;
+  const statusServer =
+    process.platform === "win32"
+      ? listenShellStatus(
+          () => ({
+            ...status,
+            lifecycle: lifecycle.currentPhase === "completed" ? "done" : lifecycle.isQuitting ? "quitting" : status.lifecycle,
+            visible: mainWindow.browserWindow?.isVisible() ?? false,
+          }),
+          log,
+        )
+      : undefined;
   app.on("will-quit", () => statusServer?.close());
 
   void app.whenReady().then(() => {
-    if (lifecycle.isQuitting) return;
-    if (process.platform === "darwin") {
-      const dockIcon = firstExisting(icons.window);
-      if (dockIcon && app.dock) app.dock.setIcon(dockIcon);
-    }
-    registerAppProtocol({
-      protocol,
-      fetch: (input, init) => net.fetch(input, init),
-      distRoot,
-      resources: () => service.helloResult?.resources ?? null,
-      log,
-    });
-    session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
-      callback(mainWindow.isTrustedSender(contents, contents.mainFrame) && MAIN_WINDOW_PERMISSIONS.has(permission));
-    });
-    const diagnostics = new ProcessDiagnostics(() => app.getAppMetrics(), undefined, () => Boolean(mainWindow.browserWindow?.isVisible() && mainWindow.browserWindow?.isFocused()));
-    const performanceHost = createPerformanceHost({ window: () => mainWindow.browserWindow, dialog, workerPath: join(__dirname, "profile-analysis.cjs"), locale: () => app.getLocale() });
-    diagnostics.sample();
-    const diagnosticsTimer = setInterval(() => diagnostics.sample(), 30_000);
-    diagnosticsTimer.unref();
-    app.once("will-quit", () => { clearInterval(diagnosticsTimer); performanceHost.dispose(); });
-    registerRendererIpc({
-      processDiagnostics: () => diagnostics.snapshot(),
-      performance: performanceHost,
-      ipcMain,
-      contract,
-      window: mainWindow,
-      invoke: async (method, args) => {
-        const generation = service.generation;
-        const result = await service.invoke(method, args);
-        if (generation !== service.generation || lifecycle.isQuitting) return result;
-        if (method === "Version" && typeof result === "string") status.rendererVersion = result;
-        if (method === "ReportDesktopWebViewReady") {
-          if (!firstHeartbeat) firstHeartbeat = Date.now();
-          else if (Date.now() - firstHeartbeat >= 2000 && status.lifecycle === "ready") {
-            status.healthy = true;
-            clearTimeout(startupTimer);
+      if (lifecycle.isQuitting) return;
+      if (process.platform === "darwin") {
+        const dockIcon = firstExisting(icons.window);
+        if (dockIcon && app.dock) app.dock.setIcon(dockIcon);
+      }
+      registerAppProtocol({
+        protocol,
+        fetch: (input, init) => net.fetch(input, init),
+        distRoot,
+        resources: () => service.helloResult?.resources ?? null,
+        log,
+      });
+      session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+        callback(mainWindow.isTrustedSender(contents, contents.mainFrame) && MAIN_WINDOW_PERMISSIONS.has(permission));
+      });
+      const diagnostics = new ProcessDiagnostics(
+        () => app.getAppMetrics(),
+        undefined,
+        () => Boolean(mainWindow.browserWindow?.isVisible() && mainWindow.browserWindow?.isFocused()),
+      );
+      const performanceHost = createPerformanceHost({
+        window: () => mainWindow.browserWindow,
+        dialog,
+        workerPath: join(__dirname, "profile-analysis.cjs"),
+        locale: () => app.getLocale(),
+      });
+      diagnostics.sample();
+      const diagnosticsTimer = setInterval(() => diagnostics.sample(), 30_000);
+      diagnosticsTimer.unref();
+      app.once("will-quit", () => {
+        clearInterval(diagnosticsTimer);
+        performanceHost.dispose();
+      });
+      registerRendererIpc({
+        processDiagnostics: () => diagnostics.snapshot(),
+        performance: performanceHost,
+        ipcMain,
+        contract,
+        window: mainWindow,
+        invoke: async (method, args) => {
+          const generation = service.generation;
+          const result = await service.invoke(method, args);
+          if (generation !== service.generation || lifecycle.isQuitting) return result;
+          if (method === "Version" && typeof result === "string") status.rendererVersion = result;
+          if (method === "ReportDesktopWebViewReady") {
+            if (!firstHeartbeat) firstHeartbeat = Date.now();
+            else if (Date.now() - firstHeartbeat >= 2000 && status.lifecycle === "ready") {
+              status.healthy = true;
+              clearTimeout(startupTimer);
+            }
+            if (status.rendererVersion === "")
+              void mainWindow.browserWindow?.webContents.executeJavaScript('window.reasonixDesktop.invoke("Version", [])').catch(() => undefined);
           }
-          if (status.rendererVersion === "") void mainWindow.browserWindow?.webContents.executeJavaScript('window.reasonixDesktop.invoke("Version", [])').catch(() => undefined);
-        }
-        return result;
-      },
-      serviceState: () => service.current,
-      clipboard,
-      graphics,
-      browserControl,
-      openExternal: (url) => shell.openExternal(url),
-      browser: {
-        list: () => browser.list(),
-        open: async (url, options) => browser.view(await browser.open(url, options)),
-        close: (tabId) => browser.close(tabId),
-        activate: (tabId) => browser.activate(tabId),
-        navigate: async (tabId, target) => {
-          await browser.navigate(tabId, target);
+          return result;
         },
-        setZoom: (tabId, factor) => browser.setZoom(tabId, factor),
-        toggleDevTools: (tabId) => browser.toggleDevTools(tabId),
-        resume: (tabId) => browser.resume(tabId),
-        takeover: (tabId) => browser.takeover(tabId, "user takeover"),
-        setLayout: (rect) => browser.setLayout(browserLayoutInDIP(rect, mainWindow.browserWindow?.webContents.getZoomFactor() ?? 1)),
-        setOverlay: (active) => browser.setOverlay(active),
-      },
-      log,
+        serviceState: () => service.current,
+        clipboard,
+        graphics,
+        browserControl,
+        openExternal: (url) => shell.openExternal(url),
+        browser: {
+          list: () => browser.list(),
+          open: async (url, options) => browser.view(await browser.open(url, options)),
+          close: (tabId) => browser.close(tabId),
+          activate: (tabId) => browser.activate(tabId),
+          navigate: async (tabId, target) => {
+            await browser.navigate(tabId, target);
+          },
+          setZoom: (tabId, factor) => browser.setZoom(tabId, factor),
+          toggleDevTools: (tabId) => browser.toggleDevTools(tabId),
+          resume: (tabId) => browser.resume(tabId),
+          takeover: (tabId) => browser.takeover(tabId, "user takeover"),
+          setLayout: (rect) => browser.setLayout(browserLayoutInDIP(rect, mainWindow.browserWindow?.webContents.getZoomFactor() ?? 1)),
+          setOverlay: (active) => browser.setOverlay(active),
+        },
+        log,
+      });
+      // Reports from the guest preload: the sender must be one of our website
+      // views, which takeoverFromSender checks by WebContents id.
+      ipcMain.on(IPC.browserTakeover, (event, payload: unknown) => {
+        const kind = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown }).kind : undefined;
+        if (typeof kind !== "string" || !TAKEOVER_KINDS.has(kind)) return;
+        browser.takeoverFromSender(event.sender.id, kind as BrowserTakeoverKind);
+      });
+      installApplicationMenu({
+        platform: process.platform,
+        openSettings: () => mainWindow.sendShellEvent("app:open-settings", service.generation),
+        toggleDevTools: () => mainWindow.toggleDevTools(),
+        showWindow: () => mainWindow.show("menu"),
+        quit: () => lifecycle.requestQuit(),
+        zoomIn: () => {
+          void mainWindow.stepAppZoom(1);
+        },
+        zoomOut: () => {
+          void mainWindow.stepAppZoom(-1);
+        },
+        resetZoom: () => {
+          void mainWindow.resetAppZoom();
+        },
+      });
+      const probed = serviceLookup.probed.length > 0 ? ` (probed ${serviceLookup.probed.join(", ")})` : "";
+      log.info(`shell starting: service ${serviceBinary}${probed}, ui ${appURL}, dist ${distRoot}, home ${dataHome}`);
+      return service.start().catch(() => undefined);
+    })
+    .catch((error: unknown) => {
+      log.error(`shell bootstrap failed: ${errorText(error)}`);
+      app.exit(1);
     });
-    // Reports from the guest preload: the sender must be one of our website
-    // views, which takeoverFromSender checks by WebContents id.
-    ipcMain.on(IPC.browserTakeover, (event, payload: unknown) => {
-      const kind = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown }).kind : undefined;
-      if (typeof kind !== "string" || !TAKEOVER_KINDS.has(kind)) return;
-      browser.takeoverFromSender(event.sender.id, kind as BrowserTakeoverKind);
-    });
-    installApplicationMenu({
-      platform: process.platform,
-      openSettings: () => mainWindow.sendShellEvent("app:open-settings", service.generation),
-      toggleDevTools: () => mainWindow.toggleDevTools(),
-      showWindow: () => mainWindow.show("menu"),
-      quit: () => lifecycle.requestQuit(),
-      zoomIn: () => { void mainWindow.stepAppZoom(1); },
-      zoomOut: () => { void mainWindow.stepAppZoom(-1); },
-      resetZoom: () => { void mainWindow.resetAppZoom(); },
-    });
-    const probed = serviceLookup.probed.length > 0 ? ` (probed ${serviceLookup.probed.join(", ")})` : "";
-    log.info(`shell starting: service ${serviceBinary}${probed}, ui ${appURL}, dist ${distRoot}, home ${dataHome}`);
-    return service.start().catch(() => undefined);
-  }).catch((error: unknown) => {
-    log.error(`shell bootstrap failed: ${errorText(error)}`);
-    app.exit(1);
-  });
 }

@@ -64,7 +64,7 @@ func Plan(current, legacy *Registration, installRoot, version string, uninstalle
 			DisplayVersion:       strings.TrimPrefix(version, "v"),
 			Publisher:            "Reasonix",
 			InstallLocation:      root,
-			DisplayIcon:          joinWindowsPath(root, "reasonix-launcher.exe"),
+			DisplayIcon:          joinWindowsPath(root, "Reasonix.exe"),
 			UninstallString:      quoteWindowsPath(uninstaller),
 			QuietUninstallString: quoteWindowsPath(uninstaller) + " /S",
 		},

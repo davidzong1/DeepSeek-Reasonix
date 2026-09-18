@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { deflateRawSync } from "node:zlib";
 import {
   checkEntryModes,
   checkMembers,
+  displayVersion,
   inferArtifactKind,
   listZipEntries,
+  readZipMember,
   nsisProjectDefines,
   numericVersion,
   packagerOptions,
@@ -17,6 +21,7 @@ import {
   parseVerboseListing,
   PRODUCT,
   readProductIdentity,
+  releaseVersions,
   requiredMembers,
   runBuildScript,
   sanitizeShellPackageJson,
@@ -62,8 +67,11 @@ test("targets map Go platform names onto packager platform and arch", () => {
 });
 
 test("versions keep the full tag for identity and strip it for OS resources", () => {
+  assert.deepEqual(releaseVersions("v1.38.9-2"), { canonical: "v1.38.9-2", display: "1.38.9-2", resource: "1.38.9" });
+  assert.deepEqual(releaseVersions("v1.2.3-preview.42"), { canonical: "v1.2.3-preview.42", display: "1.2.3-preview.42", resource: "1.2.3" });
   assert.equal(numericVersion("v1.2.3"), "1.2.3");
   assert.equal(numericVersion("v1.2.3-rc.1"), "1.2.3");
+  assert.equal(displayVersion("v1.2.3-rc.1"), "1.2.3-rc.1");
   assert.equal(numericVersion("v0.0.0-local"), "0.0.0");
   assert.equal(versionTag("v1.20.0-preview.42"), "v1.20.0-preview.42");
   for (const bad of ["1.2.3", "v1.2", "v01.2.3", "v1.2.3+meta", ""]) assert.throws(() => numericVersion(bad), /version must look like/);
@@ -127,14 +135,15 @@ test("packager options pin the product identity and layout for every target", ()
 });
 
 test("NSIS project defines replace the Wails-generated INFO_* values", () => {
-  const defines = nsisProjectDefines(identity, "v1.2.3-rc.1");
+  const defines = nsisProjectDefines(identity, "v1.38.9-2");
   assert.ok(defines.startsWith("﻿"), "UTF-8 BOM for makensis");
   assert.match(defines, /!define INFO_PROJECTNAME "reasonix-desktop"\r\n/);
   assert.match(defines, /!define INFO_COMPANYNAME "Reasonix"\r\n/);
   assert.match(defines, /!define INFO_PRODUCTNAME "Reasonix"\r\n/);
-  assert.match(defines, /!define INFO_PRODUCTVERSION "1\.2\.3"\r\n/);
+  assert.match(defines, /!define INFO_PRODUCTVERSION "1\.38\.9"\r\n/);
+  assert.match(defines, /!define REASONIX_DISPLAY_VERSION "1\.38\.9-2"\r\n/);
   assert.match(defines, /!define INFO_COPYRIGHT "Copyright © 2026 Reasonix Contributors"\r\n/);
-  assert.match(defines, /!define REASONIX_VERSION_TAG "v1\.2\.3-rc\.1"\r\n/);
+  assert.match(defines, /!define REASONIX_VERSION_TAG "v1\.38\.9-2"\r\n/);
 });
 
 test("signing files are every PE file, sorted, deduplicated and slash-normalised", () => {
@@ -167,11 +176,16 @@ test("required members cover every artifact and the checks report gaps", () => {
   assert.deepEqual(checkMembers(requiredMembers("darwin-app-dir").map(String), "darwin-app-dir").missing, []);
 
   const portable = [
-    "Reasonix.exe", "reasonix-launcher.exe", "reasonix-cli.exe", "current.json",
+    "Reasonix.exe", "reasonix-cli.exe", "current.json",
     "versions/v1.2.3-rc.1/reasonix-desktop.exe", "versions/v1.2.3-rc.1/reasonix-update-helper.exe", "versions/v1.2.3-rc.1/reasonix-cli.exe",
     "versions/v1.2.3-rc.1/app/Reasonix.exe", "versions/v1.2.3-rc.1/app/resources/bin/reasonix-cli-launcher.exe", "versions/v1.2.3-rc.1/app/resources/app.asar", "versions/v1.2.3-rc.1/app/resources/app/index.html", "versions/v1.2.3-rc.1/app/resources/build.json",
   ];
   assert.deepEqual(checkMembers(portable, "windows-portable-zip"), { missing: [], forbidden: [] });
+  assert.deepEqual(checkMembers([...portable, "reasonix-launcher.exe"], "windows-portable-zip").forbidden, ["reasonix-launcher.exe"]);
+  assert.deepEqual(checkMembers([...portable, "reasonix-launcher.exe"], "windows-portable-zip", "legacy-dual"), { missing: [], forbidden: [] });
+  assert.deepEqual(checkMembers(portable, "windows-portable-zip", "legacy-dual").missing, ["reasonix-launcher.exe"]);
+  assert.deepEqual(checkMembers([...portable, "unexpected.EXE"], "windows-portable-zip").forbidden, ["unexpected.EXE"]);
+  assert.throws(() => checkMembers(portable, "windows-portable-zip", "auto"), /unknown Windows portable layout/);
   assert.deepEqual(checkMembers(portable.filter((name) => !name.endsWith("app/Reasonix.exe")), "windows-portable-zip").missing, [String(/^versions\/v[^/]+\/app\/Reasonix\.exe$/)]);
   assert.deepEqual(checkMembers([...portable, "reasonix-guard.exe"], "windows-portable-zip").forbidden, ["reasonix-guard.exe"]);
 
@@ -216,25 +230,28 @@ test("artifact kinds are inferred from release names and bundle shapes", () => {
   assert.throws(() => inferArtifactKind("/dist/Reasonix-darwin-universal.dmg", false), /cannot infer/);
 });
 
-function storedZip(entries) {
+function storedZip(entries, compressed = false) {
   const locals = [];
   const centrals = [];
   let offset = 0;
   for (const [name, content] of entries) {
     const nameBytes = Buffer.from(name, "utf8");
     const data = Buffer.from(content, "utf8");
+    const packed = compressed ? deflateRawSync(data) : data;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(compressed ? 8 : 0, 8);
     local.writeUInt16LE(nameBytes.length, 26);
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt32LE(data.length, 20);
+    central.writeUInt16LE(compressed ? 8 : 0, 10);
+    central.writeUInt32LE(packed.length, 20);
     central.writeUInt32LE(data.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
     central.writeUInt32LE(offset, 42);
-    locals.push(local, nameBytes, data);
+    locals.push(local, nameBytes, packed);
     centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + data.length;
+    offset += local.length + nameBytes.length + packed.length;
   }
   const directory = Buffer.concat(centrals);
   const end = Buffer.alloc(22);
@@ -257,6 +274,37 @@ test("zip listing reads the central directory without extracting", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("Windows ZIP verification checks launcher bytes and explicitly selects historical layout", t => {
+  const dir = mkdtempSync(join(tmpdir(), "reasonix-entry-zip-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const archive = join(dir, "Reasonix-windows-amd64.zip");
+  const version = "versions/v1.38.9";
+  const entries = [
+    ["Reasonix.exe", "gui"], ["reasonix-cli.exe", "cli"], ["current.json", "{}"],
+    ...["reasonix-desktop.exe", "reasonix-update-helper.exe", "reasonix-cli.exe", "app/Reasonix.exe", "app/resources/bin/reasonix-cli-launcher.exe", "app/resources/app.asar", "app/resources/app/index.html", "app/resources/build.json"].map(name => [`${version}/${name}`, name]),
+  ];
+  const verify = mode => spawnSync(process.execPath, [fileURLToPath(new URL("./verify.mjs", import.meta.url)), archive, "--portable-layout", mode], { encoding: "utf8" });
+  for (const compressed of [false, true]) {
+    writeFileSync(archive, storedZip(entries, compressed));
+    assert.equal(readZipMember(archive, "Reasonix.exe").toString(), "gui");
+    assert.throws(() => readZipMember(archive, "missing"), /missing/);
+    assert.equal(verify("canonical").status, 0);
+    assert.notEqual(verify("legacy-dual").status, 0);
+    writeFileSync(archive, storedZip([...entries, ["reasonix-launcher.exe", "gui"]], compressed));
+    assert.notEqual(verify("canonical").status, 0);
+    assert.equal(verify("legacy-dual").status, 0);
+    writeFileSync(archive, storedZip([...entries, ["reasonix-launcher.exe", "different"]], compressed));
+    assert.notEqual(verify("legacy-dual").status, 0);
+  }
+  writeFileSync(archive, storedZip([...entries, ["Reasonix.exe", "duplicate"]]));
+  assert.throws(() => readZipMember(archive, "Reasonix.exe"), /duplicate/);
+});
+
+test("candidate layout declaration agrees with the portable verifier default", () => {
+  assert.equal(readFileSync(new URL("./windows-portable-layout.txt", import.meta.url), "utf8").trim(), "canonical");
+  assert.ok(!requiredMembers("windows-portable-zip").includes("reasonix-launcher.exe"));
 });
 
 test("Linux listings reject a private app directory and unreadable files", () => {
@@ -322,6 +370,25 @@ test("the NSIS script installs the Electron tree with both payload modes and no 
   assert.match(nsi, /!define PRODUCT_EXECUTABLE "\$\{INFO_PROJECTNAME\}\.exe"/);
   assert.match(nsi, /RMDir \/r "\$INSTDIR\\versions"/);
   assert.match(nsi, /File "\/oname=uninstall\.exe" "\$\{ARG_REASONIX_SIGNED_UNINSTALLER\}"/);
+  for (const releaseIdentity of [
+    /\$INSTDIR\\versions\\\$\{REASONIX_VERSION_TAG\}/,
+    /\.installer-\$\{REASONIX_VERSION_TAG\}-\$R8/,
+    /--version "\$\{REASONIX_VERSION_TAG\}"/,
+  ]) assert.match(nsi, releaseIdentity);
+  for (const nativeIdentityLeak of [
+    /\$INSTDIR\\versions\\v\$\{INFO_PRODUCTVERSION\}/,
+    /\.installer-v\$\{INFO_PRODUCTVERSION\}/,
+    /--version "v\$\{INFO_PRODUCTVERSION\}"/,
+  ]) assert.doesNotMatch(nsi, nativeIdentityLeak);
+  assert.deepEqual(
+    nsi.split(/\r?\n/).map(line => line.trim()).filter(line => line.includes("INFO_PRODUCTVERSION")),
+    [
+      "## INFO_PRODUCTVERSION is numeric metadata only.",
+      'VIProductVersion "${INFO_PRODUCTVERSION}.0"',
+      'VIFileVersion    "${INFO_PRODUCTVERSION}.0"',
+    ],
+    "numeric resource versions must never become install or runtime identity",
+  );
   const activation = nsi.slice(nsi.indexOf("Reasonix layout activator output:"));
   const retry = activation.indexOf('MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateLocked)" IDRETRY reasonix_layout_activate');
   assert.ok(retry > 0, "activation failure offers Retry against the kept staging directory");

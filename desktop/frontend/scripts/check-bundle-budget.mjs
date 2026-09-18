@@ -23,7 +23,7 @@ function formatKiB(bytes) {
 
 function assertBudget(label, actual, budget) {
   if (actual > budget) {
-    throw new Error(`${label} is ${formatKiB(actual)}; budget is ${formatKiB(budget)}`);
+    throw new Error(`${label} is ${formatKiB(actual)} (${actual} B); budget is ${formatKiB(budget)} (${Math.floor(budget)} B)`);
   }
   process.stdout.write(`  PASS  ${label}: ${formatKiB(actual)} / ${formatKiB(budget)}\n`);
 }
@@ -453,6 +453,19 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // startup bridge measures 2439.6 KiB; retain 0.3 KiB bounded toolchain headroom.
 // History preparation and cancellation across startup and paging add 884 B
 // (0.035%) to the 2498286 B base. Measured 2499170 B; retain 0.1 KiB headroom.
-const rawInitialBudgetKiB = 2_440.7;
+// Independent-session identity, organization CAS and unread/lifecycle guards
+// measure 2443.0 KiB against the same-toolchain main-v2 base of 2440.7 KiB
+// (+2.3 KiB, 0.095%). Retain one tenth; all other limits stay unchanged.
+// Complete export execution/rendering remains lazy; only bounded progress,
+// lifecycle observation, and cross-page tool-state hydration enter startup.
+// A full 40-character identity measures 2064513 B in the browser build and
+// 2064459 B in Electron, versus 2064077 B on current main-v2 (+436 B, 0.021%).
+// Retain the smallest one-decimal ceiling; all other limits stay unchanged.
+// Reasoning capability recovery copy moves the same-toolchain local build from
+// 2064327 B to 2064614 B (+287 B, 0.014%). The stable build with a full source
+// identity measures 2064746 B; retain the next one-decimal ceiling.
+// The React error-family field adds 177 B to the same production build. The
+// measured 2064923 B payload keeps the existing gzip, CSS, and chunk limits.
+const rawInitialBudgetKiB = 2_016.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

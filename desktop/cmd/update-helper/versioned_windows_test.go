@@ -96,10 +96,13 @@ func TestActivateVersionedWindowsFromStaging(t *testing.T) {
 	if err != nil || string(raw) != "payload:reasonix-desktop.exe" {
 		t.Fatalf("desktop payload = %q err=%v", raw, err)
 	}
-	for _, name := range []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-cli.exe"} {
+	for _, name := range []string{"Reasonix.exe", "reasonix-cli.exe"} {
 		if _, err := os.Stat(filepath.Join(installDir, name)); err != nil {
 			t.Fatalf("root entry %s: %v", name, err)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(installDir, "reasonix-launcher.exe")); !os.IsNotExist(err) {
+		t.Fatalf("new versioned root created a legacy entry: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(installDir, "reasonix-desktop.exe")); !os.IsNotExist(err) {
 		t.Fatal("flat desktop should be removed")
@@ -107,7 +110,7 @@ func TestActivateVersionedWindowsFromStaging(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(installDir, "reasonix-guard.exe")); !os.IsNotExist(err) {
 		t.Fatal("flat guard should be removed")
 	}
-	if prefer := preferRelaunchPath("", installDir); filepath.Base(prefer) != "reasonix-launcher.exe" {
+	if prefer := preferRelaunchPath("", installDir); filepath.Base(prefer) != "Reasonix.exe" {
 		t.Fatalf("prefer relaunch = %s", prefer)
 	}
 }
@@ -135,6 +138,27 @@ func TestActivateVersionedWindowsFromStagingPublishesShellTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(installDir, "app")); !os.IsNotExist(err) {
 		t.Fatalf("shell tree leaked into the install root: %v", err)
+	}
+}
+
+func TestVersionedWindowsUpgradePreservesExistingLegacyEntry(t *testing.T) {
+	acceptWindowsPayloadManifestForTest(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "reasonix-launcher.exe"), []byte("old"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"v1.38.9", "v1.39.0"} {
+		staging := t.TempDir()
+		writeVersionedWindowsStaging(t, staging, version+":", version)
+		if err := activateVersionedWindowsFromStaging(versionedWindowsTransaction(root, version, version), staging); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"Reasonix.exe", "reasonix-launcher.exe"} {
+			body, err := os.ReadFile(filepath.Join(root, name))
+			if err != nil || string(body) != version+":reasonix-launcher.exe" {
+				t.Fatalf("%s=%q (%v)", name, body, err)
+			}
+		}
 	}
 }
 
@@ -208,7 +232,7 @@ func TestPreferRelaunchPathIgnoresStaleVersionedDesktop(t *testing.T) {
 		t.Fatalf("previous desktop should remain: %v", err)
 	}
 	got := preferRelaunchPath(oldDesktop, installDir)
-	if filepath.Base(got) != "reasonix-launcher.exe" {
+	if filepath.Base(got) != "Reasonix.exe" {
 		t.Fatalf("preferRelaunchPath(%s) = %s, want install-root launcher", oldDesktop, got)
 	}
 }

@@ -44,7 +44,7 @@ func (a *App) publishRemoteTabFrameForRouteLocked(tabID string, tab, expectedTab
 	case "turn_started":
 		a.recordRemoteTabTurnStarted(tabID, gen, frame)
 		refreshRuntime = true
-	case "approval_request", "ask_request":
+	case "approval_request", "ask_request", "mcp_interaction":
 		a.cacheRemotePendingEvent(tabID, gen, kind, frame)
 		refreshRuntime = true
 	case "extension_surface":

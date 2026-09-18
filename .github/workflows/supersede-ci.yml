@@ -1,11 +1,9 @@
 name: Supersede CI
 
-# ci.yml declares `cancel-in-progress: true`, but when a Windows job is mid
-# step GitHub sometimes never delivers the cancel: the old run keeps the
-# concurrency group and the run for the new head sits `pending` until someone
-# force-cancels by hand. Twice on 2026-09-11 that cost the release candidate
-# 10-20 minutes each. This workflow is not in that group, so it runs anyway
-# and cancels only runs whose head is a strict ancestor of the pushed commit.
+# Push runs have separate concurrency groups so Notes can finish without
+# cancelling their required code ancestor. Only a changed code tree supersedes
+# earlier evidence. Force cancellation releases stuck Windows workers after
+# the normal cancellation grace period.
 
 on:
   push:
@@ -39,6 +37,11 @@ jobs:
             fi
             if ! git merge-base --is-ancestor "$sha" "$GITHUB_SHA"; then
               echo "run $id ($sha) is not an ancestor of $GITHUB_SHA; leaving it alone"
+              continue
+            fi
+            code_changes="$(git diff --name-only "$sha" "$GITHUB_SHA" -- . ':!release-notes')"
+            if [ -z "$code_changes" ]; then
+              echo "run $id ($sha) provides the unchanged code evidence required by $GITHUB_SHA; preserving"
               continue
             fi
             echo "run $id ($sha) is superseded by $GITHUB_SHA; cancelling"

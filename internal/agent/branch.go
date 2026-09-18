@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +38,13 @@ type BranchMeta struct {
 	TopicID          string    `json:"topic_id,omitempty"`
 	TopicTitle       string    `json:"topic_title,omitempty"`
 	CustomTitle      string    `json:"custom_title,omitempty"`
-	Model            string    `json:"model,omitempty"`
-	ModelIdentity    string    `json:"model_identity,omitempty"`
+	// TitleRevision is an opaque mutation identity for CustomTitle. It is
+	// independent from the transcript Revision: saving the same title again
+	// still advances this token so a delayed AI completion cannot pass an
+	// A→B→A value comparison.
+	TitleRevision string `json:"title_revision,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ModelIdentity string `json:"model_identity,omitempty"`
 	// TokenMode and AgentPreset are deprecated dual-write fields derived from
 	// QualityFloor; delivery writes "delivery", standard writes "full"/"".
 	TokenMode   string `json:"token_mode,omitempty"`
@@ -286,7 +293,12 @@ func loadBranchMetaRetry(sessionPath string) (BranchMeta, bool, error) {
 
 func SaveBranchMeta(sessionPath string, m BranchMeta) error {
 	return UpdateBranchMeta(sessionPath, true, func(current *BranchMeta) error {
-		preserveBranchMetaPersistence(&m, *current)
+		// SaveBranchMeta is the compatibility full-record writer. Callers that
+		// intentionally supply CustomTitle must still be able to change it; the
+		// cross-process lock held by UpdateBranchMeta makes that replacement
+		// authoritative. Transcript/listing writers use saveBranchMeta below,
+		// which preserves the title fields from the latest sidecar.
+		preserveBranchMetaPersistence(&m, *current, false)
 		*current = m
 		return nil
 	})
@@ -294,7 +306,7 @@ func SaveBranchMeta(sessionPath string, m BranchMeta) error {
 
 func SaveBranchMetaPreserveUpdated(sessionPath string, m BranchMeta) error {
 	return UpdateBranchMeta(sessionPath, false, func(current *BranchMeta) error {
-		preserveBranchMetaPersistence(&m, *current)
+		preserveBranchMetaPersistence(&m, *current, false)
 		*current = m
 		return nil
 	})
@@ -303,14 +315,22 @@ func SaveBranchMetaPreserveUpdated(sessionPath string, m BranchMeta) error {
 // SaveBranchMetaPreserveUpdatedLocked is for callers that already hold
 // LockSessionMetaPath for a larger read-modify-write transaction.
 func SaveBranchMetaPreserveUpdatedLocked(sessionPath string, m BranchMeta) error {
-	return saveBranchMeta(sessionPath, m, false)
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, false, false)
 }
 
 func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
-	return saveBranchMetaContext(context.Background(), sessionPath, m, touchUpdated)
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, touchUpdated, true)
 }
 
 func saveBranchMetaContext(ctx context.Context, sessionPath string, m BranchMeta, touchUpdated bool) error {
+	return saveBranchMetaContextMode(ctx, sessionPath, m, touchUpdated, true)
+}
+
+func saveBranchMetaTitle(sessionPath string, m BranchMeta) error {
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, false, false)
+}
+
+func saveBranchMetaContextMode(ctx context.Context, sessionPath string, m BranchMeta, touchUpdated, preserveTitle bool) error {
 	metaPath := BranchMetaPath(sessionPath)
 	if metaPath == "" {
 		return fmt.Errorf("empty session path")
@@ -332,7 +352,7 @@ func saveBranchMetaContext(ctx context.Context, sessionPath string, m BranchMeta
 		}
 	}
 	if existing, ok, err := LoadBranchMeta(sessionPath); err == nil && ok {
-		preserveBranchMetaPersistence(&m, existing)
+		preserveBranchMetaPersistence(&m, existing, preserveTitle)
 	}
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		return err
@@ -345,9 +365,16 @@ func saveBranchMetaContext(ctx context.Context, sessionPath string, m BranchMeta
 	return atomicWriteFileContext(ctx, metaPath, ".branch.*.tmp", "branch-meta", b, 0o600, false)
 }
 
-func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
+func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta, preserveTitle ...bool) {
 	if next == nil {
 		return
+	}
+	// Title metadata is owned by the title mutation path, not by transcript
+	// snapshots or listing projection refreshes. A stale in-memory BranchMeta
+	// must never roll it back while preserving newer transcript fields.
+	if len(preserveTitle) == 0 || preserveTitle[0] {
+		next.CustomTitle = existing.CustomTitle
+		next.TitleRevision = existing.TitleRevision
 	}
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision
@@ -621,38 +648,82 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 // topic title remains a separate grouping label, so explicit session names do
 // not fight topic auto-titling.
 func RenameSession(sessionPath string, title string) error {
-	return renameSession(sessionPath, nil, title)
+	_, err := renameSession(sessionPath, "", false, title)
+	return err
 }
 
-// RenameSessionIfTitleUnchanged atomically updates a session title only when
-// no newer title writer has changed it since expectedTitle was observed. The
-// comparison and write share the BranchMeta path lock, so a delayed AI result
-// cannot overwrite a newer manual or AI rename.
-func RenameSessionIfTitleUnchanged(sessionPath, expectedTitle, title string) error {
-	return renameSession(sessionPath, &expectedTitle, title)
-}
-
-func renameSession(sessionPath string, expectedTitle *string, title string) error {
+// SessionTitleSnapshot returns the title and an opaque mutation revision from
+// one locked BranchMeta generation. Missing revisions are initialized before
+// returning, upgrading old sidecars without changing their title.
+func SessionTitleSnapshot(sessionPath string) (title, revision string, err error) {
 	if sessionPath == "" {
-		return fmt.Errorf("empty session path")
+		return "", "", fmt.Errorf("empty session path")
+	}
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
+	m, err := ensureBranchMetaUnlocked(sessionPath)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(m.TitleRevision) == "" {
+		m.TitleRevision, err = newTitleRevision()
+		if err != nil {
+			return "", "", err
+		}
+		if err = saveBranchMetaTitle(sessionPath, m); err != nil {
+			return "", "", err
+		}
+	}
+	return m.CustomTitle, m.TitleRevision, nil
+}
+
+// RenameSessionIfTitleRevision atomically updates a title only when the opaque
+// title mutation identity still matches. This detects A→B→A and same-value
+// manual saves, unlike a text-only comparison.
+func RenameSessionIfTitleRevision(sessionPath, expectedRevision, title string) error {
+	_, err := renameSession(sessionPath, expectedRevision, true, title)
+	return err
+}
+
+func renameSession(sessionPath, expectedRevision string, conditional bool, title string) (string, error) {
+	if sessionPath == "" {
+		return "", fmt.Errorf("empty session path")
 	}
 	// Read-modify-write on the sidecar: hold the per-path meta lock so a
 	// concurrent save (recordSessionContentRevision) can't have its Revision
 	// bump clobbered by a stale read-back here.
 	unlock, err := LockSessionMetaPath(sessionPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 	m, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if expectedTitle != nil && m.CustomTitle != *expectedTitle {
-		return fmt.Errorf("%w: expected %q, found %q", ErrSessionTitleChanged, *expectedTitle, m.CustomTitle)
+	if conditional && m.TitleRevision != expectedRevision {
+		return "", fmt.Errorf("%w: title revision changed", ErrSessionTitleChanged)
 	}
 	m.CustomTitle = strings.TrimSpace(title)
-	return saveBranchMeta(sessionPath, m, false)
+	m.TitleRevision, err = newTitleRevision()
+	if err != nil {
+		return "", err
+	}
+	if err := saveBranchMetaTitle(sessionPath, m); err != nil {
+		return "", err
+	}
+	return m.TitleRevision, nil
+}
+
+func newTitleRevision() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate title revision: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 // LoadSessionModel reads the canonical provider/model ref saved beside a

@@ -74,9 +74,12 @@ History is a bounded window, not an ever-growing list.
   cursor the server cannot read is that same typed answer rather than a
   transport error. A client re-anchors at most once and keeps its current page
   with a retry affordance after a second failure.
-- Anchor jumps (search hit, turn navigation) resolve through the history index
-  and request the page around the target. They never walk pages from the newest
-  position.
+- The turn rail describes loaded turns only, as specified in
+  [Transcript v2](TRANSCRIPT_V2.md). Its marks track the resident window; it does
+  not enumerate unloaded history.
+- Jumps to unloaded history (for example, a canonical search hit) resolve through
+  the history index and request the page around the target. They never walk
+  pages from the newest position.
 
 ## Routing
 

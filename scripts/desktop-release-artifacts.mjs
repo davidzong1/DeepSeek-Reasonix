@@ -16,8 +16,10 @@ export function releaseIdentity(env) {
     return [key, env[variable]];
   }));
   const match = /^desktop-([1-9][0-9]*)-([1-9][0-9]*)-(preflight|release)$/.exec(identity.prefix);
-  if (!match || match[1] !== env.GITHUB_RUN_ID || !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ATTEMPT ?? "")
-    || BigInt(match[2]) > BigInt(env.GITHUB_RUN_ATTEMPT)) throw new Error("artifact set is not from this run or a completed attempt");
+  const producerRun = env.RELEASE_PRODUCER_RUN_ID ?? env.GITHUB_RUN_ID;
+  const producerAttempt = env.RELEASE_PRODUCER_RUN_ATTEMPT ?? env.GITHUB_RUN_ATTEMPT;
+  if (!match || match[1] !== producerRun || !/^[1-9][0-9]*$/.test(producerAttempt ?? "")
+    || BigInt(match[2]) > BigInt(producerAttempt)) throw new Error("artifact set is not from the verified producer run or a completed attempt");
   if (![identity.sourceSHA, identity.controlSHA].every(sha => /^[a-f0-9]{40}$/.test(sha))) throw new Error("invalid release SHA");
   return identity;
 }
@@ -46,6 +48,30 @@ function validAttempt(attempt, identity, currentAttempt) {
     && BigInt(attempt) >= BigInt(identity.prefix.split("-")[2]) && BigInt(attempt) <= BigInt(currentAttempt);
 }
 
+export function verifyBundle(bundle, platform, identity, currentAttempt) {
+  if (!platforms.includes(platform)) throw new Error("invalid release platform");
+  if (!lstatSync(bundle).isDirectory() || lstatSync(bundle).isSymbolicLink()
+    || JSON.stringify(readdirSync(bundle).sort()) !== JSON.stringify(["files", "identity.json"])) {
+    throw new Error("invalid bundle layout");
+  }
+  if (!lstatSync(path.join(bundle, "identity.json")).isFile()
+    || lstatSync(path.join(bundle, "identity.json")).isSymbolicLink()
+    || !lstatSync(path.join(bundle, "files")).isDirectory()
+    || lstatSync(path.join(bundle, "files")).isSymbolicLink()) {
+    throw new Error("invalid bundle entries");
+  }
+  const manifest = JSON.parse(readFileSync(path.join(bundle, "identity.json"), "utf8"));
+  if (manifest.schema !== 1 || manifest.platform !== platform) throw new Error("invalid bundle identity");
+  if (!validAttempt(manifest.buildAttempt, identity, currentAttempt)) throw new Error("invalid producer attempt");
+  for (const [key, value] of Object.entries(identity)) {
+    if (manifest[key] !== value) throw new Error(`artifact identity mismatch: ${key}`);
+  }
+  const files = entries(path.join(bundle, "files"));
+  if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error(`artifact digest mismatch: ${platform}`);
+  requireSignatures(files);
+  return { manifest, files };
+}
+
 export function pack(source, target, platform, identity, buildAttempt = identity.prefix.split("-")[2]) {
   if (!platforms.includes(platform)) throw new Error("invalid release platform");
   if (!validAttempt(buildAttempt, identity, buildAttempt)) throw new Error("invalid producer attempt");
@@ -63,19 +89,7 @@ export function collect(source, target, identity, currentAttempt = identity.pref
   const copies = new Map();
   for (const platform of platforms) {
     const bundle = path.join(source, `${identity.prefix}-${platform}`);
-    if (!lstatSync(bundle).isDirectory() || lstatSync(bundle).isSymbolicLink()
-      || JSON.stringify(readdirSync(bundle).sort()) !== JSON.stringify(["files", "identity.json"])) throw new Error("invalid bundle layout");
-    if (!lstatSync(path.join(bundle, "identity.json")).isFile() || lstatSync(path.join(bundle, "identity.json")).isSymbolicLink()
-      || !lstatSync(path.join(bundle, "files")).isDirectory() || lstatSync(path.join(bundle, "files")).isSymbolicLink()) throw new Error("invalid bundle entries");
-    const manifest = JSON.parse(readFileSync(path.join(bundle, "identity.json"), "utf8"));
-    if (manifest.schema !== 1 || manifest.platform !== platform) throw new Error("invalid bundle identity");
-    if (!validAttempt(manifest.buildAttempt, identity, currentAttempt)) throw new Error("invalid producer attempt");
-    for (const [key, value] of Object.entries(identity)) {
-      if (manifest[key] !== value) throw new Error(`artifact identity mismatch: ${key}`);
-    }
-    const files = entries(path.join(bundle, "files"));
-    if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error(`artifact digest mismatch: ${platform}`);
-    requireSignatures(files);
+    const { files } = verifyBundle(bundle, platform, identity, currentAttempt);
     for (const { name } of files) {
       if (copies.has(name)) throw new Error(`duplicate artifact across platforms: ${name}`);
       copies.set(name, path.join(bundle, "files", name));
@@ -90,6 +104,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const [command, source, target, platform] = process.argv.slice(2);
   const identity = releaseIdentity(process.env);
   if (command === "pack") pack(source, target, platform, identity, process.env.GITHUB_RUN_ATTEMPT);
-  else if (command === "collect") collect(source, target, identity, process.env.GITHUB_RUN_ATTEMPT);
-  else throw new Error("usage: desktop-release-artifacts.mjs pack|collect SOURCE TARGET [PLATFORM]");
+  else if (command === "collect") collect(source, target, identity, process.env.RELEASE_PRODUCER_RUN_ATTEMPT ?? process.env.GITHUB_RUN_ATTEMPT);
+  else if (command === "verify") verifyBundle(source, target, identity, process.env.GITHUB_RUN_ATTEMPT);
+  else throw new Error("usage: desktop-release-artifacts.mjs pack|collect|verify SOURCE TARGET [PLATFORM]");
 }

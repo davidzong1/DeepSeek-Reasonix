@@ -167,8 +167,9 @@ export function useBranchSwitcher({ tabId, scopeKey, workspaceRoot, gitBranch, r
   const trimmedQuery = branchQuery.trim();
   const filteredBranches = useMemo(() => {
     const q = trimmedQuery.toLowerCase();
-    return q ? branches.filter((branch) => branch.toLowerCase().includes(q)) : branches;
-  }, [branches, trimmedQuery]);
+    const available = activeBranch && !branches.includes(activeBranch) ? [activeBranch, ...branches] : branches;
+    return q ? available.filter((branch) => branch.toLowerCase().includes(q)) : available;
+  }, [activeBranch, branches, trimmedQuery]);
   const exactMatch = filteredBranches.some((branch) => branch === trimmedQuery);
   const canCreate = trimmedQuery !== "" && !exactMatch && isValidBranchName(trimmedQuery);
 

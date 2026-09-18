@@ -32,6 +32,7 @@ type RuntimeStateSnapshot struct {
 	HostID           string               `json:"hostId,omitempty"`
 	SessionID        string               `json:"sessionId,omitempty"`
 	SessionCodec     string               `json:"sessionCodec,omitempty"`
+	ProjectionEpoch  string               `json:"projectionEpoch"`
 	RuntimeEpoch     string               `json:"runtimeEpoch"`
 	ActivityRevision uint64               `json:"activityRevision"`
 	Revision         uint64               `json:"revision"`

@@ -21,6 +21,7 @@ let restoredWidth = 0;
 const globalRoot = "/fixture/global-workspace";
 let navigation!: ReturnType<typeof useSessionNavigationCommands>;
 let navigationRequest: unknown;
+let draftRequest: unknown;
 const setTreeWidth = (width: number) => { restoredWidth = width; };
 function Probe({ workspace, visible, sessionId }: { workspace: string; visible: boolean; sessionId: string }) {
   commands = useWorkspacePanelCommands({ sessionId, workspaceRoot: workspace, visible, closeOverlays, clearLiveWidth,
@@ -28,6 +29,8 @@ function Probe({ workspace, visible, sessionId }: { workspace: string; visible: 
   navigation = useSessionNavigationCommands({
     activeTab: { id: "fixture", scope: workspace === globalRoot ? "global" : "project", workspaceRoot: workspace },
     closeTransientOverlays: closeOverlays, clearImDetail: () => {}, prepareBlankWorkspace: commands.prepareBlankWorkspace,
+    enterConversation: () => {},
+    draft: { open: async (scope, workspaceRoot) => { draftRequest = { scope, workspaceRoot }; }, dismiss: () => {} },
     navigation: { enqueueNavigation: async request => { navigationRequest = request; } },
   } as SessionNavigationCommandsInput);
   return null;
@@ -135,7 +138,8 @@ try {
   saveWorkspacePanelOpen(true, "");
   saveWorkspacePanelOpen(true, globalRoot);
   await act(async () => navigation.openBlankSession("global", globalRoot));
-  assert.deepEqual(navigationRequest, { kind: "blank", scope: "global", workspaceRoot: "" }, "global bridge requests retain the empty root contract");
+  assert.deepEqual(draftRequest, { scope: "global", workspaceRoot: "" }, "global draft requests retain the empty root contract");
+  assert.equal(navigationRequest, undefined, "local new-session navigation does not create a formal blank session");
   assert.equal(loadWorkspacePanelOpen(""), true, "global creation does not overwrite the legacy fallback for other projects");
   await paint(globalRoot);
   assert.equal(useLayoutStore.getState().workspacePanelOpen, false, "global destination restoration cannot reopen the new-session dock");
@@ -145,7 +149,7 @@ try {
   assert.equal(useLayoutStore.getState().workspacePanelOpen, true, "manual global preference still restores on ordinary navigation");
   await act(async () => navigation.handleNewTab());
   assert.equal(loadWorkspacePanelOpen(globalRoot), false, "new-session toolbar uses the active global directory");
-  assert.deepEqual(navigationRequest, { kind: "blank", scope: "global", workspaceRoot: "" });
+  assert.deepEqual(draftRequest, { scope: "global", workspaceRoot: "" });
   await paint("A");
   assert.equal(useLayoutStore.getState().workspacePanelOpen, true, "global creation preserves the source project's preference");
   await act(async () => root.unmount());

@@ -197,7 +197,7 @@ console.log("\nrecovery wait banner");
   dom.window.close();
 }
 
-// Composer host: the banner sits above the card, the run strip keeps its
+// Composer host: the banner sits above the shared composer frame, the run strip keeps its
 // status line, and Stop routes through the composer's cancel path.
 {
   const dom = installDom();
@@ -209,7 +209,8 @@ console.log("\nrecovery wait banner");
   await settle(() => document.querySelector(".recovery-wait-banner") !== null);
   const banner = document.querySelector(".composer-wrap > .recovery-wait-banner");
   ok(banner !== null, "waiting recovery renders the banner inside the composer area");
-  ok(banner?.nextElementSibling?.classList.contains("composer-card") ?? false, "banner sits directly above the composer card");
+  const frame = banner?.nextElementSibling;
+  ok(Boolean(frame?.classList.contains("composer-workspace-frame") && frame.querySelector(":scope > .composer-card")), "banner sits directly above the composer frame");
   const strip = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
   ok(strip.startsWith("Waiting for provider (service unavailable)"), `run strip keeps the compact status line: ${JSON.stringify(strip)}`);
   await act(async () => {

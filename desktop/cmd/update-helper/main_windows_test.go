@@ -248,7 +248,7 @@ func TestRunVersionedUpdateRelaunchesLauncherNotOldDesktop(t *testing.T) {
 	if !verified {
 		t.Fatal("versioned update did not verify its desktop owner")
 	}
-	if filepath.Base(relaunchPath) != "reasonix-launcher.exe" {
+	if filepath.Base(relaunchPath) != "Reasonix.exe" {
 		t.Fatalf("relaunch path = %s, want install-root launcher (not %s)", relaunchPath, oldDesktop)
 	}
 	if relaunchPath == oldDesktop {

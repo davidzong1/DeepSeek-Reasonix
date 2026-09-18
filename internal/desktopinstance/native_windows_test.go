@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +142,49 @@ func TestNativeInspectCurrentUser(t *testing.T) {
 	defer p.close()
 	if p.image == "" || !p.alive() {
 		t.Fatal("missing executable identity")
+	}
+}
+
+func TestUnsupportedPortableLocationNotificationIsActionable(t *testing.T) {
+	title, body := notificationContent(fmt.Errorf("launch: %w", NewUnsupportedPortableLocationError("unc")))
+	if title != "Reasonix 无法从当前位置启动" {
+		t.Fatalf("title = %q", title)
+	}
+	for _, want := range []string{
+		"Copy the entire extracted folder to a local Windows drive",
+		"start Reasonix.exe, or use the installer",
+		"请将整个解压目录复制到 Windows 本地磁盘",
+		"或使用安装器",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("notification body is missing %q: %q", want, body)
+		}
+	}
+	if strings.Contains(body, "30 seconds") || strings.Contains(body, "启动或更新") {
+		t.Fatalf("notification fell back to generic startup copy: %q", body)
+	}
+}
+
+func TestPortableLocationDiagnosticContainsClassificationButNoPath(t *testing.T) {
+	home := t.TempDir()
+	LogPortableLocationRejected(home, "unc", true)
+	data, err := os.ReadFile(filepath.Join(home, "desktop-shell", "logs", "recovery.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := string(data)
+	for _, want := range []string{
+		"event=portable_location_rejected",
+		"platform=windows",
+		"location_type=unc",
+		"launch_mode=interactive",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("diagnostic is missing %q: %q", want, line)
+		}
+	}
+	if strings.Contains(line, home) {
+		t.Fatalf("diagnostic leaked the user path: %q", line)
 	}
 }
 

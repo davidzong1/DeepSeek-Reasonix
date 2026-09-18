@@ -346,12 +346,23 @@ ok(
 
 
 ok(
-  /return navigation\.enqueueNavigation\(\{ kind: "topic", scope, workspaceRoot, topicId, sessionPath \}\);/.test(sessionNavigationSource) &&
-    /const targetRoot = scope === "project" \? workspaceRoot : ""/.test(sessionNavigationSource) &&
-    /enqueueNavigation\(\{ kind: "blank", scope, workspaceRoot: targetRoot \}\)/.test(sessionNavigationSource) &&
-    /return navigation\.enqueueNavigation\(\{ kind: "sidebar-im", connection \}\);/.test(sessionNavigationSource) &&
-    /navigation\.enqueueNavigation\(\{ kind: "resume-session", session \}\)/.test(sessionNavigationSource),
-  "topic, blank, IM, and history navigation all use the shared coalescing path",
+  /return navigation\.enqueueNavigationWithIntent\(\{ kind: "topic", scope, workspaceRoot, topicId, sessionPath \}, navigationIntentSeq\);/.test(sessionNavigationSource) &&
+    /return navigation\.enqueueNavigationWithIntent\(\{ kind: "sidebar-im", connection \}, navigationIntentSeq\);/.test(sessionNavigationSource) &&
+    /navigation\.enqueueNavigationWithIntent\(\{ kind: "resume-session", session \}, navigationIntentSeq\)/.test(sessionNavigationSource),
+  "topic, IM, and history navigation use the shared intent-fenced formal-session path",
+);
+
+ok(
+  /const targetRoot = scope === "project" \? workspaceRoot : ""/.test(sessionNavigationSource) &&
+    /return input\.draft\.open\(scope, targetRoot\);/.test(sessionNavigationSource) &&
+    !/enqueueNavigation\(\{ kind: "blank", scope, workspaceRoot: targetRoot \}\)/.test(sessionNavigationSource) &&
+    /if \(activeTab\?\.remote\)[\s\S]*navigation\.openRemoteProject\(activeTab\.remote, \{ newSession: true \}\)/.test(sessionNavigationSource),
+  "local blank sessions open durable drafts while remote new-session keeps its runtime path",
+);
+
+ok(
+  /projectTree:\s*\{[\s\S]*?activeTab:\s*draftActive \? undefined : activeTab/.test(appViewSource),
+  "a draft surface clears the previous formal-session highlight in the project tree",
 );
 
 

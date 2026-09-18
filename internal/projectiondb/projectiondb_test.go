@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +80,22 @@ func TestInspectDoesNotCreateMissingDatabase(t *testing.T) {
 	}
 }
 
+func TestInspectReadsLiveWALSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.sqlite")
+	handle, err := Open(t.Context(), OpenOptions{Path: path, Migrations: testMigrations()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.DB.Close()
+	if _, err := handle.DB.Exec(`PRAGMA wal_autocheckpoint=0; INSERT INTO schema_migrations(version, applied_at) VALUES(42, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	inspection := Inspect(t.Context(), path)
+	if !inspection.Exists || inspection.Error != "" || inspection.Schema != 42 || inspection.Integrity != "ok" {
+		t.Fatalf("live WAL inspection=%+v", inspection)
+	}
+}
+
 func TestRebuildPublishesOnlyValidatedReplacement(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "catalog.sqlite")
@@ -147,15 +162,8 @@ func TestRebuildCanRetainPreviousDatabaseForRollback(t *testing.T) {
 	}
 }
 
-func TestDiskFileDSNUsesCrossPlatformURI(t *testing.T) {
+func TestDiskOpenUsesCrossPlatformURI(t *testing.T) {
 	t.Parallel()
-	dsn := diskFileDSN(filepath.Join(t.TempDir(), "catalog.sqlite"))
-	if !strings.HasPrefix(dsn, "file:") {
-		t.Fatalf("dsn=%q", dsn)
-	}
-	if strings.Contains(dsn, `\`) {
-		t.Fatalf("dsn must use forward slashes: %q", dsn)
-	}
 	// Opening through the DSN must succeed on this platform.
 	handle, err := Open(context.Background(), OpenOptions{
 		Path: filepath.Join(t.TempDir(), "opened.sqlite"), MemoryName: "dsn", Migrations: testMigrations(), RequireDisk: true,

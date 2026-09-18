@@ -276,6 +276,7 @@ func (s *turnEventSink) persistAndPublish(e event.Event) error {
 			return err
 		}
 	}
+	s.c.recordTurnLifecycle(stamped)
 	s.c.refreshRuntimeState(stamped)
 	s.publishInner(stamped)
 	if e.Kind == event.TurnDone && !ledger.ProjectionAckRequired() && projectionSaved {
@@ -313,6 +314,11 @@ func (s *turnEventSink) commitEnvelope(ledger *turnevent.Ledger, e event.Event, 
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, terminationFlushTimeout)
 		defer cancel()
+	}
+	if e.Kind == event.Notice && e.Code == event.NoticeCodeMCPToolsList && e.MessageID == "" {
+		if store := s.c.sessionEventStore(); store != nil {
+			e.MessageID = fmt.Sprintf("notice:%s:%d", store.ID(), store.EventSequence()+1)
+		}
 	}
 	if err := s.c.appendSessionEventLocked(ctx, e); err != nil {
 		return e, turnevent.Envelope{}, false, err

@@ -399,8 +399,8 @@ func TestTurnOrchestratorRefTurnPreservesExpandedPasteForRouting(t *testing.T) {
 			Scope:       skill.ScopeBuiltin,
 		}},
 	})
-	resolve := func(context.Context, string) (string, []string) {
-		return "<file path=\"notes.txt\">\nreference\n</file>", nil
+	resolve := func(context.Context, string) resolvedReferences {
+		return resolvedReferences{block: "<file path=\"notes.txt\">\nreference\n</file>"}
 	}
 
 	if err := c.runRefTurnWithResolverSync(context.Background(), expanded, expanded, display, "", resolve); err != nil {

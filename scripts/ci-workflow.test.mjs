@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +24,124 @@ function shellStep(body, name) {
 }
 const ci = workflow("ci");
 const release = workflow("release-desktop");
+const promote = workflow("release-promote");
 const appMemory = workflow("app-memory");
+
+test("Windows PR verifies credential aliases before full push CI", () => {
+  assert.match(ci, /name: test \(Windows credential ACL identity\)[\s\S]*?runner\.os == 'Windows' && github\.event_name == 'pull_request'[\s\S]*?go test -timeout=2m -run '\^TestCredentialAccessRepairsLegacyCredentialDeny\|\^TestRepairLegacyCredentialDenyMatchesFileAcrossPathAliases\$' \.\/internal\/config \.\/internal\/winsandbox/);
+});
+
+test("release candidate verification cannot mutate repository contents before approval", () => {
+  assert.match(job(promote, "preflight"), /permissions:\n      actions: read\n      attestations: read\n      contents: read/);
+  assert.match(job(promote, "authorize"), /environment: release[\s\S]*permissions:\n      contents: read/);
+  assert.match(job(promote, "activate"), /permissions:\n      contents: write/);
+});
+
+test("cancelled CI stops expensive workers but keeps result aggregation", () => {
+  for (const name of ["test", "windows-control", "windows-isolated", "race", "sdk", "desktop-prepare",
+    "desktop-frontend", "desktop-browser-group", "desktop-go", "desktop-go-race", "desktop-macos",
+    "desktop-windows", "desktop-windows-go-group", "desktop-windows-package", "lint-code", "site", "coverage", "prune-go-cache"]) {
+    assert.equal(condition(job(ci, name), { cancelled: () => true }), false, name);
+  }
+  for (const name of ["root", "lint", "desktop", "desktop-browser", "desktop-windows-go"])
+    assert.equal(condition(job(ci, name), { cancelled: () => true }), true, name);
+});
+
+test("packaging changes run native installer acceptance before merge", () => {
+  assert.match(job(ci, "desktop-prepare"), /REASONIX_COMMIT: \$\{\{ github.sha \}\}/,
+    "prepared frontend must budget the full source identity used by native packaging");
+  const body = job(ci, "desktop-windows-package");
+  assert.doesNotMatch(ci, /performance-benchmark\.mjs/);
+  const diagnostic = workflow("diagnostic-overhead");
+  assert.match(diagnostic, /schedule:/);
+  assert.match(diagnostic, /workflow_dispatch:/);
+  assert.match(diagnostic, /desktop\/electron\/\*\*/);
+  assert.match(diagnostic, /desktop\/frontend\/\*\*/);
+  assert.match(diagnostic, /run: pnpm install --frozen-lockfile/);
+  assert.match(diagnostic, /run: node electron\/scripts\/performance-benchmark\.mjs/);
+  assert.match(diagnostic, /if-no-files-found: error/);
+  assert.doesNotMatch(diagnostic, /continue-on-error/);
+  for (const event of ["pull_request", "push"]) {
+    for (const packaging of ["true", "false", ""]) {
+      const context = { github: { event_name: event }, needs: {
+        "desktop-prepare": { result: "success" }, changes: { outputs: { packaging, notes_only: "false" } },
+      } };
+      assert.equal(condition(body, context), event === "push" || packaging !== "false");
+      const aggregate = job(ci, "desktop").match(/PACKAGE_REQUIRED: \$\{\{ (.+) \}\}/)[1];
+      assert.equal(vm.runInNewContext(aggregate, context), condition(body, context));
+    }
+  }
+});
+
+test("notes pushes preserve required ancestor CI while code pushes cancel obsolete runs", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "reasonix-ci-cancel-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "-q");
+    git("config", "user.name", "test");
+    git("config", "user.email", "test@example.invalid");
+    const commit = (file, content) => {
+      writeFileSync(path.join(dir, file), content);
+      git("add", "."); git("commit", "-qm", "fixture");
+      return git("rev-parse", "HEAD");
+    };
+    const old = commit("code", "old");
+    const code = commit("code", "current");
+    mkdirSync(path.join(dir, "release-notes"));
+    const notes = commit("release-notes/record", "first");
+    const head = commit("release-notes/record", "reviewed");
+    const run = candidate => {
+      const script = `set -euo pipefail
+sleep() { :; }
+gh() {
+  if [ "$2" = "-X" ]; then printf '%s\\n' "$4" >> "$CANCEL_LOG";
+  elif [[ "$2" == *workflows/ci.yml/runs* ]]; then printf '%s\\n' "$ACTIVE_RUNS";
+  else echo completed; fi
+}
+${shellStep(job(workflow("supersede-ci"), "cancel-superseded"), "Cancel CI runs this push supersedes")}`;
+      const log = path.join(dir, "cancel-log");
+      writeFileSync(log, "");
+      const result = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8", env: {
+        ...process.env, GITHUB_REPOSITORY: "example/repo", GITHUB_SHA: candidate, CANCEL_LOG: log,
+        ACTIVE_RUNS: `11 ${old}\n12 ${code}\n13 ${notes}\n14 ${head}`,
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      return readFileSync(log, "utf8").trim().split("\n");
+    };
+    assert.deepEqual(run(head), ["repos/example/repo/actions/runs/11/cancel"]);
+    const next = commit("code", "next");
+    assert.deepEqual(run(next), [11, 12, 13, 14].map(id => `repos/example/repo/actions/runs/${id}/cancel`));
+    const group = ci.match(/  group: (ci-.+)/)[1];
+    assert.match(group, /github.event_name == 'push' && github.sha \|\| github.ref/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Certum signing survives skipped ancestor gates but requires successful inputs", () => {
+  const body = job(release, "windows-sign");
+  // A status function is required to override GitHub's implicit success(),
+  // which otherwise propagates a skipped standalone/orchestrator ancestor.
+  assert.match(body, /if:.*always\(\)/);
+  const context = {
+    needs: { resolve: { result: "success" }, "windows-build": { result: "success" }, "signing-contract": { result: "success" } },
+    github: { repository: "esengine/DeepSeek-Reasonix" },
+    inputs: { desktop_manual_only: false },
+  };
+  assert.equal(condition(body, context), true);
+  assert.equal(condition(body, { ...context, cancelled: () => true }), false);
+  for (const name of Object.keys(context.needs)) {
+    for (const result of ["failure", "skipped", "cancelled"]) {
+      assert.equal(condition(body, { ...context, needs: { ...context.needs, [name]: { result } } }), false);
+    }
+  }
+  assert.equal(condition(body, { ...context, inputs: { desktop_manual_only: true } }), false);
+  assert.equal(condition(body, { ...context, github: { repository: "example/fork" } }), false);
+});
 
 test("Windows full runs use the partitioned suite without a duplicate module sweep", () => {
   const body = job(ci, "test");
@@ -45,7 +162,7 @@ test("Windows full runs use the partitioned suite without a duplicate module swe
     }
   }
   assert.match(body, /run: node scripts\/windows-go-tests\.mjs full/);
-  assert.match(job(ci, "windows-isolated"), /group: \[agent, boot\]/);
+  assert.match(job(ci, "windows-isolated"), /group: \[agent, boot, serve, session, worktree\]/);
   assert.match(job(ci, "windows-control"), /run: node scripts\/windows-go-tests\.mjs control/);
 });
 
@@ -111,7 +228,7 @@ test("required desktop aggregate rejects every failed, cancelled or unexpectedly
   assert.equal(run({ ...success, PREPARE_REQUIRED: "false", NATIVE_REQUIRED: "false", FRONTEND_REQUIRED: "false", BROWSER_REQUIRED: "false",
     PACKAGE_REQUIRED: "false", PREPARE_RESULT: "skipped", GO_RESULT: "skipped", GO_RACE_RESULT: "skipped", FRONTEND_RESULT: "skipped",
     BROWSER_RESULT: "success", MACOS_RESULT: "skipped", WINDOWS_RESULT: "skipped", WINDOWS_GO_RESULT: "success", PACKAGE_RESULT: "skipped" }), 0);
-  // Any pull request: packaging is push-only, so it must be skipped there.
+  // A pull request unrelated to packaging must skip it.
   assert.equal(run({ ...success, PACKAGE_REQUIRED: "false", PACKAGE_RESULT: "skipped" }), 0);
   assert.notEqual(run({ ...success, PACKAGE_REQUIRED: "false", PACKAGE_RESULT: "success" }), 0);
   assert.equal(run({ ...success, FRONTEND_REQUIRED: "false", BROWSER_REQUIRED: "false", FRONTEND_RESULT: "skipped", BROWSER_RESULT: "success" }), 0);
@@ -127,16 +244,18 @@ test("required lint aggregates code lint and the deduplicated frontend suite", (
   const body = job(ci, "lint");
   const script = shellStep(body, "Verify lint and frontend validation jobs");
   const success = { CHANGES_RESULT: "success", LINT_CODE_RESULT: "success", LINT_CODE_REQUIRED: "true",
+    RELEASE_CONTROL_RESULT: "success", RELEASE_CONTROL_REQUIRED: "true",
     PREPARE_RESULT: "success", FRONTEND_RESULT: "success", FRONTEND_REQUIRED: "true" };
   const run = env => spawnSync("bash", ["-e", "-c", script], { env: { ...process.env, ...env } }).status;
   assert.equal(run(success), 0);
-  for (const key of ["CHANGES_RESULT", "LINT_CODE_RESULT", "PREPARE_RESULT", "FRONTEND_RESULT"])
+  for (const key of ["CHANGES_RESULT", "LINT_CODE_RESULT", "RELEASE_CONTROL_RESULT", "PREPARE_RESULT", "FRONTEND_RESULT"])
     for (const value of ["failure", "cancelled", "skipped", ""]) assert.notEqual(run({ ...success, [key]: value }), 0, `${key}=${value}`);
   assert.equal(run({ ...success, LINT_CODE_REQUIRED: "false", LINT_CODE_RESULT: "skipped",
+    RELEASE_CONTROL_REQUIRED: "false", RELEASE_CONTROL_RESULT: "skipped",
     FRONTEND_REQUIRED: "false", PREPARE_RESULT: "skipped", FRONTEND_RESULT: "skipped" }), 0);
   assert.equal(run({ ...success, FRONTEND_REQUIRED: "false", PREPARE_RESULT: "success", FRONTEND_RESULT: "skipped" }), 0);
   assert.doesNotMatch(job(ci, "lint-code"), /test:motion/);
-  assert.match(body, /needs: \[changes, lint-code, desktop-prepare, desktop-frontend\]/);
+  assert.match(body, /needs: \[changes, lint-code, release-control, desktop-prepare, desktop-frontend\]/);
 });
 
 test("required root aggregate covers the jobs the per-OS test legs do not", () => {
@@ -195,11 +314,11 @@ test("every ci job is reachable from a required aggregate", () => {
 test("reuse skips only build work and still gates every publisher on validation", () => {
   const context = {
     inputs: { preflight_artifact_prefix: "desktop-123-1-preflight", orchestrated: true, signing_preflight_verified: true, signing_preflight: false, production_signing_smoke: false },
-    needs: { resolve: { result: "success" }, "cache-guard": { result: "success" }, "signing-contract": { result: "success" }, "mac-universal-intel": { result: "skipped" }, "windows-sign": { result: "skipped" }, build: { result: "skipped" } },
+    needs: { resolve: { result: "success" }, "signing-contract": { result: "success" }, "mac-universal-intel": { result: "skipped" }, "windows-build": { result: "skipped" }, "windows-sign": { result: "skipped" }, "windows-runtime-acceptance": { result: "skipped" }, build: { result: "skipped" } },
   };
   assert.equal(condition(job(release, "build"), context), false);
   assert.equal(condition(job(release, "publish"), context), true);
-  for (const key of ["resolve", "cache-guard", "signing-contract", "mac-universal-intel", "windows-sign", "build"]) {
+  for (const key of ["resolve", "signing-contract", "mac-universal-intel", "windows-build", "windows-sign", "build"]) {
     for (const result of ["failure", "cancelled"]) {
       const changed = structuredClone(context);
       changed.needs[key].result = result;
@@ -217,29 +336,55 @@ test("reuse skips only build work and still gates every publisher on validation"
   assert.equal(condition(job(release, "build"), fresh), true);
   assert.equal(condition(job(release, "publish"), fresh), false);
   fresh.needs.build.result = "success";
+  fresh.needs["windows-build"].result = "success";
   fresh.needs["mac-universal-intel"].result = "success";
   assert.equal(condition(job(release, "publish"), fresh), false, "unsigned Windows bundles cannot publish");
   fresh.needs["windows-sign"].result = "success";
+  assert.equal(condition(job(release, "publish"), fresh), false, "signed Windows installers must pass native runtime acceptance");
+  fresh.needs["windows-runtime-acceptance"].result = "success";
   assert.equal(condition(job(release, "publish"), fresh), true);
 });
 
 test("Certum signing preserves native builds and gates publication and attestation", () => {
+  const packageJob = job(ci, "desktop-windows-package");
+  assert.match(packageJob, /test-windows-installer-startup\.ps1/);
+  assert.match(packageJob, /ExpectedVersion v0\.0\.0-ci/);
+  const windowsBuild = job(release, "windows-build");
   const signer = job(release, "windows-sign");
-  assert.match(job(release, "build"), /runner: windows-11-arm, platform: windows\/arm64/);
+  assert.match(windowsBuild, /runner: windows-latest, platform: windows\/amd64/);
+  assert.match(windowsBuild, /runner: windows-11-arm, platform: windows\/arm64/);
+  assert.match(windowsBuild, /Smoke-test packaged Electron startup/);
+  assert.match(windowsBuild, /Upload Windows signing inputs/);
+  assert.match(job(ci, 'test'), /test-windows-installer-startup\.test\.ps1/);
+  assert.match(signer, /needs: \[resolve, windows-build, signing-contract\]/);
   assert.match(signer, /runs-on: windows-2022/);
-  assert.match(signer, /arch: \[amd64, arm64\]/);
-  assert.match(signer, /max-parallel: 1/);
   assert.match(signer, /ref: \$\{\{ github.workflow_sha \}\}/);
-  assert.ok(signer.indexOf("-PayloadDirectory signed-payload") < signer.indexOf("scripts/package-windows-desktop.sh"));
-  assert.ok(signer.indexOf("scripts/package-windows-desktop.sh") < signer.indexOf("-FilePath"));
-  assert.ok(signer.indexOf("-ExpectedThumbprint") < signer.indexOf("Sign artifacts (minisign)"));
+  assert.equal(signer.match(/setup-certum/g)?.length, 1, "both architectures share one Certum session");
+  assert.match(signer, /Finalize amd64 in the shared Certum session/);
+  assert.match(signer, /Finalize arm64 in the shared Certum session/);
+  assert.equal(signer.match(/finalize-windows-signed-candidate\.sh/g)?.length, 2);
+  assert.ok(signer.indexOf("Finalize amd64 in the shared Certum session")
+    < signer.indexOf("name: ${{ needs.resolve.outputs.artifact_prefix }}-windows-amd64"));
+  assert.ok(signer.indexOf("Finalize arm64 in the shared Certum session")
+    < signer.indexOf("name: ${{ needs.resolve.outputs.artifact_prefix }}-windows-arm64"));
   assert.ok(!release.includes("secrets.SIGNPATH_API_TOKEN"));
+  const runtimeAcceptance = job(release, "windows-runtime-acceptance");
+  assert.match(runtimeAcceptance, /runner: windows-latest, arch: amd64/);
+  assert.match(runtimeAcceptance, /runner: windows-11-arm, arch: arm64/);
+  assert.match(runtimeAcceptance, /test-windows-installer-startup\.ps1/);
+  assert.match(runtimeAcceptance, /ExpectedVersion "\$\{\{ needs\.resolve\.outputs\.version \}\}"/);
   const attestation = job(release, "attest-signing-contract");
+  assert.ok(!attestation.includes("gh api --method"), "GITHUB_TOKEN cannot mutate repository variables");
+  assert.match(attestation, /uses: actions\/upload-artifact@v7/);
+  assert.match(attestation, /verified-contract\.json/);
+  assert.match(attestation, /gh variable set/);
   const context = { github: { repository: "esengine/DeepSeek-Reasonix" }, inputs: { signing_preflight: true, orchestrated: false },
-    needs: { "signing-contract": { result: "success" }, build: { result: "success" }, "windows-sign": { result: "success" } } };
+    needs: { "signing-contract": { result: "success" }, build: { result: "success" }, "windows-build": { result: "success" }, "windows-sign": { result: "success" }, "windows-runtime-acceptance": { result: "success" } } };
   assert.equal(condition(attestation, context), true);
-  for (const result of ["failure", "cancelled", "skipped"]) {
-    assert.equal(condition(attestation, { ...context, needs: { ...context.needs, "windows-sign": { result } } }), false);
+  for (const key of ["windows-build", "windows-sign", "windows-runtime-acceptance"]) {
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      assert.equal(condition(attestation, { ...context, needs: { ...context.needs, [key]: { result } } }), false);
+    }
   }
 });
 
@@ -288,6 +433,7 @@ test("all desktop consumers verify the prepared build and reject a failed prepar
   assert.match(prepare, /producer_attempt: \$\{\{ steps\.artifact-identity\.outputs\.attempt \}\}/);
   assert.match(prepare, /id: artifact-identity\n\s+run: echo "attempt=\$GITHUB_RUN_ATTEMPT" >> "\$GITHUB_OUTPUT"/);
   assert.match(prepare, /stable_artifact_name: desktop-frontend-stable-\$\{\{ github\.run_id \}\}-\$\{\{ steps\.artifact-identity\.outputs\.attempt \}\}/);
+  assert.equal(prepare.match(/desktop\/frontend\/sourcemaps\/\$\{\{ github\.sha \}\}/g)?.length, 2);
 });
 
 test("browser matrix preserves five entry points and fails closed through desktop-browser", () => {
@@ -310,6 +456,31 @@ test("browser matrix preserves five entry points and fails closed through deskto
   assert.equal(run({ CHANGES_RESULT: "success", SHOULD_RUN: "false", PREPARE_RESULT: "success", GROUP_RESULT: "skipped" }), 0);
 });
 
+test("Desktop race uses every verified partition and one shared cache writer", () => {
+  const body = job(ci, "desktop-go-race");
+  assert.deepEqual(body.match(/group: \[([^\]]+)\]/)[1].split(",").map(value => value.trim()), windowsDesktopGroups);
+  assert.match(body, /fail-fast: false/);
+  assert.match(body, /run: node \.\.\/scripts\/desktop-windows-go-tests\.mjs \$\{\{ matrix.group \}\} --race/);
+  for (const group of windowsDesktopGroups) {
+    const args = windowsDesktopTestArgs(group, true);
+    assert.deepEqual(args.filter(arg => arg !== "-race"), windowsDesktopTestArgs(group));
+    assert.equal(args.filter(arg => arg === "-race").length, 1);
+  }
+  assert.match(body, /matrix.group == 'A-B' && steps.gocache.outputs.key/);
+  assert.match(job(ci, "desktop"), /GO_RACE_RESULT: \$\{\{ needs.desktop-go-race.result \}\}/);
+});
+
+test("installer evidence excludes running payloads and cache files on every publisher", () => {
+  for (const body of [job(ci, "desktop-windows-package"), job(release, "windows-runtime-acceptance")]) {
+    const upload = body.match(/name: Upload (?:signed )?Windows installer acceptance evidence\n([\s\S]*?)(?=\n      - |$)/)?.[1];
+    assert.ok(upload);
+    for (const extension of ["json", "png", "log"])
+      assert.ok(upload.includes(`reasonix-installer-acceptance/**/*.${extension}`));
+    for (const excluded of ["installed/**", "**/cache/**"])
+      assert.ok(upload.includes(`!\${{ runner.temp }}/reasonix-installer-acceptance/${excluded}`));
+  }
+});
+
 test("Windows desktop Go partitions tests without verbose JSON cache overhead", () => {
   const windowsGo = job(ci, "desktop-windows-go-group");
   const context = { github: { event_name: "pull_request" }, needs: {
@@ -327,9 +498,9 @@ test("Windows desktop Go partitions tests without verbose JSON cache overhead", 
     return { run: args.includes("-run") ? args[args.indexOf("-run") + 1] : undefined,
       skip: args.includes("-skip") ? args[args.indexOf("-skip") + 1] : undefined };
   });
-  assert.equal(commands.length, 4);
+  assert.equal(commands.length, windowsDesktopGroups.length);
   // Include non-test entry points and every possible first suffix character.
-  // The complement group must retain names outside the three selected ranges.
+  // The complement group retains names outside the selected ranges.
   const names = ["Example", "ExampleSession", "FuzzSession", "Test"];
   for (let code = 0; code <= 127; code++) names.push(`Test${String.fromCharCode(code)}Session`);
   names.push("Test会话", "TestΩSession", "TestWindowsTerminalProcessConPTYSmoke");
@@ -352,8 +523,8 @@ test("Windows desktop Go partitions tests without verbose JSON cache overhead", 
   assert.match(windowsGo, /fail-fast: false/);
 
   assert.match(windowsGo, /name: probe \(Windows ConPTY host integration\)[\s\S]*?continue-on-error: true[\s\S]*?run: go test -run '\^TestWindowsTerminalProcessConPTYSmoke\$' \./);
-  assert.match(windowsGo, /name: probe \(Windows ConPTY host integration\)\n\s+if: matrix.group == 'Q-Z'/);
-  assert.match(windowsGo, /name: test \(vendored systray identity\)\n\s+if: matrix.group == 'Q-Z'/);
+  assert.match(windowsGo, /name: probe \(Windows ConPTY host integration\)\n\s+if: matrix.group == 'T-Z'/);
+  assert.match(windowsGo, /name: test \(vendored systray identity\)\n\s+if: matrix.group == 'T-Z'/);
   assert.match(windowsGo, /steps\.conpty-smoke\.outcome == 'failure'/);
 });
 

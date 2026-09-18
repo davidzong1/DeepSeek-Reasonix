@@ -30,6 +30,8 @@ func (c *Controller) CancelWithInboxItemsResult(ids []string, source string) (In
 	// A blocked sidecar or filesystem cannot delay Stop reaching the model/tool
 	// context. Status persistence and Goal pausing run after the inbox mutation.
 	turnID, cancelled := c.cancelTurnLocked()
+	c.recordLifecycle("cancel_requested", source, turnID, 0, "")
+	defer c.recordLifecycle("cancel_acknowledged", source, turnID, 0, "")
 	defer c.finishCancel(turnID, cancelled)
 	st, err := c.ensureInbox()
 	if err != nil {

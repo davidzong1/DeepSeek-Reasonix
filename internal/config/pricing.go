@@ -298,12 +298,12 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	}
 	classicDesktopLayout := strings.EqualFold(strings.TrimSpace(header.Desktop.LayoutStyle), "classic")
 	if header.ConfigVersion == defaultVersion && !classicDesktopLayout {
-		return false, nil
+		return repairProviderEndpointContractsOnStartup(path, false)
 	}
 	// Versions 7-9 commit the protocol upgrades and final version together,
 	// preserving the original bytes in one backup before any replacement.
 	if header.ConfigVersion >= deepSeekScheduledPricingConfigVersion && header.ConfigVersion < openCodeGoUpgradeVersion {
-		return upgradeOpenCodeGoFileLocked(path)
+		return upgradeOpenCodeGoAndRepairProviderEndpoints(path)
 	}
 	cfg := LoadForEdit(path)
 	changed := false
@@ -348,7 +348,7 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 		changed = true
 	}
 	if !changed {
-		return false, nil
+		return repairProviderEndpointContractsOnStartup(path, false)
 	}
 	if header.ConfigVersion < defaultVersion {
 		cfg.ConfigVersion = deepSeekOfficialChatUpgradeConfigVersion
@@ -361,7 +361,24 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 			return false, err
 		}
 	}
-	return true, nil
+	return repairProviderEndpointContractsOnStartup(path, true)
+}
+
+func upgradeOpenCodeGoAndRepairProviderEndpoints(path string) (bool, error) {
+	upgraded, err := upgradeOpenCodeGoFileLocked(path)
+	if err != nil {
+		return false, err
+	}
+	return repairProviderEndpointContractsOnStartup(path, upgraded)
+}
+
+func repairProviderEndpointContractsOnStartup(path string, changed bool) (bool, error) {
+	repairs, err := repairProviderEndpointContractsFileLocked(path)
+	if err != nil {
+		return false, err
+	}
+	recordProviderEndpointRepairs(path, repairs)
+	return changed || len(repairs) > 0, nil
 }
 
 // ResetOfficialProviderPricingOnUpgrade is retained for older call sites.

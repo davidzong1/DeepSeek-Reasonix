@@ -86,14 +86,15 @@ type ProviderView struct {
 }
 
 type ProviderModelCapabilityView struct {
-	Model                   string   `json:"model"`
-	InputModalities         []string `json:"inputModalities"`
-	State                   string   `json:"state"`
-	Source                  string   `json:"source"`
-	AutomaticState          string   `json:"automaticState"`
-	AutomaticSource         string   `json:"automaticSource"`
-	ImageInputEnableAllowed bool     `json:"imageInputEnableAllowed"`
-	ImageInputBlockReason   string   `json:"imageInputBlockReason,omitempty"`
+	Reasoning               *config.ResolvedReasoningView `json:"reasoning,omitempty"`
+	Model                   string                        `json:"model"`
+	InputModalities         []string                      `json:"inputModalities"`
+	State                   string                        `json:"state"`
+	Source                  string                        `json:"source"`
+	AutomaticState          string                        `json:"automaticState"`
+	AutomaticSource         string                        `json:"automaticSource"`
+	ImageInputEnableAllowed bool                          `json:"imageInputEnableAllowed"`
+	ImageInputBlockReason   string                        `json:"imageInputBlockReason,omitempty"`
 }
 
 type ProviderModelCatalogUpdate struct {
@@ -360,6 +361,7 @@ type SettingsView struct {
 	DefaultToolApprovalMode      string               `json:"defaultToolApprovalMode"`
 
 	CheckUpdates      bool   `json:"checkUpdates"`
+	UpdaterEnabled    bool   `json:"updaterEnabled"`
 	UpdateChannel     string `json:"updateChannel"`
 	Telemetry         bool   `json:"telemetry"`
 	Metrics           bool   `json:"metrics"`
@@ -380,31 +382,6 @@ type SettingsView struct {
 	AutoApproveTools bool `json:"autoApproveTools"`
 	// Bypass is the legacy JSON key for the same live state.
 	Bypass bool `json:"bypass"`
-}
-
-// DesktopStartupSettingsView is the lightweight Settings subset needed during
-// frontend startup. It deliberately excludes providers and credential state so
-// slow keychain/env resolution stays off the first-render path.
-type DesktopStartupSettingsView struct {
-	Bot                          BotSettingsView `json:"bot"`
-	DesktopLanguage              string          `json:"desktopLanguage"`
-	DesktopLayoutStyle           string          `json:"desktopLayoutStyle"`
-	DesktopTheme                 string          `json:"desktopTheme"`
-	DesktopThemeStyle            string          `json:"desktopThemeStyle"`
-	DesktopTerminalTheme         string          `json:"desktopTerminalTheme,omitempty"`
-	DisplayMode                  string          `json:"displayMode"`
-	SessionExperience            string          `json:"sessionExperience"`
-	ReasoningDisplayMode         string          `json:"reasoningDisplayMode"`
-	ReasoningDisplayModeExplicit bool            `json:"reasoningDisplayModeExplicit"`
-	StatusBarStyle               string          `json:"statusBarStyle"`
-	StatusBarItems               []string        `json:"statusBarItems"`
-	CheckUpdates                 bool            `json:"checkUpdates"`
-	UpdateChannel                string          `json:"updateChannel"`
-	ConversationWidth            string          `json:"conversationWidth,omitempty"`
-	// ConfigWarnings report in-memory recovery without rewriting user/project files.
-	ConfigWarnings         []string `json:"configWarnings,omitempty"`
-	ConfigWarningsRevision uint64   `json:"configWarningsRevision"`
-	ConfigPath             string   `json:"configPath,omitempty"`
 }
 
 // shadowingConfigPath returns the config file that outranks writePath for the
@@ -725,31 +702,6 @@ func providerViewFromEntryForRootWithResolverAndCredentials(p config.ProviderEnt
 		ModelCapabilities:           modelCapabilities,
 		RecommendedUpgradeAvailable: false, // Chat Completions is the default again; retain the legacy bridge field.
 		ModelCatalogFingerprint:     providerModelCatalogFingerprintForCredentials(p, credentialsRevision),
-	}
-}
-
-func providerModelCapabilitiesForView(p config.ProviderEntry, models []string) []ProviderModelCapabilityView {
-	resolver := config.NewModelCapabilityResolver()
-	out := make([]ProviderModelCapabilityView, 0, len(models))
-	for _, model := range models {
-		entry := p
-		entry.Model = model
-		capability := resolver.Resolve(&entry)
-		out = append(out, modelCapabilityView(capability))
-	}
-	return out
-}
-
-func modelCapabilityView(capability config.ResolvedModelCapability) ProviderModelCapabilityView {
-	modalities := make([]string, len(capability.InputModalities))
-	for i, modality := range capability.InputModalities {
-		modalities[i] = string(modality)
-	}
-	return ProviderModelCapabilityView{
-		Model: capability.Model, InputModalities: modalities,
-		State: string(capability.State), Source: string(capability.Source),
-		AutomaticState: string(capability.AutomaticState), AutomaticSource: string(capability.AutomaticSource),
-		ImageInputEnableAllowed: capability.ImageInputEnableAllowed, ImageInputBlockReason: capability.ImageInputBlockReason,
 	}
 }
 
@@ -1140,6 +1092,7 @@ func (a *App) Settings() SettingsView {
 		StatusBarItems:               cfg.DesktopStatusBarItems(),
 		DefaultToolApprovalMode:      cfg.DesktopDefaultToolApprovalMode(),
 		CheckUpdates:                 cfg.DesktopCheckUpdates(),
+		UpdaterEnabled:               desktopUpdaterEnabled(),
 		UpdateChannel:                cfg.DesktopUpdateChannel(),
 		Telemetry:                    cfg.DesktopTelemetry(),
 		Metrics:                      cfg.DesktopMetrics(),
@@ -1950,10 +1903,12 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 	snap := a.tabRuntimeSnapshot(tab)
 	runtime := snap.normalizedRuntime()
 	model := snap.model
+	var modelConfig *config.Config
 	if override := strings.TrimSpace(modelOverride); override != "" {
 		model = override
 	}
 	if cfg, err := config.LoadForRoot(snap.workspaceRoot); err == nil {
+		modelConfig = cfg
 		if setting == "saved model settings" {
 			model, err = resolveModelSettingsRuntime(cfg, model)
 			if err != nil {
@@ -2003,6 +1958,7 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 	}
 	tab.Ctrl = ctrl
 	tab.modelApplication.failure = nil
+	tab.effort = config.RebindSessionEffort(modelConfig, snap.model, model, snap.effort)
 	tab.model = model
 	tab.Label = ctrl.Label()
 	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)
@@ -2043,6 +1999,7 @@ func (a *App) buildSettingReplacementController(tab *WorkspaceTab, snap tabRunti
 		SessionDir:           sessionDirForSnapshot(snap),
 		SessionService:       a.desktopSessionService(sessionDirForSnapshot(snap)),
 		EffortOverride:       cloneStringPtr(snap.effort),
+		EffortModel:          snap.model,
 		SharedHost:           a.lookupSharedHost(snap.sharedHostKey), BrowserExecutor: a.browserExecutorForTab(tab),
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -2383,13 +2340,13 @@ func saveProviderConfig(c *config.Config, p ProviderView) error {
 	e.Headers = p.Headers
 	e.ExtraBody = p.ExtraBody
 	e.AuthHeader = p.AuthHeader
+	config.RepairProviderEndpointContract(&e)
 	e.NoProxy = p.NoProxy
 	e.BalanceURL = strings.TrimSpace(p.BalanceURL)
 	e.ContextWindow = p.ContextWindow
 	e.ReasoningProtocol = p.ReasoningProtocol
 	e.Thinking = providerThinkingForSettings(p.Thinking)
-	// Settings exposes this switch only for verified endpoints. Preserve an
-	// existing advanced override, but never carry an official default to a new URL.
+	// Preserve advanced search overrides only for verified endpoints, never for a new URL.
 	if config.IsOfficialDeepSeekSearchEndpoint(&e) {
 		enabled := p.WebSearch
 		e.WebSearch = &enabled

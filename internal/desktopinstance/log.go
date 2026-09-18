@@ -45,3 +45,14 @@ func writeRecoveryLog(home, message string) {
 	}
 	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339Nano), message)
 }
+
+// LogPortableLocationRejected records only the storage classification. In
+// particular, it never records the UNC server/share or the user's full path.
+func LogPortableLocationRejected(home, locationType string, interactive bool) {
+	locationType = portableLocationType(locationType)
+	launchMode := "noninteractive"
+	if interactive {
+		launchMode = "interactive"
+	}
+	writeRecoveryLog(home, fmt.Sprintf("event=portable_location_rejected platform=windows location_type=%s launch_mode=%s", locationType, launchMode))
+}

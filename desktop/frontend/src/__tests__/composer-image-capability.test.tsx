@@ -211,11 +211,11 @@ console.log("\ncomposer image capability");
   const dom = installDom();
   let saveCalls = 0;
   installBridgeApp({
-    SavePastedImage: async () => {
+    SavePastedImageForTarget: async () => {
       saveCalls += 1;
       return ".reasonix/attachments/mock.png";
     },
-    AttachmentDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
+    AttachmentDataURLForTarget: async () => "data:image/png;base64,iVBORw0KGgo=",
   });
   const { root } = await renderComposer({ imageInputEnabled: false });
   const file = new File(["img"], "photo.png", { type: "image/png", lastModified: 1 });
@@ -242,8 +242,8 @@ console.log("\ncomposer image capability");
   const dom = installDom();
   const sent: Array<{ display: string; submit?: string }> = [];
   installBridgeApp({
-    SavePastedImage: async () => ".reasonix/attachments/mock.png",
-    AttachmentDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
+    SavePastedImageForTarget: async () => ".reasonix/attachments/mock.png",
+    AttachmentDataURLForTarget: async () => "data:image/png;base64,iVBORw0KGgo=",
   });
   const { root, rerender } = await renderComposer({
     imageInputEnabled: true,
@@ -281,8 +281,8 @@ console.log("\ncomposer image capability");
   const dom = installDom();
   const sent: string[] = [];
   installBridgeApp({
-    SavePastedImage: async () => ".reasonix/attachments/mock.png",
-    AttachmentDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
+    SavePastedImageForTarget: async () => ".reasonix/attachments/mock.png",
+    AttachmentDataURLForTarget: async () => "data:image/png;base64,iVBORw0KGgo=",
   });
   const { root } = await renderComposer({
     imageInputEnabled: false,
@@ -313,8 +313,8 @@ console.log("\ncomposer image capability");
 {
   const dom = installDom();
   installBridgeApp({
-    SavePastedImage: async () => ".reasonix/attachments/mock.png",
-    AttachmentDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
+    SavePastedImageForTarget: async () => ".reasonix/attachments/mock.png",
+    AttachmentDataURLForTarget: async () => "data:image/png;base64,iVBORw0KGgo=",
   });
   const { root } = await renderComposer({ imageInputEnabled: true });
   const file = new File(["img"], "photo.png", { type: "image/png", lastModified: 1 });

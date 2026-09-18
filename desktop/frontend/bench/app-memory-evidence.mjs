@@ -78,19 +78,21 @@ export function screeningBlockers(reasons) {
   return reasons.filter((reason) => reason !== OFFLINE_ATTRIBUTION_REASON && reason !== TRANSIENT_EXCURSION_REASON);
 }
 
-// The gate blocks on persistent drift: the final checkpoint displaced from
-// the warmed baseline, or the tail still moving. Intermediate excursions are
-// kept as observations so they still get an offline explanation. When the
-// bench ends with an explicit "settled" resting-state sample, that sample is
-// the authoritative tail and every earlier checkpoint is intermediate.
+// The gate blocks on retention-shaped drift: a final population above the
+// warmed baseline, or an unsettled-baseline tail that is still growing.
+// A final population below baseline is released capacity, not retention.
+// Intermediate excursions are kept as observations so they still get an
+// offline explanation. When the bench ends with an explicit "settled"
+// resting-state sample, that sample is the authoritative tail.
 function counterDriftReason(values, phases, baselineStable = true) {
   const baseline = values[0];
   const final = values.at(-1);
   const settledTail = phases.at(-1) === "settled";
-  if (baselineStable && final !== baseline) return "persistent";
-  if (!settledTail) {
+  if (baselineStable && final > baseline) return "persistent";
+  if (!baselineStable && !settledTail) {
     const tail = values.slice(1).slice(-3);
-    if (tail.some((value) => value !== final)) return "persistent";
+    if (tail.length > 1 && tail.every((value, index) => index === 0 || value >= tail[index - 1])
+      && tail.at(-1) > tail[0]) return "persistent";
   }
   return values.some((value) => value !== baseline) ? "transient" : null;
 }

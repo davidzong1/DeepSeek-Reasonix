@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { desktopDownloadVersion } from "../data/desktop-download.js";
 import {
   CLI_RELEASE_ASSETS,
   cliUpgradeCommand,
@@ -28,6 +29,10 @@ const desktopSHA256 = "a".repeat(64);
 // Every approved manual tag is probed. Selection must stay "newest that
 // actually resolves", so listing the next tag early cannot downgrade the page.
 const manualTagOf = (url) => (url.match(/desktop-v\d+\.\d+\.\d+/) || [])[0];
+
+test("production Desktop downloads follow the current Stable manifest", () => {
+  assert.equal(desktopDownloadVersion, "");
+});
 
 test("a website pin requests only the exact Desktop version", async () => {
   const requests = [];

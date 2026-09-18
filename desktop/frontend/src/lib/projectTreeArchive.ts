@@ -3,10 +3,12 @@ import { app } from "./bridge";
 import { invalidateProjectTreeTopicLoads, projectTreeFolderKeyForSession, projectTreeFolderKeyForTopic } from "./projectTreeTopic";
 import type { ToastContextValue } from "./toast";
 import type { ProjectNode } from "./types";
+import { sessionLifecycleFences } from "./sessionLifecycleFences";
+import { projectSessionIdentity } from "./projectSessionIdentity";
 
 export { projectTreeWithoutTopics } from "./projectTreeTopic";
 
-type TopicPageState = { nextCursor?: string; loading: boolean };
+type TopicPageState = { itemKeys?: string[]; nextCursor?: string; loading: boolean; initialized?: boolean; error?: string };
 
 export type ProjectTreeRefreshOptions = {
   reloadTopicKeys?: string[];
@@ -89,6 +91,31 @@ export function projectTreeTrashingTopics(previous: Set<string>, topicId: string
   return next;
 }
 
+export async function archiveProjectTreeSession({
+  sessionPath,
+  archiveTarget,
+  refresh,
+  topicsChanged,
+  showError,
+}: {
+  sessionPath: string;
+  archiveTarget: (selector: { sessionPath: string }) => Promise<unknown>;
+  refresh: () => Promise<void>;
+  topicsChanged?: () => Promise<void> | void;
+  showError: (error: unknown) => void;
+}): Promise<boolean> {
+  try {
+    await archiveTarget({ sessionPath });
+    await refresh();
+    await Promise.resolve(topicsChanged?.()).catch(() => undefined);
+    return true;
+  } catch (error) {
+    showError(error);
+    await refresh().catch(() => undefined);
+    return false;
+  }
+}
+
 export function useProjectTreeArchiveState() {
   const topicsRef = useRef<Set<string>>(new Set());
   const tombstonesRef = useRef<Set<string>>(new Set());
@@ -111,7 +138,7 @@ export function useProjectTreeArchiveState() {
   const releaseTombstone = useCallback((topicId: string) => {
     tombstonesRef.current = projectTreeTrashingTopics(tombstonesRef.current, topicId, false);
   }, []);
-  const currentTombstones = useCallback((): ReadonlySet<string> => tombstonesRef.current, []);
+  const currentTombstones = useCallback((): ReadonlySet<string> => new Set([...tombstonesRef.current, ...sessionLifecycleFences.keys()]), []);
   return {
     trashingTopics: topics,
     beginTrashingTopic: begin,
@@ -125,23 +152,29 @@ export function useProjectTreeArchiveState() {
 export function useProjectTreeArchiveController({
   treeRef,
   topicLoadSeqRef,
+  topicLoadPendingRef,
   topicPageStateRef,
   updateTopicPageState,
   refreshRef,
   optimisticallyRemoveTopic,
+  optimisticallyRemoveSession,
   closeMenu,
   onTopicsChanged,
   showToast,
+  sessionErrorMessage,
 }: {
   treeRef: { current: ProjectNode[] };
   topicLoadSeqRef: { current: Record<string, number> };
+  topicLoadPendingRef: { current: Record<string, number> };
   topicPageStateRef: { current: Record<string, TopicPageState> };
   updateTopicPageState: (key: string, next: TopicPageState) => void;
   refreshRef: { current: ProjectTreeRefresh };
   optimisticallyRemoveTopic: (topicId: string) => void;
+  optimisticallyRemoveSession: (node: ProjectNode) => void;
   closeMenu: () => void;
   onTopicsChanged?: () => Promise<void> | void;
   showToast: ToastContextValue["showToast"];
+  sessionErrorMessage?: (error: unknown) => string;
 }) {
   const {
     trashingTopics,
@@ -176,8 +209,15 @@ export function useProjectTreeArchiveController({
           // Fence every load that captured the catalog before backend commit,
           // then remove the topic while the tombstone covers newer arrivals.
           invalidateProjectTreeTopicLoads(topicLoadSeqRef.current, invalidatedKeys);
-          for (const key of invalidatedKeys) {
-            updateTopicPageState(key, { ...topicPageStateRef.current[key], loading: false });
+          for (const folderKey of invalidatedKeys) {
+            const prefix = `${folderKey}\u001f`;
+            for (const key of Object.keys(topicLoadPendingRef.current)) {
+              if (key === folderKey || key.startsWith(prefix)) delete topicLoadPendingRef.current[key];
+            }
+            for (const [key, state] of Object.entries(topicPageStateRef.current)) {
+              if (key !== folderKey && !key.startsWith(prefix)) continue;
+              updateTopicPageState(key, { ...state, nextCursor: undefined, loading: false, initialized: false, error: undefined });
+            }
           }
           optimisticallyRemoveTopic(topicId);
         },
@@ -194,36 +234,49 @@ export function useProjectTreeArchiveController({
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
+  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, topicLoadPendingRef, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
 
-  const trashSession = useCallback(async (rawSessionPath: string) => {
-    const sessionPath = rawSessionPath.trim();
-    if (!sessionPath || sessionTrashingRef.current.has(sessionPath)) return;
+  const trashSession = useCallback(async (target: ProjectNode) => {
+    const sessionPath = (target.sessionPath ?? "").trim();
+    const targetKey = projectSessionIdentity(target);
+    if (!sessionPath || sessionTrashingRef.current.has(targetKey)) return;
     const folderKey = projectTreeFolderKeyForSession(treeRef.current, sessionPath);
     const reloadOptions: ProjectTreeRefreshOptions = {
       reloadTopicKeys: folderKey ? [folderKey] : undefined,
       reloadAllTopics: !folderKey,
     };
-    sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, sessionPath, true);
+    sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, targetKey, true);
     setTrashingSessions(sessionTrashingRef.current);
     closeMenu();
 
     const queued = enqueueProjectTreeArchive(archiveQueueRef.current, async () => {
-      try {
-        await app.DeleteSession(sessionPath);
-        await refreshRef.current(reloadOptions);
-        await Promise.resolve(onTopicsChanged?.()).catch(() => undefined);
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : String(err), "error");
-        await refreshRef.current(reloadOptions).catch(() => undefined);
-      } finally {
-        sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, sessionPath, false);
-        setTrashingSessions(sessionTrashingRef.current);
-      }
+      await runProjectTreeArchiveJob({
+        archive: async () => {
+          const receipt = await app.ArchiveSessionTarget({ ref: target.session, source: target.source, sessionPath });
+          if (receipt.committed) sessionLifecycleFences.archive(target, receipt);
+        },
+        commit: () => {
+          const invalidatedKeys = folderKey ? [folderKey] : treeRef.current.filter((node) => node.kind === "project" || node.kind === "global_folder").map((node) => node.key);
+          invalidateProjectTreeTopicLoads(topicLoadSeqRef.current, invalidatedKeys);
+          optimisticallyRemoveSession(target);
+        },
+        reload: async () => {
+          await refreshRef.current(reloadOptions);
+          await Promise.resolve(onTopicsChanged?.()).catch(() => undefined);
+        },
+        finishPending: () => {
+          sessionTrashingRef.current = projectTreeTrashingTopics(sessionTrashingRef.current, targetKey, false);
+          setTrashingSessions(sessionTrashingRef.current);
+        },
+        recover: async (err) => {
+          showToast(sessionErrorMessage?.(err) ?? (err instanceof Error ? err.message : String(err)), "error");
+          await refreshRef.current(reloadOptions);
+        },
+      });
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [closeMenu, onTopicsChanged, refreshRef, showToast, treeRef]);
+  }, [closeMenu, commitArchiveTombstone, onTopicsChanged, optimisticallyRemoveSession, refreshRef, releaseArchiveTombstone, sessionErrorMessage, showToast, topicLoadSeqRef, treeRef]);
 
   return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession };
 }

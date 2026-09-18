@@ -1,3 +1,4 @@
+import { historyToolStatus } from "./historyToolStatus";
 // historyItems converts durable HistoryMessage rows (and legacy HistoryPage
 // payloads) into transcript Items for the single-shot hydration path. The
 // windowed counterpart lives in transcriptStore; both projections must agree
@@ -117,7 +118,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "user") {
       if (m.content.trim() === "") continue;
-      items.push({ kind: "user", id: m.messageId ? `m:${m.messageId}` : recordItemId, messageId: m.messageId, submissionId: m.submissionId, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn, historyTurn: m.historyTurn });
+      items.push({ kind: "user", id: m.messageId ? `m:${m.messageId}` : recordItemId, messageId: m.messageId, submissionId: m.submissionId, turnId: m.turnId, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn, historyTurn: m.historyTurn });
       seq++;
       continue;
     }
@@ -135,6 +136,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         serverSearch: m.serverSearch,
       });
       for (const item of built) {
+        item.turnId = m.turnId;
         if (item.kind === "assistant") { item.id = messageItemId ?? `${idPrefix}${seq}`; item.streaming = Boolean(m.pending); }
         items.push(item);
         seq++;
@@ -165,7 +167,8 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           readOnly: typeof tc.resolvedReadOnly === "boolean" ? tc.resolvedReadOnly : isReadOnlyTool(tc.name),
           resolvedName: tc.resolvedName,
           capabilityId: tc.capabilityId,
-          status: result ? (error ? "error" : "done") : tc.pending ? "running" : "stopped",
+          status: historyToolStatus(result, tc, error),
+          contentState: result && !result.toolResultArchived ? "ready" : "unloaded",
           output,
           error,
           dataArchived: archived || undefined,

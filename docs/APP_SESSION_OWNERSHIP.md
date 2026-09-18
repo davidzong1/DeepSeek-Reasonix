@@ -28,6 +28,24 @@ Generation replacement, retirement, reconnect, host suspension and explicit
 close follow the same per-tab publication order. Network handshakes and pump
 waits remain outside the fence; map snapshots are revalidated after taking it.
 
+## Local readable history and runtime readiness
+
+Local navigation starts a bounded canonical history read after publishing the
+target tab identity, independently of controller activation. A readable history
+window can appear while runtime setup is still pending. Draft input stays mounted
+and editable, while send/control actions retain their runtime readiness fence.
+Runtime failure preserves history that already arrived; it cannot turn an
+unfinished history read into a successful empty transcript. Remote transitions
+keep their existing presentation gate.
+
+Navigation detaches renderer subscriptions and retains history under the existing
+store budgets; explicit close evicts it. Lazy bodies can hand off once to a newer
+generation of the same resident owner. Eviction or close/reopen ends the old read.
+Retained residency alone does not prove a navigation cache hit: canonical history
+generations and legacy tab fingerprints are different identity domains, and a new
+tab binding needs explicit ownership reconciliation. Browser-mock paint timings
+do not establish native backend latency or cross-binding cache reuse.
+
 ## Remote bootstrap lock handoff
 
 A remote server owner can release its directory between a competing exclusive

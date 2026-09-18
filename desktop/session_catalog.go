@@ -81,6 +81,17 @@ type ProjectTopicPageRequest struct {
 	Query         string `json:"query,omitempty"`
 	TimeFilter    string `json:"timeFilter,omitempty"`
 	SortMode      string `json:"sortMode,omitempty"`
+	GroupFilter   string `json:"groupFilter,omitempty"`
+	GroupID       string `json:"groupId,omitempty"`
+	ExcludePinned bool   `json:"excludePinned,omitempty"`
+
+	groupIncludeJSON string
+	groupExcludeJSON string
+	groupCursorBind  string
+	groupInclude     map[string]struct{}
+	groupExclude     map[string]struct{}
+	groupSelected    *desktopGroup
+	groupAll         []desktopGroup
 }
 
 type ProjectTopicKey struct {
@@ -193,14 +204,16 @@ func (a *App) startSessionCatalog() {
 	}
 	ctx, cancel := context.WithCancel(a.bootContext())
 	done := make(chan struct{})
+	initialReconcileDone := make(chan struct{})
 	a.catalogCancel = cancel
 	a.catalogDone = done
+	a.catalogInitialReconcileDone = initialReconcileDone
 	a.catalogLifecycleMu.Unlock()
 	history.RegisterSessionPersistObserver(desktopSessionCatalogPersistObserverKey, desktopSessionCatalogPersistObserver{app: a})
 
 	go func() {
 		defer close(done)
-		a.runSessionCatalog(ctx)
+		a.runSessionCatalog(ctx, initialReconcileDone)
 	}()
 }
 
@@ -213,6 +226,7 @@ func (a *App) stopSessionCatalog(timeout time.Duration) bool {
 	done := a.catalogDone
 	a.catalogCancel = nil
 	a.catalogDone = nil
+	a.catalogInitialReconcileDone = nil
 	a.catalogLifecycleMu.Unlock()
 	if cancel != nil {
 		cancel()

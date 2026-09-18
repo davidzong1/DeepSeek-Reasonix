@@ -24,13 +24,14 @@ func (s *Service) SetTitle(ctx context.Context, ref SessionRef, title string) er
 
 var ErrSessionTitleChanged = errors.New("session title changed")
 
-// SetTitleIfUnchanged checks and commits at the same acceptance boundary as
-// manual title writes, so a delayed generated title cannot overwrite one.
-func (s *Service) SetTitleIfUnchanged(ctx context.Context, ref SessionRef, expectedTitle, title string) error {
-	return s.setTitle(ctx, ref, &expectedTitle, title)
+// SetTitleIfSequence checks and commits against the sequence of the latest
+// session/title event. Same-value manual writes and A→B→A both advance this
+// revision, so a delayed generated title cannot overwrite them.
+func (s *Service) SetTitleIfSequence(ctx context.Context, ref SessionRef, expectedSequence uint64, title string) error {
+	return s.setTitle(ctx, ref, &expectedSequence, title)
 }
 
-func (s *Service) setTitle(ctx context.Context, ref SessionRef, expectedTitle *string, title string) error {
+func (s *Service) setTitle(ctx context.Context, ref SessionRef, expectedSequence *uint64, title string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -57,7 +58,7 @@ func (s *Service) setTitle(ctx context.Context, ref SessionRef, expectedTitle *s
 	if err != nil {
 		return err
 	}
-	if _, err = session.commitPrepared(prepared, expectedTitle); err != nil {
+	if _, err = session.commitPrepared(prepared, expectedSequence); err != nil {
 		return err
 	}
 	_, err = session.Flush(ctx)

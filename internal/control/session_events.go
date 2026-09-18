@@ -413,7 +413,7 @@ func (c *Controller) appendSessionEventLocked(ctx context.Context, e event.Event
 			e.TurnID = projection.TurnID
 		}
 	}
-	events, err := c.v3EventsFor(e, projection)
+	events, err := c.sessionEventsFor(e, projection)
 	if err != nil || len(events) == 0 {
 		return err
 	}
@@ -430,6 +430,13 @@ func (c *Controller) appendSessionEventLocked(ctx context.Context, e event.Event
 	}
 	c.noteCommittedMessagesLocked(events)
 	return nil
+}
+
+func (c *Controller) sessionEventsFor(e event.Event, projection session.Projection) ([]session.Event, error) {
+	if e.Kind == event.Notice {
+		return mcpDisplayNoticeEvents(e)
+	}
+	return c.v3EventsFor(e, projection)
 }
 
 func (c *Controller) v3EventsFor(e event.Event, projection session.Projection) ([]session.Event, error) {
@@ -537,18 +544,8 @@ func (c *Controller) v3EventsFor(e event.Event, projection session.Projection) (
 			out = append(out, session.Event{Kind: "runtime/recovery", Payload: payload})
 		}
 	case event.CompactionDone:
-		// An empty summary denotes an aborted pass and must not replace the
-		// provider projection. Successful passes record the exact installed view.
-		if strings.TrimSpace(e.Compaction.Summary) != "" && c.executor != nil {
-			payload, err := makePayload(map[string]any{
-				"messages": c.executor.ModelHistorySnapshot(),
-				"trigger":  e.Compaction.Trigger,
-			})
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, session.Event{Kind: "compaction", Payload: payload})
-		}
+		// Context-maintenance commits persist their exact model projection before
+		// this notification is emitted. CompactionDone is presentation-only.
 	case event.TurnDone:
 		interactionState := "unavailable"
 		if e.Cancelled || e.Status == event.TurnInterrupted {
@@ -637,6 +634,60 @@ func (c *Controller) RecordSessionMessages(ctx context.Context, reason string, m
 		c.noteCommittedMessagesLocked(events)
 	}
 	return err
+}
+
+// RecordSessionModelContext implements agent.SessionModelContextRecorder. It
+// persists the exact provider-visible projection without mutating the Agent or
+// the canonical history. A successful return means the accepted commit is on
+// stable storage through its final sequence.
+func (c *Controller) RecordSessionModelContext(ctx context.Context, request agent.SessionModelContextCommit) (agent.SessionModelContextCommitResult, error) {
+	var result agent.SessionModelContextCommitResult
+	if !c.sessionEventCommitAllowed() {
+		return result, session.ErrStaleExecution
+	}
+	store := c.sessionEventStore()
+	if store == nil {
+		return result, nil
+	}
+	operationID := strings.TrimSpace(request.OperationID)
+	if operationID == "" {
+		return result, errors.New("record session model context: missing operation id")
+	}
+	modelMessages := provider.ModelMessages(request.Messages)
+	if modelMessages == nil {
+		modelMessages = []provider.Message{}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"messages": modelMessages,
+		"reason":   strings.TrimSpace(request.Reason),
+	})
+	if err != nil {
+		return result, err
+	}
+
+	c.turnEvents.commitMu.Lock()
+	if !c.messageCommitAllowedLocked(ctx, store) {
+		c.turnEvents.commitMu.Unlock()
+		return result, session.ErrStaleExecution
+	}
+	commit, err := c.appendSessionBatch(ctx, store, session.Batch{
+		OperationID: "model-context-maintenance:" + operationID,
+		Events:      []session.Event{{Kind: "model/context-replace", Payload: payload}},
+	})
+	c.turnEvents.commitMu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	result.Accepted = true
+	receipt, err := store.Flush(ctx)
+	if err != nil {
+		return result, err
+	}
+	if receipt.DurableSequence < commit.LastSequence() {
+		return result, fmt.Errorf("record session model context: durable sequence %d is before commit %d", receipt.DurableSequence, commit.LastSequence())
+	}
+	result.Durable = true
+	return result, nil
 }
 
 // RecordSessionMessageUpsert records one explicit stable-message mutation.

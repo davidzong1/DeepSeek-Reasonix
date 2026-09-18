@@ -211,7 +211,7 @@ api_key_env = "REASONIX_TEST_KEY"
 	t.Fatalf("ACP session did not load project command from cwd; commands=%v", ctrl.Commands())
 }
 
-func TestACPFactoryClearsEffortOverrideForUnsupportedModel(t *testing.T) {
+func TestACPFactoryRejectsExplicitEffortForUnsupportedModel(t *testing.T) {
 	isolateCLIConfigHome(t)
 	if _, err := config.SetCredential("REASONIX_TEST_KEY", "test-key"); err != nil {
 		t.Fatalf("SetCredential: %v", err)
@@ -257,14 +257,8 @@ effort = "high"
 		Model:          "plain/plain-model",
 		EffortOverride: &high,
 	})
-	if err != nil {
-		t.Fatalf("plain SessionConfigState: %v", err)
-	}
-	if _, ok := findACPConfigOption(state.ConfigOptions, "effort"); ok {
-		t.Fatalf("plain model should not advertise effort option: %+v", state.ConfigOptions)
-	}
-	if state.EffortOverride == nil || *state.EffortOverride != "" {
-		t.Fatalf("plain effort override = %v, want explicit empty override", state.EffortOverride)
+	if err == nil {
+		t.Fatal("explicit unsupported selection was silently cleared")
 	}
 }
 

@@ -250,7 +250,7 @@ func TestPendingCrashDoesNotPersistInstallID(t *testing.T) {
 	}
 }
 
-func TestFlushPendingCrashDeduplicatesSameVersionAndResendsAfterUpgrade(t *testing.T) {
+func TestFlushPendingCrashDeduplicatesEventIDWithoutCollapsingSimilarEvents(t *testing.T) {
 	removeAllPendingCrashes()
 	oldVersion, oldEndpoint := version, crashEndpoint
 	t.Cleanup(func() {
@@ -271,6 +271,7 @@ func TestFlushPendingCrashDeduplicatesSameVersionAndResendsAfterUpgrade(t *testi
 	report.ErrorType = "panic"
 	report.TopFrame = "main.go:12"
 	report.Message = "same crash"
+	report.EventID = "11111111111111111111111111111111"
 	firstQueued := writePendingReport(report, false)
 	secondQueued := writePendingReport(report, false)
 	if !firstQueued || !secondQueued {
@@ -278,17 +279,16 @@ func TestFlushPendingCrashDeduplicatesSameVersionAndResendsAfterUpgrade(t *testi
 	}
 	NewApp().flushPendingCrash()
 	if got := hits.Load(); got != 1 {
-		t.Fatalf("same-version uploads = %d, want 1", got)
+		t.Fatalf("same-event uploads = %d, want 1", got)
 	}
 
-	report.Version = "v10.0.0"
-	report.EventID, report.DedupKey = "", ""
+	report.EventID = "22222222222222222222222222222222"
 	if !writePendingReport(report, false) {
-		t.Fatal("failed to queue upgraded report")
+		t.Fatal("failed to queue distinct similar event")
 	}
 	NewApp().flushPendingCrash()
 	if got := hits.Load(); got != 2 {
-		t.Fatalf("uploads after version upgrade = %d, want 2", got)
+		t.Fatalf("distinct similar-event uploads = %d, want 2", got)
 	}
 	info, err := os.Stat(crashLedgerPath())
 	if err != nil {

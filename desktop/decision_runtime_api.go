@@ -27,6 +27,19 @@ type PromptIdentityView struct {
 	Kind         string `json:"kind"`
 }
 
+type InteractionTargetView struct {
+	TabID             string `json:"tabId"`
+	HostID            string `json:"hostId"`
+	SessionID         string `json:"sessionId"`
+	SessionGeneration uint64 `json:"sessionGeneration"`
+	PromptID          string `json:"promptId"`
+	TurnID            string `json:"turnId"`
+	RuntimeEpoch      string `json:"runtimeEpoch"`
+	Kind              string `json:"kind"`
+}
+
+type RemotePromptTarget = InteractionTargetView
+
 func (a *App) PendingPromptIdentitiesForTab(tabID string) ([]PromptIdentityView, error) {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if ctrl == nil {
@@ -71,6 +84,43 @@ func (a *App) ResolvePromptForTab(tabID, promptID, turnID, runtimeEpoch, kind st
 	}
 	return resolver.ResolvePromptExact(
 		control.PromptIdentity{PromptID: promptID, TurnID: turnID, RuntimeEpoch: runtimeEpoch, Kind: control.PromptKind(kind)},
+		control.PromptAnswer{Questions: questions, Allow: answer.Allow, Session: answer.Session, Persist: answer.Persist, Action: answer.Action, Feedback: answer.Feedback, Content: answer.Content, Generation: answer.Generation, PermissionRevision: answer.PermissionRevision},
+	)
+}
+
+// ResolvePromptForSession fixes the controller and session binding before
+// dispatch. A reusable tab cannot redirect an old card to its new session.
+func (a *App) ResolvePromptForSession(target InteractionTargetView, answer PromptAnswerView) error {
+	if target.TabID == "" || target.SessionID == "" || target.SessionGeneration == 0 ||
+		target.PromptID == "" || target.TurnID == "" || target.Kind == "" {
+		return fmt.Errorf("exact prompt and session identity is required")
+	}
+	if target.HostID != "" && target.HostID != localDesktopHostID {
+		return fmt.Errorf("prompt host binding is stale")
+	}
+	a.mu.RLock()
+	tab := a.tabByIDLocked(target.TabID)
+	if tab == nil || tab.SessionID != target.SessionID || tab.SessionGeneration != target.SessionGeneration {
+		a.mu.RUnlock()
+		return fmt.Errorf("prompt session binding is stale")
+	}
+	ctrl := tab.Ctrl
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return fmt.Errorf("prompt runtime is unavailable")
+	}
+	resolver, ok := ctrl.(interface {
+		ResolvePromptExact(control.PromptIdentity, control.PromptAnswer) error
+	})
+	if !ok {
+		return fmt.Errorf("this runtime cannot resolve exact prompts")
+	}
+	questions := make([]event.AskAnswer, len(answer.Questions))
+	for i, q := range answer.Questions {
+		questions[i] = event.AskAnswer{QuestionID: q.QuestionID, Selected: q.Selected}
+	}
+	return resolver.ResolvePromptExact(
+		control.PromptIdentity{PromptID: target.PromptID, TurnID: target.TurnID, RuntimeEpoch: target.RuntimeEpoch, Kind: control.PromptKind(target.Kind)},
 		control.PromptAnswer{Questions: questions, Allow: answer.Allow, Session: answer.Session, Persist: answer.Persist, Action: answer.Action, Feedback: answer.Feedback, Content: answer.Content, Generation: answer.Generation, PermissionRevision: answer.PermissionRevision},
 	)
 }

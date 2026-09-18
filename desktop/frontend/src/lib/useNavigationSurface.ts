@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { Item } from "./useController";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
+import { noteNavigationFirstPaint, noteNavigationRequested } from "./sessionDiagnostics";
 import {
   beginNavigationSurfaceState,
   createNavigationSurfaceTicket,
@@ -42,6 +43,7 @@ export function useNavigationSurface(target: {
   );
 
   const begin = useCommittedCommand((nextIntent: number) => {
+    noteNavigationRequested(nextIntent);
     recordFrontendDiagnostic("navigation", "navigation.begin", { intent: nextIntent, phase: "begin" });
     const rendered = renderedRef.current;
     flushSync(() => {
@@ -54,7 +56,10 @@ export function useNavigationSurface(target: {
     setSurface((current) => markNavigationTargetMasked(current, completedIntent));
   });
   const settle = useCommittedCommand((completedIntent: number, outcome: "ready" | "degraded" | "failed") => {
-    if (outcome !== "failed") recordFrontendDiagnostic("navigation", "navigation.paint-ready", { intent: completedIntent, outcome });
+    if (outcome !== "failed") {
+      noteNavigationFirstPaint(completedIntent);
+      recordFrontendDiagnostic("navigation", "navigation.paint-ready", { intent: completedIntent, outcome });
+    }
     recordFrontendDiagnostic("navigation", "navigation.terminal", { intent: completedIntent, outcome });
     recordFrontendDiagnostic("navigation", "navigation.settle", {
       intent: completedIntent,

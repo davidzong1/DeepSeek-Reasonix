@@ -407,6 +407,44 @@ func TestModelSettingsRequestRejectsStaleEdit(t *testing.T) {
 	}
 }
 
+func TestModelSettingsRequestReceiptSurvivesRestart(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	oldRef, newRef := configureSwitchableDefaultModels(t)
+	firstApp := NewApp()
+	change := ModelSettingsChange{
+		Kind: "preference", Field: "default", Ref: newRef, RequestID: "restart-receipt",
+		ExpectedFingerprint: firstApp.Settings().ModelSettingsFingerprint,
+	}
+	first := firstApp.ApplyModelSettings(change)
+	if !first.Persisted {
+		t.Fatalf("initial save: %+v", first)
+	}
+
+	restarted := NewApp()
+	receipt := restarted.GetModelSettingsRequest(change.RequestID)
+	if !receipt.Persisted || receipt.Revision != first.Revision {
+		t.Fatalf("restart receipt = %+v, want persisted revision %q", receipt, first.Revision)
+	}
+	before, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := restarted.ApplyModelSettings(change)
+	after, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Persisted || string(before) != string(after) {
+		t.Fatal("restart replay performed another write")
+	}
+
+	change.Ref = oldRef
+	conflict := restarted.ApplyModelSettings(change)
+	if conflict.Persisted || len(conflict.Issues) == 0 || conflict.Issues[0].Code != "request_conflict" {
+		t.Fatalf("request ID conflict = %+v", conflict)
+	}
+}
+
 func TestModelSettingsRunningToolContinuationKeepsOldConnection(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()

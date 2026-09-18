@@ -8,8 +8,14 @@ Reasonix Desktop 的 Electron 窗口、launcher、Go 桌面进程、快捷方式
 
 ## 安装与升级
 
+使用安装根目录的 `Reasonix.exe` 打开桌面端；`reasonix-cli.exe` 是独立的命令行入口。
+新安装和解压到空目录的 ZIP 只提供这个 GUI 入口。已有安装原本存在的
+`reasonix-launcher.exe` 会保留，且不设置强制删除期限，以兼容旧固定项、自定义快捷方式
+和脚本。受控升级会用同一份已验证启动器字节更新两个名字。`versions/` 中的程序，
+包括 Electron 的 `app/Reasonix.exe`，仍是内部组件。
+
 在任何 Electron 窗口显示前，Desktop 会在永久 launcher 存在时，将窗口的重新启动
-命令和图标设为该入口。新建任务栏固定项因此不会依赖版本目录内的 Electron 程序，
+命令和图标优先设为 `Reasonix.exe`，必要时回退到旧 launcher。新建任务栏固定项因此不会依赖版本目录内的 Electron 程序，
 也不会依赖启动时临时传入的服务路径环境变量。
 
 安装器在启动 Desktop 前，为刚创建的准确快捷方式路径设置身份。它调用已安装的
@@ -25,10 +31,12 @@ launcher 维护命令 `--repair-shortcuts <绝对.lnk路径...>`；该命令只�
 仍可修复过期的目标和图标。明确标注 Studio、Tauri 或未知身份的链接，即便名称为
 Reasonix 也会保留原样；其他独立安装不会被修改。
 
-永久入口 `reasonix-launcher.exe` 存在时，指向
+标准入口 `Reasonix.exe` 存在时，指向旧 `reasonix-launcher.exe`、
 `versions/<版本>/reasonix-desktop.exe`、`versions/<版本>/app/Reasonix.exe` 或平铺的 `app/Reasonix.exe`
 的链接会迁回永久入口，之后删除旧版本目录也不会让快捷方式失效。修复保留启动参数、
-描述、窗口显示状态和用户自定义图标；改写目标时，工作目录设为安装根目录。
+描述、窗口显示状态、自定义图标和自定义工作目录；仅在工作目录为空或指向被迁移程序
+的旧目录时，才改为安装根目录。安装器修复已有链接，不通过重建覆盖其属性。
+只有旧 launcher 存在时继续使用这个有效入口，不生成失效链接。
 仍在使用的平铺 Go 安装保留其有效 Go 入口。
 
 无法读取或写入的链接会记录警告，留待后续启动重试；进程不会退回共享旧身份。
@@ -36,6 +44,16 @@ Windows Explorer 可能保留固定项缓存；若链接修复后仍显示为单
 从永久 launcher 启动 Desktop 后重新固定。
 
 ## 共存与回退
+
+签名更新载荷和 `/REASONIXSTAGE=1` 仍包含 `reasonix-launcher.exe`，因为已经安装的
+旧更新器依赖该名称。安装后的布局单独决定：旧更新器可以直接升级，也可能继续生成
+两个入口；新更新器保留已有旧入口，但不会在单入口安装中额外创建它。
+`current.json` schema 1、`versioned-v1` 和签名载荷 schema 均不变。
+
+便携 ZIP 应解压到新目录，或使用应用内更新。手工覆盖解压会保留旧文件，且不提供
+事务安装保障；残留旧 launcher 可能仍是上一版字节，后续受控更新会同步更新。
+若快捷方式或脚本可能引用它，不要为了节省空间自行删除。`current.json` 损坏时，
+应使用完整安装器修复，不要把快捷方式改指向保留的旧版本。
 
 升级通过既有完整发布单元机制同步交付 launcher、Electron 和 Go 二进制。
 回退须恢复完整旧版本。旧 launcher 或旧桌面端可能恢复旧快捷方式身份，再次完整

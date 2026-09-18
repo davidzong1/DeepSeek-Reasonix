@@ -43,7 +43,7 @@ function session(kind = "ask", turnId = "turn-A", requestId = "1"): RuntimeSessi
 }
 async function publish(sessions: RuntimeSession[]) {
   const snapshot: RuntimeProjection = { epoch: "host", revision: ++revision, sessions,
-    topics: [{ scope: "project", workspaceRoot: "/fixture", node: { key: "topic-A", topicId: "topic-A", label: "Conversation A", kind: "session" } }] };
+    topics: [{ scope: "project", workspaceRoot: "/fixture", node: { key: "topic-A", topicId: "topic-A", label: "Conversation A", kind: "session", session: { hostId: "local", sessionId: "session-A" } } }] };
   await act(async () => runtimeStateStore.commit(snapshot));
 }
 try {

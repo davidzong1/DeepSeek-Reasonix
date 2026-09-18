@@ -42,7 +42,7 @@ func TestPlanRefreshesManagedDesktopRegistrationAndDeletesMatchingLegacyAlias(t 
 	}
 	if got.Desired.InstallLocation != `d:\reasonix` ||
 		got.Desired.UninstallString != `"d:\reasonix\uninstall.exe"` ||
-		got.Desired.DisplayIcon != `d:\reasonix\reasonix-launcher.exe` {
+		got.Desired.DisplayIcon != `d:\reasonix\Reasonix.exe` {
 		t.Fatalf("desired registration = %+v", got.Desired)
 	}
 }

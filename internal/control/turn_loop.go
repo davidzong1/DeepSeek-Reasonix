@@ -251,7 +251,7 @@ func (c *Controller) startTurnLocked(parent context.Context, next queuedTurn) (c
 	if c.turns.runtime != nil && !c.turns.runtime.BeginExecution(c.turns.generation, "turn") {
 		return nil, nil, false
 	}
-	ctx, cancel = context.WithCancel(extension.ContextWithRuntimeOwner(parent, c.runtimeOwner))
+	ctx, cancel = context.WithCancel(extension.ContextWithRuntimeOwner(c.withAuthentication(parent), c.runtimeOwner))
 	c.turns.cancel = cancel
 	c.turns.done = make(chan struct{})
 	c.turns.finishingBound.beginIdle()
@@ -357,6 +357,7 @@ func (c *Controller) cancellationGrace() time.Duration {
 }
 
 func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnCompletion) {
+	c.authentication.recordFailure(err, c.ModelRef())
 	c.memory.clearAutoRemember()
 	c.mu.Lock()
 	cancelRequested := c.turns.cancelRequested
@@ -426,6 +427,24 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 			c.turns.finishingBound.endIdle()
 			c.mu.Unlock()
 			c.finalizeControllerClose()
+			c.refreshRuntimeState(event.Event{})
+			return
+		}
+		if authErr := c.authentication.admissionError(); authErr != nil {
+			for _, pending := range c.turns.pending {
+				if pending.goalRound != nil {
+					pending.goalRound.setResult(authErr, false)
+				}
+			}
+			c.turns.pending = nil
+			c.turns.wake = false
+			c.turns.lastToken = c.turns.token
+			c.turns.phase = session.RuntimeIdle
+			c.turns.turnID = ""
+			c.noteExecutionLocked(session.RuntimeIdle, "")
+			c.turns.finishingBound.endIdle()
+			c.mu.Unlock()
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Code: "authentication_not_ready", Text: authErr.Error()})
 			c.refreshRuntimeState(event.Event{})
 			return
 		}

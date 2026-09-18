@@ -1,5 +1,6 @@
 // SessionMeta is one saved session for the history panel.
 export interface SessionMeta {
+  source?: import("../generated/desktopContract.generated").SessionSourceRef;
   path: string;
   sessionId?: string;
   hostId?: string;

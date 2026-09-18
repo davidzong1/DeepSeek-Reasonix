@@ -262,6 +262,9 @@ func remotePendingEventKey(kind string, frame json.RawMessage) string {
 		Ask *struct {
 			ID string `json:"id"`
 		} `json:"ask"`
+		MCPInteraction *struct {
+			ID string `json:"id"`
+		} `json:"mcpInteraction"`
 	}
 	_ = json.Unmarshal(frame, &probe)
 	id := ""
@@ -269,6 +272,8 @@ func remotePendingEventKey(kind string, frame json.RawMessage) string {
 		id = probe.Approval.ID
 	} else if probe.Ask != nil {
 		id = probe.Ask.ID
+	} else if probe.MCPInteraction != nil {
+		id = probe.MCPInteraction.ID
 	}
 	return kind + ":" + strings.TrimSpace(id)
 }
@@ -280,7 +285,7 @@ func (a *App) bufferRemoteTabResumeFrame(tabID string, gen uint64, sessionPath, 
 	}
 	key := ""
 	switch kind {
-	case "approval_request", "ask_request":
+	case "approval_request", "ask_request", "mcp_interaction":
 		key = remotePendingEventKey(kind, frame)
 	case "extension_surface":
 		if remotePendingExtensionForm(frame) {

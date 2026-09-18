@@ -116,7 +116,7 @@ function parseJSON(output, description) {
 }
 
 function readLocalPackage(entry, version, candidateSha) {
-  const pkg = JSON.parse(readFileSync(`${entry.dir}/package.json`, "utf8"));
+  const pkg = entry.manifest ?? JSON.parse(readFileSync(`${entry.dir}/package.json`, "utf8"));
   if (pkg.name !== entry.name || pkg.version !== version) {
     throw new Error(
       `local package identity mismatch: expected ${entry.name}@${version}, got ${pkg.name}@${pkg.version}`,
@@ -230,8 +230,9 @@ function ensurePackage(
 
   log(`publish ${entry.name}@${version} (${stagingTag})`);
   try {
+    const publishTarget = entry.tarball ? [entry.tarball] : [];
     runner(
-      ["publish", "--access", "public", "--provenance", "--tag", stagingTag],
+      ["publish", ...publishTarget, "--access", "public", "--provenance", "--tag", stagingTag],
       { cwd: entry.dir, inherit: true },
     );
   } catch (error) {

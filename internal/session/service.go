@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -93,17 +94,34 @@ type Runtime struct {
 	closeErr  error
 }
 
-func newRuntime(ref SessionRef, session *Session) *Runtime {
-	runtime := &Runtime{ref: ref, epoch: randomID(), session: session, phase: RuntimeIdle}
+func newRuntime(ref SessionRef, session *Session) (*Runtime, error) {
+	runtime, err := initializeRuntime(ref, session)
+	// Logging can perform I/O; release the session lock before emitting.
+	var diagnostic *TranscriptInitializationError
+	if errors.As(err, &diagnostic) {
+		slog.Error("session transcript initialization failed", "diagnostic", diagnostic)
+	}
+	return runtime, err
+}
+
+func initializeRuntime(ref SessionRef, session *Session) (*Runtime, error) {
 	session.mu.Lock()
+	defer session.mu.Unlock()
+	runtime := &Runtime{ref: ref, epoch: randomID(), session: session, phase: RuntimeIdle}
 	baseline := session.recentMessages
 	if len(baseline) == 0 {
 		baseline = session.projection.Messages
 	}
+	totalMessages := len(baseline)
 	if len(baseline) > 96 {
 		baseline = baseline[len(baseline)-96:]
 	}
-	runtime.transcript, _ = transcript.NewProjection(transcript.Identity{SessionID: ref.SessionID, RuntimeEpoch: runtime.epoch}, session.transcriptRows(baseline), session.next-1)
+	projection, err := transcript.NewProjection(transcript.Identity{SessionID: ref.SessionID, RuntimeEpoch: runtime.epoch}, session.transcriptRows(baseline), session.next-1)
+	if err != nil {
+		return nil, &TranscriptInitializationError{sessionID: ref.SessionID, covered: session.next - 1,
+			messageCount: len(baseline), totalMessages: totalMessages, cause: err}
+	}
+	runtime.transcript = projection
 	durable := uint64(0)
 	if session.binding != nil {
 		durable, _, _ = session.binding.progress()
@@ -130,9 +148,8 @@ func newRuntime(ref SessionRef, session *Session) *Runtime {
 	}
 	runtime.transcript.RestoreRuntime(restored, durable)
 	session.transcript = runtime.transcript
-	session.mu.Unlock()
 	runtime.revision.Store(1)
-	return runtime
+	return runtime, nil
 }
 
 func (r *Runtime) Ref() SessionRef { return r.ref }

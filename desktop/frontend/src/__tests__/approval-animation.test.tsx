@@ -108,8 +108,8 @@ async function cleanup(root: Root, dom: JSDOM) {
 
 console.log("\napproval shelf animation");
 
-// A real Web Animations implementation validates easing synchronously. Keep
-// the business action pending until the visual transition finishes.
+// A real Web Animations implementation validates easing synchronously. The
+// decision starts immediately; the transition has no business ownership.
 {
   const dom = installDom();
   const answers: SubmittedAnswer[] = [];
@@ -129,7 +129,7 @@ console.log("\napproval shelf animation");
   await confirmSelectedAction();
 
   eq(easing, "cubic-bezier(0.8, 0, 0.8, 0.28)", "shelf exit passes a valid CSS easing to Element.animate");
-  eq(answers.length, 0, "approval waits for the shelf exit animation");
+  eq(answers.length, 1, "approval submits before the shelf exit animation finishes");
   eq(animations.length, 1, "approval starts one shelf exit animation");
 
   await act(async () => {
@@ -137,7 +137,7 @@ console.log("\napproval shelf animation");
     animations[0].oncancel?.();
     await flushTimers();
   });
-  eq(answers.length, 1, "finish and late cancel submit the approval only once");
+  eq(answers.length, 1, "finish and late cancel do not resubmit the approval");
   eq(JSON.stringify(answers[0]), JSON.stringify([true, false, false]), "finished animation preserves the selected approval");
 
   await cleanup(root, dom);

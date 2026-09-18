@@ -81,6 +81,18 @@ type Operation struct {
 	extra              map[string]json.RawMessage
 }
 
+type PurgeState uint8
+
+const (
+	PurgeAbsent PurgeState = iota
+	PurgePrepared
+	PurgePreparedStale
+	PurgeTombstoned
+	PurgeContentRemoved
+	PurgeCommitted
+	PurgeInvalid
+)
+
 func validLifecycle(value string) bool {
 	return value == Active || value == Archived || value == Deleted
 }
@@ -147,8 +159,12 @@ func (s *Store) SetLifecycle(ctx context.Context, ids []string, lifecycle string
 			if _, ok := sessionOwner(*state, id); !ok {
 				return ErrSessionNotFound
 			}
+			if err := validateLifecycleSupersedesPreparedPurge(*state, id); err != nil {
+				return err
+			}
 		}
 		for _, id := range ids {
+			cancelPreparedPurge(state, id)
 			setLifecycle(state, id, lifecycle)
 			if lifecycle == Active {
 				owner, _ := sessionOwner(*state, id)
@@ -314,6 +330,9 @@ func commitOperation(state *State, id string, visiting map[string]bool) error {
 		}
 	}
 	for _, sessionID := range op.SessionIDs {
+		if err := validateLifecycleSupersedesPreparedPurge(*state, sessionID); err != nil {
+			return err
+		}
 		if state.SessionStates[sessionID].Lifecycle == Deleted {
 			return ErrMutationConflict
 		}
@@ -330,10 +349,17 @@ func commitOperation(state *State, id string, visiting map[string]bool) error {
 				return ErrWorkspaceNotFound
 			}
 			workspace.SessionIDs = insertBefore(workspace.SessionIDs, sessionID, "")
+			// Source adoption replaces the imported source slot below. Publishing
+			// a canonical default first would incorrectly override that choice.
+			if op.Mapping == nil {
+				attachOrganizationSession(&workspace, sessionID, "")
+				mirrorOrganizationOrder(&workspace)
+			}
 			workspace.UpdatedAt = time.Now().UTC()
 			state.Workspaces[workspace.ID] = workspace
 			owner = workspace.ID
 		}
+		cancelPreparedPurge(state, sessionID)
 		setLifecycle(state, sessionID, op.Lifecycle)
 		if op.Lifecycle == Active {
 			workspace := state.Workspaces[owner]
@@ -360,26 +386,131 @@ func commitOperation(state *State, id string, visiting map[string]bool) error {
 	return nil
 }
 
-// BeginPurge leaves a durable tombstone before content removal. It prevents
-// restore or source discovery from resurrecting a partially purged session.
-func (s *Store) BeginPurge(ctx context.Context, id string, expected ...uint64) error {
-	return s.mutate(ctx, func(state *State) error {
+func ClassifyPurge(state State, id string) PurgeState {
+	key := "purge-" + id
+	op, exists := state.PendingOperations[key]
+	if !exists {
+		return PurgeAbsent
+	}
+	status, known := state.SessionStates[id]
+	if !known || op.ID != key || op.Kind != "purge" || op.Lifecycle != Deleted || len(op.SessionIDs) != 1 || op.SessionIDs[0] != id {
+		return PurgeInvalid
+	}
+	switch op.Phase {
+	case "prepared":
+		if status.Lifecycle == Deleted {
+			return PurgeInvalid
+		}
+		if status.Lifecycle != Archived || status.Generation > op.ExpectedGeneration {
+			return PurgePreparedStale
+		}
+		return PurgePrepared
+	case "tombstoned":
+		if status.Lifecycle == Deleted {
+			return PurgeTombstoned
+		}
+	case "content_removed":
+		if status.Lifecycle == Deleted {
+			return PurgeContentRemoved
+		}
+	case "committed":
+		if status.Lifecycle == Deleted {
+			return PurgeCommitted
+		}
+	}
+	return PurgeInvalid
+}
+
+func validateLifecycleSupersedesPreparedPurge(state State, id string) error {
+	switch ClassifyPurge(state, id) {
+	case PurgeAbsent, PurgePrepared, PurgePreparedStale:
+		return nil
+	default:
+		return ErrMutationConflict
+	}
+}
+
+func cancelPreparedPurge(state *State, id string) {
+	key := "purge-" + id
+	if op, exists := state.PendingOperations[key]; exists && op.Kind == "purge" && op.Phase == "prepared" {
+		delete(state.PendingOperations, key)
+	}
+}
+
+func samePurgeIdentity(left, right Operation) bool {
+	return left.ID == right.ID && left.Kind == "purge" && right.Kind == "purge" && left.Lifecycle == right.Lifecycle &&
+		left.ExpectedGeneration == right.ExpectedGeneration && slices.Equal(left.SessionIDs, right.SessionIDs)
+}
+
+// BeginPurge atomically validates the archived generation, publishes the
+// deletion tombstone and records the resumable purge operation.
+func (s *Store) BeginPurge(ctx context.Context, id string, expected uint64) error {
+	return s.beginOrResumePurge(ctx, id, expected, nil)
+}
+
+// ResumePurge continues only the observed operation. It cannot recreate a
+// deletion intent after a restore superseded that operation.
+func (s *Store) ResumePurge(ctx context.Context, id string, observed Operation) error {
+	return s.beginOrResumePurge(ctx, id, observed.ExpectedGeneration, &observed)
+}
+
+// ResumePurgeForRequest keeps both the request snapshot and the observed
+// transaction identity. Neither may be refreshed while waiting for locks.
+func (s *Store) ResumePurgeForRequest(ctx context.Context, id string, expected uint64, observed Operation) error {
+	return s.beginOrResumePurge(ctx, id, expected, &observed)
+}
+
+func (s *Store) beginOrResumePurge(ctx context.Context, id string, expected uint64, observed *Operation) error {
+	stale := false
+	err := s.mutate(ctx, func(state *State) error {
 		key := "purge-" + id
-		if op, exists := state.PendingOperations[key]; exists {
-			if op.Kind != "purge" {
+		current, exists := state.PendingOperations[key]
+		if observed != nil && (!exists || !samePurgeIdentity(current, *observed)) {
+			return fmt.Errorf("%w: observed purge was removed or replaced", ErrMutationConflict)
+		}
+		switch ClassifyPurge(*state, id) {
+		case PurgePreparedStale:
+			delete(state.PendingOperations, key)
+			stale = true
+			return nil
+		case PurgePrepared:
+			if observed == nil {
 				return ErrMutationConflict
 			}
+			status := state.SessionStates[id]
+			if status.Generation > expected {
+				return fmt.Errorf("%w: purge generation %d exceeds request %d", ErrMutationConflict, status.Generation, expected)
+			}
+			setLifecycle(state, id, Deleted)
+			current.Phase = "tombstoned"
+			state.PendingOperations[key] = current
 			return nil
-		}
-		if state.SessionStates[id].Lifecycle != Archived {
+		case PurgeTombstoned, PurgeContentRemoved, PurgeCommitted:
+			return nil
+		case PurgeInvalid:
+			return fmt.Errorf("%w: inconsistent purge state", ErrMutationConflict)
+		case PurgeAbsent:
+			if observed != nil {
+				return ErrMutationConflict
+			}
+			status, known := state.SessionStates[id]
+			if !known || status.Lifecycle != Archived || status.Generation > expected {
+				return ErrMutationConflict
+			}
+			state.PendingOperations[key] = Operation{ID: key, Kind: "purge", Phase: "tombstoned", Lifecycle: Deleted, SessionIDs: []string{id}, ExpectedGeneration: status.Generation}
+			setLifecycle(state, id, Deleted)
+			return nil
+		default:
 			return ErrMutationConflict
 		}
-		if len(expected) > 0 && state.SessionStates[id].Generation > expected[0] {
-			return ErrMutationConflict
-		}
-		state.PendingOperations[key] = Operation{ID: key, Kind: "purge", Phase: "prepared", Lifecycle: Deleted, SessionIDs: []string{id}, ExpectedGeneration: state.Generation}
-		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if stale {
+		return fmt.Errorf("%w: stale purge preparation removed", ErrMutationConflict)
+	}
+	return nil
 }
 
 func (s *Store) AdvancePurge(ctx context.Context, id, phase string) error {
@@ -389,15 +520,13 @@ func (s *Store) AdvancePurge(ctx context.Context, id, phase string) error {
 		if !ok || op.Kind != "purge" {
 			return ErrMutationConflict
 		}
+		if ClassifyPurge(*state, id) == PurgeInvalid {
+			return ErrMutationConflict
+		}
 		if op.Phase == "committed" || op.Phase == phase || op.Phase == "content_removed" {
 			return nil
 		}
-		if phase == "tombstoned" && op.Phase == "prepared" {
-			if state.SessionStates[id].Lifecycle != Archived || state.SessionStates[id].Generation > op.ExpectedGeneration {
-				return ErrMutationConflict
-			}
-			setLifecycle(state, id, Deleted)
-		} else if phase != "content_removed" || op.Phase != "tombstoned" {
+		if phase != "content_removed" || op.Phase != "tombstoned" {
 			return ErrMutationConflict
 		}
 		op.Phase = phase
@@ -409,14 +538,12 @@ func (s *Store) AdvancePurge(ctx context.Context, id, phase string) error {
 func (s *Store) CompletePurge(ctx context.Context, id string) error {
 	return s.mutate(ctx, func(state *State) error {
 		key := "purge-" + id
-		op, ok := state.PendingOperations[key]
-		if !ok || op.Kind != "purge" || state.SessionStates[id].Lifecycle != Deleted {
-			return ErrMutationConflict
-		}
-		if op.Phase == "committed" {
+		op := state.PendingOperations[key]
+		switch ClassifyPurge(*state, id) {
+		case PurgeCommitted:
 			return nil
-		}
-		if op.Phase != "content_removed" {
+		case PurgeContentRemoved:
+		default:
 			return ErrMutationConflict
 		}
 		for key, workspace := range state.Workspaces {
@@ -439,6 +566,7 @@ func (s *Store) RecordSource(ctx context.Context, mapping SourceMapping, present
 			return nil
 		}
 		state.SourceMappings[mapping.SourceKey] = mapping
+		adoptOrganizationSource(state, mapping)
 		if _, exists := state.Presentation[mapping.SessionID]; !exists {
 			state.Presentation[mapping.SessionID] = presentation
 		}
@@ -613,6 +741,7 @@ func commitSourceMapping(state *State, mapping *SourceMapping) error {
 			return ErrMutationConflict
 		}
 		state.SourceMappings[mapping.SourceKey] = mapping
+		adoptOrganizationSource(state, mapping)
 	}
 	return nil
 }

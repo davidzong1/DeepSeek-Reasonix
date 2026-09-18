@@ -1,0 +1,112 @@
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'test-windows-upgrade-startup.ps1')
+. (Join-Path $PSScriptRoot 'windows-upgrade-ui-evidence.ps1')
+
+function Assert-True($value, [string]$message) { if (-not $value) { throw $message } }
+function Assert-Throws([scriptblock]$action, [string]$message) {
+  $caught = $false
+  try { & $action } catch { $caught = $true }
+  Assert-True $caught $message
+}
+
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('reasonix-upgrade-contract-' + [guid]::NewGuid().ToString('N'))
+$savedHome = $HOME
+try {
+  $release = Join-Path $testRoot 'install/releases/test/app/resources'
+  New-Item -ItemType Directory -Path $release -Force | Out-Null
+  $application = Join-Path $testRoot 'install/Reasonix.exe'
+  $builder = Join-Path $testRoot 'fixture.exe'
+  Set-Content -LiteralPath $application -Value 'mock launcher'
+  Set-Content -LiteralPath $builder -Value 'mock builder'
+  $version = 'v1.38.9-5'
+  $commit = '0123456789abcdef0123456789abcdef01234567'
+  @{activeVersion=$version; activeDir='releases/test'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $testRoot 'install/current.json')
+  $buildPath = Join-Path $release 'build.json'
+  @{version=$version; commit=$commit} | ConvertTo-Json | Set-Content -LiteralPath $buildPath
+  $script:calls = [Collections.Generic.List[string]]::new()
+  $script:failPhase = ''
+  # Only replace native process boundaries; run the real evidence orchestration.
+  function Invoke-UpgradeFixture([string]$builder, [string[]]$arguments) {
+    $mode = $arguments[1]
+    $fixtureHome = $arguments[3]
+    $report = $arguments[5]
+    Assert-True ($fixtureHome -ne $HOME -and $fixtureHome.Contains('home # %20 中文')) 'Fixture must use a disposable home.'
+    if ($mode -eq 'create') {
+      $script:calls.Add('create')
+      @{visibleText='assistant-only marker'} | ConvertTo-Json | Set-Content -LiteralPath $report
+    } else {
+      $phase = $arguments[7]
+      $script:calls.Add("verify-$phase")
+      if ($script:failPhase -eq $phase) { throw 'Injected verification failure' }
+    }
+  }
+  function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence) {
+    Assert-True ($text -eq 'assistant-only marker') 'Startup must require the assistant marker.'
+    $script:calls.Add('startup-' + (Split-Path $evidence -Leaf))
+  }
+  $evidence = Join-Path $testRoot 'success'
+  Invoke-WindowsUpgradeAcceptance $application $builder $version $evidence
+  $result = Get-Content -LiteralPath (Join-Path $evidence 'result.json') -Raw | ConvertFrom-Json
+  Assert-True ($HOME -eq $savedHome) 'Acceptance changed the PowerShell home.'
+  Assert-True ($result.sourceSha -eq $commit) 'Evidence must read build.json.commit.'
+  Assert-True ($result.applicationSha256 -eq (Get-FileHash -Algorithm SHA256 -LiteralPath $application).Hash) 'Evidence must hash the tested application.'
+  Assert-True (($script:calls -join ',') -eq 'create,startup-first,verify-first,startup-restart,verify-restart') 'Upgrade and restart must both be checked in order.'
+
+  foreach ($invalidCommit in @('', 'unknown', '0123456')) {
+    @{version=$version; commit=$invalidCommit; sourceSha=$commit} | ConvertTo-Json | Set-Content -LiteralPath $buildPath
+    $badEvidence = Join-Path $testRoot ('invalid-' + [guid]::NewGuid().ToString('N'))
+    Assert-Throws { Invoke-WindowsUpgradeAcceptance $application $builder $version $badEvidence } 'Missing/invalid commit must fail closed.'
+    Assert-True (-not (Test-Path -LiteralPath $badEvidence)) 'Invalid package must not get acceptance evidence.'
+  }
+  @{version=$version; commit=$commit} | ConvertTo-Json | Set-Content -LiteralPath $buildPath
+  foreach ($phase in @('first', 'restart')) {
+    $script:failPhase = $phase
+    $badEvidence = Join-Path $testRoot "failure-$phase"
+    Assert-Throws { Invoke-WindowsUpgradeAcceptance $application $builder $version $badEvidence } 'Data verification failure must propagate.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $badEvidence 'result.json'))) 'Failed verification cannot publish a pass.'
+  }
+
+  # Model the native tree enumeration boundary. Selection and visibility checks
+  # below use the same function as packaged Windows acceptance.
+  function Get-UpgradeUIDescendants($element) {
+    foreach ($child in $element.Children) { $child; Get-UpgradeUIDescendants $child }
+  }
+  function New-UIElement([string]$name, [string]$id='', [bool]$offscreen=$false, [object[]]$children=@()) {
+    return [pscustomobject]@{
+      Current=[pscustomobject]@{Name=$name; AutomationId=$id; IsOffscreen=$offscreen; BoundingRectangle=[pscustomobject]@{Width=200; Height=20}}
+      Children=$children
+    }
+  }
+  $marker = 'assistant-only marker'
+  $body = New-UIElement $marker
+  $transcript = New-UIElement '' 'reasonix-chat-transcript-upgrade-tab' $false @($body)
+  $sidebar = New-UIElement $marker 'sidebar-topic'
+  $root = New-UIElement '' '' $false @($sidebar)
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'A matching sidebar title must not pass.'
+  $root.Children = @($sidebar, $transcript)
+  Assert-True (Test-VisibleUpgradeHistory $root $marker) 'Visible transcript assistant body should pass.'
+  $failure = New-UIElement 'Failed to load conversation history. Previous content was kept when available — retry to try again.'
+  $transcript.Children = @($body, $failure)
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Visible history with an obsolete failure notice must not pass.'
+  $transcript.Children = @($body)
+  $recovery = New-UIElement 'Loading history' 'reasonix-session-recovery-test'
+  $root.Children = @($sidebar, $transcript, $recovery)
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'History behind an unresolved recovery banner must not pass.'
+  $recovery.Current.IsOffscreen = $true
+  Assert-True (Test-VisibleUpgradeHistory $root $marker) 'An offscreen recovery surface does not block the visible session.'
+  $root.Children = @($sidebar, $transcript)
+  $body.Current.IsOffscreen = $true
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Offscreen history must not pass.'
+  $body.Current.IsOffscreen = $false
+  $transcript.Current.IsOffscreen = $true
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Hidden transcript must not pass.'
+  $transcript.Current.IsOffscreen = $false
+  $body.Current.BoundingRectangle.Width = 0
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Zero-size history must not pass.'
+  $body.Current.BoundingRectangle.Width = 200
+  $body.Current.Name = 'unrelated body'
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Matching text outside the transcript must not pass.'
+  Write-Host 'Windows upgrade orchestration and UI evidence contracts passed (mocked native boundaries).'
+} finally {
+  Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+}

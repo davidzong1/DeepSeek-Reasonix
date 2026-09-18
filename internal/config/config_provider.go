@@ -87,7 +87,11 @@ type ProviderEntry struct {
 	SupportedEfforts []string `toml:"supported_efforts"`
 	// DefaultEffort is the /effort level used when the user picks "auto" or
 	// has not set Effort. Ignored for empty SupportedEfforts or fixed Kimi K3.
-	DefaultEffort string `toml:"default_effort"`
+	DefaultEffort              string `toml:"default_effort"`
+	reasoningAutomatic         bool   // runtime-only vocabulary provenance; never persisted
+	reasoningProtocolAutomatic bool
+	reasoningDefaultAutomatic  bool
+	ReasoningMetadataUnknown   bool `toml:"-" json:"-"` // resolver-backed metadata only
 	// ModelOverrides customizes capability metadata after ResolveModel picks
 	// a concrete model: use it when a gateway exposes mixed reasoning or
 	// vision models under one base_url/key.
@@ -99,20 +103,6 @@ type ProviderEntry struct {
 	// CacheTTLMinutes overrides the vendor-default prefix-cache retention used by
 	// cold-resume prune. Zero uses the vendor default (DeepSeek/unknown 24h, DashScope/Anthropic 5m).
 	CacheTTLMinutes int `toml:"cache_ttl_minutes"`
-}
-
-type ProviderModelOverride struct {
-	ReasoningProtocol string   `toml:"reasoning_protocol"`
-	SupportedEfforts  []string `toml:"supported_efforts"`
-	DefaultEffort     string   `toml:"default_effort"`
-	Vision            *bool    `toml:"vision"`
-	// ContextWindow overrides the provider-wide context budget for this model.
-	// Zero inherits ProviderEntry.ContextWindow so existing configurations keep
-	// their current compaction behavior.
-	ContextWindow int `toml:"context_window"`
-	// MaxOutputTokens overrides the provider-wide output budget. Zero inherits;
-	// positive values set a cap and negative values omit optional wire limits.
-	MaxOutputTokens int `toml:"max_output_tokens"`
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,
@@ -242,12 +232,15 @@ func (e *ProviderEntry) applyModelOverride() {
 		return
 	}
 	if ov.ReasoningProtocol != "" {
+		e.reasoningProtocolAutomatic = false
 		e.ReasoningProtocol = ov.ReasoningProtocol
 	}
 	if ov.SupportedEfforts != nil {
+		e.reasoningAutomatic = false
 		e.SupportedEfforts = append([]string(nil), ov.SupportedEfforts...)
 	}
 	if ov.DefaultEffort != "" || ov.SupportedEfforts != nil {
+		e.reasoningDefaultAutomatic = false
 		e.DefaultEffort = ov.DefaultEffort
 	}
 	if ov.Vision != nil {
@@ -267,7 +260,7 @@ func (e *ProviderEntry) modelOverrideForModel(model string) (ProviderModelOverri
 		return ProviderModelOverride{}, false
 	}
 	if ov, ok := e.ModelOverrides[model]; ok {
-		return ov, true
+		return explicitModelReasoning(ov), true
 	}
 	return ProviderModelOverride{}, false
 }

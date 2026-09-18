@@ -123,6 +123,7 @@ function backendNoticeKey(msg: string): DictKey | "" {
     case "Some plan-mode tool settings were ignored.": return "notice.planModeToolSettingsIgnored";
     case "Some plan-mode command settings were ignored.": return "notice.planModeCommandSettingsIgnored";
     case "Config migration did not complete.": return "notice.configMigrationIncomplete";
+    case "Provider connection settings were repaired.": return "notice.providerConnectionRepaired";
     case "Selected model is missing its API key.": return "notice.modelMissingApiKey";
     case "An MCP server failed to start.": return "notice.mcpServerFailed";
     case "Some MCP servers failed to start; run /mcp for details.": return "notice.mcpServersFailed";

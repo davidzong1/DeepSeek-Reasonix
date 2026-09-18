@@ -5,6 +5,7 @@ import "reasonix/internal/provider"
 // ResolvedReasoningView is additive UI metadata, resolved by the same adapter
 // contract as boot validation. Empty Effective means the server chooses.
 type ResolvedReasoningView struct {
+	State     string                     `json:"state,omitempty"`
 	APIFormat string                     `json:"apiFormat"`
 	Protocol  string                     `json:"protocol"`
 	Selected  string                     `json:"selected"`
@@ -21,6 +22,7 @@ func ResolveReasoningView(e *ProviderEntry) *ResolvedReasoningView {
 	cap := ReasoningCapabilityForEntry(e)
 	effort := EffectiveEffort(e)
 	out := &ResolvedReasoningView{APIFormat: e.Kind, Protocol: ReasoningProtocolForEntry(e), Selected: EffortDisplay(e), Effective: effort, Default: cap.Default, Options: cap.Options}
+	out.State = cap.State()
 	if err := cap.Validate(e.Model, effort); err != nil {
 		out.Error = err.Error()
 	}

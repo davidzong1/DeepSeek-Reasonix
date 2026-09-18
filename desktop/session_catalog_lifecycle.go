@@ -15,7 +15,13 @@ import (
 	"reasonix/internal/taskcatalog"
 )
 
-func (a *App) runSessionCatalog(ctx context.Context) {
+func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan struct{}) {
+	initialReconcileFinished := false
+	defer func() {
+		if !initialReconcileFinished {
+			close(initialReconcileDone)
+		}
+	}()
 	path := sessioncatalog.DefaultPath()
 	freshGeneration := false
 	if strings.TrimSpace(path) != "" {
@@ -77,6 +83,8 @@ func (a *App) runSessionCatalog(ctx context.Context) {
 		})
 	}
 	_ = reconcileGroup.Wait()
+	close(initialReconcileDone)
+	initialReconcileFinished = true
 	if freshGeneration {
 		catalog.MarkRepairReason("generation_upgrade")
 	}

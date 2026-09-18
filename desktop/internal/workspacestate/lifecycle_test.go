@@ -78,6 +78,227 @@ func TestSessionTopicSurvivesReopenWithoutOverwritingPresentation(t *testing.T) 
 	}
 }
 
+func TestPurgeTombstoneAndRestoreAreOrderedByDurableCommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	first, second := NewStore(path), NewStore(path)
+	ctx := t.Context()
+	if err := first.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.AttachSession(ctx, "", GlobalWorkspaceID, "victim", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := first.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.BeginPurge(ctx, "victim", state.Generation); err != nil {
+		t.Fatal(err)
+	}
+	state, err = second.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.SessionStates["victim"].Lifecycle != Deleted || ClassifyPurge(state, "victim") != PurgeTombstoned {
+		t.Fatalf("purge commit was not atomic: lifecycle=%+v purge=%v", state.SessionStates["victim"], ClassifyPurge(state, "victim"))
+	}
+	if err := second.RestoreSession(ctx, "victim"); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("restore after tombstone = %v, want mutation conflict", err)
+	}
+}
+
+func TestRestoreClearsLegacyPreparedPurgeBeforeRearchive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	first, second := NewStore(path), NewStore(path)
+	ctx := t.Context()
+	if err := first.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.AttachSession(ctx, "", GlobalWorkspaceID, "victim", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	var legacy Operation
+	if err := first.mutate(ctx, func(state *State) error {
+		status := state.SessionStates["victim"]
+		legacy = Operation{ID: "purge-victim", Kind: "purge", Phase: "prepared", Lifecycle: Deleted, SessionIDs: []string{"victim"}, ExpectedGeneration: status.Generation}
+		state.PendingOperations[legacy.ID] = legacy
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.RestoreSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := first.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.SessionStates["victim"].Lifecycle != Active || ClassifyPurge(state, "victim") != PurgeAbsent {
+		t.Fatalf("restore did not supersede prepared purge: lifecycle=%+v purge=%v", state.SessionStates["victim"], ClassifyPurge(state, "victim"))
+	}
+	if err := first.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = first.Load(ctx)
+	if err := first.BeginPurge(ctx, "victim", state.Generation); err != nil {
+		t.Fatalf("new explicit purge: %v", err)
+	}
+	if err := second.ResumePurge(ctx, "victim", legacy); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("old replay replaced new purge: %v", err)
+	}
+	state, _ = first.Load(ctx)
+	if ClassifyPurge(state, "victim") != PurgeTombstoned {
+		t.Fatalf("new purge changed by old replay: %+v", state.PendingOperations["purge-victim"])
+	}
+}
+
+func TestOnlyObservedReplayCanAdvanceLegacyPreparedPurge(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx := t.Context()
+	if err := store.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AttachSession(ctx, "", GlobalWorkspaceID, "victim", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	var legacy Operation
+	if err := store.mutate(ctx, func(state *State) error {
+		status := state.SessionStates["victim"]
+		legacy = Operation{ID: "purge-victim", Kind: "purge", Phase: "prepared", Lifecycle: Deleted, SessionIDs: []string{"victim"}, ExpectedGeneration: status.Generation}
+		state.PendingOperations[legacy.ID] = legacy
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginPurge(ctx, "victim", state.Generation); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("new request adopted legacy prepare: %v", err)
+	}
+	if err := store.ResumePurge(ctx, "victim", legacy); err != nil {
+		t.Fatalf("observed replay did not advance prepare: %v", err)
+	}
+	state, err = store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ClassifyPurge(state, "victim") != PurgeTombstoned || state.SessionStates["victim"].Lifecycle != Deleted {
+		t.Fatalf("legacy replay was not atomically tombstoned: %+v", state)
+	}
+}
+
+func TestInvalidPreparedDeletedPurgePreservesEvidence(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx := t.Context()
+	if err := store.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AttachSession(ctx, "", GlobalWorkspaceID, "victim", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	var malformed Operation
+	if err := store.mutate(ctx, func(state *State) error {
+		status := state.SessionStates["victim"]
+		status.Lifecycle = Deleted
+		state.SessionStates["victim"] = status
+		malformed = Operation{ID: "purge-victim", Kind: "purge", Phase: "prepared", Lifecycle: Deleted, SessionIDs: []string{"victim"}, ExpectedGeneration: status.Generation}
+		state.PendingOperations[malformed.ID] = malformed
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ClassifyPurge(state, "victim") != PurgeInvalid {
+		t.Fatalf("malformed purge classification = %v", ClassifyPurge(state, "victim"))
+	}
+	if err := store.ResumePurge(ctx, "victim", malformed); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("malformed replay = %v, want conflict", err)
+	}
+	state, err = store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := state.PendingOperations[malformed.ID]; !exists {
+		t.Fatal("malformed purge evidence was removed")
+	}
+}
+
+func TestPurgeIgnoresUnrelatedSessionGeneration(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx := t.Context()
+	if err := store.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"victim", "other"} {
+		if err := store.AttachSession(ctx, "", GlobalWorkspaceID, id, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	observed, _ := store.Load(ctx)
+	if err := store.ArchiveSession(ctx, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginPurge(ctx, "victim", observed.Generation); err != nil {
+		t.Fatalf("unrelated lifecycle change blocked purge: %v", err)
+	}
+}
+
+func TestRestoreOperationCommitClearsLegacyPreparedPurge(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx := t.Context()
+	if err := store.EnsureWorkspace(ctx, Workspace{ID: GlobalWorkspaceID, Visible: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AttachSession(ctx, "", GlobalWorkspaceID, "victim", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ArchiveSession(ctx, "victim"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(ctx, func(state *State) error {
+		status := state.SessionStates["victim"]
+		state.PendingOperations["purge-victim"] = Operation{ID: "purge-victim", Kind: "purge", Phase: "prepared", Lifecycle: Deleted, SessionIDs: []string{"victim"}, ExpectedGeneration: status.Generation}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := store.Load(ctx)
+	op := Operation{ID: "restore_victim", Kind: "restore", Lifecycle: Active, WorkspaceID: GlobalWorkspaceID, SessionIDs: []string{"victim"}, ExpectedGeneration: state.Generation}
+	if err := store.BeginOperation(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PrepareOperationContent(ctx, op.ID, op.SessionIDs, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitOperation(ctx, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = store.Load(ctx)
+	if state.SessionStates["victim"].Lifecycle != Active || ClassifyPurge(state, "victim") != PurgeAbsent {
+		t.Fatalf("restore commit left prepared purge: %+v", state)
+	}
+}
+
 func TestV2UpgradePreservesV1EvidenceAndUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workspace-state-v1.json")
 	original := []byte(`{"version":1,"generation":7,"workspaceIds":["global"],"workspaces":{"global":{"id":"global","root":"/global","title":"Mine","visible":false,"sessionIds":["old"],"future":{"nested":42}}},"archivedSessionIds":["old"],"pendingCreates":{"reserved":{"operationId":"op","workspaceId":"global","sessionId":"reserved","future":true}},"futureRoot":{"keep":true}}`)
@@ -89,7 +310,7 @@ func TestV2UpgradePreservesV1EvidenceAndUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Version != 2 || state.SessionStates["old"].Lifecycle != Archived {
+	if state.Version != SchemaVersion || state.SessionStates["old"].Lifecycle != Archived {
 		t.Fatalf("upgrade: %+v", state)
 	}
 	unchanged, _ := os.ReadFile(path)

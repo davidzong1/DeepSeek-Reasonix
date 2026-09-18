@@ -54,7 +54,7 @@ func TestTitleMessagesReadAuthoredHistoryAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestSetTitleIfUnchangedIsAtomicWithManualTitleCommit(t *testing.T) {
+func TestSetTitleIfSequenceIsAtomicWithManualTitleCommit(t *testing.T) {
 	service, err := NewService("local", NewFilesystemPersistence(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestSetTitleIfUnchangedIsAtomicWithManualTitleCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := ""
+	expected := uint64(0)
 	prepared, err := runtime.Session().PrepareBatchContext(t.Context(), "delayed-title", Batch{Events: []Event{{Kind: "session/title", Payload: []byte(`{"title":"stale AI title"}`)}}})
 	if err != nil {
 		t.Fatal(err)
@@ -88,13 +88,49 @@ func TestSetTitleIfUnchangedIsAtomicWithManualTitleCommit(t *testing.T) {
 	if err := service.Close(t.Context(), runtime.Ref()); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.SetTitleIfUnchanged(t.Context(), runtime.Ref(), "", "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
+	if err := service.SetTitleIfSequence(t.Context(), runtime.Ref(), 0, "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
 		t.Fatalf("cold stale title = %v", err)
 	}
-	if err := service.SetTitleIfUnchanged(t.Context(), runtime.Ref(), "manual title", "new AI title"); err != nil {
+	info, err := service.Query().Stat(t.Context(), runtime.Ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetTitleIfSequence(t.Context(), runtime.Ref(), info.TitleSequence, "new AI title"); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := service.Query().Stat(t.Context(), runtime.Ref()); err != nil || info.Title != "new AI title" {
 		t.Fatalf("persisted title = %+v, %v", info, err)
+	}
+}
+
+func TestSetTitleIfSequenceRejectsABAAndSameValueManualSave(t *testing.T) {
+	service, err := NewService("local", NewFilesystemPersistence(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	runtime, err := service.Create(t.Context(), CreateOptions{SessionID: "title-aba"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetTitle(t.Context(), runtime.Ref(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	original := runtime.Session().Snapshot().Projection.TitleSequence
+	if err := service.SetTitle(t.Context(), runtime.Ref(), "B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetTitle(t.Context(), runtime.Ref(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetTitleIfSequence(t.Context(), runtime.Ref(), original, "stale AI"); !errors.Is(err, ErrSessionTitleChanged) {
+		t.Fatalf("ABA title commit = %v", err)
+	}
+	current := runtime.Session().Snapshot().Projection.TitleSequence
+	if err := service.SetTitle(t.Context(), runtime.Ref(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetTitleIfSequence(t.Context(), runtime.Ref(), current, "stale same-value AI"); !errors.Is(err, ErrSessionTitleChanged) {
+		t.Fatalf("same-value title commit = %v", err)
 	}
 }

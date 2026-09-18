@@ -18,6 +18,7 @@ export function recordBytes(m: HistoryMessage): number {
   if (m.completionReceipt) chars += JSON.stringify(m.completionReceipt).length;
   if (m.completionSummary) chars += JSON.stringify(m.completionSummary).length;
   for (const tc of m.toolCalls ?? []) {
+    if (tc.resultObservation) chars += JSON.stringify(tc.resultObservation).length;
     chars +=
       (tc.arguments?.length ?? 0) +
       (tc.subject?.length ?? 0) +

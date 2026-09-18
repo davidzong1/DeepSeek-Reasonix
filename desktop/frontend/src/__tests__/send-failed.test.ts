@@ -8,6 +8,7 @@ import { continueDelivery } from "../lib/deliveryContinue";
 import type { WireEvent } from "../lib/types";
 import { submitPlanDecision, type SessionActionPorts } from "../app-runtime/sessionActionOwner";
 import { createSessionSurfaceFence } from "../app-runtime/sessionTarget";
+import { sessionIdentityStableKey } from "../lib/sessionIdentity";
 
 let passed = 0;
 let failed = 0;
@@ -52,20 +53,20 @@ eq(acceptsRuntimeEventEpoch(undefined, "e1"), true, "first runtime epoch can est
 eq(acceptsRuntimeEventEpoch("e2", undefined), true, "legacy events remain compatible");
 
 const sent = reducer({ ...initialState }, { type: "user", text: "hello", seq: 0, submissionId: "send-0" });
-eq(sent.items.length, 1, "submit appends the user bubble immediately");
-eq(sent.items[0].kind === "user" && sent.items[0].text, "hello", "bubble carries the submitted text");
+eq(sent.items.length, 0, "submit keeps the optimistic bubble out of durable transcript items");
+eq(sent.localSubmissions["send-0"]?.text, "hello", "local bubble carries the submitted text");
 eq(sent.running, true, "submit marks the turn running");
 eq(sent.pendingUser, "hello", "submit tracks the optimistic bubble");
 
 const hiddenSubmit = reducer({ ...initialState }, { type: "user", text: "display prompt", submitText: "hidden context\ndisplay prompt", seq: 0, submissionId: "hidden-0" });
 eq(
-  hiddenSubmit.items[0].kind === "user" && hiddenSubmit.items[0].submitText,
+  hiddenSubmit.localSubmissions["hidden-0"]?.submitText,
   "hidden context\ndisplay prompt",
   "optimistic user bubble preserves submit-only context",
 );
 
 const confirmed = reducer(sent, { type: "event", e: { kind: "turn_done", submissionId: "send-0" } as WireEvent });
-eq(confirmed.items.filter((it) => it.kind === "user").length, 1, "matching TurnDone confirms without duplicating");
+eq(confirmed.localSubmissions["send-0"]?.status, "accepted", "matching TurnDone confirms the local bubble without duplicating");
 eq(confirmed.pendingUser, undefined, "matching submission id clears the pending marker");
 
 const memoryCitationMessage = {
@@ -74,7 +75,8 @@ const memoryCitationMessage = {
 } as WireEvent;
 const started = reducer(sent, { type: "event", e: { kind: "turn_started" } as WireEvent });
 const citationOnlyFinal = reducer(started, { type: "event", e: memoryCitationMessage });
-eq(citationOnlyFinal.items.length, 1, "memory citations alone do not leave an empty assistant bubble");
+eq(citationOnlyFinal.items.length, 0, "memory citations alone do not add durable transcript rows");
+eq(citationOnlyFinal.localSubmissionOrder.length, 1, "memory citations leave the local user echo visible");
 eq(citationOnlyFinal.items.some((it) => it.kind === "assistant"), false, "memory citations alone stay hidden from the transcript");
 const textThenCitationFinal = reducer(reducer(started, { type: "event", e: { kind: "text", text: "done" } as WireEvent }), { type: "event", e: memoryCitationMessage });
 const citedAssistant = textThenCitationFinal.items.find((it) => it.kind === "assistant");
@@ -82,15 +84,18 @@ eq(citedAssistant?.kind === "assistant" && citedAssistant.text, "done", "memory 
 eq(citedAssistant?.kind === "assistant" && citedAssistant.memoryCitations?.length, 1, "memory citations attach to real assistant content");
 
 const failedState = reducer(sent, { type: "send_failed", submissionId: "send-0", error: "Send failed: bridge unavailable" });
-const failedBubble = failedState.items.find((it) => it.kind === "user");
-eq(failedBubble?.kind === "user" && failedBubble.failed, true, "send_failed marks the bubble failed");
+const failedBubble = failedState.localSubmissions["send-0"];
+eq(failedBubble?.status, "failed", "send_failed marks the bubble failed");
 const notice = failedState.items[failedState.items.length - 1];
 eq(notice.kind, "notice", "send_failed appends a notice");
 eq(notice.kind === "notice" && notice.level, "warn", "the notice is a warning");
 eq(failedState.running, false, "send_failed stops the running indicator");
 eq(failedState.pendingUser, undefined, "send_failed clears the pending marker");
 
-const waitingAsk = reducer({ ...initialState }, {
+const promptMeta = { label: "", ready: true, eventChannel: "agent:event", cwd: "", session: { hostId: "local", sessionId: "session-a" }, sessionGeneration: 1 };
+const askTarget = (promptId: string, turnId: string) => ({ tabId: "tab-a", sessionKey: sessionIdentityStableKey(promptMeta), hostId: "local", sessionId: "session-a", sessionGeneration: 1,
+  promptId, turnId, kind: "ask" as const, instanceKey: `${turnId}:${promptId}` });
+const waitingAsk = reducer({ ...initialState, meta: promptMeta }, {
   type: "event",
   e: {
     kind: "ask_request",
@@ -104,7 +109,7 @@ const rejectedCollision = reducer(collidingSubmit, {
   submissionId: "send-collision",
   error: "Send failed: turn already running",
 });
-eq(rejectedCollision.items.some((item) => item.kind === "user" && item.failed), true, "rejected admission marks the exact optimistic bubble failed");
+eq(rejectedCollision.localSubmissions["send-collision"]?.status, "failed", "rejected admission marks the exact optimistic bubble failed");
 eq(rejectedCollision.running, true, "rejected admission stays conservatively running until reconciliation");
 eq(rejectedCollision.pendingPrompt, true, "rejected admission restores the visible Ask gate");
 eq(rejectedCollision.ask?.id, "ask-existing", "rejected admission preserves the pending Ask");
@@ -132,20 +137,20 @@ const reconciledIdle = reducer(rejectedCollision, {
 eq(reconciledIdle.running, false, "authoritative idle snapshot releases the rejected submit gate");
 eq(reconciledIdle.ask, undefined, "authoritative idle snapshot clears a stale Ask");
 
-const answeredAsk = reducer(waitingAsk, { type: "ask_submit_succeeded", id: "ask-existing", epoch: waitingAsk.promptEpoch });
+const answeredAsk = reducer(waitingAsk, { type: "ask_submit_succeeded", target: askTarget("ask-existing", "turn-existing"), epoch: waitingAsk.promptEpoch });
 eq(answeredAsk.ask, undefined, "successful Ask submission clears the matching prompt");
 eq(answeredAsk.resolvedPromptId, "ask-existing", "successful Ask submission tombstones the matching prompt id");
 const nextAsk = reducer(waitingAsk, {
   type: "event",
   e: { kind: "ask_request", turnId: "turn-existing", ask: { id: "ask-next", questions: [] } } as WireEvent,
 });
-const lateAskSuccess = reducer(nextAsk, { type: "ask_submit_succeeded", id: "ask-existing", epoch: nextAsk.promptEpoch });
+const lateAskSuccess = reducer(nextAsk, { type: "ask_submit_succeeded", target: askTarget("ask-existing", "turn-existing"), epoch: nextAsk.promptEpoch });
 eq(lateAskSuccess.ask?.id, "ask-next", "late Ask success cannot clear a newer prompt");
 const rebuiltAsk = reducer(reducer(waitingAsk, { type: "controller_rebuilt" }), {
   type: "event",
   e: { kind: "ask_request", turnId: "turn-new", ask: { id: "ask-existing", questions: [] } } as WireEvent,
 });
-const oldEpochSuccess = reducer(rebuiltAsk, { type: "ask_submit_succeeded", id: "ask-existing", epoch: waitingAsk.promptEpoch });
+const oldEpochSuccess = reducer(rebuiltAsk, { type: "ask_submit_succeeded", target: askTarget("ask-existing", "turn-existing"), epoch: waitingAsk.promptEpoch });
 eq(oldEpochSuccess.ask?.id, "ask-existing", "old prompt epoch cannot clear an id reused by a rebuilt controller");
 
 const readinessStarted = reducer(sent, { type: "event", e: { kind: "turn_started" } as WireEvent });
@@ -262,12 +267,7 @@ eq(mcpReady, beforeMcpReady, "mcp_surface_ready is accepted as a deliberate no-o
 const pendingMcpReady = reducer(sent, { type: "event", e: { kind: "mcp_surface_ready" } as WireEvent });
 eq(pendingMcpReady, sent, "mcp_surface_ready does not confirm a pending submit");
 const failedAfterMcpReady = reducer(pendingMcpReady, { type: "send_failed", submissionId: "send-0", error: "Send failed: bridge unavailable" });
-const failedAfterMcpReadyBubble = failedAfterMcpReady.items.find((it) => it.kind === "user");
-eq(
-  failedAfterMcpReadyBubble?.kind === "user" && failedAfterMcpReadyBubble.failed,
-  true,
-  "send_failed still marks a pending submit after mcp readiness",
-);
+eq(failedAfterMcpReady.localSubmissions["send-0"]?.status, "failed", "send_failed still marks a pending submit after mcp readiness");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(here, "../AppRuntime.tsx"), "utf8");
@@ -280,7 +280,7 @@ eq(controllerSource.includes('e.kind === "mcp_surface_ready"'), true, "reducer h
   const calls: string[] = [];
   const ports: SessionActionPorts = {
     approveForTab: () => undefined,
-    resolvePlanForTab: (tabId, id, action) => calls.push(`resolve:${tabId}:${id}:${action}`),
+    resolvePlanForTab: (target, action) => { calls.push(`resolve:${target.tabId}:${target.promptId}:${action}`); },
     resolveRecoveryForTab: () => undefined,
     answerQuestionForTab: async () => undefined,
     answerMCPForTab: () => undefined,
@@ -291,7 +291,8 @@ eq(controllerSource.includes('e.kind === "mcp_surface_ready"'), true, "reducer h
     notePlanMode: (tabId, enabled) => calls.push(`plan:${tabId}:${enabled}`),
     drainRemoteApprovals: () => undefined,
   };
-  const target = { tabId: "tab-source", sessionKey: "session-source:1", promptId: "approval-7" };
+  const target = { tabId: "tab-source", sessionKey: "session-source:1", hostId: "local", sessionId: "session-source", sessionGeneration: 1,
+    promptId: "approval-7", kind: "plan" as const, instanceKey: "plan-source:approval-7" };
   await submitPlanDecision(target, {
     action: "start_execution", leavePlanMode: true, remote: false, goal: "", toolApprovalMode: "ask",
   }, ports, { checkpoint() {}, ownsUI: () => true });

@@ -73,6 +73,7 @@ export interface TranscriptContentChange {
 }
 
 export interface SessionTranscript {
+  bindingKey?: string;
   canonicalV2?: boolean;
   latestSequence?: number;
   key: string;
@@ -112,6 +113,8 @@ export interface SessionTranscript {
   revisionKnown: boolean;
   digest: string;
   generation: number;
+  /** Settles when the current fresh-page generation has installed or failed. */
+  generationSettlement?: { generation: number; promise: Promise<void> };
   bodyBytes: number;
   olderInFlight: boolean;
   newerInFlight: boolean;

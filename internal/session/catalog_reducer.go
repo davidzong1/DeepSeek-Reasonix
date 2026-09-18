@@ -9,9 +9,10 @@ import (
 // first preview, and history replacement can reorder it, so keeping only the
 // first message would be incorrect. No message/tool/model body survives apply.
 type catalogReducer struct {
-	state      Projection
-	endedTurns map[string]bool
-	positions  map[string]bool
+	state           Projection
+	endedTurns      map[string]bool
+	resultSequences map[string]uint64
+	positions       map[string]bool
 }
 
 func (r *catalogReducer) apply(commit Commit) error {
@@ -50,14 +51,21 @@ func (r *catalogReducer) apply(commit Commit) error {
 					r.endedTurns = map[string]bool{}
 				}
 				r.endedTurns[turn.TurnID] = true
+				if turn.Status.Terminal() && turn.MessageID != "" {
+					if r.resultSequences == nil {
+						r.resultSequences = map[string]uint64{}
+					}
+					r.resultSequences[turn.TurnID] = turn.BoundarySequence
+				}
 			}
 		}
 		// Keep only state used by subsequent metadata events. Body-heavy state,
 		// closed turns and authority maps belong to runtime/history projections.
 		s := r.state
 		r.state = Projection{CommittedSequence: s.CommittedSequence, TurnID: s.TurnID,
-			CurrentTurnStart: s.CurrentTurnStart, TurnStatus: s.TurnStatus,
-			Title: s.Title, ModelRef: s.ModelRef, ModelIdentity: s.ModelIdentity,
+			CurrentTurnStart: s.CurrentTurnStart, CurrentTurnMessageID: s.CurrentTurnMessageID, TurnStatus: s.TurnStatus,
+			Title: s.Title, TitleSequence: s.TitleSequence,
+			ModelRef: s.ModelRef, ModelIdentity: s.ModelIdentity,
 			TranscriptInputs: s.TranscriptInputs, HiddenTurns: s.HiddenTurns, RetractedInputs: s.RetractedInputs}
 	}
 	return nil
@@ -68,6 +76,11 @@ func (r *catalogReducer) metadata(manifest Manifest) catalogMetadata {
 	for id := range r.endedTurns {
 		if !r.state.HiddenTurns[id] {
 			m.Turns++
+		}
+	}
+	for id, sequence := range r.resultSequences {
+		if !r.state.HiddenTurns[id] {
+			m.ResultSequence = max(m.ResultSequence, sequence)
 		}
 	}
 	return m

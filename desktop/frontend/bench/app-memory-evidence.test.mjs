@@ -44,7 +44,7 @@ test("subscriptions retained after a round trip require attribution", () => {
   const samples = Array.from({ length: 4 }, (_, index) => ({
     ...sample([1, index + 2], index * 32), dom: { nodes: 6000, jsEventListeners: 500 },
   }));
-  samples[1].lifecycle.activeSubscriptions++;
+  for (const retained of samples.slice(1)) retained.lifecycle.activeSubscriptions++;
   assert.ok(attributeRetention(samples).reasons.includes("subscription-population-drift"));
 });
 test("persistent post-baseline cohorts remain a qualification blocker", () => {
@@ -86,6 +86,19 @@ test("a displaced final tail remains a persistent blocker", () => {
   const result = attributeRetention(samples);
   assert.ok(result.reasons.includes("post-gc-dom-or-listener-drift"));
   assert.deepEqual(screeningBlockers(result.reasons), ["post-gc-dom-or-listener-drift"]);
+});
+test("a settled population below baseline records release instead of retention", () => {
+  // A real shard settled from 346 to 343 listeners with stable nodes,
+  // subscriptions, operations, and render cohorts. Fewer live listeners
+  // cannot be evidence of retained listeners.
+  const samples = Array.from({ length: 21 }, (_, index) => ({
+    ...sample([1, index + 2], index * 32),
+    dom: { nodes: 6724, jsEventListeners: index === 5 || index === 6 ? 456 : 346 },
+  }));
+  samples.push({ ...sample([1, 23], 512), phase: "settled", dom: { nodes: 6724, jsEventListeners: 343 } });
+  const result = attributeRetention(samples);
+  assert.ok(result.reasons.includes(TRANSIENT_EXCURSION_REASON));
+  assert.deepEqual(screeningBlockers(result.reasons), []);
 });
 test("an explicit settled tail sample is the authoritative resting state", () => {
   // Round 5 CI data: the blip can land on the final round checkpoint; the

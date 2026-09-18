@@ -39,3 +39,15 @@ remain for investigating old runs.
 
 旧契约命令、目录和证明变量名为恢复兼容而保留，但指纹已覆盖 Certum 实现，旧证明
 不能授权新流程。发布不再调用 SignPath；旧回执工具仅供历史运行排查。
+
+A successful standalone preflight uploads `verified-signing-contract-*` evidence
+and prints the maintainer command for promoting its fingerprint to the recovery
+variable in the job summary. `GITHUB_TOKEN` cannot modify repository variables;
+the workflow does not need a privileged personal token. Promote only the exact
+fingerprint from a run whose two Windows signing jobs succeeded. Official
+orchestrated releases use successful same-run preflight evidence instead.
+
+独立预检成功后上传 `verified-signing-contract-*` 证明，并在任务摘要中给出由维护者
+将指纹写入恢复变量的命令。`GITHUB_TOKEN` 无权修改仓库变量，无需为此添加高权限
+个人令牌。仅登记两个 Windows 签名任务均成功的运行所验证的准确指纹；正式编排发布
+使用同一运行内的预检成功结果。

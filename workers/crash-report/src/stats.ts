@@ -560,6 +560,7 @@ export function renderStats(
       gpuStates: BarRow[];
     };
     installationLinkedSince?: string;
+    structuredAttributionSince?: string;
     firebaseStorage?: {
       active: number;
       compacted: number;
@@ -683,9 +684,12 @@ export function renderStats(
 </div>`;
   const overviewTone = topSeverityTone(data.overview.openReports, data.overview.regressedReports, data.overview.criticalOpenReports);
   const isDevelopmentDiagnostic = (row: CrashRow) => row.development ?? row.fingerprint.startsWith("dev:");
-  const releaseCrashes = data.crashes.filter(
+  const releaseDiagnostics = data.crashes.filter(
     (row) => row.kind !== "performance" && row.severity !== "low" && !isDevelopmentDiagnostic(row),
   );
+  const abnormalExitReports = releaseDiagnostics.filter((row) => row.last_category === "unclean_exit" || row.last_category === "startup_failure");
+  const historicalDiagnostics = releaseDiagnostics.filter((row) => row.last_category === "historical_record");
+  const releaseCrashes = releaseDiagnostics.filter((row) => !abnormalExitReports.includes(row) && !historicalDiagnostics.includes(row));
   const performanceDiagnostics = data.crashes.filter(
     (row) => row.kind === "performance" && !isDevelopmentDiagnostic(row),
   );
@@ -722,18 +726,20 @@ ${navLink(filterQS({}, "health"), { en: "Agent Health", zh: "运行健康" }, ac
   const linkedSince = data.installationLinkedSince
     ? `<p class="muted">${i18n("Installation-linked data available since", "可关联安装数据起始于")} ${esc(data.installationLinkedSince)}</p>`
     : "";
-  const filters = `<div class="filter-card"><div class="filter-head"><h2>${i18n("Report filters", "诊断筛选")}</h2><span>${i18nHTML(`latest ${esc(data.latestVersion || "n/a")}`, `最新 ${esc(data.latestVersion || "n/a")}`)}</span></div>${linkedSince}
+  const attributionSince = data.structuredAttributionSince ? `<p class="muted">${i18n("Fault/observer attribution available since", "故障/上报版本归因起始于")} ${esc(data.structuredAttributionSince)}</p>` : "";
+  const filters = `<div class="filter-card"><div class="filter-head"><h2>${i18n("Report filters", "诊断筛选")}</h2><span>${i18nHTML(`latest ${esc(data.latestVersion || "n/a")}`, `最新 ${esc(data.latestVersion || "n/a")}`)}</span></div>${linkedSince}${attributionSince}
 <div class="filter-tabs">
 ${filterTab("All", "全部", clearFiltersHref, !hasFilters)}
 ${filterTab("Open", "未处理", filterQS({ status: "open" }), data.filters.status === "open")}
 ${filterTab("Resolved", "已解决", filterQS({ status: "resolved" }), data.filters.status === "resolved")}
 ${filterTab("Ignored", "已忽略", filterQS({ status: "ignored" }), data.filters.status === "ignored")}
 ${filterTab("New in latest", "最新新增", filterQS({ new: data.filters.newLatest ? "" : "latest" }), data.filters.newLatest)}
+${data.latestVersion ? filterTab(`Latest release ${data.latestVersion}`, `最新正式版 ${data.latestVersion}`, filterQS({ version: data.filters.version === data.latestVersion ? "" : data.latestVersion }), data.filters.version === data.latestVersion) : ""}
 ${filterTab("Regressed", "回归", filterQS({ regressed: data.filters.regressed ? "" : "1" }), data.filters.regressed)}
 </div>
 <div class="facet-grid">
 <section><h3>${i18n("Source", "来源")}</h3><div class="facet-list">${facetChips(data.sources, data.filters.source, (label) => filterQS({ source: label }), 4)}</div></section>
-<section><h3>${i18n("Version", "版本")}</h3><div class="facet-list">${facetChips(data.versions, data.filters.version, (label) => filterQS({ version: label }), 5)}</div></section>
+<section><h3>${i18n("Fault version", "实际故障版本")}</h3><div class="facet-list">${facetChips(data.versions, data.filters.version, (label) => filterQS({ version: label }), 5)}</div></section>
 <section><h3>${i18n("Platform", "平台")}</h3><div class="facet-list">${facetChips(data.platforms, data.filters.platform, (label) => filterQS({ platform: label }), 4)}</div></section>
 <section><h3>${i18n("Windows build / revision", "Windows build / revision")}</h3><div class="facet-list">${facetChips(diagnosticFacets.osBuilds, data.filters.osBuild ?? "", (label) => filterQS({ osBuild: label }), 6)}${facetChips(diagnosticFacets.osRevisions, data.filters.osRevision ?? "", (label) => filterQS({ osRevision: label }), 4)}${data.filters.osBuild !== "17763" ? `<a class="facet-chip" href="${esc(filterQS({ osBuild: "17763" }))}"><span class="facet-label">LTSC 2019 · 17763</span></a>` : ""}</div></section>
 <section><h3>${i18n("Linux distribution / session", "Linux 发行版 / 会话")}</h3><div class="facet-list">${facetChips(diagnosticFacets.distros, data.filters.distroId ?? "", (label) => filterQS({ distro: label }), 5)}${facetChips(diagnosticFacets.distroVersions, data.filters.distroVersion ?? "", (label) => filterQS({ distroVersion: label }), 4)}${facetChips(diagnosticFacets.kernels, data.filters.kernelVersion ?? "", (label) => filterQS({ kernel: label }), 4)}${facetChips(diagnosticFacets.sessions, data.filters.sessionType ?? "", (label) => filterQS({ session: label }), 4)}</div></section>
@@ -753,6 +759,8 @@ ${anyPing ? dailyChart(days) : `<div class="empty">${i18n("No pings yet — data
 <p class="sub">${i18n("Installation-linked data is available only from the diagnostics-v2 deployment date; historical device counts are not backfilled.", "可关联安装的数据仅从 diagnostics-v2 部署日起提供；历史设备数不回填。")}</p>
 ${firebaseStorage}
 <section class="module-panel"><div class="panel-title"><h3>${i18nHTML("Needs attention <b>— top 10 release crashes and exceptions</b>", "优先处理 <b>— 正式版崩溃与异常 Top 10</b>")}</h3><span class="panel-context">${i18n(`Past ${range} days · ranked by affected installs`, `过去${range}天 · 按受影响安装降序`)}</span></div>${reportGroups(releaseCrashes.slice(0, 10), true, range)}</section>
+${abnormalExitReports.length ? `<section class="module-panel"><div class="panel-title"><h3>${i18nHTML("Abnormal exits <b>— cause not yet confirmed</b>", "异常退出 <b>— 原因尚未确定</b>")}</h3><span class="panel-context">${i18n(`Past ${range} days`, `过去${range}天`)}</span></div>${reportGroups(abnormalExitReports.slice(0, 10), true, range)}</section>` : ""}
+${historicalDiagnostics.length ? `<section class="module-panel"><div class="panel-title"><h3>${i18nHTML("Historical reports <b>— old versions and retired architecture</b>", "历史补报 <b>— 旧版本与旧架构</b>")}</h3><span class="panel-context">${i18n(`Past ${range} days received`, `过去${range}天接收`)}</span></div>${reportGroups(historicalDiagnostics.slice(0, 10), true, range)}</section>` : ""}
 ${performanceDiagnostics.length ? `<section class="module-panel"><div class="panel-title"><h3>${i18nHTML("Performance signals <b>— tracked separately from crashes</b>", "性能信号 <b>— 与崩溃分开统计</b>")}</h3><span class="panel-context">${i18n(`Past ${range} days · ranked by affected installs`, `过去${range}天 · 按受影响安装降序`)}</span></div>${reportGroups(performanceDiagnostics.slice(0, 5), true, range)}</section>` : ""}
 ${developmentDiagnostics.length ? `<section class="module-panel"><div class="panel-title"><h3>${i18nHTML("Development diagnostics <b>— excluded from release priority</b>", "开发版诊断 <b>— 不计入正式版优先级</b>")}</h3><span class="panel-context">${i18n(`Past ${range} days · ranked by affected installs`, `过去${range}天 · 按受影响安装降序`)}</span></div>${reportGroups(developmentDiagnostics.slice(0, 5), true, range)}</section>` : ""}
 ${filters}

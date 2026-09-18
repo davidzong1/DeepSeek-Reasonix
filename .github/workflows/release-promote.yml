@@ -1,0 +1,438 @@
+name: Publish release candidate
+run-name: ${{ inputs.operation }} ${{ inputs.candidate_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        description: "Sealed candidate from Prepare release candidate"
+        required: true
+        type: string
+      operation:
+        description: "Publish a new identity or recover an interrupted publication"
+        required: true
+        default: publish
+        type: choice
+        options: [publish, recover]
+
+concurrency:
+  group: stable-release-publication
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  attestations: read
+  contents: write
+
+jobs:
+  preflight:
+    name: verify sealed candidate before approval
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      candidate_id: ${{ steps.record.outputs.candidate_id }}
+      version: ${{ steps.record.outputs.version }}
+      source_sha: ${{ steps.record.outputs.source_sha }}
+      producer_run_id: ${{ steps.record.outputs.producer_run_id }}
+      producer_run_attempt: ${{ steps.record.outputs.producer_run_attempt }}
+      candidate_control_sha: ${{ steps.record.outputs.candidate_control_sha }}
+      signing_fingerprint: ${{ steps.record.outputs.signing_fingerprint }}
+      desktop_prefix: ${{ steps.record.outputs.desktop_prefix }}
+      approved_artifact: approved-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Resolve candidate record artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
+        run: node scripts/resolve-release-candidate.mjs resolve "${{ inputs.candidate_id }}"
+      - name: Download exact candidate record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.artifact.outputs.record_artifact_id }}
+          PRODUCER_RUN_ID: ${{ steps.artifact.outputs.producer_run_id }}
+        run: |
+          mkdir -p record
+          gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID" > /tmp/record-artifact.json
+          gh api "repos/${{ github.repository }}/actions/runs/$PRODUCER_RUN_ID" > /tmp/producer-run.json
+          gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/record.zip
+          node scripts/verify-release-artifact-archive.mjs /tmp/record-artifact.json /tmp/record.zip
+          unzip -q /tmp/record.zip -d record
+          test -s record/record.json
+      - name: Verify record provenance and resolve exact payload
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          signer_sha="$(jq -r .head_sha /tmp/producer-run.json)"
+          gh attestation verify record/record.json --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+            --signer-digest "$signer_sha" --source-ref refs/heads/main-v2 --deny-self-hosted-runners
+          node scripts/resolve-release-candidate.mjs inspect "${{ inputs.candidate_id }}" \
+            record/record.json /tmp/record-artifact.json /tmp/producer-run.json
+      - name: Download exact candidate payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_ID: ${{ steps.record.outputs.payload_artifact_id }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts/$PAYLOAD_ID" > /tmp/payload-artifact.json
+          test "$(jq -r .name /tmp/payload-artifact.json)" = "${{ steps.record.outputs.payload_artifact_name }}"
+          test "$(jq -r .expired /tmp/payload-artifact.json)" = false
+          test "$(jq -r .workflow_run.id /tmp/payload-artifact.json)" = "${{ steps.record.outputs.producer_run_id }}"
+          mkdir -p payload
+          gh api "repos/${{ github.repository }}/actions/artifacts/$PAYLOAD_ID/zip" > /tmp/payload.zip
+          node scripts/verify-release-artifact-archive.mjs /tmp/payload-artifact.json /tmp/payload.zip
+          unzip -q /tmp/payload.zip -d payload
+      - name: Verify payload provenance, bytes, source, and operation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ steps.record.outputs.version }}
+          SOURCE_SHA: ${{ steps.record.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+              --signer-digest "${{ steps.record.outputs.candidate_control_sha }}" \
+              --source-ref refs/heads/main-v2 --deny-self-hosted-runners >/dev/null
+          done < <(find payload -type f -print0)
+          node scripts/release-candidate.mjs verify payload record/record.json >/dev/null
+          git fetch origin main-v2 --tags
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main-v2
+          git show "$SOURCE_SHA:release-notes/releases.json" > /tmp/catalog.json
+          test "$(sha256sum /tmp/catalog.json | awk '{print $1}')" = "$(jq -r .notes.catalogSha256 record/record.json)"
+          bash scripts/release-candidate-tags.sh check "$OPERATION" "$VERSION" "$SOURCE_SHA"
+          {
+            echo "### Sealed release approval"
+            echo
+            echo "- Candidate: \`${{ inputs.candidate_id }}\`"
+            echo "- Operation: \`$OPERATION\`"
+            echo "- Product SHA: \`$SOURCE_SHA\`"
+            echo "- Candidate record SHA-256: \`$(sha256sum record/record.json | awk '{print $1}')\`"
+            echo "- Notes SHA-256: \`$(jq -r .notes.renderedSha256 record/record.json)\`"
+            echo "- Signing policy: \`$(jq -r .signing.desktopFingerprint record/record.json)\`"
+            echo "- Payload files: \`$(jq '.files | length' record/record.json)\`"
+            echo "- Native acceptance: \`$(jq -r '[.acceptance[] | select(.status == "passed") | .kind] | join(", ")' record/record.json)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Render and bind reviewed release notes
+        run: |
+          worktree="$(mktemp -d "$RUNNER_TEMP/reasonix-notes.XXXXXX")"
+          git worktree add --detach "$worktree" "${{ steps.record.outputs.source_sha }}"
+          node "$worktree/scripts/release-notes.mjs" render --version "v${{ steps.record.outputs.version }}" --output release-notes.md
+          git worktree remove "$worktree"
+          test "$(sha256sum release-notes.md | awk '{print $1}')" = "$(jq -r .notes.renderedSha256 record/record.json)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: orchestrator-reviewed-release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: approved-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: payload
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-darwin-arm64
+          path: payload/desktop/darwin-arm64
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-darwin-amd64
+          path: payload/desktop/darwin-amd64
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-darwin-universal
+          path: payload/desktop/darwin-universal
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-windows-amd64
+          path: payload/desktop/windows-amd64
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-windows-arm64
+          path: payload/desktop/windows-arm64
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.record.outputs.desktop_prefix }}-linux-amd64
+          path: payload/desktop/linux-amd64
+          if-no-files-found: error
+          retention-days: 7
+
+  authorize:
+    name: approve sealed Stable candidate
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ needs.preflight.outputs.version }}
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+    steps:
+      - run: echo "Approved ${{ needs.preflight.outputs.candidate_id }} at ${{ needs.preflight.outputs.source_sha }}"
+
+  activate:
+    name: atomically activate release identity
+    needs: [preflight, authorize]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Create or verify all implementation tags
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          CANDIDATE_ID: ${{ needs.preflight.outputs.candidate_id }}
+          RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
+        run: |
+          set -euo pipefail
+          node scripts/resolve-release-candidate.mjs active "$CANDIDATE_ID"
+          git fetch origin main-v2 --tags
+          bash scripts/release-candidate-tags.sh activate "$OPERATION" "$VERSION" "$SOURCE_SHA"
+
+  cli:
+    name: publish CLI and Homebrew from candidate
+    needs: [preflight, activate]
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ needs.preflight.outputs.version }}
+      approved_cli_tag: v${{ needs.preflight.outputs.version }}
+      approved_sha: ${{ needs.preflight.outputs.source_sha }}
+      orchestrated: true
+      orchestrator: promote
+      candidate_artifact_name: ${{ needs.preflight.outputs.approved_artifact }}
+      candidate_verified: true
+    secrets: inherit
+
+  npm:
+    name: publish npm from candidate
+    needs: [preflight, activate]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/release-npm.yml
+    with:
+      channel: stable
+      base_version: ${{ needs.preflight.outputs.version }}
+      tag: npm-v${{ needs.preflight.outputs.version }}
+      approved_cli_tag: v${{ needs.preflight.outputs.version }}
+      approved_sha: ${{ needs.preflight.outputs.source_sha }}
+      orchestrated: true
+      orchestrator: promote
+      candidate_artifact_name: ${{ needs.preflight.outputs.approved_artifact }}
+      candidate_verified: true
+    secrets: inherit
+
+  desktop:
+    name: publish Desktop from candidate
+    needs: [preflight, activate]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      channel: stable
+      tag: desktop-v${{ needs.preflight.outputs.version }}
+      approved_cli_tag: v${{ needs.preflight.outputs.version }}
+      approved_sha: ${{ needs.preflight.outputs.source_sha }}
+      orchestrated: true
+      orchestrator: promote
+      signing_preflight_verified: true
+      preflight_artifact_prefix: ${{ needs.preflight.outputs.desktop_prefix }}
+      candidate_id: ${{ needs.preflight.outputs.candidate_id }}
+      candidate_source_run_id: ${{ needs.preflight.outputs.producer_run_id }}
+      candidate_source_run_attempt: ${{ needs.preflight.outputs.producer_run_attempt }}
+      candidate_control_sha: ${{ needs.preflight.outputs.candidate_control_sha }}
+      candidate_signing_fingerprint: ${{ needs.preflight.outputs.signing_fingerprint }}
+      candidate_verified: true
+    secrets: inherit
+
+  postflight:
+    name: verify every public Stable surface
+    needs: [preflight, cli, npm, desktop]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Require every publisher
+        env:
+          CLI_RESULT: ${{ needs.cli.result }}
+          NPM_RESULT: ${{ needs.npm.result }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+        run: |
+          for result in "$CLI_RESULT" "$NPM_RESULT" "$DESKTOP_RESULT"; do test "$result" = success; done
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Verify public artifacts
+        id: immutable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_OPERATION: ${{ inputs.operation }}
+          RELEASE_LEDGER_OUTPUT: /tmp/publication-ledger-core.json
+          CLI_TAG: v${{ needs.preflight.outputs.version }}
+          DESKTOP_TAG: desktop-v${{ needs.preflight.outputs.version }}
+        run: bash scripts/verify-stable-release-artifacts.sh
+      - name: Publish exact Stable release record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          CLI_TAG: v${{ needs.preflight.outputs.version }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: |
+          node scripts/release-event.mjs generate --version "$VERSION" --sha "$RELEASE_SHA" \
+            --published-at "$(gh api "repos/${{ github.repository }}/releases/tags/$CLI_TAG" --jq .published_at)" \
+            --output /tmp/release-event.json
+          if ! gh release download "$CLI_TAG" --pattern release-event.json --output /tmp/existing-release-event.json 2>/dev/null; then
+            gh release upload "$CLI_TAG" /tmp/release-event.json
+          else
+            cmp -s /tmp/release-event.json /tmp/existing-release-event.json
+          fi
+      - name: Decide whether this candidate owns the current public site
+        id: site
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          current="$(curl -fsSL https://dl.reasonix.io/latest/latest.json | jq -r .version)"
+          if [ "$current" = "v$VERSION" ]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+          elif [ "$OPERATION" = recover ]; then
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "Stable pointers remain on $current; website deployment is preserved." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Stable manifest serves $current after publishing v$VERSION"
+            exit 1
+          fi
+      - name: Dispatch and wait for the owned Pages deployment
+        id: pages
+        if: steps.site.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          baseline="$(gh run list --workflow pages.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run pages.yml --ref main-v2 -f "release_version=$VERSION"
+          pages_run=""
+          for _ in $(seq 1 30); do
+            pages_run="$(gh run list --workflow pages.yml --event workflow_dispatch --branch main-v2 --limit 20 \
+              --json databaseId,displayTitle \
+              --jq "map(select(.databaseId > $baseline and .displayTitle == \"Deploy site v$VERSION\")) | sort_by(.databaseId) | last | .databaseId // empty")"
+            [ -z "$pages_run" ] || break
+            sleep 2
+          done
+          if [ -z "$pages_run" ]; then
+            echo "::error::public-sync-pending: the owned Pages deployment was not created"
+            exit 1
+          fi
+          echo "Waiting for Pages run $pages_run." >> "$GITHUB_STEP_SUMMARY"
+          gh run watch "$pages_run" --exit-status
+      - name: Verify hydrated-site inputs and public download routes
+        id: public_site
+        if: steps.site.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          CLI_TAG: v${{ needs.preflight.outputs.version }}
+          DESKTOP_TAG: desktop-v${{ needs.preflight.outputs.version }}
+          RELEASE_OPERATION: ${{ inputs.operation }}
+          RELEASE_LEDGER_OUTPUT: /tmp/publication-ledger-site.json
+          VERIFY_HOMEPAGE: "true"
+          VERIFY_PUBLIC_SITE_ONLY: "true"
+        run: bash scripts/verify-stable-release-artifacts.sh
+      - name: Finalize observed publication ledger
+        if: ${{ always() && steps.immutable.outcome == 'success' }}
+        env:
+          UPDATE_SITE: ${{ steps.site.outputs.update }}
+        run: |
+          if [ -s /tmp/publication-ledger-site.json ]; then
+            node scripts/release-publication-ledger.mjs merge \
+              /tmp/publication-ledger-core.json /tmp/publication-ledger-site.json \
+              /tmp/publication-ledger.json
+            state=complete
+          elif [ "$UPDATE_SITE" = false ]; then
+            cp /tmp/publication-ledger-core.json /tmp/publication-ledger.json
+            state=immutable-complete-newer-pointer-preserved
+          else
+            cp /tmp/publication-ledger-core.json /tmp/publication-ledger.json
+            state=public-sync-pending
+          fi
+          jq --arg state "$state" '. + {completionState: $state}' \
+            /tmp/publication-ledger.json > /tmp/publication-ledger.final.json
+          mv /tmp/publication-ledger.final.json /tmp/publication-ledger.json
+      - name: Upload publication ledger
+        if: ${{ always() && steps.immutable.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-publication-ledger-${{ needs.preflight.outputs.candidate_id }}-${{ github.run_attempt }}
+          path: /tmp/publication-ledger.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  metrics:
+    name: record publication timing
+    needs: [preflight, authorize, activate, cli, npm, desktop, postflight]
+    if: ${{ always() && !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Record queue, execution, and critical-path evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" > "$RUNNER_TEMP/release-jobs.json"
+          node scripts/ci-timings.mjs \
+            --run "$RUNNER_TEMP/release-run.json" \
+            --jobs "$RUNNER_TEMP/release-jobs.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --output "$RUNNER_TEMP/publication-timing.json" \
+            --title "Release publication timing"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-publication-timing-${{ needs.preflight.outputs.candidate_id || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication-timing.json
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 90

@@ -254,6 +254,73 @@ func TestResolveRefsVisionCapableImageDoesNotAskForOCR(t *testing.T) {
 	}
 }
 
+func TestResolveRefsUnreadableImageDoesNotClaimAttached(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeVisionTestConfig(t, dir)
+	const imagePath = ".reasonix/attachments/empty.png"
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{workspaceRoot: dir, selection: modelSelection{ref: "custom/vision-pro"}}
+	block, errs := c.ResolveRefs(t.Context(), "look at @"+imagePath)
+	if len(errs) != 1 || !strings.Contains(errs[0], "between 1 byte and 64 MB") {
+		t.Fatalf("ResolveRefs errors = %v, want unreadable-image error", errs)
+	}
+	if strings.Contains(block, "attached as visual input") {
+		t.Fatalf("unreadable image claimed successful attachment:\n%s", block)
+	}
+}
+
+func TestFreezeInboxReferencesResolvesLargeImageOnce(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash-vision-exp"
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com",
+		Models: []string{"deepseek-v4-flash-vision-exp"}, VisionModels: []string{"deepseek-v4-flash-vision-exp"},
+		APIKeyEnv: "DEEPSEEK_API_KEY",
+	}}
+	if err := cfg.SaveTo(filepath.Join(workspace, "reasonix.toml")); err != nil {
+		t.Fatal(err)
+	}
+	previousLimit := inlineImageLimit
+	inlineImageLimit = 4
+	t.Cleanup(func() { inlineImageLimit = previousLimit })
+	uploads := 0
+	previousUpload := uploadVisionFile
+	uploadVisionFile = func(_ context.Context, _ provider.FileUpload) (string, error) {
+		uploads++
+		return "file-api-shared-resolution", nil
+	}
+	t.Cleanup(func() { uploadVisionFile = previousUpload })
+
+	imagePath := filepath.Join(workspace, ".reasonix", "attachments", "large.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte("x"), 8)...)
+	if err := os.WriteFile(imagePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{workspaceRoot: workspace, selection: modelSelection{ref: cfg.DefaultModel}}
+	block, images, errs := c.freezeInboxReferences(t.Context(), "look", []string{imagePath})
+	if len(errs) != 0 || len(images) != 1 || images[0] != "file-api-shared-resolution" {
+		t.Fatalf("resolved block/images/errors = %q / %v / %v", block, images, errs)
+	}
+	if uploads != 1 {
+		t.Fatalf("image uploads = %d, want one shared resolution", uploads)
+	}
+	if !strings.Contains(block, "attached as visual input") {
+		t.Fatalf("successful shared resolution did not produce the visual-input note:\n%s", block)
+	}
+}
+
 func TestControllerInputImagesPassesHTTPURLAndFileID(t *testing.T) {
 	workspace := t.TempDir()
 	writeVisionTestConfig(t, workspace)

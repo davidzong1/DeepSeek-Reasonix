@@ -128,6 +128,33 @@ try {
   assert(afterSwitch.subscriptions === 6, `the six AppRuntimeEffects subscriptions remain singular (${afterSwitch.subscriptions})`);
   assert(afterSwitch.operations === 0, "instrumented operation owners report zero active operations (not yet all App operations)");
 
+  // Browser-mock local switches exercise the renderer latency contract. Use
+  // the navigation surface's paint receipt (the same click-to-first-paint
+  // milestone reported in diagnostics), not completion of deferred Markdown
+  // or lazy-content expansion after the first screen is already visible.
+  const switchSamples = [];
+  for (let index = 0; index < 20; index += 1) {
+    const geometry = index % 2 === 0;
+    const label = geometry ? "bench:geometry" : "bench:small-6t";
+    // The latency gate stops at the first readable inline body. The full
+    // ASYNC marker intentionally lives beyond the lazy-content preview and
+    // is validated above; including its simulated 1.5s body fetch here would
+    // benchmark deferred expansion rather than first readable paint.
+    const marker = geometry ? "Geometry contract fixture complete." : "Asynchronously hydrated verification appendix";
+    const previousIntent = await page.evaluate(() => window.__reasonixPerf?.stats().navigation?.intent ?? -1);
+    await selectSession(page, label);
+    await page.waitForFunction((text) => document.querySelector(".transcript")?.textContent?.includes(text), marker);
+    await page.waitForFunction((intent) => {
+      const navigation = window.__reasonixPerf?.stats().navigation;
+      return navigation?.intent !== intent && navigation?.clickToFirstPaintMs !== undefined;
+    }, previousIntent);
+    switchSamples.push(await page.evaluate(() => window.__reasonixPerf.stats().navigation.clickToFirstPaintMs));
+  }
+  switchSamples.sort((a, b) => a - b);
+  const localSwitchP95 = switchSamples[Math.ceil(switchSamples.length * 0.95) - 1];
+  assert(localSwitchP95 <= 300,
+    `browser-mock local click-to-first-paint P95 <= 300ms (${localSwitchP95.toFixed(1)}ms; samples=${switchSamples.map(value => value.toFixed(1)).join(",")})`);
+
   await page.locator('.project-tree__folder-main:has(svg.lucide-cloud)').click();
   await page.locator('.project-tree__topic-main:has-text("Remote demo session")').click();
   await page.locator('.remote-surface--ready').waitFor();

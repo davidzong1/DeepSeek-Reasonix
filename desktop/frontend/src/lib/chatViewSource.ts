@@ -1,6 +1,8 @@
 import type { Item, LiveStream } from "./useController";
+import { canonicalUserConfirmations, matchLocalSubmissions, type LocalSubmission } from "./localSubmissionState";
 import type { PresentedFile } from "./types";
 import { deriveTurnFiles, fileIdentity, type TurnFileView } from "./turnFiles";
+import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 
 export type PresentedFileView = PresentedFile & { toolCallId: string };
 
@@ -12,7 +14,13 @@ export type ChatNode = ItemNode
   | { kind: "process"; key: string; turnKey: string; members: readonly string[]; collapsed: boolean; foldable: boolean; toolCallCount: number; messageCount: number; subagentCount: number; failureCount: number }
   | { kind: "tail"; key: string; turnKey: string; answerKey?: string; turn?: number; latest: boolean; presentedFiles: readonly PresentedFileView[]; modifiedFiles: readonly TurnFileView[] };
 export interface ChatStatus { running: boolean; hydrating: boolean; hasOlder: boolean; loadingOlder: boolean; error?: string; startedAt?: number }
-export interface ChatInput extends ChatStatus { items: readonly Item[]; live?: LiveStream; historyStartTurn?: number }
+export interface ChatInput extends ChatStatus {
+  items: readonly Item[];
+  localSubmissions?: readonly LocalSubmission[];
+  visibleSubmissionHandoffs?: Readonly<Record<string, { submissionId: string }>>;
+  live?: LiveStream;
+  historyStartTurn?: number;
+}
 export interface ChatViewSource {
   getOrderSnapshot(): readonly ChatNodeKey[];
   subscribeOrder(listener: Listener): () => void;
@@ -24,7 +32,8 @@ export interface ChatViewSource {
 }
 
 const sameKeys = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((key, i) => key === b[i]);
-const sameItems = (a: readonly Item[], b: readonly Item[]) => a.length === b.length && a.every((item, i) => item === b[i]);
+const sameReferences = (a: readonly unknown[] = [], b: readonly unknown[] = []) =>
+  a.length === b.length && a.every((item, index) => item === b[index]);
 const shallowSame = (a: object, b: object) => Object.keys(a).length === Object.keys(b).length
   && Object.entries(a).every(([key, value]) => value === (b as Record<string, unknown>)[key]);
 const foldViews = new Map<string, Set<string>>();
@@ -32,6 +41,49 @@ const emptyChildren: readonly Extract<ChatNode, { kind: "tool" }>[] = [];
 function proxyAuditCall(item: Item): string | undefined {
   if (item.kind !== "notice" || item.code !== "capability_proxy_audit") return undefined;
   try { return (JSON.parse(item.detail ?? "{}") as { callId?: string }).callId || undefined; } catch { return undefined; }
+}
+
+function submissionItem(submission: LocalSubmission): Extract<Item, { kind: "user" }> {
+  return {
+    kind: "user",
+    id: submission.localId,
+    submissionId: submission.submissionId,
+    messageId: submission.messageId,
+    turnId: submission.turnId,
+    submissionState: submission.status === "accepted" ? "confirmed" : submission.status,
+    text: submission.text,
+    submitText: submission.submitText,
+    failed: submission.status === "failed",
+    createdAt: submission.createdAt,
+    checkpointTurn: submission.checkpointTurn,
+  };
+}
+
+type DisplayEntry = { item: Item; local?: LocalSubmission };
+function itemsWithLocalSubmissions(input: ChatInput): DisplayEntry[] {
+  const submissions = input.localSubmissions ?? [];
+  const items: DisplayEntry[] = uniqueUserItems(input.items).map(item => ({ item }));
+  const matched = new Set(matchLocalSubmissions(submissions, canonicalUserConfirmations(input.items)).map(match => match.submissionId));
+  const insertedAfter = new Map<string, number>();
+  for (const submission of [...submissions].sort((a, b) => a.sequence - b.sequence)) {
+    if (matched.has(submission.submissionId)) continue;
+    const item = { item: submissionItem(submission), local: submission };
+    const turnIndex = submission.turnId ? items.findIndex(candidate => candidate.item.turnId === submission.turnId) : -1;
+    if (!submission.anchorItemId && submission.placement !== "latest" && !input.hasOlder && (input.historyStartTurn ?? 0) === 0) {
+      items.splice(insertedAfter.get("") ?? 0, 0, item);
+      insertedAfter.set("", (insertedAfter.get("") ?? 0) + 1);
+      continue;
+    }
+    const anchor = submission.anchorItemId ? items.findIndex(candidate => candidate.item.id === submission.anchorItemId) : -1;
+    if (anchor < 0) {
+      if (turnIndex >= 0) items.splice(turnIndex, 0, item);
+      continue;
+    }
+    const offset = insertedAfter.get(submission.anchorItemId!) ?? 0;
+    items.splice(anchor + 1 + offset, 0, item);
+    insertedAfter.set(submission.anchorItemId!, offset + 1);
+  }
+  return items;
 }
 
 /** A reconstructable presentation projection. Controller/history remain authoritative. */
@@ -58,6 +110,9 @@ export class ChatSource implements ChatViewSource {
   private input?: ChatInput;
   private status: ChatStatus = { running: false, hydrating: true, hasOlder: false, loadingOlder: false };
   private opened = new Set<string>();
+  private displayKeyBySubmission = new Map<string, string>();
+  private displayMessageBySubmission = new Map<string, string>();
+  private displayKeyByMessage = new Map<string, string>();
   constructor(readonly sessionKey: string) { this.opened = new Set(foldViews.get(sessionKey)); }
   getOrderSnapshot = () => this.order;
   getNodeSnapshot = (key: string) => this.nodes.get(key);
@@ -82,19 +137,25 @@ export class ChatSource implements ChatViewSource {
     const { running, hydrating, hasOlder, loadingOlder, error, startedAt } = input;
     const status = { running, hydrating, hasOlder, loadingOlder, error, startedAt };
     if (!shallowSame(status, this.status)) { this.status = status; this.statusDirty = true; }
-    if (!previous || previous.items !== input.items || previous.running !== running || previous.hasOlder !== hasOlder) this.project(input);
+    if (!previous || previous.items !== input.items || previous.visibleSubmissionHandoffs !== input.visibleSubmissionHandoffs || !sameReferences(previous.localSubmissions, input.localSubmissions)
+      || previous.running !== running || previous.hasOlder !== hasOlder) this.project(input);
     this.updateLive(input.live, false);
     this.schedule();
   }
   private project(input: ChatInput) {
+    for (const local of input.localSubmissions ?? []) if (local.messageId) this.displayMessageBySubmission.set(local.submissionId, local.messageId);
+    for (const [messageId, handoff] of Object.entries(input.visibleSubmissionHandoffs ?? {})) {
+      this.displayMessageBySubmission.set(handoff.submissionId, messageId);
+    }
     const order: string[] = [];
     const present = new Set<string>();
     const groups: Array<{ key: string; turn?: number; user?: Extract<Item, { kind: "user" }>; items: Item[] }> = [];
     let group: (typeof groups)[number] = { key: "history-head", items: [] };
     groups.push(group);
-    for (const item of uniqueUserItems(input.items)) {
+    for (const { item, local } of itemsWithLocalSubmissions(input)) {
       if (item.kind === "user") {
-        group = { key: item.id, user: item, turn: item.checkpointTurn ?? item.historyTurn, items: [] };
+        const key = this.userDisplayKey(item, local, input.visibleSubmissionHandoffs);
+        group = { key, user: item, turn: item.checkpointTurn ?? item.historyTurn, items: [] };
         groups.push(group);
       } else group.items.push(item);
     }
@@ -105,7 +166,7 @@ export class ChatSource implements ChatViewSource {
       const active = current === groups[groups.length - 1] && input.running;
       const latest = current === groups[groups.length - 1];
       const cached = this.projectedGroups.get(turnKey);
-      if (cached && cached.user === current.user && cached.active === active && cached.latest === latest && sameItems(cached.items, current.items)) {
+      if (cached && cached.user === current.user && cached.active === active && cached.latest === latest && sameReferences(cached.items, current.items)) {
         cached.present.forEach(key => present.add(key));
         order.push(...cached.order);
         continue;
@@ -115,7 +176,7 @@ export class ChatSource implements ChatViewSource {
       const add = (node: ChatNode, visible = true) => {
         this.put(node); present.add(node.key); groupPresent.push(node.key); if (visible) order.push(node.key);
       };
-      if (current.user) add({ kind: "user", key: current.user.id, turnKey, item: current.user });
+      if (current.user) add({ kind: "user", key: turnKey, turnKey, item: current.user });
       const answer = (current.items.find(item => item.kind === "assistant" && item.turnFinal)
         ?? [...current.items].reverse().find(item => item.kind === "assistant" && item.turnFinal === undefined && item.text.trim())) as Extract<Item, { kind: "assistant" }> | undefined;
       const answerIndex = answer ? current.items.indexOf(answer) : -1;
@@ -177,6 +238,9 @@ export class ChatSource implements ChatViewSource {
     }
     for (const key of this.nodes.keys()) if (!present.has(key)) { this.nodes.delete(key); this.dirty.add(key); }
     for (const key of this.projectedGroups.keys()) if (!groupKeys.has(key)) this.projectedGroups.delete(key);
+    for (const [submissionId, key] of this.displayKeyBySubmission) if (!groupKeys.has(key)) this.displayKeyBySubmission.delete(submissionId);
+    for (const submissionId of this.displayMessageBySubmission.keys()) if (!this.displayKeyBySubmission.has(submissionId)) this.displayMessageBySubmission.delete(submissionId);
+    for (const [messageId, key] of this.displayKeyByMessage) if (!groupKeys.has(key)) this.displayKeyByMessage.delete(messageId);
     const children = new Map<string, Extract<ChatNode, { kind: "tool" }>[]>();
     for (const node of this.nodes.values()) if (node.kind === "tool" && node.item.parentId) {
       const list = children.get(node.item.parentId) ?? [];
@@ -191,6 +255,29 @@ export class ChatSource implements ChatViewSource {
     }
     for (const key of this.opened) if (!groupKeys.has(key)) this.opened.delete(key);
     if (!sameKeys(this.order, order)) { this.order = order; this.orderDirty = true; }
+    recordFrontendDiagnostic("transcript", "presentation", this.presentationStats());
+  }
+  private userDisplayKey(item: Extract<Item, { kind: "user" }>, local?: LocalSubmission, handoffs?: ChatInput["visibleSubmissionHandoffs"]): string {
+    if (local) {
+      const key = `submission:${local.submissionId}`;
+      this.displayKeyBySubmission.set(local.submissionId, key);
+      return key;
+    }
+    let key = item.messageId ? this.displayKeyByMessage.get(item.messageId) : undefined;
+    const submissionId = item.messageId ? handoffs?.[item.messageId]?.submissionId ?? item.submissionId : undefined;
+    const boundMessageId = submissionId ? this.displayMessageBySubmission.get(submissionId) : undefined;
+    if (!key && submissionId && (!boundMessageId || boundMessageId === item.messageId)) {
+      key = this.displayKeyBySubmission.get(submissionId);
+    }
+    key ??= item.id;
+    if (submissionId && this.displayKeyBySubmission.get(submissionId) === key && item.messageId) {
+      this.displayMessageBySubmission.set(submissionId, item.messageId);
+    }
+    if (item.messageId) this.displayKeyByMessage.set(item.messageId, key);
+    return key;
+  }
+  presentationStats() {
+    return { nodes: this.nodes.size, submissions: this.displayKeyBySubmission.size, messages: this.displayKeyByMessage.size };
   }
   /** Already frame-batched by the controller; no additional frame queue. */
   updateLive(live: LiveStream | undefined, publish = true) {
@@ -239,7 +326,9 @@ export class ChatSource implements ChatViewSource {
   dispose() {
     this.epoch++; this.scheduled = false; this.dirty.clear();
     this.orderListeners.clear(); this.statusListeners.clear(); this.nodeListeners.clear();
-    this.nodes.clear(); this.children.clear(); this.projectedGroups.clear(); this.order = []; this.input = undefined;
+    this.nodes.clear(); this.children.clear(); this.projectedGroups.clear();
+    this.displayKeyBySubmission.clear(); this.displayMessageBySubmission.clear(); this.displayKeyByMessage.clear();
+    this.order = []; this.input = undefined;
   }
 }
 import { uniqueUserItems } from "./transcriptUserIdentity";

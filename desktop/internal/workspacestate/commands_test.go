@@ -7,6 +7,32 @@ import (
 	"testing"
 )
 
+func TestPurgeCommandAdmissionDoesNotRelaxOtherCommands(t *testing.T) {
+	s, expected := seedArchivedProcessState(t)
+	if err := s.RenameWorkspace(t.Context(), GlobalWorkspaceID, "unrelated"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginCommand(t.Context(), "command-restore", "restore", json.RawMessage(`{"action":"restore"}`), expected); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("restore gate relaxed: %v", err)
+	}
+	if err := s.BeginPurgeCommand(t.Context(), "command-wrong-action", "restore", json.RawMessage(`{"action":"restore"}`), expected); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("purge admitted restore: %v", err)
+	}
+	if err := s.BeginPurgeCommand(t.Context(), "command-future", "future", json.RawMessage(`{"action":"purge"}`), expected+100); !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("future version admitted: %v", err)
+	}
+	if err := s.BeginPurgeCommand(t.Context(), "command-purge", "purge", json.RawMessage(`{"action":"purge"}`), expected); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingOperations["command-purge"].ExpectedGeneration != expected || state.SessionStates["victim"].Lifecycle != Archived {
+		t.Fatal("admission changed intent or lifecycle")
+	}
+}
+
 func TestCommandChildRejectsInterveningLifecycle(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "registry.json"))
 	ctx := t.Context()

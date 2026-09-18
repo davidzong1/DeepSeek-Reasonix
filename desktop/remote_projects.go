@@ -92,7 +92,8 @@ type remoteTab struct {
 	attachedGen uint64
 	// Pending approval/ask frames are retained while the frontend surface is
 	// inactive. RemoteTabSnapshot replays them when that surface mounts again.
-	pendingEvents map[string]json.RawMessage
+	pendingEvents    map[string]json.RawMessage
+	persistenceExtra map[string]json.RawMessage
 
 	// Transient runtime state is projected into TabMeta even while this tab is
 	// inactive, matching the local tab strip's running/prompt/job indicators.
@@ -486,7 +487,7 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 				sessionID:  sessionID,
 				reset:      entry.SessionReset,
 			},
-			hostLabel: hostLabel, topicTitle: title, model: model,
+			hostLabel: hostLabel, topicTitle: title, model: model, persistenceExtra: cloneDesktopJSONFields(entry.extra),
 			routing: remoteTabSessionRouting{currentPath: route, running: map[string]bool{}},
 		}
 		restored.modelSeq = remoteTabModelSeq.Add(1)
@@ -556,33 +557,36 @@ func remoteTabMetaLocked(tab *remoteTab) TabMeta {
 	}
 	ref := tab.ref
 	return TabMeta{
-		ID:            tab.id,
-		Scope:         "project",
-		WorkspaceRoot: tab.ref.Workspace,
-		WorkspaceName: remoteWorkspaceName(tab.ref.Workspace),
-		TopicID:       remoteTabTopicID(tab),
-		TopicTitle:    tab.topicTitle,
-		SessionPath:   tab.session.path,
-		SessionID:     tab.session.sessionID,
-		Label:         label,
-		Mode:          "normal",
-		Active:        true,
-		Cwd:           tab.ref.Workspace,
-		Remote:        &ref,
-		RemoteState:   tab.state,
+		ID:                tab.id,
+		Scope:             "project",
+		WorkspaceRoot:     tab.ref.Workspace,
+		WorkspaceName:     remoteWorkspaceName(tab.ref.Workspace),
+		TopicID:           remoteTabTopicID(tab),
+		TopicTitle:        tab.topicTitle,
+		SessionPath:       tab.session.path,
+		SessionID:         tab.session.sessionID,
+		SessionGeneration: tab.gen,
+		Label:             label,
+		Mode:              "normal",
+		Active:            true,
+		Cwd:               tab.ref.Workspace,
+		Remote:            &ref,
+		RemoteState:       tab.state,
 		// Every remote tab's view is built here, so the capability answer cannot
 		// be forgotten on one path. Local tabs never reach this helper and keep
 		// the false zero value.
-		ForkTargetsSupported: remoteForkTargetsSupported(tab),
-		Ready:                tab.state == "ready",
-		Running:              tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
-		TurnStartedAt:        tab.runtime.turnStartedAt,
-		PendingPrompt:        tab.runtime.pendingPrompt,
-		BackgroundJobs:       tab.runtime.backgroundJobs,
-		CancelRequested:      tab.runtime.cancelRequested,
-		Cancellable:          tab.runtime.cancellable,
-		ReadOnly:             tab.session.takenOver,
-		TakenOver:            tab.session.takenOver,
+		ForkTargetsSupported:           remoteForkTargetsSupported(tab),
+		InteractionTargetSupported:     tab.capabilities[serveCapabilityInteractionTargetV1],
+		ExtensionFormInstanceSupported: tab.capabilities[serveCapabilityExtensionFormInstanceV1],
+		Ready:                          tab.state == "ready",
+		Running:                        tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
+		TurnStartedAt:                  tab.runtime.turnStartedAt,
+		PendingPrompt:                  tab.runtime.pendingPrompt,
+		BackgroundJobs:                 tab.runtime.backgroundJobs,
+		CancelRequested:                tab.runtime.cancelRequested,
+		Cancellable:                    tab.runtime.cancellable,
+		ReadOnly:                       tab.session.takenOver,
+		TakenOver:                      tab.session.takenOver,
 	}
 }
 

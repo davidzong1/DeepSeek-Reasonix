@@ -2,10 +2,14 @@ package boot
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 
 	_ "reasonix/internal/provider/openai"
@@ -156,6 +160,42 @@ api_key_env = "`+keyEnv+`"
 	}
 	if !found {
 		t.Fatalf("expected a notice naming the unset key env %q; got %v", keyEnv, notices)
+	}
+}
+
+func TestBuildClassifiesUnavailableCredentialStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	if err := os.Mkdir(filepath.Join(home, ".env"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, home, "config.toml", `
+default_model = "relay/chat"
+
+[[providers]]
+name = "relay"
+kind = "openai"
+base_url = "https://example.invalid/v1"
+model = "chat"
+api_key_env = "RELAY_TEST_KEY"
+`)
+	dir := robustTempDir(t)
+	fenceBootTestHistoryCatalog(t)
+	t.Chdir(dir)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrl.Close()
+	if got := ctrl.AuthenticationState(); got.Status != control.AuthenticationCredentialStoreUnavailable || got.Code != "credential_store_unavailable" {
+		t.Fatalf("authentication state = %+v", got)
+	}
+
+	_, err = Build(context.Background(), Options{Sink: event.Discard, RequireKey: true, Model: "relay/chat"})
+	var authErr *control.AuthenticationError
+	if !errors.As(err, &authErr) || authErr.State.Status != control.AuthenticationCredentialStoreUnavailable {
+		t.Fatalf("headless build error = %v, want credential-store AuthenticationError", err)
 	}
 }
 

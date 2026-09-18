@@ -64,6 +64,58 @@ func TestHTMLPreviewBindsLocalDependencies(t *testing.T) {
 	}
 }
 
+func TestHTMLPreviewDecodesDependencyPathsExactlyOnce(t *testing.T) {
+	withPreviewWorkspace(t)
+	files := map[string]string{
+		"raw%20name.js": "literal-percent",
+		"raw name.js":   "space",
+		"100%.css":      "literal-percent-sign",
+		"中文#.png":       "unicode-hash",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	htmlBody := `<script src="raw%2520name.js"></script><script src="raw%20name.js"></script>` +
+		`<link href="100%25.css"><img src="%E4%B8%AD%E6%96%87%23.png">`
+	if err := os.WriteFile("index.html", []byte(htmlBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	preview := app.ReadFile("index.html")
+	if preview.Err != "" || preview.URL == "" {
+		t.Fatalf("HTML preview = %+v", preview)
+	}
+	tokenRoot := strings.TrimSuffix(preview.URL, "/index.html")
+	handler := app.workspaceMediaMiddleware()(http.NotFoundHandler())
+	requests := map[string]string{
+		"raw%2520name.js":           "literal-percent",
+		"raw%20name.js":             "space",
+		"100%25.css":                "literal-percent-sign",
+		"%E4%B8%AD%E6%96%87%23.png": "unicode-hash",
+	}
+	for encoded, want := range requests {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tokenRoot+"/"+encoded, nil))
+		if recorder.Code != http.StatusOK || recorder.Body.String() != want {
+			t.Fatalf("GET %q = %d %q, want 200 %q", encoded, recorder.Code, recorder.Body.String(), want)
+		}
+	}
+}
+
+func TestHTMLPreviewRejectsEncodedTraversalAndNUL(t *testing.T) {
+	withPreviewWorkspace(t)
+	for _, source := range []string{"%2e%2e/outside.js", "asset%00.js"} {
+		if err := os.WriteFile("index.html", []byte(`<script src="`+source+`"></script>`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if preview := NewApp().ReadFile("index.html"); preview.URL != "" || preview.Err == "" {
+			t.Fatalf("unsafe dependency %q = %+v", source, preview)
+		}
+	}
+}
+
 func TestHTMLPreviewFailsBeforePublishingIncompleteBundle(t *testing.T) {
 	withPreviewWorkspace(t)
 	if err := os.WriteFile("index.html", []byte(`<script src="missing.js"></script>`), 0o644); err != nil {

@@ -338,6 +338,7 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 		return fmt.Errorf("switch model: session changed during switch")
 	}
 	newCtrl.ActivateGoalDriverAfterRebuild()
+	s.buildOptions.EffortOverride = config.RebindSessionEffort(nil, currentModelRef(cur), currentModelRef(newCtrl), s.buildOptions.EffortOverride)
 	tag.Activate()
 	s.refreshProviderSetup(currentModelRef(newCtrl))
 
@@ -459,71 +460,6 @@ func (s *Server) switchEffort(ctx context.Context, level string) error {
 	return s.switchEffortExpected(ctx, level, "")
 }
 
-func (s *Server) switchEffortExpected(ctx context.Context, level, expectedPath string) error {
-	s.bindMu.Lock()
-	defer s.bindMu.Unlock()
-	if err := s.expectedSessionPathErrorLocked(expectedPath); err != nil {
-		return err
-	}
-	cur := s.ctl()
-	if controllerHasActiveRuntimeWork(cur) {
-		return fmt.Errorf("cannot change effort while active work or background jobs are running")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if s.managedModels != nil {
-		if err := s.managedModels.Apply(cfg, cur.WorkspaceRoot()); err != nil {
-			return err
-		}
-	}
-	ref := currentModelRef(cur)
-	entry, ok := cfg.ResolveModel(ref)
-	if !ok {
-		return fmt.Errorf("cannot resolve current provider %q", ref)
-	}
-	if !config.EffortCapabilityForEntry(entry).Supported {
-		return fmt.Errorf("effort is not configurable for %s", entry.Name)
-	}
-	effort, err := config.NormalizeEffort(entry, level)
-	if err != nil {
-		return err
-	}
-	if s.managedModels != nil {
-		// Managed providers are transient tunnel identities. Keep an explicit
-		// session effort override in memory instead of persisting virtual keys.
-		previous := s.buildOptions.EffortOverride
-		s.buildOptions.EffortOverride = &effort
-		if err := s.switchModelLocked(ctx, ref); err != nil {
-			s.buildOptions.EffortOverride = previous
-			return err
-		}
-		return nil
-	}
-	editPath := config.UserConfigPath()
-	if editPath == "" {
-		return fmt.Errorf("no config file found")
-	}
-	// Lock only the load-modify-save cycle; switchModel below rebuilds the
-	// controller and must not hold the config edit lock.
-	if err := func() error {
-		unlock := config.LockUserConfigEdits()
-		defer unlock()
-		edit := config.LoadForEdit(editPath)
-		if err := applyEffortEdit(edit, entry, effort); err != nil {
-			return err
-		}
-		if err := edit.SaveTo(editPath); err != nil {
-			return fmt.Errorf("save config: %w", err)
-		}
-		return nil
-	}(); err != nil {
-		return err
-	}
-	return s.switchModelLocked(ctx, entry.Name+"/"+entry.Model)
-}
-
 func controllerHasActiveRuntimeWork(ctrl control.SessionAPI) bool {
 	if ctrl == nil {
 		return false
@@ -606,6 +542,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /jobs/cancel", s.foregroundMutation(s.jobsCancel))
 	mux.HandleFunc("POST /answer", s.foregroundMutation(s.answer))
 	mux.HandleFunc("POST /mcp-interaction", s.foregroundMutation(s.mcpInteraction))
+	mux.HandleFunc("POST /resolve-prompt", s.foregroundMutation(s.resolvePromptExact))
 	mux.HandleFunc("POST /resume", s.resume)
 	mux.HandleFunc("POST /forget", s.foregroundMutation(s.forget))
 	mux.HandleFunc("GET /checkpoints", s.checkpoints)
@@ -725,21 +662,6 @@ func (s *Server) logoWordmark(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) cancel(w http.ResponseWriter, _ *http.Request) {
 	s.ctl().Cancel()
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) cancelSession(w http.ResponseWriter, _ *http.Request) {
-	ctrl := s.ctl()
-	receipt := control.CancelReceipt{SessionRef: ctrl.SessionPath(), HeadID: agent.BranchID(ctrl.SessionPath()), Accepted: true}
-	if cancellable, ok := ctrl.(interface{ CancelSession() control.CancelReceipt }); ok {
-		receipt = cancellable.CancelSession()
-	} else {
-		status := ctrl.RuntimeStatus()
-		receipt.AlreadyIdle = !status.Running && !status.PendingPrompt
-		ctrl.Cancel()
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(receipt)
 }
 
 func (s *Server) approve(w http.ResponseWriter, r *http.Request) {

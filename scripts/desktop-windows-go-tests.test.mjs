@@ -7,8 +7,8 @@ test("every test prefix, example and fuzz seed has exactly one execution owner",
   const names = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].map(letter => `Test${letter}Feature`);
   names.push("Test", "Test_Compatibility", "Test中文", "Example", "ExampleController_Open", "FuzzSession", conptyProbe);
   for (const name of names) assert.equal(owners(name).length, 1, name);
-  assert.deepEqual(owners("ExampleController_Open"), ["A-D"]);
-  assert.deepEqual(owners("FuzzSession"), ["A-D"]);
+  assert.deepEqual(owners("ExampleController_Open"), ["A-B"]);
+  assert.deepEqual(owners("FuzzSession"), ["A-B"]);
   assert.deepEqual(owners(conptyProbe), ["conpty-probe"]);
   const counts = verifyInventory(new Map(names.map(name => [name, name])));
   assert.equal(Object.values(counts).reduce((sum, count) => sum + count, 0), names.length);
@@ -22,6 +22,13 @@ test("inventory keeps same-named tests from different packages and rejects missi
   assert.throws(() => inventoryFromJSON(""), /no desktop test inventory/);
 });
 
+test("URI upgrade and preview regressions have exactly one Windows execution owner", () => {
+  for (const name of ["TestWindowsUpgradeFixtureMigratesLegacyAndRestarts", "TestDesktopV1UpgradeBacksUpTopicWALAndRetriesWithoutDuplicateImport",
+    "TestChatFileReferencePreservesRawFilenameCharacters", "TestResolveMarkdownImageSelectsPercentAndSpaceNamesExactly"]) {
+    assert.equal(owners(name).length, 1, name);
+  }
+});
+
 test("CI runs all groups separately and retains the aggregate and native probe", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const matrixJob = source.match(/\n  desktop-windows-go-group:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|$)/)?.[1];
@@ -29,10 +36,14 @@ test("CI runs all groups separately and retains the aggregate and native probe",
   const matrix = matrixJob.match(/group: \[([^\]]+)\]/)[1].split(",").map(value => value.trim());
   assert.deepEqual(matrix, groups);
   assert.match(matrixJob, /fail-fast: false/);
+  assert.match(matrixJob, /actions\/setup-node@v7/);
+  assert.doesNotMatch(matrixJob, /cache: pnpm/, "Go-only groups must not cache a pnpm store they never create");
   assert.match(matrixJob, /run: node \.\.\/scripts\/desktop-windows-go-tests\.mjs \$\{\{ matrix.group \}\}/);
   assert.match(matrixJob, /run: go test -run '\^TestWindowsTerminalProcessConPTYSmoke\$' \./);
   const aggregate = source.match(/\n  desktop-windows-go:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|$)/)?.[1];
   assert.match(aggregate, /needs: \[changes, desktop-prepare, desktop-windows-go-group\]/);
   assert.match(aggregate, /test "\$GROUP_RESULT" = success/);
-  assert.match(source, /node --test scripts\/desktop-windows-go-tests.test.mjs/);
+  const releaseControl = source.match(/\n  release-control:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|$)/)?.[1];
+  assert.ok(releaseControl, "release-control job must still exist");
+  assert.match(releaseControl, /node --test[\s\S]*?scripts\/desktop-windows-go-tests\.test\.mjs/);
 });

@@ -21,7 +21,8 @@ const navigationRefs: NavigationCoalescingRefs<NavigationInput> = {
 };
 let navigationGate: ReturnType<typeof deferred<void>> | undefined;
 const ports: ProjectTopicPorts = {
-  renameLocal: async (id, title) => {
+  renameLocal: async (selector, title) => {
+    const id = selector.ref?.sessionId ?? selector.sessionPath ?? "";
     effects.push(`rename:${id}:${title}`);
     const gate = deferred<void>(); localRequests.set(id, gate); await gate.promise;
   },
@@ -44,7 +45,7 @@ function Probe({ tab, remote = false }: { tab: string; remote?: boolean }) {
   commands = useProjectTopicCommands({ visible: { tabId: tab, sessionKey: tab },
     topic: { id: tab, title: tab, target: remote
       ? { kind: "remote", hostId: "fixture", workspace: "fixture", sessionPath: `${tab}.jsonl` }
-      : { kind: "local", topicId: tab } },
+      : { kind: "local", topicId: tab, selector: { ref: { hostId: "local", sessionId: tab } } } },
     ports, navigation, reportError: error => { throw error; },
   });
   return null;
@@ -98,7 +99,9 @@ try {
   assert.deepEqual(effects, ["remote:A:source title", "refresh-projects"], "remote current may change but rename retains A; ABA cannot resync the visible tab");
 
   effects.length = 0;
+  await paint("A");
   const renameA = commands.renameTopic("A", "one");
+  await paint("B");
   const renameB = commands.renameTopic("B", "two");
   localRequests.get("A")!.resolve(); await renameA;
   localRequests.get("B")!.resolve(); await renameB;
@@ -106,6 +109,7 @@ try {
 
   effects.length = 0;
   listing = deferred<RemoteSessionView[]>();
+  await paint("A", true);
   await act(async () => commands.startActiveTopicRename());
   await act(async () => { pending = commands.commitActiveTopicRename(); });
   await act(async () => root.unmount());

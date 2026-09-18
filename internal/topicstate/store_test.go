@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
+
+	"reasonix/internal/sqliteuri"
 
 	_ "modernc.org/sqlite"
 )
@@ -167,7 +170,11 @@ func TestMergeMissingTitleIndexDoesNotOverwriteNewerRename(t *testing.T) {
 func TestStoreRejectsFutureSchemaWithoutChangingFile(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "topic-state-v1.sqlite")
-	db, err := sql.Open("sqlite", diskFileDSN(path))
+	dsn, err := sqliteuri.Disk(path, url.Values{"_pragma": {"busy_timeout(2000)", "foreign_keys(1)"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

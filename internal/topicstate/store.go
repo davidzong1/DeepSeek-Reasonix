@@ -13,10 +13,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"reasonix/internal/sqliteuri"
 
 	moderncsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -85,7 +86,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	_ = os.Chmod(filepath.Dir(path), 0o700)
 
-	db, err := sql.Open("sqlite", diskFileDSN(path))
+	dsn, err := sqliteuri.Disk(path, url.Values{
+		"_pragma": {"busy_timeout(2000)", "foreign_keys(1)"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -125,19 +132,6 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	_ = os.Chmod(path+"-wal", 0o600)
 	_ = os.Chmod(path+"-shm", 0o600)
 	return &Store{path: path, db: db, now: time.Now}, nil
-}
-
-func diskFileDSN(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	slash := filepath.ToSlash(abs)
-	if runtime.GOOS == "windows" && len(slash) >= 2 && slash[1] == ':' {
-		slash = "/" + slash
-	}
-	u := &url.URL{Scheme: "file", Path: slash}
-	return u.String() + "?_pragma=busy_timeout%282000%29&_pragma=foreign_keys%281%29"
 }
 
 func applyMigrations(ctx context.Context, db *sql.DB, now func() time.Time) error {

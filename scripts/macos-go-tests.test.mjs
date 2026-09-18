@@ -55,7 +55,9 @@ test("every darwin-specific package is inside the pull-request group", () => {
 test("CI runs the darwin group on pull requests and the full sweep on pushes", () => {
   const source = readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8");
   assert.match(source, /run: node scripts\/macos-go-tests\.mjs darwin\n/);
-  assert.match(source, /node --test[^\n]*scripts\/macos-go-tests\.test\.mjs/);
+  const releaseControl = source.match(/\n  release-control:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|$)/)?.[1];
+  assert.ok(releaseControl, "release-control job must still exist");
+  assert.match(releaseControl, /node --test[\s\S]*?scripts\/macos-go-tests\.test\.mjs/);
   const enabled = (name, event, run) => {
     const step = source.split(`      - name: ${name}\n`)[1]?.split(/\n      - /)[0];
     assert.ok(step, `${name} must still exist`);

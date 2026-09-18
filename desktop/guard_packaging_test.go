@@ -20,7 +20,6 @@ func TestVerifyWindowsPortableVersionedLayout(t *testing.T) {
 	verify := filepath.Join("..", "scripts", "verify-windows-portable.sh")
 	good := t.TempDir()
 	// versioned-v1 root entries
-	writePortableFixture(t, good, "reasonix-launcher.exe", "launcher")
 	writePortableFixture(t, good, "Reasonix.exe", "launcher")
 	writePortableFixture(t, good, "reasonix-cli.exe", "cli-entry")
 	ver := filepath.Join(good, "versions", "v1.20.0")
@@ -53,6 +52,38 @@ func TestVerifyWindowsPortableVersionedLayout(t *testing.T) {
 	}
 	if out, err := exec.Command("bash", verify, good).CombinedOutput(); err != nil {
 		t.Fatalf("valid versioned portable failed: %v\n%s", err, out)
+	}
+	writePortableFixture(t, good, "reasonix-launcher.exe", "launcher")
+	if out, err := exec.Command("bash", verify, good).CombinedOutput(); err == nil {
+		t.Fatalf("canonical package accepted legacy entry: %s", out)
+	}
+	if out, err := exec.Command("bash", verify, good, "legacy-dual").CombinedOutput(); err != nil {
+		t.Fatalf("explicit legacy package rejected: %v\n%s", err, out)
+	}
+	writePortableFixture(t, good, "reasonix-launcher.exe", "mismatch")
+	if out, err := exec.Command("bash", verify, good, "legacy-dual").CombinedOutput(); err == nil {
+		t.Fatalf("legacy package accepted mismatched entries: %s", out)
+	}
+	if err := os.Remove(filepath.Join(good, "reasonix-launcher.exe")); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"legacy-dual", "auto"} {
+		if out, err := exec.Command("bash", verify, good, mode).CombinedOutput(); err == nil {
+			t.Fatalf("accepted mode %s: %s", mode, out)
+		}
+	}
+	writePortableFixture(t, good, "unexpected.EXE", "extra")
+	if out, err := exec.Command("bash", verify, good).CombinedOutput(); err == nil {
+		t.Fatalf("accepted extra executable: %s", out)
+	}
+	if err := os.Remove(filepath.Join(good, "unexpected.EXE")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "current.json"), []byte("broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("bash", verify, good).CombinedOutput(); err == nil {
+		t.Fatalf("accepted damaged pointer: %s", out)
 	}
 
 	// Flat Guard layout must be rejected.
@@ -199,13 +230,13 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 		`!define REASONIX_UNINST_FINALIZE 'cmd.exe /C copy /Y "%1" "reasonix-uninstall.exe" >NUL'`,
 		`!uninstfinalize '${REASONIX_UNINST_FINALIZE}'`,
 		`File "/oname=uninstall.exe" "${ARG_REASONIX_SIGNED_UNINSTALLER}"`,
-		`StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"`,
+		`StrCpy $R9 "$INSTDIR\versions\.installer-${REASONIX_VERSION_TAG}-$R8"`,
 		`File "/oname=${REASONIX_LAYOUT_INSTALLER}" "${REASONIX_GUARD}"`,
 		`nsExec::ExecToLog /OEM`,
 		`Reasonix layout activator output:`,
 		`--activate-staging "$R9" --no-relaunch`,
-		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0`,
-		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0`,
+		`CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0`,
+		`CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0`,
 		`StrCmp $ReasonixStageMode "1" reasonix_stage_payload`,
 		`File "/oname=${REASONIX_GUARD}" "${REASONIX_GUARD}"`,
 	} {
@@ -216,6 +247,15 @@ func TestDesktopPackagesPreserveNativePlatformLaunchers(t *testing.T) {
 	if strings.Contains(windows, `FileOpen $0 "$INSTDIR\current.json" w`) ||
 		strings.Contains(windows, `SetOutPath "$INSTDIR\versions\v${INFO_PRODUCTVERSION}"`) {
 		t.Fatal("normal Windows installer must not write the live version or current.json in place")
+	}
+	for _, leak := range []string{
+		`$INSTDIR\versions\v${INFO_PRODUCTVERSION}`,
+		`.installer-v${INFO_PRODUCTVERSION}`,
+		`--version "v${INFO_PRODUCTVERSION}"`,
+	} {
+		if strings.Contains(windows, leak) {
+			t.Errorf("numeric Windows resource version leaked into release identity: %q", leak)
+		}
 	}
 	if strings.Contains(windows, `ExecWait '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}"`) {
 		t.Fatal("Windows installer must not discard layout activator stdout/stderr")

@@ -768,8 +768,8 @@ func TestACPApplyPendingClaimsStateBeforeResolving(t *testing.T) {
 	if got := sess.model; got != "fast" {
 		t.Fatalf("session model = %q, want latest requested value fast", got)
 	}
-	if got := stringPtrValue(sess.effortOverride); got != "high" {
-		t.Fatalf("effort = %q, want pending different-axis value high preserved", got)
+	if got := stringPtrValue(sess.effortOverride); got != "" {
+		t.Fatalf("effort = %q, want prior model's pending effort cleared by the newer model switch", got)
 	}
 }
 

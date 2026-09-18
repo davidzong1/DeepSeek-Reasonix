@@ -16,6 +16,19 @@ const readme = read("README.md");
 const desktopReadme = read("desktop/README.md");
 const desktopBuildScript = read("scripts/desktop-build.sh");
 
+// Execute the production shell wrapper to check the identity passed to packaging.
+const packageShell = desktopBuildScript.match(/^package_shell\(\) \{\n[\s\S]*?^\}/m)?.[0];
+assert.ok(packageShell, "desktop builds must define package_shell");
+const sourceSha = "a".repeat(40);
+const identityProbe = spawnSync("bash", ["-c", `${packageShell}\nnode() { printf '%s' "$REASONIX_COMMIT"; }\npackage_shell`], {
+  encoding: "utf8",
+  env: { ...process.env, ROOT: "/fixture", PLATFORM: "windows/amd64", VERSION: "v0.0.0-ci", CHANNEL: "canary",
+    SOURCE_SHA: sourceSha, GIT_COMMIT: sourceSha.slice(0, 12), BUILD_TIME_UTC: "2026-01-01T00:00:00Z" },
+});
+assert.ifError(identityProbe.error);
+assert.equal(identityProbe.status, 0, identityProbe.stderr);
+assert.equal(identityProbe.stdout.trim().split("\n").at(-1), sourceSha, "packaged identity must retain the full source SHA");
+
 const jobBody = (workflow, jobName) => {
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line === `  ${jobName}:`);

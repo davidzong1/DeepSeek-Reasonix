@@ -109,21 +109,21 @@ func TestBootstrapShellStartsDetachedShellWithServiceEnvAndArgs(t *testing.T) {
 		t.Fatalf("bootstrap handled=%v code=%d", handled, code)
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	want := []string{exe, "--flag", "two words"}
 	var raw []byte
 	for {
 		var err error
-		if raw, err = os.ReadFile(out); err == nil && len(raw) > 0 {
-			break
+		if raw, err = os.ReadFile(out); err == nil {
+			got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+			if strings.Join(got, "\x00") == strings.Join(want, "\x00") {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("shell script did not report its environment: %v", err)
+			got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+			t.Fatalf("shell saw %q, want %q (read error: %v)", got, want, err)
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	want := []string{exe, "--flag", "two words"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("shell saw %q, want %q", got, want)
 	}
 }
 

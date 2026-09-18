@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import { AlarmClock, Activity, BarChart3, Brain, Cpu, Palette, Puzzle, RotateCw, Server, Settings as SettingsIcon, SquarePen, TerminalSquare, Trash2 } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { useGlobalShortcut } from "../lib/keyboardShortcuts";
@@ -85,16 +84,16 @@ export function usePaletteCommands(input: PaletteCommandsInput) {
   const paletteItems = useMemo<PaletteItem[]>(() => {
     const navigation = useAppNavigationStore.getState();
     const cmds: PaletteItem[] = [
-      { id: "cmd-new", group: t("palette.group.commands"), title: t("palette.cmd.newSession"), icon: <SquarePen size={15} />, compact: true, keywords: ["new", "新建"], run: () => void ports.handleNewTab() },
-      { id: "cmd-automation", group: t("palette.group.commands"), title: t("sidebar.automation"), icon: <AlarmClock size={15} />, compact: true, keywords: ["automation", "自动化"], run: () => navigation.openPage({ kind: "automation" }) },
-      { id: "cmd-trash", group: t("palette.group.commands"), title: t("palette.cmd.trash"), icon: <Trash2 size={15} />, compact: true, keywords: ["trash", "回收站"], run: () => void ports.openTrash() },
-      { id: "cmd-settings", group: t("palette.group.commands"), title: t("palette.cmd.settings"), icon: <SettingsIcon size={15} />, compact: true, keywords: ["settings", "设置"], run: () => navigation.setSettingsTarget(navigation.lastSettingsTarget) },
-      { id: "cmd-appearance", group: t("palette.group.commands"), title: t("palette.cmd.appearance"), icon: <Palette size={15} />, compact: true, keywords: ["theme", "appearance", "外观", "主题"], run: () => navigation.setSettingsTarget("appearance") },
+      { id: "cmd-new", group: t("palette.group.commands"), title: t("palette.cmd.newSession"), icon: "new", compact: true, keywords: ["new", "新建"], run: () => void ports.handleNewTab() },
+      { id: "cmd-automation", group: t("palette.group.commands"), title: t("sidebar.automation"), icon: "automation", compact: true, keywords: ["automation", "自动化"], run: () => navigation.openPage({ kind: "automation" }) },
+      { id: "cmd-trash", group: t("palette.group.commands"), title: t("palette.cmd.trash"), icon: "trash", compact: true, keywords: ["trash", "回收站"], run: () => void ports.openTrash() },
+      { id: "cmd-settings", group: t("palette.group.commands"), title: t("palette.cmd.settings"), icon: "settings", compact: true, keywords: ["settings", "设置"], run: () => navigation.setSettingsTarget(navigation.lastSettingsTarget) },
+      { id: "cmd-appearance", group: t("palette.group.commands"), title: t("palette.cmd.appearance"), icon: "appearance", compact: true, keywords: ["theme", "appearance", "外观", "主题"], run: () => navigation.setSettingsTarget("appearance") },
       {
         id: "cmd-theme-reset",
         group: t("palette.group.commands"),
         title: t("settings.themeLibrary.reset"),
-        icon: <Palette size={15} />,
+        icon: "appearance",
         compact: true,
         keywords: ["theme", "reset", "default", "恢复默认", "主题"],
         run: () => {
@@ -106,13 +105,13 @@ export function usePaletteCommands(input: PaletteCommandsInput) {
             .catch((err) => showToast(err instanceof Error ? err.message : String(err), "error"));
         },
       },
-      { id: "cmd-memory", group: t("palette.group.commands"), title: t("palette.cmd.memory"), icon: <Brain size={15} />, compact: true, keywords: ["memory", "记忆"], run: () => navigation.setSettingsTarget("memory") },
-      { id: "cmd-models", group: t("palette.group.commands"), title: t("palette.cmd.models"), icon: <Cpu size={15} />, compact: true, keywords: ["model", "模型"], run: () => navigation.setSettingsTarget("models") },
+      { id: "cmd-memory", group: t("palette.group.commands"), title: t("palette.cmd.memory"), icon: "memory", compact: true, keywords: ["memory", "记忆"], run: () => navigation.setSettingsTarget("memory") },
+      { id: "cmd-models", group: t("palette.group.commands"), title: t("palette.cmd.models"), icon: "models", compact: true, keywords: ["model", "模型"], run: () => navigation.setSettingsTarget("models") },
       {
         id: "cmd-usage-stats",
         group: t("palette.group.commands"),
         title: t("palette.cmd.usageStats"),
-        icon: <BarChart3 size={15} />,
+        icon: "usage",
         compact: true,
         keywords: ["usage", "stats", "statistics", "用量", "统计"],
         run: () => {
@@ -123,13 +122,13 @@ export function usePaletteCommands(input: PaletteCommandsInput) {
           navigation.setSettingsTarget("models");
         },
       },
-      { id: "cmd-task-center", group: t("palette.group.commands"), title: t("palette.cmd.taskCenter"), icon: <Activity size={15} />, compact: true, keywords: ["task", "tasks", "center", "任务", "任务中心"], run: () => ports.setTasksOpen("all") },
-      { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: <TerminalSquare size={15} />, compact: true, keywords: ["terminal", "shell", "终端"], run: () => ports.toggleTerminalPanel() },
+      { id: "cmd-task-center", group: t("palette.group.commands"), title: t("palette.cmd.taskCenter"), icon: "tasks", compact: true, keywords: ["task", "tasks", "center", "任务", "任务中心"], run: () => ports.setTasksOpen("all") },
+      { id: "cmd-terminal", group: t("palette.group.commands"), title: t("rightDock.terminal"), icon: "terminal", compact: true, keywords: ["terminal", "shell", "终端"], run: () => ports.toggleTerminalPanel() },
       {
         id: "cmd-reload-runtime",
         group: t("palette.group.commands"),
         title: t("palette.cmd.reloadRuntime"),
-        icon: <RotateCw size={15} />,
+        icon: "reload",
         compact: true,
         keywords: ["reload", "runtime", "重载", "运行时"],
         run: () => {
@@ -168,7 +167,7 @@ export function usePaletteCommands(input: PaletteCommandsInput) {
           ? t("palette.remote.open", { host: host.label })
           : t("palette.remote.connect", { host: host.label }),
         hint: host.defaultWorkspace || target,
-        icon: <Server size={15} />,
+        icon: "remote",
         keywords: ["ssh", "remote", "远程", "连接", host.label, host.host],
         run: () => {
           if (connected) ports.openRemoteWorkspaceFromStatus(host);
@@ -181,7 +180,7 @@ export function usePaletteCommands(input: PaletteCommandsInput) {
       group: t("palette.group.extensions"),
       title: action.description || action.slash,
       hint: action.slash,
-      icon: <Puzzle size={15} />,
+      icon: "extension",
       keywords: ["extension", "扩展", action.plugin, action.action, action.slash],
       run: () => {
         const tabID = activeTabId;

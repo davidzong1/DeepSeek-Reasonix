@@ -57,8 +57,11 @@ func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scop
 	return availability
 }
 
-func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopicPage) ProjectTopicPage {
-	metadata := a.metadataTopicPage(req)
+func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopicPage) (ProjectTopicPage, error) {
+	metadata, err := a.metadataTopicPage(req)
+	if err != nil {
+		return page, err
+	}
 	manualOrder := manualTopicOrderFor(req.Scope, req.WorkspaceRoot)
 	seen := make(map[string]struct{}, len(page.Items)+len(metadata.Items))
 	for _, item := range page.Items {
@@ -87,7 +90,7 @@ func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopic
 	}
 	page.NextCursor = ""
 	if hasMore && len(page.Items) > 0 {
-		page.NextCursor = encodeProjectNodeCursor(page.Items[len(page.Items)-1], req.SortMode, manualOrder)
+		page.NextCursor = encodeProjectNodeCursor(page.Items[len(page.Items)-1], req.SortMode, manualOrder, req.groupCursorBind)
 	}
-	return page
+	return page, nil
 }

@@ -10,8 +10,16 @@ longer claim it.
 
 ## Installation and upgrade
 
+Use `Reasonix.exe` at the installation root to open Desktop; `reasonix-cli.exe`
+is the separate command-line entry. New installations and ZIPs extracted into
+an empty directory contain only that GUI entry. Existing installations retain
+`reasonix-launcher.exe` when present, with no scheduled removal, so old pins,
+custom shortcuts and scripts continue working. Managed upgrades update both
+names from the same verified launcher bytes. Files inside `versions/`, including
+the Electron `app/Reasonix.exe`, remain internal components.
+
 Before showing any Electron window, Desktop sets its relaunch command and icon
-to the permanent launcher when that launcher exists. New taskbar pins therefore
+to `Reasonix.exe`, falling back to the legacy launcher when necessary. New taskbar pins therefore
 do not depend on the versioned Electron executable or its service-path environment.
 
 The installer applies the identity to the exact shortcuts it creates before
@@ -33,10 +41,14 @@ is named Reasonix. Separate installations are not modified.
 
 Links into `versions/<version>/reasonix-desktop.exe` or
 `versions/<version>/app/Reasonix.exe`, as well as a flat `app/Reasonix.exe`, move to the permanent
-`reasonix-launcher.exe` when it exists. The obsolete version can then be
+`Reasonix.exe` when it exists; owned links to `reasonix-launcher.exe` also move
+to this canonical entry. With only the legacy launcher available, repair keeps
+using that valid entry. The obsolete version can then be
 removed without breaking that shortcut. The repair preserves launch arguments,
-descriptions, window state, and custom icons; a rewritten target uses the
-installation root as its working directory. An active flat Go installation keeps
+descriptions, window state, custom icons and custom working directories. Only
+empty working directories or the migrated version's executable directory are
+normalized to the installation root. The installer repairs existing links
+without recreating them. An active flat Go installation keeps
 its live Go entry point.
 
 Unreadable or unwritable links are left for a later launch to retry and produce
@@ -45,6 +57,20 @@ Explorer may retain cached pins; if a repaired link still appears separately,
 unpin it, start Desktop through its permanent launcher, and pin it again.
 
 ## Coexistence and rollback
+
+Signed update payloads and `/REASONIXSTAGE=1` still contain
+`reasonix-launcher.exe`: already installed update helpers require this name.
+The installed layout is selected separately. An old helper can upgrade directly
+and may publish both entry names. A new helper preserves an existing legacy entry
+but does not create one in a canonical-only installation. `current.json` schema 1,
+`versioned-v1` and the signed payload schema are unchanged.
+
+Extract portable ZIPs into a new directory, or use in-app updates. Manually
+overlaying a ZIP leaves old files in place and does not provide transactional
+installation; a remaining legacy launcher can still have its previous bytes
+until the next managed update. Do not delete it to save space if shortcuts or
+scripts may still reference it. A damaged `current.json` requires repair with
+a complete installer; do not point shortcuts at a retained old version.
 
 Upgrades deliver the launcher, Electron shell, and Go binaries together through
 the existing release-unit mechanism. A rollback must restore the complete old

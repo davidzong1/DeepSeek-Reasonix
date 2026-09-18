@@ -42,6 +42,9 @@ func doctorBillingCommand(args []string) int {
 }
 
 func doctorCommand(args []string, version string) int {
+	if len(args) > 0 && args[0] == "credentials" {
+		return doctorCredentialsCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "catalogs" {
 		return doctorCatalogsCommand(args[1:])
 	}
@@ -89,6 +92,49 @@ func doctorCommand(args []string, version string) int {
 	return 0
 }
 
+func doctorCredentialsCommand(args []string) int {
+	fs := flag.NewFlagSet("doctor credentials", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print credential diagnostics as JSON")
+	probe := fs.Bool("probe", false, "test temporary create and atomic rename in the credential directory")
+	repairCredentials := fs.Bool("repair", false, "conservatively repair current-user credential access")
+	dryRun := fs.Bool("dry-run", false, "preview credential repairs without changing files")
+	if code, ok := parseCommandFlags(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 0 || (*dryRun && !*repairCredentials) {
+		fmt.Fprintln(os.Stderr, "usage: reasonix doctor credentials [--json] [--probe] [--repair [--dry-run]]")
+		return 2
+	}
+	report, err := config.DiagnoseCredentials(config.CredentialDiagnosticOptions{Probe: *probe, Repair: *repairCredentials, DryRun: *dryRun})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	} else {
+		fmt.Println("Reasonix credential diagnostics")
+		fmt.Println("  path:", report.CredentialPath)
+		for _, check := range report.Checks {
+			fmt.Printf("  %-24s %-11s %s\n", check.ID, check.Status, check.Message)
+		}
+		for _, action := range report.Actions {
+			fmt.Println("  action:", action)
+		}
+	}
+	for _, check := range report.Checks {
+		if check.Status == "failed" {
+			return 1
+		}
+	}
+	return 0
+}
+
 func doctorSessionsCommand(args []string) int {
 	fs := flag.NewFlagSet("doctor sessions", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print session catalog diagnostics as JSON")
@@ -109,6 +155,9 @@ func doctorSessionsCommand(args []string) int {
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(status); err != nil {
 			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if status.State == sessioncatalog.StateDegraded {
 			return 1
 		}
 		return 0
@@ -133,6 +182,9 @@ func doctorSessionsCommand(args []string) int {
 		status.RecoveryGroups, status.RecoveryBranches, status.RecoveryDiverged, status.CleanupEligible)
 	if status.LastError != "" {
 		fmt.Printf("  note: %s\n", status.LastError)
+	}
+	if status.State == sessioncatalog.StateDegraded {
+		return 1
 	}
 	return 0
 }

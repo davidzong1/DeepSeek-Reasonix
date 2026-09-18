@@ -955,15 +955,12 @@ func TestAutoReclaimCompletesOutstandingReclaim(t *testing.T) {
 	held.Store(false)
 	writerLease.Release()
 	backdate()
-	f.server.maybeAutoReclaimMirrored(other)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if view := f.ownershipView(t, other); !view.Mirrored {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("stale mirror with outstanding reclaim was never cleared: %+v", f.ownershipView(t, other))
-		}
-		time.Sleep(10 * time.Millisecond)
+	done := f.server.maybeAutoReclaimMirrored(other)
+	if done == nil {
+		t.Fatal("stale mirror recovery did not start")
+	}
+	<-done
+	if view := f.ownershipView(t, other); view.Mirrored {
+		t.Fatalf("stale mirror with outstanding reclaim was never cleared: %+v", view)
 	}
 }

@@ -279,7 +279,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("\n")
 
 	if shouldRenderProviders(c, defaults, scope) {
-		for _, p := range c.Providers {
+		for _, p := range reasoningCompatibilitySnapshots(c.Providers) {
 			b.WriteString("[[providers]]\n")
 			fmt.Fprintf(&b, "name        = %q\n", p.Name)
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
@@ -941,7 +941,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 	// [[providers]] — include user-defined providers that aren't built-in
 	proj := projectScopedConfigForRender(c)
 	if proj != nil && len(proj.Providers) > 0 && !reflect.DeepEqual(proj.Providers, d.Providers) {
-		for _, p := range proj.Providers {
+		for _, p := range reasoningCompatibilitySnapshots(proj.Providers) {
 			b.WriteString("[[providers]]\n")
 			fmt.Fprintf(&b, "name        = %q\n", p.Name)
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
@@ -1520,54 +1520,6 @@ func renderAnyValue(v any) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func renderModelOverrides(m map[string]ProviderModelOverride) string {
-	keys := make([]string, 0, len(m))
-	for k, ov := range m {
-		if k == "" || modelOverrideEmpty(ov) {
-			continue
-		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteString("{ ")
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%q = %s", k, renderModelOverride(m[k]))
-	}
-	b.WriteString(" }")
-	return b.String()
-}
-
-func renderModelOverride(ov ProviderModelOverride) string {
-	var parts []string
-	if ov.ReasoningProtocol != "" {
-		parts = append(parts, fmt.Sprintf("reasoning_protocol = %q", ov.ReasoningProtocol))
-	}
-	if len(ov.SupportedEfforts) > 0 {
-		parts = append(parts, "supported_efforts = "+renderStringArray(ov.SupportedEfforts))
-	}
-	if ov.DefaultEffort != "" {
-		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
-	}
-	if ov.Vision != nil {
-		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
-	}
-	if ov.ContextWindow > 0 {
-		parts = append(parts, fmt.Sprintf("context_window = %d", ov.ContextWindow))
-	}
-	if ov.MaxOutputTokens != 0 {
-		parts = append(parts, fmt.Sprintf("max_output_tokens = %d", ov.MaxOutputTokens))
-	}
-	return "{ " + strings.Join(parts, ", ") + " }"
-}
-
-func modelOverrideEmpty(ov ProviderModelOverride) bool {
-	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
 }
 
 func hasPositiveIntMap(m map[string]int) bool {

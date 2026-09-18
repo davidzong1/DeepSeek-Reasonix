@@ -31,6 +31,10 @@ type SubmissionRequest struct {
 	Invocations      []InvocationRequest `json:"invocations,omitempty"`
 }
 
+// ErrSubmissionNotAccepted is only attached to failures that precede durable
+// admission. Transport and flush failures must never use this disposition.
+var ErrSubmissionNotAccepted = errors.New("submission not accepted")
+
 type submissionIdentityState struct {
 	mu        sync.Mutex
 	pending   atomic.Pointer[session.SubmissionReceipt]
@@ -68,6 +72,12 @@ func submissionFingerprint(req SubmissionRequest) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// MatchesSubmissionReceipt validates a cold, durable receipt without creating
+// a Controller or including host identity in provider-visible input.
+func MatchesSubmissionReceipt(req SubmissionRequest, receipt session.SubmissionReceipt) bool {
+	return req.ID == receipt.SubmissionID && receipt.Fingerprint == submissionFingerprint(req)
+}
+
 // LookupSubmission also detects accidental reuse of a key for different input.
 func (c *Controller) LookupSubmission(req SubmissionRequest) (session.SubmissionReceipt, bool, error) {
 	store := c.sessionEventStore()
@@ -96,14 +106,18 @@ func (c *Controller) LookupSubmission(req SubmissionRequest) (session.Submission
 // SubmitIdentified serializes identity checking with synchronous turn admission.
 func (c *Controller) SubmitIdentified(req SubmissionRequest) (session.SubmissionReceipt, error) {
 	if len(req.ID) > 256 || strings.ContainsAny(req.ID, "\x00\r\n") {
-		return session.SubmissionReceipt{}, errors.New("invalid submission identity")
+		return session.SubmissionReceipt{}, errors.Join(ErrSubmissionNotAccepted, errors.New("invalid submission identity"))
 	}
 	return c.submitIdentified(req, func() {
 		switch {
 		case req.Action == ProtocolRecoveryAction:
 			c.submitProtocolRecoveryLocked(req.RecoveryID, req.Input)
-		case req.Action == "delivery-recovery":
+		case req.Action == "delivery-recovery" || req.Action == FinalReadinessRecoveryAction:
 			c.submitFinalReadinessRecoveryLocked(req.Display, req.Input)
+		case req.Action == "shell":
+			// TurnStarted persists the pending receipt synchronously before
+			// runGuarded can launch the shell body.
+			c.RunShell(req.Input)
 		case req.HTTP:
 			c.submitHTTPWithFormatLocked(req.Input, req.Display, req.Format)
 		case len(req.Invocations) > 0:
@@ -122,14 +136,19 @@ func (c *Controller) submitIdentified(req SubmissionRequest, submit func()) (ses
 	}
 	store := c.sessionEventStore()
 	if req.ID == "" {
+		before, _, _ := c.currentTurnToken()
 		submit()
+		after, _, _ := c.currentTurnToken()
+		if after == before {
+			return session.SubmissionReceipt{}, errors.Join(ErrSubmissionNotAccepted, errors.New("submission was not admitted"))
+		}
 		return session.SubmissionReceipt{}, nil
 	}
 	if store == nil {
-		return session.SubmissionReceipt{}, errors.New("durable submission identity unavailable")
+		return session.SubmissionReceipt{}, errors.Join(ErrSubmissionNotAccepted, errors.New("durable submission identity unavailable"))
 	}
 	if c.Running() {
-		return session.SubmissionReceipt{}, ErrTurnRunning
+		return session.SubmissionReceipt{}, errors.Join(ErrSubmissionNotAccepted, ErrTurnRunning)
 	}
 	receipt := &session.SubmissionReceipt{SessionID: store.ID(), SubmissionID: req.ID,
 		Fingerprint: submissionFingerprint(req), MessageID: agent.NewMessageID()}
@@ -143,7 +162,7 @@ func (c *Controller) submitIdentified(req SubmissionRequest, submit func()) (ses
 	}
 	accepted, ok := store.Submission(req.ID)
 	if !ok {
-		return session.SubmissionReceipt{}, errors.New("submission was not durably admitted")
+		return session.SubmissionReceipt{}, errors.Join(ErrSubmissionNotAccepted, errors.New("submission was not durably admitted"))
 	}
 	return accepted, nil
 }

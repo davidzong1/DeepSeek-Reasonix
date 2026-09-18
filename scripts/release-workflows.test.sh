@@ -53,16 +53,53 @@ assert 'args+=(--latest=false)' in manual_publish
 assert 'name: Sign artifacts (minisign)' in desktop
 PY
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
-relay="$repo_root/.github/workflows/release-stable-trigger.yml"
-grep -Eq 'actions: write' "$relay"
-grep -Eq "CONTROL_PLANE_REF.*default_branch" "$relay"
-grep -Eq "CONTROL_PLANE_REF !== 'main-v2'" "$relay"
-grep -Eq 'createWorkflowDispatch' "$relay"
-grep -Eq 'ref: process\.env\.CONTROL_PLANE_REF' "$relay"
-grep -Eq "workflow_id: 'release-stable\.yml'" \
-	"$repo_root/.github/workflows/release-stable-trigger.yml"
-grep -Eq "allow_recovery: 'false'" \
-	"$repo_root/.github/workflows/release-stable-trigger.yml"
+test ! -e "$repo_root/.github/workflows/release-stable-trigger.yml"
+candidate="$repo_root/.github/workflows/release-candidate.yml"
+promote="$repo_root/.github/workflows/release-promote.yml"
+verify="$repo_root/.github/workflows/release-verify.yml"
+rehearsal_verify="$repo_root/.github/workflows/release-candidate-verify.yml"
+for workflow in "$candidate" "$promote" "$verify" "$rehearsal_verify"; do test -s "$workflow"; done
+candidate_dispatch="$(sed -n '/workflow_dispatch:/,/^  push:/p' "$candidate")"
+[ "$(grep -Ec '^      [a-z_]+:$' <<<"$candidate_dispatch")" = "2" ]
+grep -Fq 'required: true' <<<"$(sed -n '/^      version:/,/^      rehearsal:/p' <<<"$candidate_dispatch")"
+grep -Fq 'required: false' <<<"$(sed -n '/^      rehearsal:/,$p' <<<"$candidate_dispatch")"
+! grep -Fq 'inputs.source_sha' "$candidate"
+! grep -Fq 'pull_request_target' "$candidate"
+grep -Fq 'branches: [main-v2]' "$candidate"
+grep -Fq -- '- release-notes/releases.json' "$candidate"
+grep -Fq 'actions/attest-build-provenance@v3' "$candidate"
+grep -Fq 'bash scripts/validate-release-control-plane.sh' "$candidate"
+preflight_line="$(grep -n -m1 'bash scripts/validate-release-control-plane.sh' "$candidate" | cut -d: -f1)"
+source_ci_line="$(grep -n -m1 'run: bash scripts/verify-release-push-ci.sh' "$candidate" | cut -d: -f1)"
+[ "$preflight_line" -lt "$source_ci_line" ]
+! grep -Fq 'source_sha="$(git rev-parse origin/main-v2)"' "$candidate"
+grep -Fq 'retention-days: 30' "$candidate"
+grep -Fq 'retention-days: 90' "$candidate"
+grep -Fq 'name: ${{ needs.resolve.outputs.artifact_namespace }}-evidence-${{ needs.resolve.outputs.candidate_id }}' "$candidate"
+grep -Fq 'RELEASE_EVIDENCE_ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}' "$candidate"
+grep -Fq 'node scripts/resolve-release-candidate.mjs resolve-rehearsal' "$rehearsal_verify"
+grep -Fq 'node scripts/release-candidate.mjs verify-rehearsal' "$rehearsal_verify"
+grep -Fq 'node scripts/verify-release-artifact-archive.mjs' "$rehearsal_verify"
+! grep -Eq 'environment: release|release-candidate-tags\.sh activate|publish-(desktop|homebrew)|npm publish' "$rehearsal_verify"
+grep -Fq 'gh attestation verify' "$promote"
+grep -Fq 'bash scripts/release-candidate-tags.sh check' "$promote"
+grep -Fq 'bash scripts/release-candidate-tags.sh activate' "$promote"
+grep -Fq 'git push --atomic "$remote"' "$repo_root/scripts/release-candidate-tags.sh"
+[ "$(grep -Ec '^    environment: release$' "$promote")" = "1" ]
+grep -Fq 'group: stable-release-publication' "$promote"
+grep -Fq 'VERIFY_PUBLIC_SITE_ONLY: "true"' "$promote"
+grep -Fq 'release-publication-ledger-' "$promote"
+grep -Fq 'release-publication-timing-' "$promote"
+grep -Fq 'release-candidate-timing-' "$candidate"
+grep -Fq 'immutable-complete-newer-pointer-preserved' "$promote"
+grep -Fq 'RELEASE_REVOKED_CANDIDATES' "$candidate"
+grep -Fq 'PUSH_SHA: ${{ github.sha }}' "$candidate"
+grep -Fq 'node scripts/resolve-release-candidate.mjs active "$candidate_id"' "$candidate"
+grep -Fq 'The sealed record exists but its payload expired; preparing fresh files.' "$candidate"
+grep -Fq 'RELEASE_REVOKED_CANDIDATES' "$promote"
+grep -Fq 'run: bash scripts/verify-stable-release-artifacts.sh' "$verify"
+grep -Fq 'RELEASE_OPERATION: recover' "$verify"
+grep -Fq -- '--dump-dom' "$repo_root/scripts/verify-stable-release-artifacts.sh"
 grep -Eq 'ALLOW_STABLE_RECOVERY:.*inputs\.allow_recovery' \
 	"$repo_root/.github/workflows/release-stable.yml"
 grep -Fq 'bash scripts/validate-stable-candidate.sh "$RELEASE_VERSION" "$RELEASE_SHA"' \
@@ -73,13 +110,19 @@ grep -Fq 'if: ${{ !inputs.allow_recovery }}' \
 	"$repo_root/.github/workflows/release-stable.yml"
 test -x "$repo_root/scripts/validate-stable-candidate.sh"
 test -x "$repo_root/scripts/verify-release-push-ci.sh"
+test -x "$repo_root/scripts/validate-release-control-plane.sh"
+test -x "$repo_root/scripts/finalize-windows-signed-candidate.sh"
 for retired in release-preview.yml release-cli-trigger.yml release-desktop-trigger.yml; do
 	test ! -e "$repo_root/.github/workflows/$retired"
 done
-! sed -n '/^on:/,/^permissions:/p' "$repo_root/.github/workflows/release-npm.yml" |
-	grep -Eq 'push:|npm-v\*-\*'
+npm_events="$(sed -n '/^on:/,/^permissions:/p' "$repo_root/.github/workflows/release-npm.yml")"
+! grep -Eq 'push:|npm-v\*-\*' <<<"$npm_events"
 grep -Eq '^name: Prepare release$' "$repo_root/.github/workflows/prepare-release-notes.yml"
-[ "$(sed -n '/workflow_dispatch:/,/permissions:/p' "$repo_root/.github/workflows/prepare-release-notes.yml" | grep -Ec '^      [a-z_]+:$')" = "1" ]
+[ "$(grep -Fc 'git merge --no-edit origin/main-v2' "$repo_root/.github/workflows/prepare-release-notes.yml")" = "0" ]
+grep -Fq 'RELEASE_NOTES_SOURCE_SHA=$source_sha' "$repo_root/.github/workflows/prepare-release-notes.yml"
+grep -Fq -- '--to "$RELEASE_NOTES_SOURCE_SHA"' "$repo_root/.github/workflows/prepare-release-notes.yml"
+notes_dispatch="$(sed -n '/workflow_dispatch:/,/permissions:/p' "$repo_root/.github/workflows/prepare-release-notes.yml")"
+[ "$(grep -Ec '^      [a-z_]+:$' <<<"$notes_dispatch")" = "1" ]
 grep -Fq 'GitHub Actions could not open the PR; the reviewed branch is preserved.' \
 	"$repo_root/.github/workflows/prepare-release-notes.yml"
 if grep -Eq '^  push:$' "$repo_root/.github/workflows/release-stable.yml" ||
@@ -94,11 +137,17 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 	grep -Eq 'inputs\.approved_sha' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'verify-release-tag\.sh' "$repo_root/.github/workflows/$workflow"
 	grep -Eq 'release-\{1\}\.yml' "$repo_root/.github/workflows/$workflow"
+done
+for workflow in release.yml release-npm.yml; do
 	grep -Eq "needs\.cache-guard\.result == 'success'" "$repo_root/.github/workflows/$workflow"
 done
+if grep -Eq '^  cache-guard:|needs\.cache-guard' "$repo_root/.github/workflows/release-desktop.yml"; then
+	echo "Desktop must reuse the orchestrator cache/docs evidence instead of executing candidate guard scripts twice" >&2
+	exit 1
+fi
 grep -Eq 'options: \[stable\]' "$repo_root/.github/workflows/release.yml"
-grep -A6 -E '^      channel:' "$repo_root/.github/workflows/release.yml" |
-	grep -Eq 'default: stable'
+cli_channel="$(grep -A6 -E '^      channel:' "$repo_root/.github/workflows/release.yml")"
+grep -Eq 'default: stable' <<<"$cli_channel"
 grep -Eq '^    environment: release$' "$repo_root/.github/workflows/release.yml"
 grep -Eq 'GORELEASER_CURRENT_TAG:.*needs\.resolve\.outputs\.tag' \
 	"$repo_root/.github/workflows/release.yml"
@@ -139,8 +188,8 @@ git -C "$test_root/product-checkout" check-ignore -q release-control/
 grep -Eq "needs\.build\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq "needs\.publish\.result == 'success'" "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'options: \[stable\]' "$repo_root/.github/workflows/release-desktop.yml"
-if sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-desktop.yml" |
-	grep -Eqi 'preview|canary'; then
+desktop_dispatch="$(sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-desktop.yml")"
+if grep -Eqi 'preview|canary' <<<"$desktop_dispatch"; then
 	echo "Standalone Desktop dispatch must not expose a Preview or Canary choice" >&2
 	exit 1
 fi
@@ -148,8 +197,10 @@ grep -Eq '^  resolve:$' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Eq 'sha:.*steps\.candidate\.outputs\.sha' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'bash scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'name: Smoke-test packaged Electron startup' "$repo_root/.github/workflows/release-desktop.yml"
-sed -n '/name: Smoke-test packaged Electron startup/,/name: Upload Windows signing inputs/p' \
-	"$repo_root/.github/workflows/release-desktop.yml" | grep -Fq "if: runner.os == 'Windows'"
+grep -Eq '^  windows-build:$' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Eq '^  windows-sign:$' "$repo_root/.github/workflows/release-desktop.yml"
+windows_sign="$(sed -n '/^  windows-sign:/,/^  windows-runtime-acceptance:/p' "$repo_root/.github/workflows/release-desktop.yml")"
+grep -Fq 'needs: [resolve, windows-build, signing-contract]' <<<"$windows_sign"
 grep -Fq 'desktop/build/electron/${{ matrix.name }}/app' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'node desktop/packaging/smoke.mjs' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq -- '--service desktop/build/bin/reasonix-desktop.exe' "$repo_root/.github/workflows/release-desktop.yml"
@@ -198,31 +249,29 @@ signing_upload_line="$(grep -n -m1 'name: Upload Windows signing inputs' "$repo_
 [ "$(grep -Fc 'IN_ORCHESTRATOR: ${{ inputs.orchestrator }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
 [ "$(grep -Fc 'name: Revalidate immutable Desktop candidate' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'ref: ${{ needs.resolve.outputs.sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 4 ]
-[ "$(grep -Ec '^          path: release-control$' "$repo_root/.github/workflows/release-desktop.yml")" = "4" ]
+[ "$(grep -Ec '^          path: release-control$' "$repo_root/.github/workflows/release-desktop.yml")" -ge "5" ]
 grep -Fq 'name: Checkout protected release verifier' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'scripts/desktop-release-artifacts.mjs' "$repo_root/.github/workflows/release-desktop.yml"
 if grep -Fq 'test-webview2-native-smoke.ps1' "$repo_root/.github/workflows/release-desktop.yml"; then
 	echo "Desktop release must smoke the packaged Electron shell, not the Wails/WebView2 harness" >&2
 	exit 1
 fi
-grep -Fq './release-control/scripts/verify-windows-authenticode.ps1' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'finalize-windows-signed-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'verify-windows-authenticode.ps1' "$repo_root/scripts/finalize-windows-signed-candidate.sh"
 [ "$(grep -Fc 'ref: ${{ github.workflow_sha }}' "$repo_root/.github/workflows/release-desktop.yml")" -ge 2 ]
 [ "$(grep -Fc 'bash release-control/scripts/resolve-desktop-candidate.sh' "$repo_root/.github/workflows/release-desktop.yml")" = "2" ]
 [ "$(grep -Fc 'RELEASE_TAG: ${{ inputs.approved_cli_tag }}' "$repo_root/.github/workflows/release-desktop.yml")" = "3" ]
-if sed -n '/^  mirror:/,$p' "$repo_root/.github/workflows/release-desktop.yml" |
-	grep -Fq 'RELEASE_TAG: ${{ inputs.tag }}'; then
+desktop_mirror="$(sed -n '/^  mirror:/,$p' "$repo_root/.github/workflows/release-desktop.yml")"
+if grep -Fq 'RELEASE_TAG: ${{ inputs.tag }}' <<<"$desktop_mirror"; then
 	echo "Desktop mirror must revalidate the orchestrator-approved CLI tag" >&2
 	exit 1
 fi
-if sed -n '/name: publish release/,/name: mirror to R2/p' \
-	"$repo_root/.github/workflows/release-desktop.yml" |
-	grep -Eq 'bash scripts/(resolve-desktop-candidate|validate-desktop-release-manifest|publish-desktop-github-release)\.sh'; then
+desktop_publish="$(sed -n '/name: publish release/,/name: mirror to R2/p' "$repo_root/.github/workflows/release-desktop.yml")"
+if grep -Eq 'bash scripts/(resolve-desktop-candidate|validate-desktop-release-manifest|publish-desktop-github-release)\.sh' <<<"$desktop_publish"; then
 	echo "Desktop publish job uses candidate-controlled release scripts" >&2
 	exit 1
 fi
-if sed -n '/name: mirror to R2/,$p' \
-	"$repo_root/.github/workflows/release-desktop.yml" |
-	grep -Eq 'bash scripts/(resolve-desktop-candidate|validate-desktop-release-manifest|verify-desktop-release-directory|decide-desktop-pointer-update)\.sh'; then
+if grep -Eq 'bash scripts/(resolve-desktop-candidate|validate-desktop-release-manifest|verify-desktop-release-directory|decide-desktop-pointer-update)\.sh' <<<"$desktop_mirror"; then
 	echo "Desktop mirror job uses candidate-controlled release scripts" >&2
 	exit 1
 fi
@@ -239,34 +288,30 @@ grep -Eq 'IN_SIGNING_PREFLIGHT:.*inputs\.signing_preflight' \
 	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq "group: release-npm-\${{ inputs.channel || 'next' }}" \
 	"$repo_root/.github/workflows/release-npm.yml"
-sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-npm.yml" |
-	grep -Eq 'default: stable'
-if sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-npm.yml" |
-	grep -Eq '^          - canary$'; then
+npm_dispatch="$(sed -n '/^  workflow_dispatch:/,/^  workflow_call:/p' "$repo_root/.github/workflows/release-npm.yml")"
+grep -Eq 'default: stable' <<<"$npm_dispatch"
+if grep -Eq '^          - canary$' <<<"$npm_dispatch"; then
 	echo "Standalone npm dispatch must not expose public Canary publication" >&2
 	exit 1
 fi
 grep -Fq 'if: ${{ !inputs.orchestrated }}' "$repo_root/.github/workflows/release-npm.yml"
 grep -Fq 'Publish or recover immutable npm packages' "$repo_root/.github/workflows/release-npm.yml"
-if sed -n '/^  cache-guard:/,/^  npm:/p' \
-	"$repo_root/.github/workflows/release-npm.yml" |
-	grep -Fq 'RECOVERY_CONTROL_SHA'; then
+npm_cache_guard="$(sed -n '/^  cache-guard:/,/^  npm:/p' "$repo_root/.github/workflows/release-npm.yml")"
+if grep -Fq 'RECOVERY_CONTROL_SHA' <<<"$npm_cache_guard"; then
 	echo "npm recovery control plane must load in the publisher job after candidate checkout" >&2
 	exit 1
 fi
-sed -n '/^  npm:/,$p' "$repo_root/.github/workflows/release-npm.yml" |
-	grep -Fq 'RECOVERY_CONTROL_SHA: ${{ github.workflow_sha }}'
-sed -n '/^  npm:/,$p' "$repo_root/.github/workflows/release-npm.yml" |
-	grep -Fq 'git restore --source="$RECOVERY_CONTROL_SHA"'
+npm_job="$(sed -n '/^  npm:/,$p' "$repo_root/.github/workflows/release-npm.yml")"
+grep -Fq 'RECOVERY_CONTROL_SHA: ${{ github.workflow_sha }}' <<<"$npm_job"
+grep -Fq 'git restore --source="$RECOVERY_CONTROL_SHA"' <<<"$npm_job"
 for recovery_script in npm/publish.mjs scripts/finalize-npm-official-release.mjs; do
-	sed -n '/^  npm:/,$p' "$repo_root/.github/workflows/release-npm.yml" |
-		grep -Fq "$recovery_script"
+	grep -Fq "$recovery_script" <<<"$npm_job"
 done
 # Orchestrated Stable recovery needs the same protected publisher repair as a
 # standalone run; the immutable product checkout must not select the old helper.
 npm_control_step="$(sed -n '/      - name: Load approved npm publication control plane/,/      - uses: actions\/setup-go@v7/p' "$repo_root/.github/workflows/release-npm.yml")"
 [ -n "$npm_control_step" ]
-if printf '%s\n' "$npm_control_step" | grep -q 'if:'; then
+if grep -q 'if:' <<<"$npm_control_step"; then
 	echo "npm publication control plane must load for orchestrated recovery too" >&2
 	exit 1
 fi
@@ -282,9 +327,9 @@ grep -Eq "needs\.build\.result == 'success'.*!inputs\.production_signing_smoke.*
 	"$repo_root/.github/workflows/release-desktop.yml"
 ! grep -Eq 'signpath/github-action-submit-signing-request|secrets.SIGNPATH_API_TOKEN|complete-signpath-request\.ps1' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'uses: ./release-control/.github/actions/setup-certum' "$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq 'scripts/sign-certum.ps1 -PayloadDirectory signed-payload' "$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq 'scripts/sign-certum.ps1 -FilePath' "$repo_root/.github/workflows/release-desktop.yml"
-grep -Fq -- '-ExpectedThumbprint $env:CERTUM_KEY_ID -RequireTrusted' "$repo_root/.github/workflows/release-desktop.yml"
+grep -Fq 'sign-certum.ps1" -PayloadDirectory' "$repo_root/scripts/finalize-windows-signed-candidate.sh"
+grep -Fq 'sign-certum.ps1" -FilePath' "$repo_root/scripts/finalize-windows-signed-candidate.sh"
+grep -Fq -- '-ExpectedThumbprint "$CERTUM_KEY_ID"' "$repo_root/scripts/finalize-windows-signed-candidate.sh"
 grep -Eq '^  signpath-preflight:$' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'signing_preflight: true' "$repo_root/.github/workflows/release-stable.yml"
 grep -Eq 'signing_preflight_verified: true' "$repo_root/.github/workflows/release-stable.yml"
@@ -393,12 +438,13 @@ grep -Eq 'name: Decide whether CLI artifacts need publication' "$cli_release_wor
 grep -Fq 'path: release-control' "$cli_release_workflow"
 grep -Fq 'ref: ${{ github.workflow_sha }}' "$cli_release_workflow"
 grep -Fq 'release-control/scripts/decide-cli-release-publication.sh' "$cli_release_workflow"
-if sed -n '/^  goreleaser:/,$p' "$cli_release_workflow" |
-	grep -Fq 'bash scripts/decide-cli-release-publication.sh'; then
+cli_goreleaser="$(sed -n '/^  goreleaser:/,$p' "$cli_release_workflow")"
+if grep -Fq 'bash scripts/decide-cli-release-publication.sh' <<<"$cli_goreleaser"; then
 	echo "CLI recovery uses candidate-controlled publication policy" >&2
 	exit 1
 fi
-grep -Fq "if: \${{ steps.publication.outputs.decision == 'publish' }}" "$cli_release_workflow"
+grep -Fq "steps.publication.outputs.decision == 'publish' && inputs.candidate_artifact_name == ''" "$cli_release_workflow"
+grep -Fq "steps.publication.outputs.decision == 'publish' && inputs.candidate_artifact_name != ''" "$cli_release_workflow"
 grep -Fq 'immutable CLI release metadata for $TAG already exists with different content' "$cli_release_workflow"
 grep -Fq 'cmp -s /tmp/cli-release.json /tmp/cli-release.pointer.json' "$cli_release_workflow"
 grep -Eq 'internal CLI release .*Stable and Preview pointers remain unchanged' "$cli_release_workflow"
@@ -1246,7 +1292,7 @@ grep -Fq 'branch="release-notes/v${VERSION}"' "$prepare_notes"
 grep -Fq 'GitHub Actions could not open the PR; the reviewed branch is preserved.' "$prepare_notes"
 grep -Fq 'gh pr create --repo ${{ github.repository }} --base main-v2 --head $RELEASE_NOTES_BRANCH --fill' "$prepare_notes"
 grep -Eq 'GITHUB_STEP_SUMMARY' "$prepare_notes"
-grep -Fq 'node scripts/generate-release-notes.mjs --version "$VERSION" --to origin/main-v2' "$prepare_notes"
+grep -Fq 'node scripts/generate-release-notes.mjs --version "$VERSION" --to "$RELEASE_NOTES_SOURCE_SHA"' "$prepare_notes"
 grep -Fq 'thinking: { type: "disabled" }' "$generate_notes"
 
 desktop_candidate_resolver="$repo_root/scripts/resolve-desktop-candidate.sh"
@@ -1276,6 +1322,21 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 	grep -Eq '^desktop_tag=desktop-v1\.3\.0-preview\.42$' "$test_root/preview.out"
 	grep -Eq '^npm_version=1\.3\.0-canary\.42$' "$test_root/preview.out"
 	approved_sha="$(git rev-parse HEAD)"
+	GITHUB_OUTPUT="$test_root/desktop-rehearsal.out" \
+		RELEASE_CHANNEL=stable RELEASE_TAG=desktop-v1.2.3 \
+		IN_ORCHESTRATED=true IN_ORCHESTRATOR=candidate APPROVED_SHA="$approved_sha" \
+		CANDIDATE_PREPARATION=true CANDIDATE_REHEARSAL=true \
+		"$desktop_candidate_resolver"
+	grep -Eq '^sha='"$approved_sha"'$' "$test_root/desktop-rehearsal.out"
+	if GITHUB_OUTPUT="$test_root/desktop-unsafe-rehearsal.out" \
+		RELEASE_CHANNEL=stable RELEASE_TAG=desktop-v1.2.3 \
+		IN_ORCHESTRATED=true IN_ORCHESTRATOR=promote APPROVED_SHA="$approved_sha" \
+		CANDIDATE_REHEARSAL=true \
+		"$desktop_candidate_resolver" >"$test_root/desktop-unsafe-rehearsal.log" 2>&1; then
+		echo "rehearsal without candidate preparation unexpectedly passed" >&2
+		exit 1
+	fi
+	grep -Fq 'rehearsal requires non-publishing candidate preparation' "$test_root/desktop-unsafe-rehearsal.log"
 	GITHUB_OUTPUT="$test_root/desktop-stable-candidate.out" \
 		RELEASE_CHANNEL=stable RELEASE_TAG=desktop-v1.2.3 \
 		IN_ORCHESTRATED=false CALLER_EVENT_NAME=workflow_dispatch \
@@ -1410,7 +1471,7 @@ git clone -q "$test_root/remote.git" "$test_root/repo"
 		echo "stale recovery workflow unexpectedly passed release authorization" >&2
 		exit 1
 	fi
-	grep -Eq 'recovery caller workflow SHA is' "$test_root/stale-workflow.log"
+	grep -Eq 'protected caller workflow SHA is' "$test_root/stale-workflow.log"
 
 	if ACTUAL_CALLER_WORKFLOW_REF='example/reasonix/.github/workflows/release-stable.yml@refs/heads/topic' \
 		EXPECTED_CALLER_WORKFLOW_REF='example/reasonix/.github/workflows/release-stable.yml@refs/heads/topic' \
@@ -1661,7 +1722,8 @@ grep -Fq "printf 'DEEPSEEK_API_KEY=%s\\n' \"\$DEEPSEEK_API_KEY\" > \"\$REASONIX_
 grep -Fq -- '-task "compaction,fix-add-bug,fizzbuzz,palindrome,subagent-delegation"' "$e2e_workflow"
 grep -Fq 'const unsuccessful = results.filter((result) => !result.Passed || result.Skipped);' "$e2e_workflow"
 grep -Fq "if: always() && hashFiles('report.md') != ''" "$e2e_workflow"
-if grep -A2 -F 'missing DEEPSEEK_API_KEY secret' "$e2e_workflow" | grep -Fq 'exit 0'; then
+e2e_missing_key="$(grep -A2 -F 'missing DEEPSEEK_API_KEY secret' "$e2e_workflow")"
+if grep -Fq 'exit 0' <<<"$e2e_missing_key"; then
 	echo "e2e bot still treats a missing provider secret as success" >&2
 	exit 1
 fi
@@ -1673,9 +1735,9 @@ bash "$repo_root/scripts/release-stable.test.sh"
 bash "$repo_root/scripts/check-cache-impact.test.sh"
 bash "$repo_root/scripts/check-docs-impact.test.sh"
 
-# Every current publisher must gate on the same compiled docs identity, and
-# each build path must stamp that identity into its shipped binary.
-for workflow in release.yml release-npm.yml release-desktop.yml; do
+# Each build orchestrator must gate on the compiled docs identity once. The
+# Desktop child consumes the candidate evidence instead of rerunning the guard.
+for workflow in release.yml release-npm.yml release-candidate.yml; do
 	grep -Fq 'bash scripts/verify-embedded-docs.sh "$DOCS_BUILD_VERSION"' \
 		"$repo_root/.github/workflows/$workflow"
 done
@@ -1684,9 +1746,10 @@ grep -Fq 'reasonix/internal/productdocs.linkedRevision={{ .Commit }}' "$repo_roo
 # The Homebrew cask must keep stripping quarantine from the unsigned CLI, but
 # through Homebrew's current postflight_steps stanza, never the deprecated
 # `postflight do` that GoReleaser's hooks field renders.
-sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'postflight_steps do'
-sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'com.apple.quarantine'
-! sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Eq '^\s+hooks:|^\s+post:'
+homebrew_config="$(sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml")"
+grep -Fq 'postflight_steps do' <<<"$homebrew_config"
+grep -Fq 'com.apple.quarantine' <<<"$homebrew_config"
+! grep -Eq '^\s+hooks:|^\s+post:' <<<"$homebrew_config"
 grep -Fq 'reasonix/internal/productdocs.linkedVersion=${binaryVersion}' "$repo_root/npm/build.mjs"
 grep -Fq 'product_docs_ldflags="-X reasonix/internal/productdocs.linkedVersion=$VERSION' \
 	"$repo_root/scripts/desktop-build.sh"

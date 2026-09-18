@@ -78,6 +78,10 @@ func Available() bool {
 	return winsandbox.Available()
 }
 
+func repairLegacyCredentialDeny(path string) error {
+	return winsandbox.RepairLegacyCredentialDeny(path)
+}
+
 func encodeWindowsSandboxPayload(payload windowsSandboxPayload) (string, error) {
 	payload.Version = windowsSandboxPayloadVersion
 	b, err := json.Marshal(payload)

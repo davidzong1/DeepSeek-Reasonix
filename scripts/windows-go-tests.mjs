@@ -2,14 +2,17 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beneath, internalRoots, listPackages, runGoTest } from "./go-test-groups.mjs";
 
-export const isolatedGroups = ["agent", "boot", "control"];
+// Start the long filesystem suites immediately on independent runners instead
+// of leaving them behind hundreds of short packages in the residual queue.
+export const isolatedGroups = ["agent", "boot", "control", "serve", "session", "worktree"];
 const smokeRoots = internalRoots(
   "appidentity", "checkpoint", "cli", "desktoplauncher", "extension/sidecar",
-  "filelock", "fileutil", "hook", "instruction", "mcplaunch", "notify",
+  "filelock", "fileops", "fileutil", "hook", "instruction", "mcplaunch", "notify",
   // persistentshell drives a real ConPTY and a PowerShell wrapper that no other
   // platform exercises, so Windows is the only lane that can prove it.
   "persistentshell", "proc",
-  "remote", "repair", "sandbox", "sessioncatalog", "sysproxy", "winsandbox", "workspacelease",
+  "lsp", "projectiondb", "remote", "repair", "sandbox", "sessioncatalog", "sqliteuri", "sysproxy",
+  "topicstate", "winsandbox", "workspacelease",
 ).concat("reasonix/cmd");
 
 export function selectPackages(packages, group) {

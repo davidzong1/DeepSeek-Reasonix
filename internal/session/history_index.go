@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -505,6 +504,9 @@ func insertHistoryRows(ctx context.Context, tx *sql.Tx, prefix string, columns i
 }
 
 func indexMessageEvent(ctx context.Context, content *sessioncontent.Store, state *historyBuildState, event Event) error {
+	if event.Kind == "diagnostic" {
+		return indexDisplayNotice(ctx, content, state, event)
+	}
 	if event.Kind == "submission/accepted" {
 		payload := event.Payload
 		if event.PayloadRef != nil {
@@ -617,56 +619,6 @@ func replaceIndexedMessages(ctx context.Context, content *sessioncontent.Store, 
 	return flushLegacyTurn()
 }
 
-func indexOneMessage(ctx context.Context, content *sessioncontent.Store, state *historyBuildState, message provider.Message, sequence uint64, upsert bool) error {
-	id := strings.TrimSpace(message.ID)
-	if id == "" {
-		return errors.New("session: indexed message has no stable id")
-	}
-	position, exists := state.positions[id]
-	visibleTurn := state.turns[id]
-	if !exists {
-		state.nextPosition++
-		position = state.nextPosition
-		state.positions[id] = position
-		if agent.IsUserAuthoredTurnMessage(message) {
-			state.visibleTurn++
-		}
-		visibleTurn = state.visibleTurn
-		state.turns[id] = visibleTurn
-	} else if !upsert {
-		return fmt.Errorf("session: duplicate indexed message id %q", id)
-	}
-	version := state.versions[id] + 1
-	state.versions[id] = version
-	if exists {
-		if err := flushHistoryBuildRows(ctx, state.tx, state); err != nil {
-			return err
-		}
-		if _, err := state.statements.expire.ExecContext(ctx, sequence, id); err != nil {
-			return err
-		}
-	}
-	body, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-	ref, err := content.Put(ctx, bytes.NewReader(body), sessioncontent.Metadata{MediaType: "application/json"})
-	if err != nil {
-		return err
-	}
-	if err := insertContentRef(ctx, state, ref); err != nil {
-		return err
-	}
-	visibleUser := 0
-	if agent.IsUserAuthoredTurnMessage(message) {
-		visibleUser = 1
-	}
-	state.messages = append(state.messages, []any{id, version, position, sequence, 0, string(message.Role), messagePreview(message), nil, ref.Digest, ref.Bytes, ref.IndexDigest, 1, "", visibleTurn, visibleUser})
-	return nil
-}
-
-// Re-number only rows whose visible user boundary changed. New versions keep
-// previous numbering available to fixed-snapshot cursors.
 func renumberVisibleTurns(ctx context.Context, state *historyBuildState, sequence uint64) error {
 	rows, err := state.tx.QueryContext(ctx, `SELECT message_id,ordinal FROM (SELECT message_id,visible_turn,SUM(visible_user) OVER (ORDER BY position) AS ordinal FROM messages WHERE current=1) WHERE visible_turn<>ordinal`)
 	if err != nil {

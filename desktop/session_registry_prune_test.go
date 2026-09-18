@@ -25,8 +25,8 @@ func TestKeepOnlyVisibleTabKeepsCanonicalRuntimeWhenRegistryCannotPersist(t *tes
 	app := &App{
 		tabs: map[string]*WorkspaceTab{"hidden": hidden, "target": target}, tabOrder: []string{"hidden", "target"},
 		activeTabID: "hidden",
-		desktopSessions: desktopSessionState{
-			workspaceState: workspacestate.NewStore(statePath),
+		desktopPersistenceState: desktopPersistenceState{
+			desktopSessions: desktopSessionState{workspaceState: workspacestate.NewStore(statePath)},
 		},
 	}
 	if _, err := app.keepOnlyVisibleTab("target"); err == nil {

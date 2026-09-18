@@ -41,8 +41,8 @@ export function UpdateBanner({
 
   useEffect(() => {
     if (!enabled) return;
-    void check();
-  }, [check, enabled]);
+    void refresh();
+  }, [enabled, refresh]);
 
   useEffect(() => {
     if (!enabled) return;

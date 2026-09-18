@@ -29,8 +29,8 @@ func localPathSource(source string) (string, error) {
 		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
 			return "", os.ErrPermission
 		}
-		path, err := url.PathUnescape(u.Path)
-		if err != nil {
+		path := u.Path
+		if strings.ContainsRune(path, 0) {
 			return "", os.ErrInvalid
 		}
 		if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
@@ -42,8 +42,8 @@ func localPathSource(source string) (string, error) {
 	if err != nil || u.Scheme != "" {
 		return "", os.ErrInvalid
 	}
-	path, err := url.PathUnescape(u.Path)
-	if err != nil || strings.ContainsRune(path, 0) {
+	path := u.Path
+	if strings.ContainsRune(path, 0) {
 		return "", os.ErrInvalid
 	}
 	return filepath.FromSlash(path), nil

@@ -5,7 +5,13 @@ import "reasonix/internal/session"
 // ProjectNode is one node in the sidebar project tree (a project folder or a
 // topic leaf).
 type ProjectNode struct {
+	Source                       *SessionSourceRef   `json:"source,omitempty"`
+	IdentityAliases              []string            `json:"identityAliases,omitempty"`
+	LifecycleGeneration          uint64              `json:"lifecycleGeneration,omitempty"`
+	TabID                        string              `json:"tabId,omitempty"`
 	Session                      *session.SessionRef `json:"session,omitempty"`
+	ParentSession                *session.SessionRef `json:"parentSession,omitempty"`
+	SessionOrigin                string              `json:"sessionOrigin,omitempty"`
 	CanArchive                   bool                `json:"canArchive,omitempty"`
 	Key                          string              `json:"key"`  // stable key for React
 	Kind                         string              `json:"kind"` // "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session"
@@ -20,6 +26,7 @@ type ProjectNode struct {
 	Health                       string              `json:"health,omitempty"`
 	CreatedAt                    int64               `json:"createdAt,omitempty"`
 	LastActivityAt               int64               `json:"lastActivityAt,omitempty"`
+	ResultSequence               uint64              `json:"resultSequence,omitempty"`
 	Open                         bool                `json:"open,omitempty"`
 	Running                      bool                `json:"running,omitempty"`
 	Status                       string              `json:"status,omitempty"`

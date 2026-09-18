@@ -20,15 +20,16 @@ const (
 // credential-redacted by the host UI hub before the event is emitted. Exactly
 // one sub-struct is set, selected by Kind.
 type ExtensionSurfacePayload struct {
-	PluginID     string
-	SurfaceID    string
-	SessionID    string
-	Generation   uint64
-	Kind         string // status | card | form | notification (request reserved)
-	Status       *ExtensionStatusView
-	Card         *ExtensionCardView
-	Form         *ExtensionFormView
-	Notification *ExtensionNotificationView
+	PluginID       string
+	SurfaceID      string
+	SessionID      string
+	Generation     uint64
+	FormInstanceID string
+	Kind           string // status | card | form | notification (request reserved)
+	Status         *ExtensionStatusView
+	Card           *ExtensionCardView
+	Form           *ExtensionFormView
+	Notification   *ExtensionNotificationView
 }
 
 // ExtensionStatusView is a one-line status contribution (mirrors the

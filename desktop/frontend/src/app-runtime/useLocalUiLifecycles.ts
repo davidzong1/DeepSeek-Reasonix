@@ -1,19 +1,15 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef } from "react";
 import { activeTabMirror } from "./activeTabMirror";
-export type TopicTimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
 
-export function useTopicTimeFilter(): [TopicTimeFilter, Dispatch<SetStateAction<TopicTimeFilter>>] {
-  const [value, setValue] = useState<TopicTimeFilter>(() => {
-    try {
-      const saved = localStorage.getItem("projectTree:timeFilter");
-      if (saved === "all" || saved === "10" || saved === "20" || saved === "1h" || saved === "3h" || saved === "5h" || saved === "1d") return saved;
-    } catch { /* localStorage unavailable */ }
-    return "all";
-  });
+export function useRetiredProjectTreeUiMigration() {
   useEffect(() => {
-    try { localStorage.setItem("projectTree:timeFilter", value); } catch { /* ignore */ }
-  }, [value]);
-  return [value, setValue];
+    try {
+      localStorage.removeItem("projectTree:timeFilter");
+      localStorage.removeItem("projectTree:workbenchOrganize");
+    } catch {
+      /* localStorage unavailable */
+    }
+  }, []);
 }
 
 export function useDecisionSurfaceFocus(input: {

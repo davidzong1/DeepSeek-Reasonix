@@ -292,20 +292,31 @@ func repairOwnedShortcut(path, installRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	icon, _, err := shortcut.iconLocation()
+	icon, iconIndex, err := shortcut.iconLocation()
 	if err != nil {
 		return false, err
 	}
 	plan := planShortcutRepair(target, icon, currentID, installRoot, installlayout.HasCurrent(installRoot))
+	// A non-default icon index is a user choice even when its resource happens
+	// to be one of our executables. Never replace it with the product icon.
+	if iconIndex != 0 {
+		plan.icon = ""
+	}
 	if plan == (shortcutRepair{}) {
 		return false, nil
 	}
 	if plan.target != "" {
+		workingDir, err := shortcut.workingDirectory()
+		if err != nil {
+			return false, err
+		}
 		if err := shortcut.setString(shortcut.link.VTable.SetPath, plan.target); err != nil {
 			return false, err
 		}
-		if err := shortcut.setString(shortcut.link.VTable.SetWorkingDirectory, installRoot); err != nil {
-			return false, err
+		if repairShortcutWorkingDirectory(workingDir, target, installRoot) {
+			if err := shortcut.setString(shortcut.link.VTable.SetWorkingDirectory, installRoot); err != nil {
+				return false, err
+			}
 		}
 	}
 	if plan.icon != "" {
@@ -374,6 +385,16 @@ func (s *loadedShortcut) targetPath() (string, error) {
 		slgpRawPath,
 	)
 	if err := checkHRESULT("IShellLinkW.GetPath", hr); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buffer), nil
+}
+
+func (s *loadedShortcut) workingDirectory() (string, error) {
+	buffer := make([]uint16, windowsPathBuffer)
+	hr, _, _ := syscall.SyscallN(s.link.VTable.GetWorkingDirectory,
+		uintptr(unsafe.Pointer(s.link)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if err := checkHRESULT("IShellLinkW.GetWorkingDirectory", hr); err != nil {
 		return "", err
 	}
 	return windows.UTF16ToString(buffer), nil

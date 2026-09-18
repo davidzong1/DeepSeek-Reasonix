@@ -17,7 +17,8 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 
 - 帧格式：按行分隔的 JSON-RPC 2.0（`rpcwire` 严格模式）。一行一帧，UTF-8，不允许批量数组。
 - Go 服务以 `reasonix-desktop --host-rpc` 启动。stdout 只承载协议帧，stderr 承载日志。
-  壳在 `desktop/shutdown` 之后关闭 stdin 以请求退出。
+	壳仅在 `desktop/shutdown` 明确返回 `completed` 后关闭 stdin 作为退出兜底；
+	没有完成结果的 stdin 关闭按 `connection_lost` 进入有界收尾。
 - 限制：双向单帧 64 MiB，服务端最多 512 个并发入站处理器，30 秒写入停滞看门狗。
   大体积二进制数据从不进入帧，而是走下文的资源源。
 - 壳发出的每个请求都在独立 goroutine 上执行，与已退役的进程内壳的绑定调用一致。只有
@@ -30,7 +31,7 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 ```jsonc
 // 壳 → 服务
 {"method":"desktop/hello","params":{
-  "protocolVersion": 1,
+	"protocolVersion": 11,
   "contractDigest": "sha256:…",       // 壳包内嵌的契约摘要
   "build": {"version":"v1.30.0","channel":"stable","commit":"abc123"},
   "host": {"name":"electron","version":"44.2.0","chrome":"152.0.0","platform":"darwin","arch":"arm64"},
@@ -38,10 +39,11 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 }}
 // 服务 → 壳
 {"result":{
-  "protocolVersion": 1,
+	"protocolVersion": 11,
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // 每个服务进程唯一
+  "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}
 }}
@@ -72,6 +74,10 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 `runtimeGeneration` 标记该服务进程发出的每个事件、每个审批和浏览器授权。服务重启
 后产生新的世代；壳丢弃任何旧世代标记的内容。
 
+`runId` 标识本次 service 运行，`incidentId` 用于关联同一故障链中的 service 与 shell
+生命周期证据。两者都是随机诊断标识，不包含 PID、本地路径或用户内容。诊断关闭时，
+`diagnosticsEnabled` 为 false，两个标识可以省略。
+
 ## 生命周期请求（壳 → 服务）
 
 | 方法 | 参数 | 结果 | Go 负责者 |
@@ -80,13 +86,15 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 | `desktop/domReady` | `{}` | `{}` | `App.domReady` |
 | `desktop/rendererAttached` | `{"rendererGeneration":n}` | `{}` | 前端心跳/就绪 |
 | `desktop/beforeClose` | `{"reason":"window"\|"quit"\|"tray"\|"updater"}` | `{"prevent":bool}` | `App.beforeClose` |
-| `desktop/shutdown` | `{}` | `{}` | `App.shutdown` |
+| `desktop/shutdown` | `{"requestId":string,"reason":string}` | 退出阶段与结果 | 可重试的统一退出协调器 |
+| `desktop/shutdownStatus` | `{"requestId":string}` | 同一退出阶段与结果 | 超时或结果未知后查询 |
 | `desktop/hostEvent` | `{"name":string,"payload":any}` | `{}` | 第二实例、托盘打开/退出、菜单动作 |
 | `desktop/browserControl` | `{"enabled":bool}` | `{}` | 内置浏览器开关，构建会话时读取 |
 
 顺序：`hello` → `start` → 窗口加载 → `domReady` →（每次渲染进程挂载后 `rendererAttached`）
-→ … → `beforeClose` →（`shutdown` → 关闭 stdin → 退出）。无论是否调用过 `shutdown`，
-stdin 关闭后服务都会自行退出，因此壳突然死亡不会留下无头 Go 进程。
+→ … → `beforeClose` →（`shutdown` 完成 → 关闭 stdin 兜底 → 退出）。shutdown RPC
+超时只代表结果未知，壳会查询 `shutdownStatus`；可重试失败时保留窗口。stdin EOF
+进入同一个协调器并记录 `connection_lost`，已完成正常退出后不会再启动第二次收尾。
 
 ## 业务命令
 

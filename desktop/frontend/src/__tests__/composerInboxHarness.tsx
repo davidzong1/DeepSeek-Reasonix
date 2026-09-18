@@ -67,8 +67,10 @@ export function installBridgeApp(methods: Record<string, unknown>) {
         ModelsForTab: async () => [],
         ListDir: async () => [],
         ListDirForTab: async () => [],
+        ListDirForTarget: async () => [],
         SearchFileRefs: async () => [],
         SearchFileRefsForTab: async () => [],
+        SearchFileRefsForTarget: async () => [],
         ...methods,
   });
 }

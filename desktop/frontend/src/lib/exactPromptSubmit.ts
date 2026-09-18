@@ -1,6 +1,38 @@
 import type { AppBindings } from "./bridge";
+import type { InteractionTarget } from "./interactionTarget";
 
-type ExactPromptBinding = Pick<AppBindings, "ListTabs" | "ResolvePromptForTab">;
+type ExactPromptBinding = Pick<AppBindings, "ResolvePromptForSession" | "ResolvePromptForTab" | "PendingPromptIdentitiesForTab">;
+
+export async function resolvePromptForSession(
+  binding: ExactPromptBinding,
+  target: InteractionTarget,
+  answer: Record<string, unknown>,
+): Promise<void> {
+  if (!binding.ResolvePromptForSession) throw new Error("exact session prompt submission is unavailable; upgrade the host");
+  if (!target.sessionId || !target.sessionGeneration) throw new Error("prompt session identity is unavailable; refresh the card");
+  let turnId = target.turnId;
+  let runtimeEpoch = target.runtimeEpoch;
+  if (!turnId) {
+    if (!binding.PendingPromptIdentitiesForTab) throw new Error("prompt identity is unavailable; refresh or upgrade the host");
+    const matches = (await binding.PendingPromptIdentitiesForTab(target.tabId)).filter((candidate) => (
+      candidate.promptId === target.promptId && candidate.kind === target.kind &&
+      (!runtimeEpoch || !candidate.runtimeEpoch || candidate.runtimeEpoch === runtimeEpoch)
+    ));
+    if (matches.length !== 1) throw new Error("prompt is stale or its exact identity is unavailable");
+    turnId = matches[0].turnId;
+    runtimeEpoch = matches[0].runtimeEpoch;
+  }
+  await binding.ResolvePromptForSession({
+    tabId: target.tabId,
+    hostId: target.hostId ?? "local",
+    sessionId: target.sessionId,
+    sessionGeneration: target.sessionGeneration,
+    promptId: target.promptId,
+    turnId,
+    runtimeEpoch: runtimeEpoch ?? "",
+    kind: target.kind,
+  }, answer);
+}
 
 export async function resolvePromptForTab(
   binding: ExactPromptBinding,
@@ -11,15 +43,18 @@ export async function resolvePromptForTab(
   knownTurnId?: string,
   knownRuntimeEpoch?: string,
 ): Promise<void> {
-  // Ask cards must refresh the active turn from the tab owner immediately
-  // before submission. A locally captured turn is useful for the identity
-  // fence, but it is not authoritative during startup/rebind races.
-  // Other prompt kinds keep their immutable card turn and only consult
-  // ListTabs when the card arrived before local turn state was available.
-  const tab = kind === "ask" || !knownTurnId
-    ? (await binding.ListTabs()).find((candidate) => candidate.id === tabId)
-    : undefined;
-  const turnId = kind === "ask" ? tab?.turnId : (knownTurnId ?? tab?.turnId);
-  if (!binding.ResolvePromptForTab || !turnId) throw new Error("active turn identity is unavailable");
-  await binding.ResolvePromptForTab(tabId, promptId, turnId, knownRuntimeEpoch ?? tab?.runtime?.epoch ?? "", kind, answer);
+  if (!binding.ResolvePromptForTab) throw new Error("exact prompt submission is unavailable; upgrade the host");
+  let turnId = knownTurnId;
+  let runtimeEpoch = knownRuntimeEpoch;
+  if (!turnId) {
+    if (!binding.PendingPromptIdentitiesForTab) throw new Error("prompt identity is unavailable; refresh or upgrade the host");
+    const matches = (await binding.PendingPromptIdentitiesForTab(tabId)).filter((candidate) => (
+      candidate.promptId === promptId && candidate.kind === kind &&
+      (!knownRuntimeEpoch || !candidate.runtimeEpoch || candidate.runtimeEpoch === knownRuntimeEpoch)
+    ));
+    if (matches.length !== 1) throw new Error("prompt is stale or its exact identity is unavailable");
+    turnId = matches[0].turnId;
+    runtimeEpoch = matches[0].runtimeEpoch;
+  }
+  await binding.ResolvePromptForTab(tabId, promptId, turnId, runtimeEpoch ?? "", kind, answer);
 }

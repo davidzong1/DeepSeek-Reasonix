@@ -262,6 +262,7 @@ func setupProfile(ctx context.Context, modelName string, maxStepsOverride int, r
 type cliBuildOverrides struct {
 	Preset               string
 	Effort               *string
+	EffortModel          string
 	PermissionAllow      []string
 	AdditionalDirs       []string
 	WorkspaceRoot        string
@@ -307,6 +308,7 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		AgentPreset:          overrides.Preset,
 		WorkspaceRoot:        overrides.WorkspaceRoot,
 		EffortOverride:       overrides.Effort,
+		EffortModel:          overrides.EffortModel,
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
@@ -1181,9 +1183,12 @@ func chatREPL(args []string, version string) int {
 	}
 	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
-	// Surface a missing-key warning in the TUI banner so the first failure is
-	// pre-announced. resolveModelForCLI falls through a keyless default to the
-	// next provider (#6996), so validating the final ref must stay a no-op.
+	// Keep local recovery available when authentication is incomplete. The
+	// controller gate ensures input cannot become a model turn until configured.
+	// resolveModelForCLI transparently falls through a keyless default to the
+	// next configured provider (issue #6996). Validating the final ref is a
+	// no-op for that configured fallback and preserves the warning when every
+	// eligible chat provider is still keyless.
 	missing := ""
 	if cfg, loadErr := config.Load(); loadErr == nil {
 		name, _, err := resolveModelForCLI(*model, cfg)
@@ -1240,19 +1245,13 @@ func chatREPL(args []string, version string) int {
 	// carrying the conversation. It must NOT touch the running model (that swap
 	// is runModelSubcommand's) and shares this TUI's sink.
 	m.buildController = func(spec controllerBuildSpec, carry []provider.Message, resumePath string, oldCtrl control.SessionAPI) (*control.Controller, error) {
-		effectiveOverrides := overrides
-		if spec.EffortOverride != nil {
-			effectiveOverrides.Effort = spec.EffortOverride
-		}
+		effectiveOverrides := overrides.forSelection(m.cfg, spec)
 		// Keep the logical-session private temporary directory across model /
 		// profile switches (Issue #7575).
 		effectiveOverrides.SessionTemp = sessionTempFromCLIController(oldCtrl)
 		c, err := setupQuietProfile(ctx, spec.ModelRef, *maxSteps, false, sink, effectiveOverrides)
 		if err != nil {
 			return nil, err
-		}
-		if spec.EffortOverride != nil {
-			overrides.Effort = spec.EffortOverride
 		}
 		// Keep the carried conversation in its existing file so the switch doesn't
 		// orphan a duplicate (#2807).
@@ -1261,6 +1260,8 @@ func chatREPL(args []string, version string) int {
 			c.Close()
 			return nil, err
 		}
+		overrides.Effort = effectiveOverrides.Effort
+		overrides.EffortModel = spec.ModelRef
 		c.EnableInteractiveApproval()
 		c.SetPlanMode(spec.PlanMode)
 		if spec.ToolApprovalMode != "" {
@@ -1279,12 +1280,18 @@ func chatREPL(args []string, version string) int {
 	// goal/recovery state, lifecycle). Same construction inputs as
 	// buildController so the replacement matches this session's launch wiring;
 	// the CLI holds no SharedHost, so each rebuild owns its plugin host.
-	m.bindRuntimeRebuilder(*maxSteps, sink, false, overrides, cliProfileBuildOptions)
+	overrides.EffortModel = ctrl.ModelRef()
+	m.bindRuntimeRebuilder(*maxSteps, sink, false, &overrides, cliProfileBuildOptions)
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
 	}
 	if effortOverride == nil {
 		m.refreshEffortStatus()
+	}
+	if authentication, ok := m.ctrl.(interface {
+		AuthenticationState() control.AuthenticationState
+	}); ok && !authentication.AuthenticationState().Ready() {
+		m.openConnectionSetup()
 	}
 
 	if m.nativeScrollback {

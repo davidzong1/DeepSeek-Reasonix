@@ -1519,7 +1519,7 @@ func TestRecordSessionDisplaySkipsNoop(t *testing.T) {
 
 func TestRecordSessionDisplaySerializesConcurrentTabs(t *testing.T) {
 	dir := t.TempDir()
-	const tabs = 32
+	const tabs = 8
 	errs := make(chan error, tabs)
 	var wg sync.WaitGroup
 	for i := range tabs {

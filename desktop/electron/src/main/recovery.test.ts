@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,5 +15,13 @@ test("recovery re-reads current.json and selects only this installation's stable
   const activate = (v: string, dir = `versions/${v}`) => writeFileSync(join(root, "current.json"), JSON.stringify({schemaVersion:1,activeVersion:v,activeDir:dir}));
   activate("v1.38.5"); assert.equal(supersededLauncher(shell,"v1.38.5"),undefined);
   activate("v1.38.7"); assert.equal(supersededLauncher(shell,"v1.38.5"),launcher);
+  const canonical = join(root, "Reasonix.exe");
+  writeFileSync(canonical, "new launcher");
+  assert.equal(supersededLauncher(shell, "v1.38.5"), canonical);
+  unlinkSync(launcher);
+  assert.equal(supersededLauncher(shell, "v1.38.5"), canonical);
+  unlinkSync(canonical);
+  mkdirSync(canonical);
+  assert.equal(supersededLauncher(shell, "v1.38.5"), undefined);
   activate("v1.38.7","../other"); assert.equal(supersededLauncher(shell,"v1.38.5"),undefined);
 });

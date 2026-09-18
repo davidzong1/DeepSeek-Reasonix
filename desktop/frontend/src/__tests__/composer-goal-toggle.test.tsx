@@ -340,8 +340,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "ui-ux-pro-max", description: "Review the interface", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer({ collaborationMode: "goal", goal: "" });
   await replaceComposerDraft(rerender, 4199, "/ui-ux-pro-max");
@@ -396,7 +396,7 @@ console.log("\ncomposer goal toggle");
   // Attachment-only first Goal: no text, no skill — attachment refs are valid task context.
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => ".reasonix/attachments/notes.txt",
+    SavePastedFileForTarget: async () => ".reasonix/attachments/notes.txt",
   });
   const { root, calls } = await renderComposer({ collaborationMode: "goal", goal: "" });
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
@@ -430,7 +430,7 @@ console.log("\ncomposer goal toggle");
   // Workspace-ref-only first Goal: no text, no skill — workspace refs remain valid task context.
   const dom = installDom();
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "workspace",
       path: "src/App.tsx",
       isDir: false,
@@ -469,8 +469,8 @@ console.log("\ncomposer goal toggle");
       { name: "writing-plans", description: "Write a plan", kind: "skill" },
       { name: "review", description: "Review the result", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4200, "/writing-plans");
@@ -574,8 +574,8 @@ console.log("\ncomposer goal toggle");
   };
   mockApp({
     Commands: async () => [command],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4201, "/writing-plans");
@@ -752,7 +752,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       throw new Error("/Users/example/private.pdf: permission denied");
     },
   });
@@ -784,7 +784,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => ".reasonix/attachments/notes.txt",
+    SavePastedFileForTarget: async () => ".reasonix/attachments/notes.txt",
   });
   const { root } = await renderComposer();
 
@@ -808,7 +808,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    AttachDropped: async () => {
+    AttachDroppedForTarget: async () => {
       throw new Error("/Users/example/secret.pdf: permission denied");
     },
   });
@@ -842,7 +842,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "attachment",
       path: ".reasonix/attachments/report.pdf",
     }),
@@ -868,7 +868,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "workspace",
       path: "__reasonix_external_folder/mock/Folder-With-Spaces",
       isDir: true,
@@ -1486,12 +1486,12 @@ console.log("\ncomposer goal toggle");
   let listDirCalls = 0;
   const listDirTabs: string[] = [];
   mockApp({
-    ListDirForTab: async (tabId) => {
-      listDirTabs.push(tabId);
+    ListDirForTarget: async (target) => {
+      listDirTabs.push(target.tabId);
       listDirCalls += 1;
       return listDirCalls === 1 ? [fileEntry("cached-dir.txt")] : [fileEntry("fresh-dir.txt")];
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer();
 
@@ -1515,11 +1515,11 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   let listDirCalls = 0;
   mockApp({
-    ListDirForTab: async () => {
+    ListDirForTarget: async () => {
       listDirCalls += 1;
       return listDirCalls === 1 ? [fileEntry("manual-refresh-stale.txt")] : [fileEntry("manual-refresh-fresh.txt")];
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer({ fileRefRefreshKey: "0" });
 
@@ -1544,8 +1544,8 @@ console.log("\ncomposer goal toggle");
   let searchCalls = 0;
   Date.now = () => now;
   mockApp({
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => {
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => {
       searchCalls += 1;
       return searchCalls === 1 ? [fileEntry("alpha-old.ts")] : [fileEntry("alpha-new.ts")];
     },
@@ -1586,7 +1586,7 @@ console.log("\ncomposer goal toggle");
   let thirdListDirResolve: ((entries: DirEntry[]) => void) | undefined;
   let listDirCalls = 0;
   mockApp({
-    ListDirForTab: async () => {
+    ListDirForTarget: async () => {
       listDirCalls += 1;
       if (listDirCalls === 1) {
         return new Promise<DirEntry[]>((resolve) => {
@@ -1598,7 +1598,7 @@ console.log("\ncomposer goal toggle");
         thirdListDirResolve = resolve;
       });
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer({ fileRefRefreshKey: "0" });
 
@@ -1639,8 +1639,8 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   const pending: Array<(entries: DirEntry[]) => void> = [];
   mockApp({
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => new Promise<DirEntry[]>((resolve) => pending.push(resolve)),
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => new Promise<DirEntry[]>((resolve) => pending.push(resolve)),
   });
   const { root, rerender } = await renderComposer({ workspaceScopeKey: "session-a" });
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
@@ -1682,8 +1682,8 @@ console.log("\ncomposer goal toggle");
       { name: "review", description: "Review the result", kind: "skill" },
       { name: "mcp", description: "Manage MCP servers", kind: "builtin", group: "integrations" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
 
@@ -1803,8 +1803,8 @@ console.log("\ncomposer goal toggle");
       commandsCalls += 1;
       return availableCommands;
     },
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
     SlashArgs: async (input) => {
       slashArgInputs.push(input);
       return input === "/mcp "
@@ -2104,10 +2104,10 @@ console.log("\ncomposer goal toggle");
   let savedFiles = 0;
   mockApp({
     Commands: async () => [{ name: "skill", description: "Manage skills", kind: "builtin" }],
-    ListDirForTab: async () => [fileEntry("README.md")],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [fileEntry("README.md")],
+    SearchFileRefsForTarget: async () => [],
     ListSessions: async () => [{ path: "/sessions/recent.jsonl", title: "Recent session", current: false }],
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       savedFiles += 1;
       return ".reasonix/attachments/notes.txt";
     },
@@ -2270,8 +2270,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
     InboxSnapshot: async () => ({
       revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
@@ -2321,8 +2321,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4100, "/writing-plans");
@@ -2384,8 +2384,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "review", description: "Review the current task", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const sessionA = "session:project:/repo:topic-a:session-a";
   const sessionB = "session:project:/repo:topic-b:session-b";
@@ -2432,8 +2432,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "review", description: "Review the current task", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const sessionA = "session:project:/repo:rich-topic-a:rich-session-a";
   const sessionB = "session:project:/repo:rich-topic-b:rich-session-b";

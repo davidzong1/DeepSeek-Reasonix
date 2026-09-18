@@ -29,6 +29,7 @@ const compositionSource = readFileSync(resolve(here, "../app-runtime/useAppSessi
 const todoSource = readFileSync(resolve(here, "../app-runtime/useTodoPanelCommands.ts"), "utf8");
 const paletteSource = readFileSync(resolve(here, "../app-runtime/usePaletteCommands.tsx"), "utf8");
 const exportSource = readFileSync(resolve(here, "../app-runtime/useSessionExportCommands.ts"), "utf8");
+const exportOperationSource = readFileSync(resolve(here, "../lib/sessionExportOperation.ts"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/remoteProjectBridge.ts"), "utf8");
 const remoteOpenSource = readFileSync(resolve(here, "../../../remote_projects.go"), "utf8");
 const remotePendingSelectionSource = readFileSync(resolve(here, "../../../remote_tab_pending_selection.go"), "utf8");
@@ -116,9 +117,11 @@ ok(
   "remote tab metadata updates refresh the affected session group",
 );
 ok(
-  /remoteSurfaceActive \? remoteSession\.transcript\.items : state\.items/.test(compositionSource) &&
-    /sessionItemsToMarkdown\(sessionTitle, Array\.from\(items\), live\)/.test(exportSource),
-  "remote exports use the visible remote transcript",
+  /selector: activeTab\?\.session\?\.sessionId \? \{ ref: activeTab\.session \}/.test(compositionSource) &&
+    /runSessionExport\(\{[\s\S]*?selector: input\.selector \?\? \{\}[\s\S]*?tabId: tabId \?\? ""[\s\S]*?remote/.test(exportSource) &&
+    /app\.BeginSessionExportForTarget\(input\.selector, input\.tabId, input\.format, input\.title, observation\)/.test(exportOperationSource) &&
+    !/sessionItemsToMarkdown\(/.test(exportSource),
+  "remote exports bind the explicit remote session snapshot instead of resident transcript items",
 );
 ok(
   /items: visibleRuntimeState\.items/.test(compositionSource) &&

@@ -18,8 +18,8 @@ reasonix --effort high
 reasonix --dir /path/to/project
 ```
 
-不带子命令运行 `reasonix` 会进入交互式终端界面。尚未配置 provider 时，先运行
-`reasonix setup`。
+不带子命令运行 `reasonix` 会进入交互式终端界面。所选连接缺少凭据时，CLI 会打开
+本地连接选择器，不会发送模型请求；认证未就绪期间仍可查看历史并使用本地命令。
 
 | 参数 | 用途 |
 | --- | --- |
@@ -72,10 +72,25 @@ provider，并支持：
 不会直接覆盖。
 
 Provider 定义只保存 `api_key_env` 变量名。即使使用 `--local`，Key 的真实值也始终保存
-在 CLI 与桌面端共用的 Reasonix 全局 `.env` 中。如果变量名已被其他 provider 使用，
-setup 会询问是否共享该凭据；两个 provider 使用不同 Key 时，应改用不同变量名。通过
-setup 添加或删除 provider 时，也会同步维护桌面端 provider access，因此相同模型可以
-直接在桌面端使用。
+在 CLI 与桌面端共用的 Reasonix 全局 `.env` 中。新增、替换或明确清空 Key 时，Reasonix
+会分配新的独立凭据槽位，并原子切换所选连接的引用；已有固定变量继续可读，只在用户编辑
+对应连接时迁移。
+
+TUI 内可用 `/setup` 打开同一连接流程，`/auth` 是别名。Key 输入会遮罩显示；按
+`Ctrl+T` 测试当前草稿连接，Enter 保存，Escape 取消。`/?` 是 `/help` 的别名。
+认证未就绪时，普通输入不会触发 provider 请求。
+
+```sh
+reasonix doctor credentials
+reasonix doctor credentials --json
+reasonix doctor credentials --probe
+reasonix doctor credentials --repair --dry-run
+reasonix doctor credentials --repair
+```
+
+默认诊断只读。`--probe` 只测试临时创建和原子重命名，不替换 `.env`。修复仅限
+Reasonix home 内归当前用户所有的普通文件；不会接管所有权、删除 deny 规则、向
+`Everyone` 授权、跟随链接/reparse point，也不会终止占用文件的进程。
 
 ### 配置费用展示币种
 
@@ -232,7 +247,11 @@ reasonix run "运行测试" --output-format stream-json
 决定，切换展示币种不会改写价表。可用 `reasonix doctor billing` 排查。
 
 执行失败时使用 `subtype: "error_during_execution"` 和 `is_error: true`。
-结构化模式会把运行时错误保留在 JSON 中，不再额外重复输出一份人类可读错误。
+结构化模式会把运行时错误保留在 JSON 中，不再额外重复输出一份人类可读错误。认证失败还会
+按需返回 `error_code`、`authentication_status` 和 `recovery_actions`；
+`--events-jsonl` 的最终 `run_done` 记录使用相同字段。例如缺少 Key 时会返回
+`missing_credential`，并列出 `configure_credentials`、`select_model`、
+`diagnose_credentials` 等恢复动作，且不会发送模型请求。
 
 完成校验器已移除。模型正常结束且没有工具调用时，当前轮次直接结束；包含工具调用时，
 继续进入工具循环；真正的空响应会在 frozen request 边界重试。旧的

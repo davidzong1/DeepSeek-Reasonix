@@ -1,6 +1,7 @@
 import type { HistoryMessage, WireEvent } from "./types";
 import type { Item, State } from "./useController";
 import type { TranscriptRecord, TranscriptSnapshot } from "./transcriptProtocol";
+import { canonicalUserConfirmations, settleLocalSubmissions } from "./localSubmissionState";
 
 export function snapshotRecords(snapshot: TranscriptSnapshot): TranscriptRecord[] {
   const records: TranscriptRecord[] = [];
@@ -26,16 +27,13 @@ export function snapshotRecords(snapshot: TranscriptSnapshot): TranscriptRecord[
 type Convert = (messages: HistoryMessage[], prefix: string) => { items: Item[]; seq: number };
 type ApplyEvent = (state: State, event: WireEvent) => State;
 
-// Message identity survives optimistic keys, hydration and older-page merges.
-// Keep one matching rule for installation and delayed content patches.
+// Durable rows only match durable identities. Optimistic submission identity is
+// owned by localSubmissionState and must never replace a canonical item id.
 export function matchingSnapshotItem(items: Item[], item: Item): Item | undefined {
   if (item.kind === "user") {
     const users = items.filter((candidate): candidate is Extract<Item, { kind: "user" }> => candidate.kind === "user");
     const message = item.messageId && users.find(candidate => candidate.messageId === item.messageId);
     if (message) return message;
-    const submission = item.submissionId && users.find(candidate => candidate.submissionId === item.submissionId &&
-      (!candidate.messageId || !item.messageId || candidate.messageId === item.messageId));
-    if (submission) return submission;
   }
   return items.find(candidate => candidate.id === item.id);
 }
@@ -63,30 +61,35 @@ export function transcriptPageState(state: State, page: TranscriptSnapshot, conv
       prefix.push({ ...prior, args: prior.args || item.args, messageId: prior.messageId || item.messageId,
         name: prior.name === "tool" ? item.name : prior.name, subject: prior.subject ?? item.subject,
         summary: prior.summary ?? item.summary, fileDiff: prior.fileDiff ?? item.fileDiff });
-    } else {
-      if (prior.id !== item.id) { order[prior.id] = order[item.id]; delete order[item.id]; }
-      prefix.push(prior);
-    }
+    } else prefix.push(prior.id === item.id ? prior : { ...prior, ...item, id: item.id } as Item);
   }
   const prefixIDs = new Set(prefix.map((item) => item.id));
   const added = prefix.filter((item) => !existing.has(item.id)).length;
   const users = records.map((record) => record.message.historyTurn).filter((turn): turn is number => typeof turn === "number" && turn > 0);
   const items = [...prefix, ...state.items.filter((item) => !prefixIDs.has(item.id))];
   items.sort((a, b) => (order[a.id] ?? Infinity) - (order[b.id] ?? Infinity));
-  return { ...state, items, transcriptItemOrder: order,
+  return settleLocalSubmissions({ ...state, items, transcriptItemOrder: order,
     seq: Math.max(state.seq, converted.seq), historyPrefixCount: state.historyPrefixCount + added,
     historyStartTurn: Math.min(state.historyStartTurn, ...users.map((turn) => turn - 1)),
     historyHasOlder: page.hasOlder, historyOlderLoading: false, historyOlderError: undefined,
     historyHasNewer: false, historyNewerLoading: false, historyNewerError: undefined,
-    historyMutation: { seq: state.historyMutation.seq + 1, kind: "prepend" } };
+    historyMutation: { seq: state.historyMutation.seq + 1, kind: "prepend" } }, items, canonicalUserConfirmations(converted.items));
 }
 
 /** One reducer transaction installs rows, runtime and the active attempt.
  * The event projector advances coverage only after this function commits. */
 export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapshot, convert: Convert, applyEvent: ApplyEvent, clock: number, projectedItems?: Item[]): State {
+  const sessionId = snapshot.identity.sessionId;
+  if (state.transcriptSessionId && state.transcriptSessionId !== sessionId) {
+    state = { ...state, localSubmissions: {}, localSubmissionOrder: [], visibleSubmissionHandoffs: {},
+      pendingSubmissionId: undefined, pendingUser: undefined, sessionGen: state.sessionGen + 1 };
+  }
   const records = snapshotRecords(snapshot);
   const messages = records.map((record) => ({ ...record.message, recordId: record.id }));
   const converted = projectedItems ? { items: projectedItems, seq: state.seq } : convert(messages, "snapshot:");
+  state = settleLocalSubmissions(state, converted.items, canonicalUserConfirmations(messages.map(message => ({
+    kind: message.role, messageId: message.messageId, submissionId: message.submissionId, turnId: message.turnId,
+  }))));
   const order = projectedItems ? Object.fromEntries(projectedItems.map((item, index) => [item.id, index])) : recordItemOrder(records, convert);
   const users = state.items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
   const items = converted.items.map((item) => {
@@ -97,33 +100,32 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     }
     if (item.kind !== "user") return item;
     const mounted = matchingSnapshotItem(users, item);
-    if (mounted && mounted.id !== item.id) { order[mounted.id] = order[item.id]; delete order[item.id]; }
     if (!mounted) return item;
-    const next = { ...item, id: mounted.id };
+    const next = { ...mounted, ...item, id: item.id };
     return Object.entries(next).every(([key, value]) => (mounted as unknown as Record<string, unknown>)[key] === value) ? mounted : next;
   });
-  const represented = new Set(messages.map((message) => message.submissionId).filter(Boolean));
-  const optimistic = users.filter((user) => user.submissionId &&
-    (user.submissionId === state.pendingSubmissionId || user.submissionId === snapshot.runtime.submissionId) && !represented.has(user.submissionId));
+  const hasLocalSubmission = Boolean(state.pendingSubmissionId && state.localSubmissions[state.pendingSubmissionId]
+    && state.localSubmissions[state.pendingSubmissionId].status !== "failed");
   const active = snapshot.runtime.status === "queued" || snapshot.runtime.status === "in_progress" ||
     snapshot.runtime.status === "waiting_user" || snapshot.runtime.status === "cancelling";
   let next: State = {
     ...state,
+    transcriptSessionId: sessionId,
     transcriptProtocol: 1,
     transcriptItemOrder: order,
     discardTurn: false,
     assistantSegmentOrdinal: active ? 1 : 0,
     turnStartAt: snapshot.runtime.startedAt ?? (state.activeTurnId === snapshot.runtime.turnId ? state.turnStartAt : 0),
     resolvedPromptId: undefined,
-    items: [...items, ...optimistic, ...users.filter(user => user.failed && !items.some(item => item.id === user.id)),
+    items: [...items, ...users.filter(user => user.failed && !items.some(item => item.id === user.id)),
       ...state.items.filter(item => item.kind === "notice" && item.local)],
     offscreenItems: undefined,
     seq: Math.max(state.seq, converted.seq),
-    running: active || optimistic.length > 0,
+    running: active || hasLocalSubmission,
     turnActive: active,
     pendingPrompt: false,
     cancelRequested: snapshot.runtime.status === "cancelling",
-    cancellable: active || optimistic.length > 0,
+    cancellable: active || hasLocalSubmission,
     activeTurnId: active ? snapshot.runtime.turnId : undefined,
     turnPhase: active ? snapshot.runtime.phase : undefined,
     completionSummary: snapshot.runtime.completionSummary,
@@ -131,8 +133,8 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     runtimeStatusSeq: snapshot.coveredThroughSeq,
     runtimeStatusSnapshotAt: clock,
     turnLifecycleObservedAt: clock,
-    pendingUser: optimistic.length ? state.pendingUser : undefined,
-    pendingSubmissionId: optimistic.length ? state.pendingSubmissionId : undefined,
+    pendingUser: hasLocalSubmission ? state.pendingUser : undefined,
+    pendingSubmissionId: hasLocalSubmission ? state.pendingSubmissionId : undefined,
     live: undefined,
     currentAssistant: undefined,
     streamAttemptJournal: undefined,

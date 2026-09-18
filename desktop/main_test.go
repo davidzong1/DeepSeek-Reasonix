@@ -19,7 +19,7 @@ func TestLifecycleDiagnosticsUsePreShellOwnershipGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeServe, _, ok := strings.Cut(string(source), "server.Serve(appCtx)")
+	beforeServe, _, ok := strings.Cut(string(source), "server.Serve(")
 	if !ok {
 		t.Fatal("host_rpc.go no longer contains the host RPC serve boundary")
 	}

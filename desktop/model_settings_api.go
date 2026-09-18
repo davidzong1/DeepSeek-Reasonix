@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -92,15 +90,35 @@ func (a *App) ApplyModelSettings(change ModelSettingsChange) (result ModelSettin
 		result.Issues = append(result.Issues, modelSettingsIssue("validation", marshalErr))
 		return result
 	}
-	mac := hmac.New(sha256.New, providerStateFingerprintKey)
-	_, _ = mac.Write(raw)
-	digest := hex.EncodeToString(mac.Sum(nil))
+	digest, digestErr := config.ModelSettingsRequestDigest(raw)
+	if digestErr != nil {
+		result.Issues = append(result.Issues, modelSettingsIssue("save_failed", digestErr))
+		return result
+	}
 	if receipt, ok := a.modelSettingsReceipts[change.RequestID]; ok {
 		if receipt.digest != digest {
 			result.Issues = append(result.Issues, ModelSettingsIssue{Code: "request_conflict", Message: "requestId was already used for a different edit"})
 			return result
 		}
 		return receipt.result
+	}
+	if receipt, ok := config.LookupModelSettingsReceipt(change.RequestID); ok {
+		if receipt.RequestDigest != digest {
+			if !strings.HasPrefix(receipt.RequestDigest, "hmac-v1:") {
+				result.Issues = append(result.Issues, ModelSettingsIssue{Code: "unknown_result", Message: "This older receipt cannot verify the request contents. Reload current settings."})
+				return result
+			}
+			result.Issues = append(result.Issues, ModelSettingsIssue{Code: "request_conflict", Message: "requestId was already used for a different edit"})
+			return result
+		}
+		result.Persisted = true
+		result.Revision = receipt.ResultRevision
+		if result.Revision == "" {
+			result.Revision = receipt.AfterRevision
+		}
+		status := a.GetModelSettingsApplication()
+		result.Application, result.Targets, result.Issues = status.Application, status.Targets, status.Issues
+		return result
 	}
 	defer func() {
 		if change.RequestID == "" {
@@ -138,18 +156,33 @@ func (a *App) ApplyModelSettings(change ModelSettingsChange) (result ModelSettin
 		if err != nil {
 			return err
 		}
+		if err := c.BeginModelCredentialCommitLocked(path, change.RequestID, digest); err != nil {
+			return err
+		}
+		defer c.CleanupStagedModelCredentialsLocked(path)
+		// Recovery and another process may have published a receipt while this
+		// request waited for the config lock. Deduplicate again under both locks.
+		if receipt, ok := config.LookupModelSettingsReceipt(change.RequestID); ok {
+			if receipt.RequestDigest != digest {
+				return fmt.Errorf("request_conflict: requestId was already used for a different edit")
+			}
+			result.Persisted, result.Revision = true, receipt.ResultRevision
+			if result.Revision == "" {
+				result.Revision = receipt.AfterRevision
+			}
+			return nil
+		}
 		result.Revision = modelSettingsEditFingerprint(c)
 		if result.Revision != change.ExpectedFingerprint {
 			return fmt.Errorf("model settings changed; reload and review the current values before saving")
 		}
 		baseline := c.ModelSettingsBaseline()
-		defer c.CleanupStagedModelCredentialsLocked(path)
 		if err := applyModelSettingsChange(c, change, &result); err != nil {
 			return err
 		}
 		if change.Kind == "protocol_upgrade" {
 			var changed bool
-			changed, err = config.UpgradeDeepSeekProviderProtocolLocked(path, change.Name)
+			changed, err = c.UpgradeDeepSeekProviderProtocolLocked(path, change.Name)
 			if err == nil && !changed {
 				err = fmt.Errorf("provider is not eligible for protocol upgrade")
 			}
@@ -164,6 +197,15 @@ func (a *App) ApplyModelSettings(change ModelSettingsChange) (result ModelSettin
 		result.Persisted = true
 		if saved, _, readErr := a.loadDesktopUserConfigForView(); readErr == nil {
 			result.Revision = modelSettingsEditFingerprint(saved)
+		} else {
+			return readErr
+		}
+		result.Persisted = true
+		if err := c.MarkModelCredentialConfigCommittedLocked(path, result.Revision); err != nil {
+			return err
+		}
+		if err := c.CompleteModelCredentialCommitLocked(); err != nil {
+			return err
 		}
 		return nil
 	}()
@@ -185,6 +227,18 @@ func (a *App) GetModelSettingsRequest(requestID string) ModelSettingsResult {
 	receipt, ok := a.modelSettingsReceipts[requestID]
 	a.modelSettingsSubmitMu.Unlock()
 	if !ok {
+		if durable, found := config.RecoverModelSettingsReceipt(requestID); found {
+			result := emptyModelSettingsResult()
+			result.RequestID = requestID
+			result.Persisted = true
+			result.Revision = durable.ResultRevision
+			if result.Revision == "" {
+				result.Revision = durable.AfterRevision
+			}
+			status := a.GetModelSettingsApplication()
+			result.Application, result.Targets, result.Issues = status.Application, status.Targets, status.Issues
+			return result
+		}
 		result := emptyModelSettingsResult()
 		result.RequestID = requestID
 		result.Issues = append(result.Issues, ModelSettingsIssue{Code: "unknown_result", Message: "The save result could not be confirmed. Review the current settings before saving again."})

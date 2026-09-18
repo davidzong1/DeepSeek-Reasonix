@@ -117,6 +117,7 @@ func (a *Agent) LoadProjectionSidecar(sessionPath string) {
 	a.sess.path = sessionPath
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.compactionMu.Unlock()
 	if sessionPath == "" {
 		a.resetCompactionState()
@@ -222,6 +223,7 @@ func (a *Agent) resetCompactionState() {
 	a.sess.compactionMu.Lock()
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.compactionMu.Unlock()
 }
 
@@ -240,6 +242,7 @@ func (a *Agent) BindSessionPath(path string, loadSidecar bool) {
 	a.sess.path = path
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.cacheState = CacheStateUnknown
 	a.sess.compactionMu.Unlock()
 	a.sess.compaction.stuck = false

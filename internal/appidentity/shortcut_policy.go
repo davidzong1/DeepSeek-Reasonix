@@ -29,18 +29,54 @@ func planShortcutRepair(target, icon, id, root string, versioned bool) shortcutR
 	if id != AppUserModelID {
 		plan.identity = AppUserModelID
 	}
-	launcher := filepath.Join(root, "reasonix-launcher.exe")
-	info, err := os.Lstat(launcher)
-	if err != nil || !info.Mode().IsRegular() || classifyShortcutTarget(launcher, root) != stableShortcutTarget {
+	launcher := ""
+	for _, name := range []string{"Reasonix.exe", "reasonix-launcher.exe"} {
+		candidate := filepath.Join(root, name)
+		info, err := os.Lstat(candidate)
+		if err == nil && info.Mode().IsRegular() && classifyShortcutTarget(candidate, root) == stableShortcutTarget {
+			launcher = candidate
+			break
+		}
+	}
+	if launcher == "" {
 		return plan
 	}
-	if staleShortcutEntry(target, kind, versioned) {
+	canonical := strings.EqualFold(filepath.Base(launcher), "Reasonix.exe")
+	needsRepair := func(path string, kind shortcutTargetKind) bool {
+		if staleShortcutEntry(path, kind, versioned) {
+			return true
+		}
+		if canonical && kind == stableShortcutTarget {
+			resolved, err := resolveShortcutTarget(path)
+			return err == nil && strings.EqualFold(filepath.Base(resolved), "reasonix-launcher.exe")
+		}
+		return false
+	}
+	if needsRepair(target, kind) {
 		plan.target = launcher
 	}
-	if staleShortcutEntry(icon, classifyShortcutTarget(icon, root), versioned) {
+	if needsRepair(icon, classifyShortcutTarget(icon, root)) {
 		plan.icon = launcher
 	}
 	return plan
+}
+
+// Preserve custom working directories. Only an empty directory or the old
+// owned executable directory needs normalization when its target is migrated.
+func repairShortcutWorkingDirectory(dir, oldTarget, root string) bool {
+	if dir == "" {
+		return true
+	}
+	kind := classifyShortcutTarget(oldTarget, root)
+	if kind != versionedShortcutTarget && kind != flatShellShortcutTarget {
+		return false
+	}
+	resolvedDir, err := resolveShortcutTarget(dir)
+	if err != nil {
+		return false
+	}
+	resolvedTarget, err := resolveShortcutTarget(oldTarget)
+	return err == nil && strings.EqualFold(resolvedDir, filepath.Dir(resolvedTarget))
 }
 
 func staleShortcutEntry(path string, kind shortcutTargetKind, versioned bool) bool {

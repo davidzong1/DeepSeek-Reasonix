@@ -54,7 +54,7 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 	if err := a.checkpointSession(ctx, CheckpointBeforeModel); err != nil {
 		return nil, err
 	}
-	ch, err := a.svc.prov.Stream(ctx, req)
+	ch, err := provider.Stream(ctx, a.svc.prov, req)
 	if err != nil {
 		if limit := provider.AsOutputLimitError(err); !provider.ManagedRecovery(ctx) && limit != nil && req.MaxTokens > limit.MaxOutputTokens {
 			a.learnOutputBudget(limit.MaxOutputTokens)
@@ -63,7 +63,7 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 			if checkpointErr := a.checkpointSession(ctx, CheckpointBeforeModel); checkpointErr != nil {
 				return nil, checkpointErr
 			}
-			return a.svc.prov.Stream(ctx, retryReq)
+			return provider.Stream(ctx, a.svc.prov, retryReq)
 		}
 		return nil, err
 	}
@@ -77,6 +77,11 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 // Output budgets are resolved only here and never change the compact_ratio
 // trigger. Physical overflow may attempt at most one recovery summary.
 func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
+	// Recover an accepted context-maintenance event before ContextManager can
+	// perform more maintenance or freeze a request from unconfirmed state.
+	if err := a.confirmPendingModelContext(ctx); err != nil {
+		return samplingRequest{}, err
+	}
 	frozen, err := a.buildSamplingRequest(ctx, CompactionTriggerPressure)
 	if err != nil {
 		return samplingRequest{}, err

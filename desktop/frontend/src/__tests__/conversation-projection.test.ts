@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorkspaceDockRegion } from "../app-shell/WorkspaceDockRegion";
 import type { Translator } from "../lib/i18n";
-import { projectConversation, projectConversationLayout } from "../app-runtime/conversationProjection";
+import { projectConversation, projectConversationLayout, projectNavigationSurfaceTarget } from "../app-runtime/conversationProjection";
 import { initialState } from "../lib/useController";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 import type { BackgroundRuntimeView } from "../lib/types";
@@ -53,6 +53,25 @@ assert.equal(localView.status.backgroundRuntimes, background);
 assert.equal(localView.composer.attachmentInputEnabled, true);
 assert.equal(localView.composer.localDurableGuidance, true);
 assert.equal(localView.context.tabId, "local");
+const readableBeforeRuntime = projectNavigationSurfaceTarget({
+  activeTabId: "local",
+  sessionKey: "local:session",
+  local: {
+    ...local,
+    meta: { ...local.meta!, ready: false, runtime: { phase: "starting", epoch: "runtime-1" } },
+    backendActivationPending: true,
+    hydrating: false,
+    hydrateError: undefined,
+  },
+});
+assert.equal(readableBeforeRuntime.ready, true, "local navigation paint is released by readable history rather than runtime readiness");
+assert.equal(readableBeforeRuntime.backendActivationPending, false, "local runtime activation does not block transcript paint");
+const localHistoryPending = projectNavigationSurfaceTarget({
+  activeTabId: "local",
+  sessionKey: "local:session",
+  local: { ...local, backendActivationPending: true, hydrating: true, hydrateError: undefined },
+});
+assert.equal(localHistoryPending.ready, false, "local cache miss keeps only the target history skeleton pending");
 for (const chatVisible of [false, true]) for (const localToolsEnabled of [false, true]) for (const dockMode of ["files", "changed", "remote", "context"]) {
   const layout = projectConversationLayout({ chatVisible, localToolsEnabled, dockMode, dockRenderable: true,
     dockGridOpen: true, dockOverlay: true, dockOpen: true, dockMaximized: true, terminalOpen: true });

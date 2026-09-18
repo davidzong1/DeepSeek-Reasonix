@@ -1,0 +1,433 @@
+name: Prepare release candidate
+run-name: Prepare release candidate ${{ inputs.version || github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Official version without a tag prefix"
+        required: true
+        type: string
+      rehearsal:
+        description: "Build and accept isolated files that cannot be published"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main-v2]
+    paths:
+      - release-notes/releases.json
+
+concurrency:
+  group: release-candidate-${{ inputs.rehearsal && 'rehearsal' || 'release' }}-${{ inputs.version || github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  resolve:
+    name: validate candidate inputs before native builds
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      candidate_id: ${{ steps.candidate.outputs.candidate_id }}
+      catalog_sha256: ${{ steps.candidate.outputs.catalog_sha256 }}
+      reuse: ${{ steps.existing.outputs.reuse }}
+      artifact_namespace: ${{ steps.candidate.outputs.artifact_namespace }}
+      purpose: ${{ steps.candidate.outputs.purpose }}
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Resolve reviewed source
+        id: candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PUSH_SHA: ${{ github.sha }}
+          REHEARSAL: ${{ inputs.rehearsal || false }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
+        run: |
+          set -euo pipefail
+          git fetch origin main-v2 --tags
+          if [ "$EVENT_NAME" = push ]; then
+            version="$(jq -r '.releases[0].version // empty' release-notes/releases.json)"
+            source_sha="$PUSH_SHA"
+          else
+            version="$INPUT_VERSION"
+            source_sha="$PUSH_SHA"
+          fi
+          purpose=release
+          artifact_namespace=release-candidate
+          if [ "$REHEARSAL" = true ]; then
+            purpose=rehearsal
+            artifact_namespace=release-candidate-rehearsal
+          fi
+          bash scripts/validate-release-candidate-source.sh "$version" "$source_sha" "$purpose"
+          git show "$source_sha:release-notes/releases.json" > /tmp/release-catalog.json
+          catalog_sha256="$(sha256sum /tmp/release-catalog.json | awk '{print $1}')"
+          candidate_id="$(node scripts/release-candidate.mjs id "$version" "$source_sha" "$catalog_sha256")"
+          node scripts/resolve-release-candidate.mjs active "$candidate_id"
+          {
+            echo "version=$version"
+            echo "source_sha=$source_sha"
+            echo "catalog_sha256=$catalog_sha256"
+            echo "candidate_id=$candidate_id"
+            echo "purpose=$purpose"
+            echo "artifact_namespace=$artifact_namespace"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Candidate input"
+            echo
+            echo "- ID: \`$candidate_id\`"
+            echo "- Product: \`$source_sha\`"
+            echo "- Control: \`$GITHUB_SHA\`"
+            echo "- Purpose: \`$purpose\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify release control helpers and signing configuration
+        env:
+          OFFICIAL_REPOSITORY: ${{ github.repository == 'esengine/DeepSeek-Reasonix' }}
+          HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERT_P12 != '' && secrets.APPLE_CERT_PASSWORD != '' && secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' }}
+          HAS_CERTUM_SIGNING: ${{ secrets.CERTUM_USERNAME != '' && secrets.CERTUM_OTP_URI != '' && secrets.CERTUM_KEY_ID != '' }}
+          HAS_MINISIGN: ${{ secrets.MINISIGN_PRIVATE_KEY != '' && secrets.MINISIGN_PASSWORD != '' }}
+        run: |
+          bash scripts/validate-release-control-plane.sh
+          if [ "$OFFICIAL_REPOSITORY" = true ]; then
+            for configured in "$HAS_APPLE_SIGNING" "$HAS_CERTUM_SIGNING" "$HAS_MINISIGN"; do
+              [ "$configured" = true ] || { echo "::error::release signing configuration is incomplete"; exit 1; }
+            done
+          fi
+      - name: Reuse an existing sealed candidate
+        if: inputs.rehearsal != true
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ID: ${{ steps.candidate.outputs.candidate_id }}
+          RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/existing-candidate.outputs"
+          GITHUB_OUTPUT="$resolved" node scripts/resolve-release-candidate.mjs resolve-optional "$CANDIDATE_ID"
+          output() { sed -n "s/^$1=//p" "$resolved" | tail -1; }
+          if [ "$(output found)" != true ]; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          record_id="$(output record_artifact_id)"
+          run_id="$(output producer_run_id)"
+          mkdir -p "$RUNNER_TEMP/existing-record"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$record_id" > "$RUNNER_TEMP/existing-record-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/existing-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$record_id/zip" > "$RUNNER_TEMP/existing-record.zip"
+          node scripts/verify-release-artifact-archive.mjs "$RUNNER_TEMP/existing-record-artifact.json" "$RUNNER_TEMP/existing-record.zip"
+          unzip -q "$RUNNER_TEMP/existing-record.zip" -d "$RUNNER_TEMP/existing-record"
+          jq -e '
+            .validity.revoked == false and
+            ((.validity.createdAt | fromdateiso8601) < (.validity.expiresAt | fromdateiso8601))
+          ' "$RUNNER_TEMP/existing-record/record.json" >/dev/null
+          if ! jq -e '(.validity.expiresAt | fromdateiso8601) > now' \
+            "$RUNNER_TEMP/existing-record/record.json" >/dev/null; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            echo "The sealed record expired; preparing fresh files." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          signer_sha="$(jq -r .head_sha "$RUNNER_TEMP/existing-run.json")"
+          gh attestation verify "$RUNNER_TEMP/existing-record/record.json" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+            --signer-digest "$signer_sha" --source-ref refs/heads/main-v2 --deny-self-hosted-runners
+          inspected="$RUNNER_TEMP/existing-inspected.outputs"
+          GITHUB_OUTPUT="$inspected" node scripts/resolve-release-candidate.mjs inspect "$CANDIDATE_ID" \
+            "$RUNNER_TEMP/existing-record/record.json" "$RUNNER_TEMP/existing-record-artifact.json" \
+            "$RUNNER_TEMP/existing-run.json"
+          payload_id="$(sed -n 's/^payload_artifact_id=//p' "$inspected" | tail -1)"
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$payload_id" \
+            > "$RUNNER_TEMP/existing-payload.json" 2> "$RUNNER_TEMP/existing-payload.error"; then
+            if grep -Eiq 'HTTP 404|Not Found' "$RUNNER_TEMP/existing-payload.error"; then
+              echo "reuse=false" >> "$GITHUB_OUTPUT"
+              echo "The sealed record exists but its payload is unavailable; preparing fresh files." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/existing-payload.error" >&2
+            exit 1
+          fi
+          test "$(jq -r .expired "$RUNNER_TEMP/existing-payload.json")" = false || {
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            echo "The sealed record exists but its payload expired; preparing fresh files." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          test "$(jq -r .name "$RUNNER_TEMP/existing-payload.json")" = "release-candidate-payload-$CANDIDATE_ID"
+          test "$(jq -r .workflow_run.id "$RUNNER_TEMP/existing-payload.json")" = "$run_id"
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+          echo "A sealed candidate with an active exact payload already exists; native builds are skipped." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify source CI after control preflight
+        if: steps.existing.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          RELEASE_CI_WAIT_SECONDS: 1800
+        run: bash scripts/verify-release-push-ci.sh "$RELEASE_SOURCE_SHA"
+      - name: Checkout immutable product for notes validation
+        if: steps.existing.outputs.reuse != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: product
+          persist-credentials: false
+      - name: Validate embedded notes and cache identity inputs
+        if: steps.existing.outputs.reuse != 'true'
+        working-directory: product
+        env:
+          DOCS_BUILD_VERSION: v${{ steps.candidate.outputs.version }}
+          DOCS_SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          node scripts/release-notes.mjs validate
+          node scripts/release-notes.mjs render --version "$DOCS_BUILD_VERSION" --output /tmp/release-notes.md
+          bash scripts/verify-embedded-docs.sh "$DOCS_BUILD_VERSION" "$DOCS_SOURCE_REVISION"
+          ./scripts/cache-guard.sh
+
+  cli-npm:
+    name: build shared CLI and npm candidate
+    needs: resolve
+    if: needs.resolve.outputs.reuse != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Build each CLI binary once and package both surfaces
+        env:
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          RELEASE_BUILD_TIME="$(git show -s --format=%cI "$RELEASE_SOURCE_SHA")"
+          export RELEASE_BUILD_TIME
+          node scripts/build-release-cli-candidate.mjs "${{ needs.resolve.outputs.version }}" candidate-cli
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-cli-${{ needs.resolve.outputs.candidate_id }}
+          path: |
+            candidate-cli/cli
+            candidate-cli/npm
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  desktop:
+    name: build, sign, and accept Desktop candidate
+    needs: resolve
+    if: needs.resolve.outputs.reuse != 'true'
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      channel: stable
+      tag: desktop-v${{ needs.resolve.outputs.version }}
+      approved_cli_tag: v${{ needs.resolve.outputs.version }}
+      approved_sha: ${{ github.sha }}
+      orchestrated: true
+      orchestrator: candidate
+      signing_preflight: true
+      candidate_preparation: true
+      candidate_rehearsal: ${{ inputs.rehearsal || false }}
+    secrets: inherit
+
+  seal:
+    name: seal reusable release candidate
+    needs: [resolve, cli-npm, desktop]
+    if: >-
+      always() && !cancelled() && needs.resolve.outputs.reuse != 'true' &&
+      needs.resolve.result == 'success' && needs.cli-npm.result == 'success' && needs.desktop.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v8
+        with:
+          name: candidate-cli-${{ needs.resolve.outputs.candidate_id }}
+          path: payload
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-darwin-arm64
+          path: payload/desktop/darwin-arm64
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-darwin-amd64
+          path: payload/desktop/darwin-amd64
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-darwin-universal
+          path: payload/desktop/darwin-universal
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-windows-amd64
+          path: payload/desktop/windows-amd64
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-windows-arm64
+          path: payload/desktop/windows-arm64
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-linux-amd64
+          path: payload/desktop/linux-amd64
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-receipt-windows-amd64
+          path: payload/evidence
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-receipt-windows-arm64
+          path: payload/evidence
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.desktop.outputs.artifact_prefix }}-receipt-macos-universal-intel
+          path: payload/evidence
+      - name: Normalize acceptance receipt names
+        run: |
+          test -s payload/evidence/windows-amd64.json
+          test -s payload/evidence/windows-arm64.json
+          test -s payload/evidence/macos-universal-intel.json
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: payload/**/*
+      - name: Upload immutable candidate payload
+        id: payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.artifact_namespace }}-payload-${{ needs.resolve.outputs.candidate_id }}
+          path: payload
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - name: Retain native acceptance evidence
+        id: evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.artifact_namespace }}-evidence-${{ needs.resolve.outputs.candidate_id }}
+          path: payload/evidence
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+      - name: Render reviewed notes from the immutable product
+        run: |
+          git show "${{ github.sha }}:release-notes/releases.json" > /tmp/releases.json
+          worktree="$(mktemp -d "$RUNNER_TEMP/reasonix-notes.XXXXXX")"
+          git worktree add --detach "$worktree" "${{ github.sha }}"
+          node "$worktree/scripts/release-notes.mjs" render --version "v${{ needs.resolve.outputs.version }}" --output /tmp/release-notes.md
+          git worktree remove "$worktree"
+      - name: Seal candidate record
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_CANDIDATE_PURPOSE: ${{ needs.resolve.outputs.purpose }}
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          RELEASE_BUILD_CONTROL_SHA: ${{ github.sha }}
+          RELEASE_ACCEPTANCE_CONTROL_SHA: ${{ github.sha }}
+          RELEASE_NOTES_SOURCE_SHA: ${{ github.sha }}
+          RELEASE_CATALOG_SHA256: ${{ needs.resolve.outputs.catalog_sha256 }}
+          RELEASE_DESKTOP_PREFIX: ${{ needs.desktop.outputs.artifact_prefix }}
+          RELEASE_DESKTOP_FINGERPRINT: ${{ needs.desktop.outputs.signing_fingerprint }}
+          RELEASE_PAYLOAD_ARTIFACT_ID: ${{ steps.payload.outputs.artifact-id }}
+          RELEASE_PAYLOAD_ARTIFACT_NAME: ${{ needs.resolve.outputs.artifact_namespace }}-payload-${{ needs.resolve.outputs.candidate_id }}
+          RELEASE_EVIDENCE_ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          RELEASE_EVIDENCE_ARTIFACT_NAME: ${{ needs.resolve.outputs.artifact_namespace }}-evidence-${{ needs.resolve.outputs.candidate_id }}
+          RELEASE_WORKFLOW: .github/workflows/release-candidate.yml
+          RELEASE_ACCEPTANCE_JSON: >-
+            [{"kind":"windows-amd64","status":"passed","evidencePath":"evidence/windows-amd64.json"},{"kind":"windows-arm64","status":"passed","evidencePath":"evidence/windows-arm64.json"},{"kind":"macos-universal-intel","status":"passed","evidencePath":"evidence/macos-universal-intel.json"}]
+        run: |
+          RELEASE_RENDERED_NOTES_SHA256="$(sha256sum /tmp/release-notes.md | awk '{print $1}')"
+          RELEASE_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RELEASE_EXPIRES_AT="$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)"
+          export RELEASE_RENDERED_NOTES_SHA256 RELEASE_CREATED_AT RELEASE_EXPIRES_AT
+          node scripts/release-candidate.mjs seal payload record/record.json
+          if [ "$RELEASE_CANDIDATE_PURPOSE" = rehearsal ]; then
+            node scripts/release-candidate.mjs verify-rehearsal payload record/record.json
+          else
+            node scripts/release-candidate.mjs verify payload record/record.json
+          fi
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: record/record.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve.outputs.artifact_namespace }}-record-${{ needs.resolve.outputs.candidate_id }}
+          path: record/record.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+      - name: Report publish command
+        env:
+          PURPOSE: ${{ needs.resolve.outputs.purpose }}
+        run: |
+          {
+            echo "### Candidate ready"
+            echo
+            echo "\`${{ needs.resolve.outputs.candidate_id }}\`"
+            echo
+            echo '```sh'
+            if [ "$PURPOSE" = rehearsal ]; then
+              echo "gh workflow run release-candidate-verify.yml --ref main-v2 -f candidate_id='${{ needs.resolve.outputs.candidate_id }}'"
+            else
+              echo "./scripts/release-stable.sh '${{ needs.resolve.outputs.candidate_id }}'"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  metrics:
+    name: record candidate timing
+    needs: [resolve, cli-npm, desktop, seal]
+    if: ${{ always() && !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Record queue, execution, and critical-path evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" > "$RUNNER_TEMP/release-jobs.json"
+          node scripts/ci-timings.mjs \
+            --run "$RUNNER_TEMP/release-run.json" \
+            --jobs "$RUNNER_TEMP/release-jobs.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --output "$RUNNER_TEMP/candidate-timing.json" \
+            --title "Release candidate timing"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate-timing-${{ needs.resolve.outputs.candidate_id || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-timing.json
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 90

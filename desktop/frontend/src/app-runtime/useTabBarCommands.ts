@@ -102,11 +102,11 @@ export function useTabBarCommands(input: TabBarCommandsInput) {
       return next;
     });
     input.setTabMetas((current) => {
-      if (current.length <= 1) return current;
       const closingIndex = current.findIndex((tab) => tab.id === id);
       if (closingIndex < 0) return current;
       const closingTab = current[closingIndex];
       const remaining = current.filter((tab) => tab.id !== id);
+      if (remaining.length === 0) return [];
       if (!closingTab.active && closingTab.id !== activeTabId) return remaining;
       const nextIndex = Math.min(closingIndex, remaining.length - 1);
       const nextActiveId = remaining[nextIndex]?.id;

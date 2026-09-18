@@ -23,7 +23,11 @@ func newExclusiveSessionServe(t *testing.T) (*Server, *control.Controller, *sess
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	exec := agent.New(nil, nil, agent.NewSession("system"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{
 		Executor: exec, SessionDir: t.TempDir(), SessionService: service, ExclusiveSession: true,

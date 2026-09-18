@@ -10,6 +10,7 @@ import { historySliceFromMessages } from "./mockHistorySlice";
 import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySlice, HistorySliceRequest, JobView, Meta, TabMeta, TopicActivationEvent, TopicActivationRequest, WireEvent } from "../lib/types";
 import { installDesktopHostStub } from "./desktopHostStub";
 import { verifyExplicitTranscriptRetry } from "./helpers/explicitTranscriptRetry";
+import { flushPromises, verifyEarlyReadableHistory, verifyDetachedPinRelease } from "./helpers/earlyReadableHistory";
 
 let passed = 0;
 let failed = 0;
@@ -26,10 +27,6 @@ function ok(value: boolean, label: string) {
 
 function eq(actual: unknown, expected: unknown, label: string) {
   ok(actual === expected, actual === expected ? label : `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-}
-
-function flushPromises(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function deferred<T>() {
@@ -433,10 +430,11 @@ eq(controller?.state.meta?.label, "model-tab-b", "switchTab applies optimistic t
 eq(controller?.state.items.length, 0, "uncached target tab does not keep the previous transcript visible");
 eq(controller?.state.hydrating, true, "target tab shows lightweight hydration state while backend activation is pending");
 eq(controller?.state.backendActivationPending, true, "target tab gates unscoped actions while backend activation is pending");
-ok(!historyCalls.includes("tab-b"), "HistoryForTab is not requested before SetActiveTab completes");
+ok(historyCalls.includes("tab-b"), "HistoryForTab starts before SetActiveTab completes");
 eq(controller?.state.approval?.id, undefined, "tab activation clears a stale approval already stored on the target tab");
 eq(controller?.state.running, false, "tab activation clears the stale prompt lifecycle before backend status arrives");
 
+await verifyEarlyReadableHistory(() => controller, () => historyB.resolve([userMessage("early B")]), flushPromises, waitFor);
 await act(async () => {
   desktopStub.emit("agent:event", { kind: "approval_request", approval: { id: "old-backend-approval", tool: "bash", subject: "old backend approval" } });
   await flushPromises();
@@ -466,17 +464,16 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("tab-a restored", () => controller?.activeTabId === "tab-a" && controller.state.items.some((item) => item.kind === "user" && item.text === "cached A"));
-eq(historyCalls.length, historyCallsBeforeReturnToA + 1, "reselected tab installs one consistent Follow baseline");
+eq(historyCalls.length, historyCallsBeforeReturnToA + 2, "unfingerprinted reselect reads a safe baseline before installing the Follow cut");
 
 await act(async () => {
-  historyB.resolve([userMessage("late B")]);
-  await Promise.all([historyB.promise, switchToB]);
+  await switchToB;
   await flushPromises();
 });
 
-eq(controller?.activeTabId, "tab-a", "late history for another tab does not change the active tab");
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "late history for another tab does not overwrite the active transcript");
-ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "late B") ?? false), "late history stays scoped to its tab state");
+eq(controller?.activeTabId, "tab-a", "completed activation for another tab does not change the active tab");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "completed activation for another tab does not overwrite the active transcript");
+ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "early B") ?? false), "early history stays scoped to its tab state");
 
 const historyCallsBeforeFallbackSync = historyCalls.length;
 await act(async () => {
@@ -566,7 +563,8 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-g", "late completion from the first rapid switch does not replace the visible tab");
 eq(backendActiveId, "tab-g", "late completion from the first rapid switch reasserts the last-clicked backend tab");
-ok(!historyCalls.includes("tab-f"), "late completion from the first rapid switch does not hydrate the stale target");
+ok(historyCalls.includes("tab-f"), "the first rapid switch may start an early history read");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "history G") ?? false, "late completion from the first rapid switch cannot overwrite the winning transcript");
 
 await act(async () => {
   await controller?.switchTab("tab-a", tabA);
@@ -582,7 +580,8 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-a", "failed backend tab switch reverts to the previous active tab");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "failed backend tab switch keeps the previous transcript visible");
-eq(historyCalls.length, historyCallsBeforeFailedSwitch, "failed backend tab switch does not hydrate the rejected target");
+ok(historyCalls.length >= historyCallsBeforeFailedSwitch, "failed backend tab switch may prime only the rejected target's bounded history");
+ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "early B") ?? false), "failed backend tab switch never exposes the rejected target history");
 failSetActiveFor = "";
 
 await act(async () => { await controller?.switchTab("tab-o", tabO); await flushPromises(); });
@@ -625,10 +624,10 @@ await act(async () => {
   await flushPromises();
 });
 eq(controller?.activeTabId, "tab-c", "switching to a cached running tab still updates the active tab");
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "streaming C") ?? false, "cached running tab keeps its optimistic transcript");
-const tabCUser = controller?.state.items.find((item) => item.kind === "user" && item.text === "streaming C");
-eq(tabCUser?.kind === "user" && tabCUser.submissionId, tabCSubmissionId, "the backend receives the same opaque correlation stored on the optimistic user");
-ok(Boolean(tabCSubmissionId) && tabCSubmissionId !== tabCUser?.id, "opaque submission correlation is distinct from the render item id");
+const tabCUser = Object.values(controller?.state.localSubmissions ?? {}).find((submission) => submission.text === "streaming C");
+ok(Boolean(tabCUser), "cached running tab keeps its optimistic transcript");
+eq(tabCUser?.submissionId, tabCSubmissionId, "the backend receives the same opaque correlation stored on the local submission");
+ok(Boolean(tabCSubmissionId) && tabCSubmissionId !== tabCUser?.localId, "opaque submission correlation is distinct from the presentation item id");
 ok(historyCalls.includes("tab-c"), "a running tab with no history page of its own still hydrates one");
 await act(async () => {
   submitTabCGate.resolve();
@@ -683,7 +682,7 @@ await act(async () => {
 });
 eq(controller?.activeTabId, "tab-d", "reopening an already hydrated topic keeps it active");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "history D") ?? false, "reopened cached topic keeps its transcript");
-eq(historyCalls.length, historyCallsBeforeReopenD + 2, "topic navigation installs a consistent baseline for each binding");
+eq(historyCalls.length, historyCallsBeforeReopenD + 3, "unfingerprinted topic navigation reads safe baselines before each Follow cut");
 eq(controller?.state.approval?.id, "stale-approval", "reopening preserves backend pending approval");
 eq(controller?.state.running, true, "reopening preserves the pending runtime state");
 
@@ -772,7 +771,7 @@ await act(async () => {
 });
 await waitFor("single-surface activation replaces visible tab", () => controller?.activeTabId === "tab-g"
   && (controller.state.items.some((item) => item.kind === "user" && item.text === "history G") ?? false));
-await act(async () => { controller?.commitSingleSurfaceNavigation("tab-g"); await flushPromises(); });
+await verifyDetachedPinRelease(() => controller, flushPromises);
 await act(async () => {
   metaH.resolve({ ...metaFor(tabH), label: "stale-model-tab-h" });
   await metaH.promise;

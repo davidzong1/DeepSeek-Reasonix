@@ -68,6 +68,9 @@ equal(readDone.items.filter(it => it.kind === "notice" && it.code === "incomplet
 equal(upsertReadPause(readDone.items, receipt, "unused").length, readDone.items.length, "replayed pause is idempotent");
 const historyNotice = readPauseItem(receipt, "unused");
 equal(historyNotice.kind === "notice" && historyNotice.text.includes("budget"), true, "pause cause is visible without expanding details");
-equal(JSON.stringify(readDone.items.find(it => it.id === historyNotice.id)), JSON.stringify(historyNotice), "live and history use identical presentation");
+const liveNotice = readDone.items.find(it => it.id === historyNotice.id)!;
+const { turnId: noticeTurnId, ...presentation } = liveNotice;
+equal(noticeTurnId, "current", "live receipt retains the explicit event turn for pending-bubble positioning");
+equal(JSON.stringify(presentation), JSON.stringify(historyNotice), "live and history use identical presentation");
 const nextTurn = reducer(readDone, { type: "event", e: { kind: "turn_started", turnId: "next", status: "in_progress" } });
 equal(reducer(nextTurn, { type: "event", e: { kind: "turn_done", turnId: "current", outcome: "incomplete_read", readPause: receipt } }), nextTurn, "stale terminal result cannot stop a new turn");

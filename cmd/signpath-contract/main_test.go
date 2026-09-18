@@ -28,7 +28,9 @@ func TestTopLevelSignPathWorkflowCallGraph(t *testing.T) {
 	}
 	want := []string{
 		".github/workflows/certum-signing-smoke.yml",
+		".github/workflows/release-candidate.yml",
 		".github/workflows/release-desktop.yml",
+		".github/workflows/release-promote.yml",
 		".github/workflows/release-stable.yml",
 	}
 	if !reflect.DeepEqual(got, want) {

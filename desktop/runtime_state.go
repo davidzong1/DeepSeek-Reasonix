@@ -60,8 +60,13 @@ func (a *App) localRuntimeBindingsLocked() map[localRuntimeBindingKey]localRunti
 		bindings[localRuntimeBindingKey{key, open}] = localRuntimeBinding{tab: tab, ctrl: tab.Ctrl,
 			view: RuntimeSessionState{TabID: tab.ID, Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot,
 				TopicID: tab.TopicID, SessionID: tab.SessionID, SessionPath: tab.SessionPath, SessionGeneration: tab.SessionGeneration, Open: open, Freshness: "synced"},
-			catalog: catalogRuntimeSnapshot{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
+			catalog: catalogRuntimeSnapshot{tabID: tab.ID, scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
 				activity: tab.ActivityStatus, topicTitle: tab.TopicTitle, topicTitleSource: tab.topicTitleSource, open: open}}
+		if tab.SessionID != "" {
+			binding := bindings[localRuntimeBindingKey{key, open}]
+			binding.catalog.sessionPath = sessionRoute(tab.SessionID)
+			bindings[localRuntimeBindingKey{key, open}] = binding
+		}
 	}
 	for key, tab := range a.tabs {
 		collect(key, tab, true)

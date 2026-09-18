@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, X } from "lucide-react";
 import type { QuestionAnswer, WireAsk, WireAskQuestion } from "../lib/types";
+import { createInteractionDraftStore } from "../lib/interactionDraftStore";
 import {
   DecisionConfirmBar,
   PromptAction,
@@ -10,9 +11,8 @@ import {
   PromptShelf,
 } from "./PromptShelf";
 
-const askDrafts = new Map<string, AskDraft>();
 const askDraftKey = (scope: string, ask: WireAsk) =>
-  JSON.stringify([scope, ask.runtimeEpoch ?? "", ask.turnId ?? "", ask.id]);
+  `${scope}\u0000${JSON.stringify([ask.runtimeEpoch ?? "", ask.turnId ?? "", ask.id])}`;
 type AnswerMode = "option" | "custom";
 type AskDraft = {
   sel: Record<string, string[]>;
@@ -21,9 +21,10 @@ type AskDraft = {
   active: number;
   selectedIndex: number;
 };
+const askDrafts = createInteractionDraftStore<AskDraft>();
 
 function readAskDraft(key: string): AskDraft | undefined {
-  const draft = askDrafts.get(key);
+  const draft = askDrafts.read(key);
   return draft ? { ...draft, sel: { ...draft.sel }, custom: { ...draft.custom }, answerMode: { ...draft.answerMode } } : undefined;
 }
 
@@ -39,12 +40,12 @@ type AskCardProps = {
   ask: WireAsk;
   onAnswer: (id: string, answers: QuestionAnswer[]) => void | Promise<void>;
   onDismiss?: () => void | Promise<void>;
-  draftScope?: string;
+  draftScope: string;
   onStop: () => void;
 };
 
 export function AskCard(props: AskCardProps) {
-  const draftKey = askDraftKey(props.draftScope ?? "default", props.ask);
+  const draftKey = askDraftKey(props.draftScope, props.ask);
   // The same identity owns both cached drafts and live component state. A
   // controller can reuse prompt IDs, so changing runtime or turn remounts it.
   return <AskCardBody key={draftKey} {...props} draftKey={draftKey} />;
@@ -96,7 +97,7 @@ function AskCardBody({ ask, onAnswer, onStop, draftKey }: AskCardProps & { draft
 
   useEffect(() => {
     try {
-      askDrafts.set(draftKey, { sel: { ...sel }, custom: { ...custom }, answerMode: { ...answerMode }, active, selectedIndex });
+      askDrafts.write(draftKey, { sel: { ...sel }, custom: { ...custom }, answerMode: { ...answerMode }, active, selectedIndex });
     } catch {
       // Draft storage is best effort; the live pending ask remains authoritative.
     }

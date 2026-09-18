@@ -221,6 +221,7 @@ export function playAttentionChime(): void {
 
 export type AttentionChimeEvent = {
   kind?: string;
+  hostId?: string;
   tabId?: string;
   turnId?: string;
   approval?: { id?: string; turnId?: string };
@@ -234,7 +235,9 @@ export function attentionChimeEventKey(event: AttentionChimeEvent): string | und
   // Turn ids are globally unique and survive detach/reattach. Tab ids and
   // desktop runtime epochs are view bindings and can change during replay.
   const turnId = prompt.turnId || event.turnId;
-  return turnId ? `turn:${JSON.stringify([kind, turnId, prompt.id])}` : `${kind}:${event.tabId ?? ""}:${prompt.id}`;
+  const identity = [kind, turnId, prompt.id];
+  if (event.hostId && event.hostId !== "local") identity.push(event.hostId);
+  return turnId ? `turn:${JSON.stringify(identity)}` : `${kind}:${event.tabId ?? ""}:${prompt.id}`;
 }
 
 // attentionChimeSeenCap bounds the dedupe set. Prompt ids are unique per

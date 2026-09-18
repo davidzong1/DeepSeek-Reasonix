@@ -22,6 +22,9 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	if cursor != nil && cursor.ManualOrder != req.ManualOrder {
 		return out, errCursorSortModeChanged
 	}
+	if cursor != nil && cursor.Binding != req.CursorBinding {
+		return out, errCursorSortModeChanged
+	}
 	rootKey := c.workspaceRootKey(req.Scope, req.WorkspaceRoot)
 	args := []any{req.Scope, rootKey}
 	where := `scope=? AND workspace_root_key=?`
@@ -33,6 +36,11 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 		where += ` AND last_activity_at>=?`
 		args = append(args, cutoff)
 	}
+	where += ` AND (?='' OR topic_id IN (SELECT value FROM json_each(COALESCE(NULLIF(?,''),'[]'))))` +
+		` AND (?='' OR topic_id NOT IN (SELECT value FROM json_each(COALESCE(NULLIF(?,''),'[]'))))` +
+		` AND (?=0 OR pinned=0)`
+	args = append(args, req.IncludeTopicIDsJSON, req.IncludeTopicIDsJSON,
+		req.ExcludeTopicIDsJSON, req.ExcludeTopicIDsJSON, req.ExcludePinned)
 	scanCursor := cursor
 	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
@@ -153,5 +161,6 @@ func cursorForTopic(topic TopicRecord, req TopicPageRequest) *pageCursor {
 		Pinned: pinned, ManualOrder: req.ManualOrder,
 		SortOrder: topicPageManualSortValue(topic),
 		Activity:  topicPageSortValue(topic, req.SortMode), TopicID: topic.TopicID,
+		Binding: req.CursorBinding,
 	}
 }

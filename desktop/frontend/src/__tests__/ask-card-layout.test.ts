@@ -3,16 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
-import React from "react";
-import { act } from "react";
+import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { AskCard } from "../components/AskCard";
 import { LocaleProvider } from "../lib/i18n";
 import type { QuestionAnswer, WireAsk } from "../lib/types";
-const testDir = dirname(fileURLToPath(import.meta.url));
-const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
-let passed = 0;
-let failed = 0;
+const testDir = dirname(fileURLToPath(import.meta.url)), styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+let passed = 0, failed = 0;
 function ok(value: boolean, label: string) {
   if (value) {
     process.stdout.write(`  PASS  ${label}\n`);
@@ -126,6 +123,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -285,6 +283,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -354,6 +353,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -407,6 +407,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -463,6 +464,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -501,6 +503,7 @@ console.log("\nask card layout");
     root.render(React.createElement(LocaleProvider, null,
       React.createElement(AskCard, {
         ask,
+        draftScope: `test:${ask.id}`,
         onAnswer: (_id: string, next: QuestionAnswer[]) => { answers.push(next); },
         onDismiss: () => undefined,
         onStop: () => undefined,
@@ -565,6 +568,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: () => undefined,
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -618,6 +622,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: async (_id: string, answers: QuestionAnswer[]) => {
             attempts += 1;
             submitted.push(answers);
@@ -688,6 +693,7 @@ console.log("\nask card layout");
       React.createElement(LocaleProvider, null,
         React.createElement(AskCard, {
           ask,
+          draftScope: `test:${ask.id}`,
           onAnswer: (_id: string, answers: QuestionAnswer[]) => { submitted.push(answers); },
           onDismiss: () => undefined,
           onStop: () => undefined,
@@ -718,7 +724,7 @@ console.log("\nask card layout");
   };
   await act(async () => {
     root.render(React.createElement(LocaleProvider, null,
-      React.createElement(AskCard, { ask, onAnswer: () => undefined, onDismiss: () => undefined, onStop: () => undefined }),
+      React.createElement(AskCard, { ask, draftScope: `test:${ask.id}`, onAnswer: () => undefined, onDismiss: () => undefined, onStop: () => undefined }),
     ));
     await flushTimers();
   });

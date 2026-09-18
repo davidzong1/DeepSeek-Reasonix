@@ -5,6 +5,48 @@
 本手册用于跨平台 Desktop 诊断链路的发布、隐私、性能和根因闭环。Windows build
 `17763` 是重点实验环境，不是代码白名单；发布诊断版本本身不代表问题已经解决。
 
+## 本地 transcript 初始化失败
+
+创建、打开会话或迁移旧会话时，如果 transcript 初始化失败，可在 Electron 壳的
+`service.log`（以及轮转文件 `service.log.1`）中搜索
+`session transcript initialization failed`。服务向 stderr 输出结构化的 `diagnostic`
+字段组，由壳现有日志链路落盘。该诊断的 `version=1`、
+`code=transcript_initialization_failed`；不改变迁移账本格式。下文另行说明不含内容的线上
+报告。
+
+| 字段 | 含义 |
+| --- | --- |
+| `diagnostic.session_key` | 会话 ID 的 SHA-256，用于关联该运行时会话的错误 |
+| `diagnostic.covered_sequence` | 初始化 transcript 覆盖到的事件序号 |
+| `diagnostic.baseline_message_count` | 本次选取的输入消息数，最多 96 条 |
+| `diagnostic.baseline_total_message_count` | 选取尾部窗口前可用的候选消息数，不一定是完整历史总数 |
+| `diagnostic.baseline.record_count` | 这些输入消息转换生成的 transcript 记录数 |
+| `diagnostic.baseline.record_index` / `previous_record_index` | 当前基线内从 0 开始的出错记录位置 / 首次冲突位置，仅在已知时记录 |
+| `diagnostic.baseline.role` | 白名单内的角色，其他值统一为 `other` |
+| `diagnostic.baseline.record_key` / `message_key` / `tool_call_key` | 标识的 SHA-256 摘要，原标识缺失时为空 |
+
+`diagnostic.baseline.code` 区分 `duplicate_record_identity`（重复标识）、
+`missing_record_identity`（缺少标识）、`baseline_encode_failed`（编码失败）和
+`baseline_decode_failed`（解码失败）。编码、解码失败不记录位置。
+位置针对本次基线内的 transcript 记录，不是整个会话的消息偏移。
+
+旧会话迁移还会输出 `desktop session migration transcript initialization failed`，
+包含同一份诊断、`stage=legacy_import` 和 `source_key`。使用 `source_key` 对照
+Reasonix 配置目录下 `desktop/session-migration-v5.json` 中已有的 `sourceKey`。
+即使重试时生成了不同的目标会话 ID，也能据此关联同一迁移来源。每次失败输出一条运行时
+诊断；在该迁移路径中再输出一条迁移诊断。失败来源保留，正常会话可继续迁移。
+
+这些新增记录不包含聊天正文、思考正文、工具参数、原始路径、原始标识或任意错误原文。
+摘要用于关联，本身不能证明用户原始数据的具体触发原因。旧 `1.38.10` 日志无法补回这些
+字段，需要使用包含此改动的构建复现后重新收集日志。
+
+同一个已处理的迁移失败还会进入本地待上传队列，作为 `exception` 上报；其
+`source=desktop.session_migration`、`label=transcript.initialization`，fingerprint hint
+只包含无正文的错误分类。报告投递到 `https://crash.reasonix.io/v1/report`，并在
+`/stats/diagnostics` 中展示，继续遵守现有 Desktop telemetry 同意开关、失败重试和按版本
+去重规则。会话/迁移来源摘要以及记录标识摘要只保留在本地。旧版本未捕获的 panic 继续走
+已有的 `go.runtime` / `go.fatal` 上报链路，并按高等级崩溃展示。
+
 ## 发布顺序
 
 1. Firebase 项目保持 Spark 且不关联 Cloud Billing；只在

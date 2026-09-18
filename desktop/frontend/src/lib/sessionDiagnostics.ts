@@ -24,6 +24,20 @@ export interface ActivationDiagnostic {
   failureClass?: string;
 }
 
+export interface NavigationDiagnostic {
+  intent: number;
+  tabId: string;
+  requestedAtMs: number;
+  identityPublishedAtMs?: number;
+  historyRequestedAtMs?: number;
+  historyReadableAtMs?: number;
+  runtimeReadyAtMs?: number;
+  firstPaintAtMs?: number;
+  composerEnabledAtMs?: number;
+  historyCacheHit?: boolean;
+  runtimeReattached?: boolean;
+}
+
 export interface HistoryPageDiagnostic {
   entries: number;
   inlineBytes: number;
@@ -114,10 +128,14 @@ export function activationFailureClass(error: string | undefined): string {
 }
 
 const MAX_ACTIVATION_LOG = 128;
+const MAX_NAVIGATION_LOG = 128;
 
 const activations = new Map<string, ActivationDiagnostic>();
 const activationOrder: string[] = [];
 let lastActivationKey: string | null = null;
+const navigations = new Map<number, NavigationDiagnostic>();
+const navigationOrder: number[] = [];
+let lastNavigationIntent: number | null = null;
 
 let lastHistoryPage: HistoryPageDiagnostic | null = null;
 let lastResumeHistory: HistoryPageDiagnostic | null = null;
@@ -147,6 +165,67 @@ function trimActivationLog(): void {
   while (activationOrder.length > MAX_ACTIVATION_LOG) {
     const oldest = activationOrder.shift();
     if (oldest) activations.delete(oldest);
+  }
+}
+
+function navigationEntry(intent: number): NavigationDiagnostic {
+  let entry = navigations.get(intent);
+  if (entry) return entry;
+  entry = { intent, tabId: "", requestedAtMs: now() };
+  navigations.set(intent, entry);
+  navigationOrder.push(intent);
+  lastNavigationIntent = intent;
+  while (navigationOrder.length > MAX_NAVIGATION_LOG) {
+    const oldest = navigationOrder.shift();
+    if (oldest !== undefined) navigations.delete(oldest);
+  }
+  return entry;
+}
+
+/** The user's local navigation intent was claimed. First writer wins so the
+ *  desktop owner and controller can both report the boundary safely. */
+export function noteNavigationRequested(intent: number): void {
+  if (!Number.isSafeInteger(intent) || intent < 0) return;
+  navigationEntry(intent);
+}
+
+export function noteNavigationIdentityPublished(intent: number, tabId: string): void {
+  const entry = navigationEntry(intent);
+  if (entry.identityPublishedAtMs === undefined) entry.identityPublishedAtMs = now();
+  if (tabId) entry.tabId = tabId;
+}
+
+export function noteNavigationHistoryRequested(intent: number, cacheHit: boolean): void {
+  const entry = navigationEntry(intent);
+  if (entry.historyRequestedAtMs === undefined) entry.historyRequestedAtMs = now();
+  entry.historyCacheHit = cacheHit;
+}
+
+export function noteNavigationHistoryReadable(intent: number, cacheHit: boolean): void {
+  const entry = navigationEntry(intent);
+  if (entry.historyReadableAtMs === undefined) entry.historyReadableAtMs = now();
+  entry.historyCacheHit = cacheHit;
+}
+
+export function noteNavigationRuntimeReady(intent: number, reattached = false): void {
+  const entry = navigationEntry(intent);
+  if (entry.runtimeReadyAtMs === undefined) entry.runtimeReadyAtMs = now();
+  entry.runtimeReattached = entry.runtimeReattached || reattached;
+}
+
+export function noteNavigationFirstPaint(intent: number): void {
+  const entry = navigationEntry(intent);
+  if (entry.firstPaintAtMs === undefined) entry.firstPaintAtMs = now();
+}
+
+/** Composer readiness is observed outside the controller. Attribute it to the
+ *  newest navigation that published this tab identity. */
+export function noteNavigationComposerEnabled(tabId: string): void {
+  for (let index = navigationOrder.length - 1; index >= 0; index -= 1) {
+    const entry = navigations.get(navigationOrder[index]);
+    if (!entry || entry.tabId !== tabId) continue;
+    if (entry.composerEnabledAtMs === undefined) entry.composerEnabledAtMs = now();
+    return;
   }
 }
 
@@ -266,6 +345,13 @@ export interface SessionPipelineDiagnostics {
     startingToReadyMs?: number;
     totalMs?: number;
   };
+  navigation?: NavigationDiagnostic & {
+    clickToIdentityMs?: number;
+    clickToFirstHistoryMs?: number;
+    clickToFirstPaintMs?: number;
+    clickToRuntimeReadyMs?: number;
+    clickToComposerEnabledMs?: number;
+  };
   history?: HistoryPageDiagnostic & {
     pages: number;
     staleCount: number;
@@ -294,11 +380,23 @@ function deriveActivation(entry: ActivationDiagnostic): SessionPipelineDiagnosti
   return out;
 }
 
+function deriveNavigation(entry: NavigationDiagnostic): SessionPipelineDiagnostics["navigation"] {
+  const out: SessionPipelineDiagnostics["navigation"] = { ...entry };
+  if (entry.identityPublishedAtMs !== undefined) out.clickToIdentityMs = entry.identityPublishedAtMs - entry.requestedAtMs;
+  if (entry.historyReadableAtMs !== undefined) out.clickToFirstHistoryMs = entry.historyReadableAtMs - entry.requestedAtMs;
+  if (entry.firstPaintAtMs !== undefined) out.clickToFirstPaintMs = entry.firstPaintAtMs - entry.requestedAtMs;
+  if (entry.runtimeReadyAtMs !== undefined) out.clickToRuntimeReadyMs = entry.runtimeReadyAtMs - entry.requestedAtMs;
+  if (entry.composerEnabledAtMs !== undefined) out.clickToComposerEnabledMs = entry.composerEnabledAtMs - entry.requestedAtMs;
+  return out;
+}
+
 /** Point-in-time snapshot for the crash/performance report context. */
 export function sessionPipelineDiagnostics(): SessionPipelineDiagnostics {
   const out: SessionPipelineDiagnostics = { duplicateLoadCount: null };
   const activation = lastActivationKey ? activations.get(lastActivationKey) : undefined;
   if (activation) out.activation = deriveActivation(activation);
+  const navigation = lastNavigationIntent === null ? undefined : navigations.get(lastNavigationIntent);
+  if (navigation) out.navigation = deriveNavigation(navigation);
   // A switch reports its first screen before any slice runs, so fall back to it
   // instead of reporting no history at all.
   const historyPage = lastHistoryPage ?? lastResumeHistory;
@@ -350,6 +448,9 @@ export function resetSessionDiagnostics(): void {
   activations.clear();
   activationOrder.length = 0;
   lastActivationKey = null;
+  navigations.clear();
+  navigationOrder.length = 0;
+  lastNavigationIntent = null;
   lastHistoryPage = null;
   lastResumeHistory = null;
   resumeSwitchPhases = null;

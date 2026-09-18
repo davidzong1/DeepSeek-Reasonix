@@ -21,9 +21,8 @@ func (c *Controller) freezeInboxReferences(ctx context.Context, submit string, e
 	if !c.HasRefs(input) {
 		return "", nil, nil
 	}
-	block, errs := c.ResolveRefs(ctx, input)
-	images := c.resolveInputImageCandidates(input)
-	return block, images, errs
+	resolved := c.resolveUnscopedRefsForTurn(ctx, input)
+	return resolved.block, resolved.images, resolved.errs
 }
 
 func applyInboxReferences(env sessioninbox.PromptEnvelope) (submit string, images []string, blockReason string, err error) {

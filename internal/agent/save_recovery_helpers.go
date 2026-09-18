@@ -145,6 +145,27 @@ func copyValidContextProjection(originalPath, targetPath string, msgs []provider
 	return true, nil
 }
 
+// LoadValidContextProjectionForMigration reconstructs the exact model-visible
+// view from a frozen legacy sidecar when it still authenticates the supplied
+// canonical transcript. Migration deliberately validates content independently
+// of the old model/workspace lineage because the canonical target persists that
+// selection separately.
+func LoadValidContextProjectionForMigration(sessionPath string, canonical []provider.Message) ([]provider.Message, bool, error) {
+	st, ok, err := LoadCompactionState(sessionPath)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	migratePromotedCoveredPrefixHash(&st, canonical)
+	if !projectionContentValid(st, canonical) {
+		return nil, false, nil
+	}
+	visible := modelVisibleFromProjection(st.Projection, canonical)
+	if len(visible) == 0 {
+		return nil, false, nil
+	}
+	return visible, true, nil
+}
+
 // healEmptyCheckpointFromWAL rebuilds a missing or 0-byte checkpoint from its
 // own valid event log. Healthy checkpoints return before probing the WAL.
 func healEmptyCheckpointFromWAL(path string) error {

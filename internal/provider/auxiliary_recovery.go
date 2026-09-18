@@ -24,7 +24,7 @@ func StreamAuxiliary(ctx context.Context, p Provider, req Request) (<-chan Chunk
 		}
 		for attempt := range 4 {
 			attemptCtx, cancel := context.WithCancel(ctx)
-			ch, err := p.Stream(attemptCtx, req)
+			ch, err := Stream(attemptCtx, p, req)
 			var latest *Usage
 			var chunks []Chunk
 			complete := false

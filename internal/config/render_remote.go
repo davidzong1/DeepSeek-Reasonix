@@ -23,6 +23,9 @@ func renderRemoteConfig(b *strings.Builder, c *Config, scope RenderScope) {
 		if project.Title != "" {
 			fmt.Fprintf(b, "title = %q\n", project.Title)
 		}
+		if project.SessionOrganization != "" {
+			fmt.Fprintf(b, "session_organization = %q\n", project.SessionOrganization)
+		}
 	}
 	b.WriteString("\n")
 }

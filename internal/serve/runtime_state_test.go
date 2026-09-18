@@ -59,16 +59,11 @@ func runtimeStateServeController(t *testing.T, dir, name string, runner interfac
 		// finishing notification establish a barrier before TempDir removal.
 		_ = c.SetInboxPaused(true)
 		c.Cancel()
-		deadline := time.NewTimer(5 * time.Second)
-		defer deadline.Stop()
+		// Cleanup must join the finishing boundary before deleting its files.
+		// The package alarm bounds deadlocks; elapsed host I/O is not an assertion.
 		for {
-			select {
-			case state := <-sink.states:
-				if state.Phase == "idle" && state.Revision > before.Revision {
-					return
-				}
-			case <-deadline.C:
-				t.Error("isolated runtime did not settle before cleanup")
+			state := <-sink.states
+			if state.Phase == "idle" && state.Revision > before.Revision {
 				return
 			}
 		}

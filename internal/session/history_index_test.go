@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"reasonix/internal/projectiondb"
 	"reasonix/internal/provider"
@@ -15,7 +14,6 @@ import (
 
 func searchHistoryReady(t *testing.T, query *Query, ref SessionRef, text, cursor string, limit int) SearchHistoryPage {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	for {
 		page, err := query.SearchHistory(t.Context(), ref, text, cursor, limit)
 		if err != nil {
@@ -24,10 +22,27 @@ func searchHistoryReady(t *testing.T, query *Query, ref SessionRef, text, cursor
 		if page.Status == "ready" {
 			return page
 		}
-		if page.Status != "preparing" || time.Now().After(deadline) {
+		if page.Status != "preparing" {
 			t.Fatalf("search preparation = %+v", page)
 		}
-		time.Sleep(time.Millisecond)
+		query.searchMu.Lock()
+		preparation := query.searchBuilds[ref.SessionID]
+		query.searchMu.Unlock()
+		if preparation == nil {
+			t.Fatalf("search preparing without a worker for %s", ref.SessionID)
+		}
+		t.Cleanup(func() {
+			query.Close()
+			<-preparation.done
+		})
+		select {
+		case <-preparation.done:
+			if preparation.err != nil {
+				t.Fatal(preparation.err)
+			}
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
 	}
 }
 
@@ -83,16 +98,38 @@ func TestHistoryIndexRebuildPairsScannedSequenceAndOffset(t *testing.T) {
 
 func waitHistoryPage(t *testing.T, query *Query, ref SessionRef, cursor string, limit int) (MessageHistoryPage, error) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	for {
 		page, err := query.HistoryPage(t.Context(), ref, cursor, limit)
 		if err != nil || page.Status != "preparing" {
 			return page, err
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("history locator remained preparing: %+v", page)
+		if err := waitHistoryPreparation(t, query, ref); err != nil {
+			return MessageHistoryPage{}, err
 		}
-		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitHistoryPreparation(t *testing.T, query *Query, ref SessionRef) error {
+	t.Helper()
+	// Join the worker on test cleanup even if an assertion interrupts the wait.
+	t.Cleanup(query.Close)
+	query.historyMu.Lock()
+	preparation := query.historyBuilds[ref.SessionID]
+	query.historyMu.Unlock()
+	if preparation == nil {
+		// A synchronous reader can own the lock without a rebuild record.
+		// Join a preparation that waits for that reader and verifies readiness.
+		filesystem, ok := query.persistence.(*FilesystemPersistence)
+		if !ok {
+			t.Fatal("history preparation requires filesystem persistence")
+		}
+		preparation = query.prepareHistoryLocator(filesystem, ref.SessionID, historyIndexPath(filesystem.Root, ref.SessionID))
+	}
+	select {
+	case <-preparation.done:
+		return preparation.err
+	case <-t.Context().Done():
+		return t.Context().Err()
 	}
 }
 

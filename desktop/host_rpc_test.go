@@ -14,6 +14,7 @@ import (
 
 	"reasonix/desktop/internal/hostrpc"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/extension/rpcwire"
 )
 
@@ -134,6 +135,47 @@ func TestHostRPCReturnsWhenStdinCloses(t *testing.T) {
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
+	}
+}
+
+func TestDetachedShutdownTimeoutLeavesInterruptedEvidence(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	release := make(chan struct{})
+	ctrl := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "blocked"})}
+	ctrl.shutdown = func() error {
+		<-release
+		return nil
+	}
+	app := NewApp()
+	app.tabs["blocked"] = &WorkspaceTab{ID: "blocked", Ctrl: ctrl}
+	app.tabOrder = []string{"blocked"}
+	tracker := lifecycleTrackerForTest(t, t.TempDir(), 4242, "detached-timeout")
+	if err := tracker.start(); err != nil {
+		t.Fatal(err)
+	}
+	app.lifecycle.tracker = tracker
+
+	status, err := requestDetachedShutdown(app, shutdownRequest{
+		RequestID: "detached-timeout", Reason: shutdownReasonConnectionLost,
+	}, 250*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || status.Phase != "saving" {
+		t.Fatalf("detached shutdown = %+v, %v", status, err)
+	}
+	state, readErr := readDesktopLifecycleState(tracker.path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if state.TerminationReason != shutdownReasonConnectionLost || state.CleanupOutcome != "interrupted" || state.Phase != "saving" {
+		t.Fatalf("timeout evidence = %+v", state)
+	}
+
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for !app.shutdownStatus("").Completed {
+		if time.Now().After(deadline) {
+			t.Fatal("detached shutdown did not finish after the blocked save was released")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

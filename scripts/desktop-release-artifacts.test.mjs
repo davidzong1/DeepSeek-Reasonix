@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { collect, pack, platforms, releaseIdentity } from "./desktop-release-artifacts.mjs";
+import { collect, pack, platforms, releaseIdentity, verifyBundle } from "./desktop-release-artifacts.mjs";
 
 const env = {
   RELEASE_SOURCE_SHA: "a".repeat(40), RELEASE_CONTROL_SHA: "b".repeat(40),
@@ -36,11 +36,39 @@ test("same-run failed-job retry preserves the exact signed bytes of all platform
   }
 });
 
+test("publisher selects only complete platform bundles beside unsigned intermediates", t => {
+  const f = fixture(t);
+  for (const arch of ["amd64", "arm64"]) mkdirSync(path.join(f.bundles, `${identity.prefix}-unsigned-windows-${arch}`));
+  assert.throws(() => collect(f.bundles, f.target, identity), /unexpected platform bundle/);
+  const workflow = readFileSync(new URL("../.github/workflows/release-desktop.yml", import.meta.url), "utf8");
+  const pattern = workflow.match(/pattern: \$\{\{ inputs\.preflight_artifact_prefix \|\| needs\.resolve\.outputs\.artifact_prefix \}\}-(.+)/)[1];
+  const selected = readdirSync(f.bundles).filter(name => path.matchesGlob(name, `${identity.prefix}-${pattern}`));
+  assert.deepEqual(selected.sort(), platforms.map(platform => `${identity.prefix}-${platform}`).sort());
+  const downloaded = path.join(path.dirname(f.bundles), "downloaded");
+  mkdirSync(downloaded);
+  for (const name of selected) cpSync(path.join(f.bundles, name), path.join(downloaded, name), { recursive: true });
+  collect(downloaded, f.target, identity);
+  for (const platform of platforms) assert.equal(readFileSync(path.join(f.target, `${platform}.zip`), "utf8"), `signed:${platform}`);
+});
+
 test("another run, future attempt and missing identity cannot be reused", () => {
   for (const change of [{ GITHUB_RUN_ID: "124" }, { RELEASE_ARTIFACT_PREFIX: "desktop-123-3-preflight" },
     { RELEASE_SOURCE_SHA: "" }, { RELEASE_CONTROL_SHA: "main-v2" }, { GITHUB_RUN_ATTEMPT: "" }]) {
     assert.throws(() => releaseIdentity({ ...env, ...change }));
   }
+});
+
+test("a sealed candidate may be collected in a later publisher run", t => {
+  const f = fixture(t);
+  const reused = releaseIdentity({
+    ...env,
+    GITHUB_RUN_ID: "999",
+    GITHUB_RUN_ATTEMPT: "1",
+    RELEASE_PRODUCER_RUN_ID: "123",
+    RELEASE_PRODUCER_RUN_ATTEMPT: "2",
+  });
+  collect(f.bundles, f.target, reused, "2");
+  assert.equal(readFileSync(path.join(f.target, `${platforms[0]}.zip`), "utf8"), `signed:${platforms[0]}`);
 });
 
 for (const field of ["sourceSHA", "controlSHA", "tag", "version", "channel", "signingFingerprint", "prefix"]) {
@@ -82,6 +110,14 @@ test("a failed platform can be replaced on retry while successful platforms reta
   assert.throws(() => collect(f.bundles, f.target, identity, "1"), /producer attempt/);
   collect(f.bundles, f.target, identity, "2");
   assert.equal(readFileSync(path.join(f.target, `${platforms[0]}.zip`), "utf8"), `signed:${platforms[0]}`);
+});
+
+test("a later attempt can verify and reuse one completed platform bundle", t => {
+  const f = fixture(t);
+  const bundle = path.join(f.bundles, `${identity.prefix}-windows-amd64`);
+  assert.equal(verifyBundle(bundle, "windows-amd64", identity, "2").manifest.buildAttempt, "1");
+  writeFileSync(path.join(bundle, "files", "windows-amd64.zip"), "tampered");
+  assert.throws(() => verifyBundle(bundle, "windows-amd64", identity, "2"), /digest mismatch/);
 });
 
 test("platform bundles cannot overwrite each other's filenames", t => {

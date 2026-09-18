@@ -251,6 +251,47 @@ func (b *PersistenceBinding) Flush(ctx context.Context) (DurableReceipt, error) 
 	}
 }
 
+// FlushThrough waits for one accepted commit boundary. Later writes may keep
+// draining, but cannot extend this caller's snapshot or cancel its shared writer.
+func (b *PersistenceBinding) FlushThrough(ctx context.Context, through uint64) (DurableReceipt, error) {
+	if b == nil {
+		return DurableReceipt{}, os.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return DurableReceipt{}, err
+	}
+	b.mu.Lock()
+	durable, changed := b.durable, b.spaceChanged
+	b.mu.Unlock()
+	if durable >= through {
+		return DurableReceipt{DurableSequence: durable}, nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.drain(context.Background(), true) }()
+	for {
+		select {
+		case <-ctx.Done():
+			return DurableReceipt{DurableSequence: b.durableSequence()}, ctx.Err()
+		case err := <-done:
+			durable = b.durableSequence()
+			if durable >= through {
+				return DurableReceipt{DurableSequence: durable}, nil
+			}
+			if err == nil {
+				err = fmt.Errorf("session: watermark %d was not accepted", through)
+			}
+			return DurableReceipt{DurableSequence: durable}, err
+		case <-changed:
+			b.mu.Lock()
+			durable, changed = b.durable, b.spaceChanged
+			b.mu.Unlock()
+			if durable >= through {
+				return DurableReceipt{DurableSequence: durable}, nil
+			}
+		}
+	}
+}
+
 func (b *PersistenceBinding) durableSequence() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()

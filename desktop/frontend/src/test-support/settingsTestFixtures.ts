@@ -108,6 +108,7 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
     statusBarItems: ["model", "workspace", "git_branch", "cache", "balance"],
     defaultToolApprovalMode: "auto",
     checkUpdates: true,
+    updaterEnabled: true,
     updateChannel: "stable",
     telemetry: true,
     metrics: true,

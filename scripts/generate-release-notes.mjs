@@ -11,6 +11,16 @@ const apiBase = process.env.DEEPSEEK_API_BASE || "https://api.deepseek.com";
 const model = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 const releaseTargetOrder = ["desktop", "cli", "site", "service"];
 
+export const releaseOutputBudgets = Object.freeze({
+  standard: Object.freeze({ highlights: 6, changes: 15, guides: 6, upgrade: 4, risks: 4, bodyChars: 280 }),
+  compact: Object.freeze({ highlights: 4, changes: 9, guides: 4, upgrade: 2, risks: 2, bodyChars: 220 }),
+});
+
+export function editorialLimitInstruction(compact = false) {
+  const budget = compact ? releaseOutputBudgets.compact : releaseOutputBudgets.standard;
+  return `Editorial budget: at most ${budget.highlights} highlights, ${budget.changes} total change items across new/improved/fixed, ${budget.guides} guides, ${budget.upgrade} upgrade notes, and ${budget.risks} risks. Keep every English and Chinese body within ${budget.bodyChars} characters. Select the most important user outcomes across the supplied PRs, combine related work, and avoid repeating the same outcome in highlights and changes. Always return a complete JSON object within this budget.`;
+}
+
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -180,9 +190,10 @@ function extractJson(content) {
   return parsed.release || parsed;
 }
 
-async function askDeepSeek(payload, retry = true) {
+async function askDeepSeek(payload, attempt = 0) {
   const key = process.env.DEEPSEEK_API_KEY;
   if (!key) throw new Error("DEEPSEEK_API_KEY is required");
+  const compact = attempt > 0;
   const response = await fetch(`${apiBase.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -210,22 +221,29 @@ async function askDeepSeek(payload, retry = true) {
   \"risks\": [{\"targets\":[\"cli\"],\"title\":{\"en\":\"\",\"zh\":\"\"},\"body\":{\"en\":\"\",\"zh\":\"\"},\"refs\":[123]}],
   \"contributors\": [], \"links\": {\"github\":\"https://...\",\"compare\":\"https://...\",\"download\":\"https://...\"}
 }
-Every highlight, change, upgrade note, and risk must have a non-empty \"targets\" array using only this canonical order: desktop, cli, site, service. Use each PR's targetHints as deterministic candidates, then choose the user-visible delivery target supported by its labels, changed files, title, and body. Shared product-core behavior belongs to both desktop and cli. Website-only work belongs to site; hosted workers and release infrastructure belong to service and must not be marked as a client update merely because a client file accompanies the server change. Set top-level surfaces to the canonical union of all item targets. Return guides only for supplied documentation URLs. Mention upgrade action or risk only when explicitly supported; otherwise use empty arrays. Output JSON only.`,
+Every highlight, change, upgrade note, and risk must have a non-empty \"targets\" array using only this canonical order: desktop, cli, site, service. Use each PR's targetHints as deterministic candidates, then choose the user-visible delivery target supported by its labels, changed files, title, and body. Shared product-core behavior belongs to both desktop and cli. Website-only work belongs to site; hosted workers and release infrastructure belong to service and must not be marked as a client update merely because a client file accompanies the server change. Set top-level surfaces to the canonical union of all item targets. Return guides only for supplied documentation URLs. Mention upgrade action or risk only when explicitly supported; otherwise use empty arrays. ${editorialLimitInstruction(compact)} Output JSON only.`,
         },
-        { role: "user", content: `Create the release record from these public GitHub sources:\n${JSON.stringify(payload)}` },
+        {
+          role: "user",
+          content: `${compact ? "The previous response was invalid or truncated. Produce a smaller complete record and obey the compact editorial budget.\n" : ""}Create the release record from these public GitHub sources:\n${JSON.stringify(payload)}`,
+        },
       ],
     }),
   });
   if (!response.ok) throw new Error(`DeepSeek API failed: ${response.status} ${await response.text()}`);
   const data = await response.json();
   const choice = data.choices?.[0];
+  if (choice?.finish_reason === "length") {
+    if (compact) throw new Error("DeepSeek response exceeded the compact editorial budget (finish_reason=length)");
+    return askDeepSeek(payload, attempt + 1);
+  }
   try {
     return extractJson(choice?.message?.content);
   } catch (error) {
-    if (!retry) {
+    if (compact) {
       throw new Error(`${error.message} (finish_reason=${choice?.finish_reason || "unknown"})`);
     }
-    return askDeepSeek(payload, false);
+    return askDeepSeek(payload, attempt + 1);
   }
 }
 

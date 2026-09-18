@@ -20,6 +20,11 @@ type CancelReceipt struct {
 // CancelSession stops the activity owned by this captured controller. Callers
 // do not need a turn id, and an idle cancellation is idempotently successful.
 func (c *Controller) CancelSession() CancelReceipt {
+	return c.CancelSessionFrom("unknown")
+}
+
+// CancelSessionFrom records provenance only; cancellation ownership is unchanged.
+func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 	if c == nil {
 		return CancelReceipt{Accepted: true, AlreadyIdle: true}
 	}
@@ -38,6 +43,7 @@ func (c *Controller) CancelSession() CancelReceipt {
 		headID = ""
 	}
 	token, turnID, cancelled := c.signalTurnCancelIdentity()
+	c.recordLifecycle("cancel_requested", source, turnID, 0, "")
 	if cancelled {
 		alreadyIdle = false
 	}
@@ -46,12 +52,14 @@ func (c *Controller) CancelSession() CancelReceipt {
 		SessionRef: sessionRef, HeadID: headID, RuntimeEpoch: epoch,
 		Accepted: true, AlreadyIdle: alreadyIdle, RecoveryRequired: recoveryRequired,
 	}
+	c.recordLifecycle("cancel_acknowledged", source, turnID, 0, "")
 	return receipt
 }
 
 // Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
 // unblocks via the cancelled context.
 func (c *Controller) Cancel() {
+	c.recordLifecycle("cancel_requested", "unknown", "", 0, "")
 	turnID, cancelled := c.cancelTurnLocked()
 	c.finishCancel(turnID, cancelled)
 }

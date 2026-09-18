@@ -60,18 +60,17 @@ func parseSignPathConfiguration(t *testing.T, name string) signPathArtifactConfi
 
 func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 	workflow := readTestFile(t, "../.github/workflows/release-desktop.yml")
+	finalizer := readTestFile(t, "../scripts/finalize-windows-signed-candidate.sh")
 	orderedSteps := []string{
 		"name: Build and package",
 		"name: Checkout protected release verifier",
 		"name: Smoke-test packaged Electron startup",
 		"name: Upload Windows signing inputs",
-		"name: Restore native-tested Windows payload",
+		"name: Restore both native-tested Windows payloads",
 		"name: Connect to Certum",
-		"name: Sign complete Windows payload",
-		"name: Bind signed Windows payload and rebuild packages",
-		"name: Sign rebuilt Windows installer",
-		"name: Verify Windows Authenticode release contract",
-		"name: Sign artifacts (minisign)",
+		"name: Finalize amd64 in the shared Certum session",
+		"name: Finalize arm64 in the shared Certum session",
+		"name: Upload signed package size reports",
 	}
 	last := -1
 	for _, step := range orderedSteps {
@@ -87,24 +86,35 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 	}
 	for _, want := range []string{
 		`uses: ./release-control/.github/actions/setup-certum`,
-		`-ExpectedThumbprint $env:CERTUM_KEY_ID -RequireTrusted`,
 		`github.repository == 'esengine/DeepSeek-Reasonix'`,
-		`Certum credentials are required for public Windows Preview and Stable releases`,
+		`Certum credentials are required for public Windows releases`,
 		`SIGNPATH_RELEASE_SIGNING_ATTESTATION does not match the current protected signing contract`,
 		`(needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.preflight_artifact_prefix != '' && inputs.orchestrated && inputs.signing_preflight_verified))`,
 		`needs.windows-sign.result == 'success'`,
 		`go run ./cmd/signpath-contract fingerprint`,
-		`go run ./cmd/sign windows-payload ../signed-payload "${{ needs.resolve.outputs.version }}"`,
-		`go run ./cmd/sign sign ../signed-payload/reasonix-payload.json`,
-		`go run ./cmd/sign verify ../signed-payload/reasonix-payload.json`,
-		`REASONIX_REQUIRE_PAYLOAD_MANIFEST: "1"`,
 		`ref: ${{ github.workflow_sha }}`,
 		`path: release-control`,
 		`node desktop/packaging/smoke.mjs`,
-		`./release-control/scripts/verify-windows-authenticode.ps1`,
+		`finalize-windows-signed-candidate.sh amd64`,
+		`finalize-windows-signed-candidate.sh arm64`,
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("desktop release workflow is missing signing contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`sign-certum.ps1" -PayloadDirectory`,
+		`go run ./cmd/sign windows-payload`,
+		`go run ./cmd/sign sign`,
+		`go run ./cmd/sign verify`,
+		`REASONIX_REQUIRE_PAYLOAD_MANIFEST=1`,
+		`sign-certum.ps1" -FilePath "$installer"`,
+		`verify-windows-authenticode.ps1`,
+		`-ExpectedThumbprint "$CERTUM_KEY_ID"`,
+		`go run ./cmd/sign sign "$dist"/*`,
+	} {
+		if !strings.Contains(finalizer, want) {
+			t.Errorf("Windows signing finalizer is missing contract %q", want)
 		}
 	}
 	ciWorkflow := readTestFile(t, "../.github/workflows/ci.yml")
@@ -163,11 +173,12 @@ func TestWindowsReleaseSignsPayloadBeforeRepackaging(t *testing.T) {
 		"$signature.SignerCertificate",
 		"$signature.Status -ne \"Valid\"",
 		"Expand-Archive",
-		`Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "*.exe"`,
+		`Get-ChildItem -LiteralPath $extractRoot -Recurse -File`,
 		`$activeDir.Replace("\", "/") -ne "versions/$activeVersion"`,
 		`Portable = (Join-Path $activeDir "reasonix-desktop.exe")`,
 		`Portable = "Reasonix.exe"; Payload = "reasonix-launcher.exe"`,
-		"6 release unit + $appExeCount Electron app tree",
+		`Compare-Object $expectedPE $actualPE`,
+		`[ValidateSet("canonical", "legacy-dual")]`,
 		"Get-FileHash -Algorithm SHA256",
 	} {
 		if !strings.Contains(verifier, want) {
@@ -255,37 +266,31 @@ func TestWindowsPackagerRejectsMissingOrPartialRequiredPayloadManifest(t *testin
 
 func TestProductionSigningRunsOnlyFromProtectedControlPlane(t *testing.T) {
 	stable := readTestFile(t, "../.github/workflows/release-stable.yml")
+	candidate := readTestFile(t, "../.github/workflows/release-candidate.yml")
+	promote := readTestFile(t, "../.github/workflows/release-promote.yml")
 	desktop := readTestFile(t, "../.github/workflows/release-desktop.yml")
-	if strings.Contains(stable, "\n  push:\n") || strings.Contains(desktop, "\n  push:\n") {
+	if strings.Contains(stable, "\n  push:\n") ||
+		strings.Contains(promote, "\n  push:\n") || strings.Contains(desktop, "\n  push:\n") {
 		t.Fatal("production workflows must not run directly with a tag-shaped SignPath origin")
 	}
+	if strings.Contains(candidate, "\n    tags:") || strings.Contains(candidate, "\n  pull_request") ||
+		!strings.Contains(candidate, "\n  push:\n    branches: [main-v2]\n    paths:\n      - release-notes/releases.json") {
+		t.Fatal("automatic preparation must use the protected Notes push, never tags or PR heads")
+	}
+	activation := readTestFile(t, "../scripts/release-candidate-tags.sh")
 	for _, want := range []string{
-		`ALLOW_STABLE_RECOVERY: ${{ inputs.allow_recovery }}`,
-		`allow_recovery: 'false'`,
-		`signing_preflight: true`,
-		`signing_preflight_verified: true`,
-		`needs: [authorize, signpath-preflight]`,
+		`actions/attest-build-provenance@v3`,
+		`candidate_preparation: true`,
+		`git push --atomic "$remote"`,
+		`environment: release`,
+		`candidate_verified: true`,
 	} {
-		if !strings.Contains(stable+"\n"+readTestFile(t, "../.github/workflows/release-stable-trigger.yml"), want) {
-			t.Errorf("stable relay is missing normal-release recovery guard %q", want)
+		if !strings.Contains(candidate+"\n"+promote+"\n"+activation, want) {
+			t.Errorf("sealed release control plane is missing %q", want)
 		}
 	}
-
-	for _, path := range []string{
-		"../.github/workflows/release-stable-trigger.yml",
-	} {
-		relay := readTestFile(t, path)
-		for _, want := range []string{
-			`actions: write`,
-			`CONTROL_PLANE_REF: ${{ github.event.repository.default_branch }}`,
-			`process.env.CONTROL_PLANE_REF !== 'main-v2'`,
-			`createWorkflowDispatch`,
-			`ref: process.env.CONTROL_PLANE_REF`,
-		} {
-			if !strings.Contains(relay, want) {
-				t.Errorf("%s is missing protected control-plane contract %q", path, want)
-			}
-		}
+	if _, err := os.Stat("../.github/workflows/release-stable-trigger.yml"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("retired tag relay still exists or cannot be checked: %v", err)
 	}
 
 	for _, path := range []string{

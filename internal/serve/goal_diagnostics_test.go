@@ -19,7 +19,11 @@ func TestGoalDiagnosticsHTTPExportsAuthoritativeSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), session.CreateOptions{SessionID: "diagnostic-http"})
 	if err != nil {
 		t.Fatal(err)

@@ -10,7 +10,10 @@ param(
 
     [string]$ExpectedThumbprint,
 
-    [switch]$RequireTrusted
+    [switch]$RequireTrusted,
+
+    [ValidateSet("canonical", "legacy-dual")]
+    [string]$PortableLayout = "canonical"
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,13 +121,15 @@ try {
     # Root/versioned executables mapped back to their payload source; every PE
     # file under the versioned app/ tree is verified from signing-files.txt.
     $portableSources = @(
-        [pscustomobject]@{ Portable = "reasonix-launcher.exe"; Payload = "reasonix-launcher.exe" },
         [pscustomobject]@{ Portable = "Reasonix.exe"; Payload = "reasonix-launcher.exe" },
         [pscustomobject]@{ Portable = "reasonix-cli.exe"; Payload = "app/resources/bin/reasonix-cli-launcher.exe" },
         [pscustomobject]@{ Portable = (Join-Path $activeDir "reasonix-desktop.exe"); Payload = "reasonix-desktop.exe" },
         [pscustomobject]@{ Portable = (Join-Path $activeDir "reasonix-update-helper.exe"); Payload = "reasonix-update-helper.exe" },
         [pscustomobject]@{ Portable = (Join-Path $activeDir "reasonix-cli.exe"); Payload = "reasonix-cli.exe" }
     )
+    if ($PortableLayout -eq "legacy-dual") {
+        $portableSources += [pscustomobject]@{ Portable = "reasonix-launcher.exe"; Payload = "reasonix-launcher.exe" }
+    }
     foreach ($entry in ($signingFiles | Where-Object { $_ -like "app/*" })) {
         $portableSources += [pscustomobject]@{
             Portable = (Join-Path $activeDir ($entry -replace '/', [System.IO.Path]::DirectorySeparatorChar))
@@ -132,11 +137,12 @@ try {
         }
     }
 
-    $appExeCount = @($signingFiles | Where-Object { $_ -like "app/*.exe" }).Count
-    $portableFiles = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "*.exe")
-    $expectedPortableCount = 6 + $appExeCount
-    if ($portableFiles.Count -ne $expectedPortableCount) {
-        throw "Portable archive must contain exactly $expectedPortableCount executables (6 release unit + $appExeCount Electron app tree), found $($portableFiles.Count)"
+    $expectedPE = @($portableSources | ForEach-Object { $_.Portable.Replace('\', '/').ToLowerInvariant() } | Sort-Object)
+    $actualPE = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File |
+        Where-Object { $_.Extension -in @('.exe', '.dll') } |
+        ForEach-Object { $_.FullName.Substring($extractPrefix.Length).Replace('\', '/').ToLowerInvariant() } | Sort-Object)
+    if (@(Compare-Object $expectedPE $actualPE).Count -ne 0) {
+        throw "Portable PE inventory does not match the exact $PortableLayout signed payload mapping"
     }
 
     foreach ($entry in $portableSources) {

@@ -73,7 +73,9 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
 				d.InputPerMillion = price.Input
 				d.OutputPerMillion = price.Output
 			}
-			if reasoning := config.ReasoningCapabilityForEntry(&entry); len(reasoning.Options) > 0 {
+			reasoning := config.ReasoningCapabilityForEntry(&entry)
+			d.ReasoningUnknown = reasoning.Unknown
+			if len(reasoning.Options) > 0 {
 				d.Efforts = reasoning.IDs()
 				d.Reasoning = true
 			}
@@ -265,8 +267,9 @@ func syntheticEntryFromResolver(r provider.Resolver, ref string) *config.Provide
 	}
 	entry := &config.ProviderEntry{
 		Name: name, Model: model, ContextWindow: contextWindow,
-		SupportedEfforts: append([]string(nil), match.Efforts...),
-		DefaultEffort:    match.DefaultEffort, Vision: match.Vision,
+		SupportedEfforts:         append([]string(nil), match.Efforts...),
+		ReasoningMetadataUnknown: match.ReasoningUnknown,
+		DefaultEffort:            match.DefaultEffort, Vision: match.Vision,
 	}
 	if match.CacheHitPerMillion > 0 || match.InputPerMillion > 0 || match.OutputPerMillion > 0 {
 		entry.Price = &provider.Pricing{CacheHit: match.CacheHitPerMillion, Input: match.InputPerMillion, Output: match.OutputPerMillion, Currency: match.PricingCurrency}

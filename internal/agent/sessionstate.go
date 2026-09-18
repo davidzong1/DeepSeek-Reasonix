@@ -41,10 +41,14 @@ type sessionRuntime struct {
 	compactionState CompactionState
 	cacheState      string // legacy resume telemetry; never provider-visible
 
-	// path and checkpointState are rebound by preflight when a transcript is
-	// bound, so reset leaves them to their owner rather than blanking them.
+	// path is rebound by preflight when a transcript is bound. Checkpoint state
+	// and any unconfirmed commit belong to the current conversation and reset.
 	path            string // bound transcript path for projection sidecars
-	checkpointState string // none|restored|applied; runtime-only
+	checkpointState string // none|restored|pending|applied; runtime-only
+	// pendingModelContextCommit is an event-log commit that was accepted but
+	// whose durability barrier did not complete. The exact payload is retained
+	// so the next model boundary can retry idempotently before any provider work.
+	pendingModelContextCommit *SessionModelContextCommit
 
 	// todoState is an executor-local mirror populated only after the semantic
 	// ToolResult commit succeeds. It never rebuilds from transcript text and is
@@ -77,6 +81,8 @@ func (r *sessionRuntime) reset(s *Session) {
 	r.compactionMu.Lock()
 	r.compactionState = CompactionState{} // lineage change; disk reloaded on Resume
 	r.cacheState = CacheStateUnknown
+	r.checkpointState = "none"
+	r.pendingModelContextCommit = nil
 	r.compactionMu.Unlock()
 	r.compaction.stuck = false
 	r.compaction.stuckInputHash = ""

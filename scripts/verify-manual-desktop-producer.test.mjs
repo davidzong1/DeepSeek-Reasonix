@@ -25,5 +25,5 @@ test("artifact recovery installs smoke dependencies and retains collection ident
   assert.ok(intel.indexOf("pnpm --dir desktop install --frozen-lockfile") < intel.indexOf("node desktop/packaging/smoke.mjs"));
   assert.ok(intel.includes("needs.signing-contract.result == 'success'"));
   assert.ok(workflow.includes("GITHUB_RUN_ID=34816299501 GITHUB_RUN_ATTEMPT=1 node release-control/scripts/desktop-release-artifacts.mjs collect"));
-  assert.ok(workflow.includes("'09cdab3866d77c6ff0d007ee61b6aca3128ebe54' || github.workflow_sha"));
+  assert.ok(workflow.includes("inputs.reuse_manual_artifacts && '09cdab3866d77c6ff0d007ee61b6aca3128ebe54' || inputs.candidate_control_sha || github.workflow_sha"));
 });

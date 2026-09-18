@@ -23,8 +23,9 @@ var (
 )
 
 const (
-	startupTimeout = 10 * time.Second
-	readChunk      = 4096
+	startupTimeout           = 10 * time.Second
+	powerShellStartupTimeout = 30 * time.Second
+	readChunk                = 4096
 )
 
 // Request is one foreground command to run in the session-scoped PTY.

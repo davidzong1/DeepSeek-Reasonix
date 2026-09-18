@@ -32,6 +32,13 @@ type Member struct {
 	Mode os.FileMode
 }
 
+// WindowsRootEntrySources maps verified payload files to installed entry points.
+// The payload keeps its historical names for already installed update helpers.
+type WindowsRootEntrySources struct {
+	LauncherPath string
+	CLIEntryPath string
+}
+
 // ActivationRequest describes a one-shot version publish + pointer swap.
 type ActivationRequest struct {
 	InstallRoot string
@@ -49,6 +56,10 @@ type ActivationRequest struct {
 	// RequiredRootNames is the exact root-entry whitelist when RootMembers is
 	// non-empty. Callers must provide it explicitly.
 	RequiredRootNames []string
+	// WindowsRootEntries selects canonical entries and preserves an existing
+	// legacy launcher under the activation lock. Mutually exclusive with the
+	// explicit RootMembers/RequiredRootNames fields.
+	WindowsRootEntries *WindowsRootEntrySources
 	// CheckProcesses runs under the activation lock before file replacement and
 	// immediately before pointer publication. The caller owns its coordination
 	// lock first. A late failure rolls back the staged version and root entries.
@@ -77,38 +88,26 @@ func StagingDirName(version, nonce string) string {
 // finally swaps current.json. Any failure before the pointer swap leaves the
 // previous active version unchanged.
 func ActivateVersion(req ActivationRequest) error {
-	installRoot, err := cleanInstallRoot(req.InstallRoot)
+	return activateVersion(req, filelock.Acquire)
+}
+
+func activateVersion(req ActivationRequest, acquireLock func(context.Context, string) (func(), error)) error {
+	installRoot, required, err := validateActivationRequest(req)
 	if err != nil {
 		return err
-	}
-	if err := ValidateVersionName(req.Version); err != nil {
-		return err
-	}
-	required := req.RequiredNames
-	if len(required) == 0 {
-		required = AllowedVersionMembers()
-	}
-	if err := validateMembers(req.Members, required, true); err != nil {
-		return err
-	}
-	if len(req.RootMembers) > 0 {
-		if len(req.RequiredRootNames) == 0 {
-			return fmt.Errorf("installlayout: root member whitelist is required")
-		}
-		if err := validateMembers(req.RootMembers, req.RequiredRootNames, false); err != nil {
-			return fmt.Errorf("installlayout: root entries: %w", err)
-		}
-	} else if len(req.RequiredRootNames) > 0 {
-		return fmt.Errorf("installlayout: root member whitelist provided without root members")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	unlock, err := filelock.Acquire(ctx, filepath.Join(installRoot, activationLockName))
+	unlock, err := acquireLock(ctx, filepath.Join(installRoot, activationLockName))
 	if err != nil {
 		return fmt.Errorf("installlayout: acquire activation lock: %w", err)
 	}
 	defer unlock()
+
+	if err := resolveWindowsRootEntries(&req, installRoot); err != nil {
+		return err
+	}
 
 	versionsRoot := filepath.Join(installRoot, VersionsDirName)
 	if err := os.MkdirAll(versionsRoot, 0o755); err != nil {
@@ -220,6 +219,75 @@ func ActivateVersion(req ActivationRequest) error {
 		_ = removeAllRetry(versionBackup)
 	}
 	return nil
+}
+
+func validateActivationRequest(req ActivationRequest) (string, []string, error) {
+	if req.WindowsRootEntries != nil && (len(req.RootMembers) != 0 || len(req.RequiredRootNames) != 0) {
+		return "", nil, fmt.Errorf("installlayout: Windows root entries and explicit root members are mutually exclusive")
+	}
+	installRoot, err := cleanInstallRoot(req.InstallRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := ValidateVersionName(req.Version); err != nil {
+		return "", nil, err
+	}
+	required := req.RequiredNames
+	if len(required) == 0 {
+		required = AllowedVersionMembers()
+	}
+	if err := validateMembers(req.Members, required, true); err != nil {
+		return "", nil, err
+	}
+	if len(req.RootMembers) > 0 {
+		if len(req.RequiredRootNames) == 0 {
+			return "", nil, fmt.Errorf("installlayout: root member whitelist is required")
+		}
+		if err := validateMembers(req.RootMembers, req.RequiredRootNames, false); err != nil {
+			return "", nil, fmt.Errorf("installlayout: root entries: %w", err)
+		}
+	} else if len(req.RequiredRootNames) > 0 {
+		return "", nil, fmt.Errorf("installlayout: root member whitelist provided without root members")
+	}
+	return installRoot, required, nil
+}
+
+func resolveWindowsRootEntries(req *ActivationRequest, installRoot string) error {
+	if req.WindowsRootEntries == nil {
+		return nil
+	}
+	// Inspect only after acquiring the same lock that protects publication.
+	// A concurrent activation must not make the preserve decision stale.
+	rootMembers, requiredRootNames, err := windowsRootMembers(installRoot, *req.WindowsRootEntries)
+	if err != nil {
+		return err
+	}
+	if err := validateMembers(rootMembers, requiredRootNames, false); err != nil {
+		return fmt.Errorf("installlayout: Windows root entries: %w", err)
+	}
+	req.RootMembers = rootMembers
+	req.RequiredRootNames = requiredRootNames
+	return nil
+}
+
+func windowsRootMembers(root string, sources WindowsRootEntrySources) ([]Member, []string, error) {
+	members := []Member{
+		{Name: "Reasonix.exe", Path: sources.LauncherPath},
+		{Name: "reasonix-cli.exe", Path: sources.CLIEntryPath},
+	}
+	names := []string{"Reasonix.exe", "reasonix-cli.exe"}
+	const legacy = "reasonix-launcher.exe"
+	info, err := os.Lstat(filepath.Join(root, legacy))
+	if err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, nil, fmt.Errorf("installlayout: legacy launcher is not a regular file")
+		}
+		members = append(members, Member{Name: legacy, Path: sources.LauncherPath})
+		names = append(names, legacy)
+	} else if !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("installlayout: inspect legacy launcher: %w", err)
+	}
+	return members, names, nil
 }
 
 func versionRollback(finalPath, versionBackup string) func() error {

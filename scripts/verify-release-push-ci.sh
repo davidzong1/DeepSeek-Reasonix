@@ -62,8 +62,6 @@ notes_only_commit() {
 	! grep -qvE '^release-notes/' <<<"$files"
 }
 
-wait_for_success "$candidate"
-echo "successful main-v2 push CI verified: $candidate"
 sha="$candidate"
 hops=0
 while notes_only_commit "$sha"; do
@@ -77,3 +75,7 @@ while notes_only_commit "$sha"; do
 	wait_for_success "$sha"
 	echo "successful main-v2 push CI verified for code ancestor: $sha"
 done
+if [ "$sha" = "$candidate" ]; then
+	wait_for_success "$candidate"
+	echo "successful main-v2 push CI verified: $candidate"
+fi

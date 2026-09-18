@@ -47,7 +47,8 @@
     "responses": {
       "baseUrl": "https://api.deepseek.com",
       "source": "https://api-docs.deepseek.com/",
-      "checkedOn": "2026-09-07"
+      "checkedOn": "2026-09-07",
+      "responsesMode": "stateless"
     }
   },
   "doubao|cn|api": {

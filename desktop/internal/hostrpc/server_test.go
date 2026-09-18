@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/extension/rpcwire"
 )
@@ -128,6 +129,34 @@ func TestServerRejectsEverythingBeforeHello(t *testing.T) {
 	assertCode(t, err, CodeNotReady, "not_ready")
 	assertCode(t, h.call("desktop/start", struct{}{}, nil), CodeNotReady, "not_ready")
 	assertCode(t, h.call("desktop/shutdown", struct{}{}, nil), CodeNotReady, "not_ready")
+}
+
+func TestServerServeReturnsWhenRuntimeContextIsCancelled(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	t.Cleanup(func() {
+		_ = stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdoutW.Close()
+		_ = stdoutR.Close()
+	})
+	conn := rpcwire.NewConn(stdinR, stdoutW, rpcwire.Options{StrictJSONRPC: true, Name: "cancel-test"})
+	server := NewServer(conn, ServerConfig{
+		Registry: mustRegistry(t, &fixtureTarget{}, nil),
+		Identity: Identity{Version: "dev", Home: t.TempDir()},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- server.Serve(ctx) }()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Serve cancellation = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve stayed blocked on stdin after context cancellation")
+	}
 }
 
 func TestServerHelloMismatchCodes(t *testing.T) {
@@ -273,7 +302,13 @@ func TestServerRoutesLifecycleRequestsToHooks(t *testing.T) {
 			log = append(log, "beforeClose:"+reason)
 			return reason == "window"
 		},
-		Shutdown: func(context.Context) error { log = append(log, "shutdown"); return nil },
+		Shutdown: func(_ context.Context, params ShutdownParams) (ShutdownResult, error) {
+			log = append(log, "shutdown")
+			return ShutdownResult{RequestID: params.RequestID, Reason: params.Reason, Phase: "completed", Outcome: "success", Completed: true}, nil
+		},
+		ShutdownStatus: func(_ context.Context, params ShutdownStatusParams) (ShutdownResult, error) {
+			return ShutdownResult{RequestID: params.RequestID, Phase: "completed", Outcome: "success", Completed: true}, nil
+		},
 		HostEvent: func(_ context.Context, name string, payload json.RawMessage) error {
 			log = append(log, "host:"+name+":"+string(payload))
 			return errors.New("unhandled host event")
@@ -301,7 +336,7 @@ func TestServerRoutesLifecycleRequestsToHooks(t *testing.T) {
 	}
 	err := h.call("desktop/hostEvent", map[string]any{"name": "tray.open", "payload": []string{"x"}}, nil)
 	assertCode(t, err, rpcwire.ErrInternal, "")
-	if err := h.call("desktop/shutdown", struct{}{}, &empty); err != nil {
+	if err := h.call("desktop/shutdown", ShutdownParams{RequestID: "request-1", Reason: "user_quit"}, &empty); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-h.serveErr; err != nil {

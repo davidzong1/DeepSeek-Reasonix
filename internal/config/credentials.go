@@ -419,7 +419,7 @@ func CredentialStoreRevision() string {
 	if strings.TrimSpace(path) == "" {
 		return "unavailable"
 	}
-	data, err := os.ReadFile(path)
+	data, err := readCredentialFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "missing"
@@ -747,14 +747,14 @@ func removeCredentialFromFile(path, key string) error {
 }
 
 func readCredentialFileLines(path string) ([]string, error) {
-	data, err := fileencoding.ReadFileUTF8(path)
+	data, err := readCredentialFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	text := strings.TrimRight(string(data), "\n")
+	text := strings.TrimRight(string(fileencoding.DecodeToUTF8(data)), "\n")
 	if text == "" {
 		return nil, nil
 	}
@@ -775,29 +775,7 @@ func writeCredentialFileLines(path string, lines []string) error {
 			return err
 		}
 	}
-	tmp, err := os.CreateTemp(dir, "credentials.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(out); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := fileutil.ReplaceFile(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return fileutil.AtomicWriteFileStrict(path, []byte(out), 0o600)
 }
 
 func credentialLineKey(line string) (string, bool) {

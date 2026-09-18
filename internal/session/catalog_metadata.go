@@ -13,8 +13,9 @@ import (
 	"reasonix/internal/provider"
 )
 
-// Rebuild both authored previews and retracted input/turn metadata.
-const catalogMetadataVersion = 3
+// Rebuild authored previews, retracted input/turn metadata, title sequencing,
+// and visible result sequencing.
+const catalogMetadataVersion = 5
 
 // metadataForDurable publishes catalog metadata only for a durable prefix.
 func (s *Session) metadataForDurable(durable uint64) (catalogMetadata, bool) {
@@ -36,16 +37,18 @@ const (
 )
 
 type catalogMetadata struct {
-	Version       int    `json:"version"`
-	Codec         string `json:"codec"`
-	SessionID     string `json:"sessionId"`
-	CreatedAt     string `json:"createdAt"`
-	Sequence      uint64 `json:"sequence"`
-	Title         string `json:"title,omitempty"`
-	ModelRef      string `json:"modelRef,omitempty"`
-	ModelIdentity string `json:"modelIdentity,omitempty"`
-	Turns         int    `json:"turns"`
-	Preview       string `json:"preview,omitempty"`
+	Version        int    `json:"version"`
+	Codec          string `json:"codec"`
+	SessionID      string `json:"sessionId"`
+	CreatedAt      string `json:"createdAt"`
+	Sequence       uint64 `json:"sequence"`
+	ResultSequence uint64 `json:"resultSequence,omitempty"`
+	Title          string `json:"title,omitempty"`
+	TitleSequence  uint64 `json:"titleSequence,omitempty"`
+	ModelRef       string `json:"modelRef,omitempty"`
+	ModelIdentity  string `json:"modelIdentity,omitempty"`
+	Turns          int    `json:"turns"`
+	Preview        string `json:"preview,omitempty"`
 	// LogRevision pins the cache to the exact durable bytes it was built from.
 	// Catalog listing validates this instead of replaying the log, so a page of
 	// long sessions costs one stat per session rather than a full scan.
@@ -62,9 +65,11 @@ func metadataFromProjection(manifest Manifest, sequence uint64, projection Proje
 	metadata := catalogMetadata{
 		Version: catalogMetadataVersion, Codec: Codec, SessionID: manifest.SessionID,
 		CreatedAt: manifest.CreatedAt.UTC().Format(time.RFC3339Nano), Sequence: sequence,
-		Title: projection.Title, ModelRef: projection.ModelRef, ModelIdentity: projection.ModelIdentity,
+		Title: projection.Title, TitleSequence: projection.TitleSequence,
+		ModelRef: projection.ModelRef, ModelIdentity: projection.ModelIdentity,
 	}
 	metadata.Turns = visibleBoundaryCount(projection, true)
+	metadata.ResultSequence = latestVisibleResultSequence(projection)
 	for _, input := range projection.TranscriptInputs {
 		if input.Preview != "" {
 			metadata.Preview = input.Preview
@@ -81,6 +86,17 @@ func metadataFromProjection(manifest Manifest, sequence uint64, projection Proje
 		}
 	}
 	return metadata
+}
+
+func latestVisibleResultSequence(projection Projection) uint64 {
+	var latest uint64
+	for _, turn := range projection.Turns {
+		if projection.HiddenTurns[turn.TurnID] || !turn.Status.Terminal() || turn.MessageID == "" {
+			continue
+		}
+		latest = max(latest, turn.BoundarySequence)
+	}
+	return latest
 }
 
 // Catalog labels use authored display text, including literal markup in an

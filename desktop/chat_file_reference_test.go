@@ -75,8 +75,19 @@ func TestChatFileReferencePreservesRawFilenameCharacters(t *testing.T) {
 	root := t.TempDir()
 	app := newChatReferenceApp(t, root)
 	writeChatReferenceFile(t, root, "out/raw%20name.txt", "percent")
+	writeChatReferenceFile(t, root, "out/raw name.txt", "space")
 	if got := resolveOne(t, app, "out/raw%20name.txt"); got.Status != "resolved" || got.DisplayPath != "out/raw%20name.txt" {
 		t.Fatalf("literal percent path = %+v", got)
+	}
+	if preview := app.ReadReferenceFileForTab("refs", "out/raw%20name.txt"); preview.Err != "" || preview.Body != "percent" {
+		t.Fatalf("literal percent content = %+v", preview)
+	}
+	percentURL := localFileHref(filepath.Join(root, "out", "raw%20name.txt"))
+	if got := resolveOne(t, app, percentURL); got.Status != "resolved" || got.DisplayPath != "out/raw%20name.txt" {
+		t.Fatalf("encoded file URL = %+v", got)
+	}
+	if preview := app.ReadReferenceFileForTab("refs", percentURL); preview.Err != "" || preview.Body != "percent" {
+		t.Fatalf("encoded file URL content = %+v", preview)
 	}
 	if runtime.GOOS == "windows" {
 		return
@@ -84,6 +95,29 @@ func TestChatFileReferencePreservesRawFilenameCharacters(t *testing.T) {
 	writeChatReferenceFile(t, root, "out/raw?query#fragment.txt", "punctuation")
 	if got := resolveOne(t, app, "out/raw?query#fragment.txt"); got.Status != "resolved" || got.DisplayPath != "out/raw?query#fragment.txt" {
 		t.Fatalf("literal query/fragment path = %+v", got)
+	}
+}
+
+func TestLocalPathSourceDecodesURLPathExactlyOnce(t *testing.T) {
+	tests := []struct {
+		source string
+		want   string
+	}{
+		{"folder/raw%2520name.txt", filepath.FromSlash("folder/raw%20name.txt")},
+		{"folder/raw%20name.txt", filepath.FromSlash("folder/raw name.txt")},
+		{"folder/100%25.txt", filepath.FromSlash("folder/100%.txt")},
+		{"folder/%E4%B8%AD%E6%96%87%23.txt", filepath.FromSlash("folder/中文#.txt")},
+	}
+	for _, tt := range tests {
+		got, err := localPathSource(tt.source)
+		if err != nil || got != tt.want {
+			t.Fatalf("localPathSource(%q) = %q, %v; want %q", tt.source, got, err, tt.want)
+		}
+	}
+	for _, source := range []string{"folder/%00.txt", "file:///tmp/%00.txt"} {
+		if _, err := localPathSource(source); err == nil {
+			t.Fatalf("localPathSource(%q) accepted NUL", source)
+		}
 	}
 }
 

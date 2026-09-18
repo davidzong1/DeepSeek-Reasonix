@@ -65,6 +65,13 @@ func (p *forkCaptureProvider) ReasoningCapability() provider.ReasoningCapability
 
 func (p *forkCaptureProvider) Name() string { return p.inner.Name() }
 
+func (p *forkCaptureProvider) ModelInfo() provider.ModelInfo {
+	if info, ok := p.inner.(provider.ModelInfoProvider); ok {
+		return info.ModelInfo()
+	}
+	return provider.ModelInfo{}
+}
+
 func (p *forkCaptureProvider) OutputBudget() int { return outputBudgetOf(p.inner) }
 
 func (p *forkCaptureProvider) SharesContextWindow() bool { return sharesContextWindow(p.inner) }

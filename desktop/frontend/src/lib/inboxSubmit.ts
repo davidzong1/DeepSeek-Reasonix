@@ -13,10 +13,10 @@ export async function resolveActiveTurnId(binding: Pick<AppBindings, "ListTabs">
   return authoritative;
 }
 
-type AskAnswerBindings = Pick<AppBindings, "ListTabs" | "ResolvePromptForTab">;
+type AskAnswerBindings = Pick<AppBindings, "ResolvePromptForTab" | "PendingPromptIdentitiesForTab">;
 
 export async function resolvePromptForTab(
-  binding: Pick<AppBindings, "ListTabs" | "ResolvePromptForTab">,
+  binding: Pick<AppBindings, "ResolvePromptForTab" | "PendingPromptIdentitiesForTab">,
   tabId: string,
   promptId: string,
   kind: string,

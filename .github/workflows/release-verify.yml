@@ -1,0 +1,35 @@
+name: Verify release
+run-name: Verify v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Official version without a tag prefix"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify immutable files and public pointers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Verify public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_OPERATION: recover
+          CLI_TAG: v${{ inputs.version }}
+          DESKTOP_TAG: desktop-v${{ inputs.version }}
+          VERIFY_HOMEPAGE: "true"
+        run: bash scripts/verify-stable-release-artifacts.sh

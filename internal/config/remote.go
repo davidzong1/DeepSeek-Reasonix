@@ -50,9 +50,10 @@ type RemoteForwardEntry struct {
 // RemoteProjectEntry pins one remote workspace so it shows in the project
 // tree. It references a configured host by name.
 type RemoteProjectEntry struct {
-	HostID    string `toml:"host_id"`
-	Workspace string `toml:"workspace"`
-	Title     string `toml:"title,omitempty"`
+	HostID              string `toml:"host_id"`
+	Workspace           string `toml:"workspace"`
+	Title               string `toml:"title,omitempty"`
+	SessionOrganization string `toml:"session_organization,omitempty"`
 }
 
 // RemoteServeInstallModes are the accepted serve_install values.

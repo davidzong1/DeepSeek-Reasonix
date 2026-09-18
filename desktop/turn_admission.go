@@ -92,6 +92,10 @@ func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionI
 			a.runtimeAdmissionMu.RUnlock()
 		}
 		tab.turnStartMu.Lock()
+		if err := a.validateDraftAdmission(tab, firstSubmissionID(submissionID)); err != nil {
+			abort()
+			return nil, nil, err
+		}
 		if a.tabIsReadOnly(tab) {
 			abort()
 			return nil, nil, readOnlyChannelErr()
@@ -135,6 +139,13 @@ func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionI
 				return nil, nil, fmt.Errorf("read saved model settings: %w", err)
 			}
 			if needed {
+				a.mu.RLock()
+				draftPending := tab.PendingCreateOperationID != ""
+				a.mu.RUnlock()
+				if draftPending {
+					abort()
+					return nil, nil, fmt.Errorf("model configuration changed before draft admission")
+				}
 				abort()
 				if err := a.refreshTabModelSettings(tab); err != nil {
 					return nil, nil, err
@@ -143,11 +154,26 @@ func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionI
 			}
 		}
 		if snapshot, ok := ctrl.(imageCapabilitySnapshot); a.ctx != nil && ok && snapshot.ImageCapabilityChanged() {
+			a.mu.RLock()
+			draftPending := tab.PendingCreateOperationID != ""
+			a.mu.RUnlock()
 			abort()
+			if draftPending {
+				return nil, nil, fmt.Errorf("image configuration changed before draft admission")
+			}
 			if err := a.refreshTabImageCapability(tab); err != nil {
 				return nil, nil, err
 			}
 			continue
+		}
+		if authentication, ok := ctrl.(interface {
+			AuthenticationState() control.AuthenticationState
+		}); ok {
+			state := authentication.AuthenticationState()
+			if !state.Ready() {
+				abort()
+				return nil, nil, &control.AuthenticationError{State: state}
+			}
 		}
 		if tab.sink != nil && !tab.sink.tryBeginTurn(submissionID...) {
 			abort()

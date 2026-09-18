@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 // Resolve only the stable entry in this shell's own versioned installation.
@@ -11,7 +11,10 @@ export function supersededLauncher(shellPath: string, version: string): string |
     const current = JSON.parse(readFileSync(join(root, "current.json"), "utf8"));
     if (current.schemaVersion !== 1 || typeof current.activeVersion !== "string" || current.activeVersion === version) return undefined;
     if (!/^v[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(current.activeVersion) || current.activeVersion.includes("..") || current.activeDir !== `versions/${current.activeVersion}`) return undefined;
-    const launcher = join(root, "reasonix-launcher.exe");
-    return existsSync(launcher) ? launcher : undefined;
+    for (const name of ["Reasonix.exe", "reasonix-launcher.exe"]) {
+      const launcher = join(root, name);
+      try { if (lstatSync(launcher).isFile()) return launcher; } catch { /* Try the compatible entry. */ }
+    }
+    return undefined;
   } catch { return undefined; }
 }

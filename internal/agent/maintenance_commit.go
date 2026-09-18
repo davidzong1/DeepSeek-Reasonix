@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -67,7 +68,13 @@ func (a *Agent) installMaintenanceProjection(in maintenanceInstall) (bool, error
 	}
 	previous := a.sess.compactionState
 	a.sess.compactionState = next
-	if err := a.persistCompactionStateLocked(); err != nil {
+	accepted, err := a.persistInstalledProjectionLocked(context.Background(), next, current)
+	if err != nil {
+		if accepted {
+			a.sess.checkpointState = "pending"
+			a.sess.compactionMu.Unlock()
+			return false, fmt.Errorf("persist %s projection: %w", in.action, err)
+		}
 		a.sess.compactionState = previous
 		a.sess.compactionMu.Unlock()
 		if errors.Is(err, errCompressStaleContext) {

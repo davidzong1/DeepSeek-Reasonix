@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/billing"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
 )
@@ -75,6 +77,9 @@ type runResult struct {
 	OriginalTotals []billing.Money    `json:"original_totals,omitempty"`
 	CostQuote      *billing.CostQuote `json:"cost_quote,omitempty"`
 	Usage          runResultUsage     `json:"usage"`
+	ErrorCode      string             `json:"error_code,omitempty"`
+	Authentication string             `json:"authentication_status,omitempty"`
+	Recovery       []string           `json:"recovery_actions,omitempty"`
 }
 
 type machineEventUsage struct {
@@ -117,14 +122,39 @@ type machineEventRecord struct {
 }
 
 type machineRunDone struct {
-	SchemaVersion int               `json:"schema_version"`
-	Sequence      uint64            `json:"sequence"`
-	Kind          string            `json:"kind"`
-	SessionID     string            `json:"session_id,omitempty"`
-	OK            bool              `json:"ok"`
-	DurationMS    int64             `json:"duration_ms"`
-	NumTurns      int               `json:"num_turns"`
-	Usage         machineEventUsage `json:"usage"`
+	SchemaVersion  int               `json:"schema_version"`
+	Sequence       uint64            `json:"sequence"`
+	Kind           string            `json:"kind"`
+	SessionID      string            `json:"session_id,omitempty"`
+	OK             bool              `json:"ok"`
+	DurationMS     int64             `json:"duration_ms"`
+	NumTurns       int               `json:"num_turns"`
+	Usage          machineEventUsage `json:"usage"`
+	ErrorCode      string            `json:"error_code,omitempty"`
+	Authentication string            `json:"authentication_status,omitempty"`
+	Recovery       []string          `json:"recovery_actions,omitempty"`
+}
+
+func runAuthenticationMetadata(err error) (code, status string, actions []string) {
+	var authErr *control.AuthenticationError
+	if !errors.As(err, &authErr) || authErr == nil {
+		return "", "", nil
+	}
+	state := authErr.State
+	code = state.Code
+	if code == "" {
+		code = string(state.Status)
+	}
+	status = string(state.Status)
+	switch state.Status {
+	case control.AuthenticationMissingCredential:
+		actions = []string{"configure_credentials", "select_model", "diagnose_credentials"}
+	case control.AuthenticationRejected:
+		actions = []string{"update_credentials", "select_model", "test_connection", "retry_authentication"}
+	case control.AuthenticationCredentialStoreUnavailable:
+		actions = []string{"diagnose_credentials", "select_model"}
+	}
+	return code, status, actions
 }
 
 type runOutputSink struct {
@@ -241,6 +271,7 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 		return s.err
 	}
 	completion := classifyRunCompletion(runErr)
+	errorCode, authentication, recovery := runAuthenticationMetadata(runErr)
 	if s.format == runOutputEventsJSONL {
 		s.sequence++
 		turns := s.turns
@@ -248,14 +279,17 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 			turns = 1
 		}
 		return s.encoder.Encode(machineRunDone{
-			SchemaVersion: machineSchemaVersion,
-			Sequence:      s.sequence,
-			Kind:          "run_done",
-			SessionID:     sessionID,
-			OK:            !completion.isError,
-			DurationMS:    time.Since(started).Milliseconds(),
-			NumTurns:      turns,
-			Usage:         machineEventUsage{InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens, CacheHitTokens: s.usage.CacheReadInputTokens, CacheMissTokens: s.usage.CacheCreationInputTokens},
+			SchemaVersion:  machineSchemaVersion,
+			Sequence:       s.sequence,
+			Kind:           "run_done",
+			SessionID:      sessionID,
+			OK:             !completion.isError,
+			DurationMS:     time.Since(started).Milliseconds(),
+			NumTurns:       turns,
+			Usage:          machineEventUsage{InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens, CacheHitTokens: s.usage.CacheReadInputTokens, CacheMissTokens: s.usage.CacheCreationInputTokens},
+			ErrorCode:      errorCode,
+			Authentication: authentication,
+			Recovery:       recovery,
 		})
 	}
 	resultText := s.final
@@ -307,6 +341,9 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 		OriginalTotals:  s.originalTotals,
 		CostQuote:       aggQuote,
 		Usage:           s.usage,
+		ErrorCode:       errorCode,
+		Authentication:  authentication,
+		Recovery:        recovery,
 	})
 }
 

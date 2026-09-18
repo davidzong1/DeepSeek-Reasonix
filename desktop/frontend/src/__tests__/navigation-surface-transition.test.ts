@@ -119,8 +119,11 @@ const stylesSource = readFileSync(new URL("../styles.css", import.meta.url), "ut
 ok(surfaceHookSource.includes("flushSync(() => {"), "navigation masking commits synchronously before the bridge await");
 ok(surfaceHookSource.includes("setPreserved(rendered?.items.length ? rendered : null)"), "the last stable transcript is retained during navigation");
 ok(sessionCompositionSource.includes("visibleTranscriptItems,") && appViewSource.includes("items: session.transcript.visibleTranscriptItems"), "the visible transcript is decoupled from the hydrating target");
-ok(chatPaneSource.includes("transcript-navigation-overlay"), "navigation renders a blocking transcript overlay");
-ok(/\.transcript-navigation-overlay\s*\{[\s\S]*?background:\s*var\(--chat-bg, var\(--bg\)\)/.test(stylesSource), "the navigation overlay is opaque while target rows settle");
+ok(chatPaneSource.includes("transcript-navigation-overlay"), "remote navigation retains its blocking transcript overlay");
+ok(/const presentationTransitioning = runtimeTransitioning && core\.remoteSurfaceActive;/.test(appViewSource)
+  && appViewSource.includes("transitioning={presentationTransitioning}"),
+"local navigation bypasses the blocking overlay while remote navigation keeps the existing behavior");
+ok(/\.transcript-navigation-overlay\s*\{[\s\S]*?background:\s*var\(--chat-bg, var\(--bg\)\)/.test(stylesSource), "the remote navigation overlay remains opaque while target rows settle");
 ok(chatPaneSource.includes("live={transitioning ? undefined : state.live}"), "App removes source live output during navigation");
 ok(!appSource.includes("hidden={composerSurfaceHidden || undefined}"), "navigation no longer collapses the composer footprint");
 // Masked Composer/Todo/rewind layout is exercised through the mounted production

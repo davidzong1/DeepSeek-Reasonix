@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { win32 } from "node:path";
 import type { AppDetailsOptions, BrowserWindow } from "electron";
 
@@ -18,7 +18,7 @@ interface WindowCreationEvents {
 }
 
 function isRegularFile(path: string): boolean {
-  try { return statSync(path).isFile(); } catch { return false; }
+  try { return lstatSync(path).isFile(); } catch { return false; }
 }
 
 export function windowsTaskbarDetails(executable: string, isFile = isRegularFile): AppDetailsOptions | undefined {
@@ -29,8 +29,8 @@ export function windowsTaskbarDetails(executable: string, isFile = isRegularFile
   const versioned = win32.basename(win32.dirname(releaseDir)).toLowerCase() === "versions"
     && /^v[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.-]+)?$/.test(win32.basename(releaseDir));
   const root = versioned ? win32.dirname(win32.dirname(releaseDir)) : releaseDir;
-  const launcher = win32.join(root, "reasonix-launcher.exe");
-  if (!isFile(launcher)) return undefined;
+  const launcher = ["Reasonix.exe", "reasonix-launcher.exe"].map(name => win32.join(root, name)).find(isFile);
+  if (!launcher) return undefined;
   return {
     appId: APP_USER_MODEL_ID,
     appIconPath: launcher,

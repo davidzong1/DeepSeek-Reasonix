@@ -2,8 +2,9 @@ import { compactArchivedToolItems } from "./archivedToolItems";
 import { duplicateLiveItemIds } from "./hydrateHistoryApply";
 import { historyRevisionIsOlder } from "./sessionTranscriptMode";
 import type { HistoryMutation, Item } from "./useController";
+import { canonicalUserConfirmations, settleLocalSubmissions, type LocalSubmissionFields } from "./localSubmissionState";
 
-type WindowFields = {
+type WindowFields = LocalSubmissionFields & {
   items: Item[];
   historyPrefixCount: number;
   hydrateHistoryLoaded?: boolean;
@@ -37,18 +38,6 @@ export type HistoryWindowMutationAction = {
   digest?: string;
 };
 
-function preserveMountedUserIds(items: Item[], existing: Item[]): Item[] {
-  const mounted = new Map<string, string>();
-  for (const item of existing) if (item.kind === "user" && item.messageId) mounted.set(item.messageId, item.id);
-  if (mounted.size === 0) return items;
-  return items.map((item) => {
-    if (item.kind !== "user") return item;
-    const messageId = item.messageId ?? (item.id.startsWith("m:") ? item.id.slice(2) : undefined);
-    const id = messageId ? mounted.get(messageId) : undefined;
-    return id ? { ...item, id, messageId } : item;
-  });
-}
-
 function common<S extends WindowFields>(state: S, action: HistoryWindowMutationAction, items: Item[], prefix: number, kind: "replace" | "prepend" | "append"): S {
   return {
     ...state,
@@ -74,24 +63,25 @@ function common<S extends WindowFields>(state: S, action: HistoryWindowMutationA
 export function reduceHistoryWindowState<S extends WindowFields>(state: S, action: HistoryWindowMutationAction): S {
   if (historyRevisionIsOlder(state.historyRevision, action.revision)) return state;
   if (action.type === "history_replace") {
-    return { ...common(state, action, action.items, action.items.length, "replace"), pendingSubmissionId: undefined };
+    return settleLocalSubmissions(common(state, action, action.items, action.items.length, "replace"), action.items);
   }
   if (action.type === "history_rebase") {
     const liveTail = state.items.slice(Math.min(state.historyPrefixCount, state.items.length));
     const duplicates = new Set(duplicateLiveItemIds(action.items, liveTail));
-    const items = [...preserveMountedUserIds(action.items, state.items), ...liveTail.filter((item) => !duplicates.has(item.id))];
-    return { ...common(state, action, items, action.items.length, "replace"), historyLayoutRevision: state.historyLayoutRevision + 1 };
+    const items = [...action.items, ...liveTail.filter((item) => !duplicates.has(item.id))];
+    return settleLocalSubmissions({ ...common(state, action, items, action.items.length, "replace"), historyLayoutRevision: state.historyLayoutRevision + 1 }, items, canonicalUserConfirmations(action.items));
   }
   if (action.type === "history_prepend") {
     const remove = action.removeIds?.length ? new Set(action.removeIds) : undefined;
     const rest = remove ? state.items.filter((item) => !remove.has(item.id)) : state.items;
     const prefix = state.items.slice(0, Math.min(state.historyPrefixCount, state.items.length));
     const retainedPrefix = remove ? prefix.filter((item) => !remove.has(item.id)) : prefix;
-    const items = [...preserveMountedUserIds(action.items, state.items), ...rest];
-    return common(state, action, items, action.items.length + retainedPrefix.length, "prepend");
+    const incoming = new Set(action.items.map(item => item.id));
+    const items = [...new Map(action.items.map(item => [item.id, item])).values(), ...rest.filter(item => !incoming.has(item.id))];
+    return settleLocalSubmissions(common(state, action, items, action.items.length + retainedPrefix.filter(item => !incoming.has(item.id)).length, "prepend"), items, canonicalUserConfirmations(action.items));
   }
-  return {
-    ...common(state, action, preserveMountedUserIds(action.items, state.items), action.items.length, "append"),
+  return settleLocalSubmissions({
+    ...common(state, action, action.items, action.items.length, "append"),
     historyLayoutRevision: state.historyLayoutRevision + 1,
-  };
+  }, action.items);
 }

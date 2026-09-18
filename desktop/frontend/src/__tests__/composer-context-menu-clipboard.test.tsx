@@ -223,7 +223,7 @@ async function main() {
   installBridgeApp({
     // The empty-paste path probes the native clipboard for an image; a reject
     // must stay silent (notifyOnError=false) and never touch the draft text.
-    SaveClipboardImage: async () => {
+    SaveClipboardImageForTarget: async () => {
       throw new Error("no native clipboard image");
     },
   });

@@ -1,11 +1,11 @@
 # Natural-flow chat transcript
 
-This is the sole production chat renderer, replacing TranscriptKernel, the window adapter and the measurement ledger. Reference: local DeepSeek Harness `c291e7961a`. Reasonix keeps its controller, protocol, storage, composer, approvals and workbench.
+This is the sole production chat renderer, replacing TranscriptKernel, the window adapter and the measurement ledger. Rendering reference: local DeepSeek Harness `c291e7961a`. Reasonix keeps its controller, storage, composer, approvals and workbench; current synchronization and history behavior follow [Transcript v2](TRANSCRIPT_V2.md) and the [scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md). Referencing Harness does not imply adopting its complete turn-outline navigation.
 
 ## Ownership
 
 ```text
-Local controller / remote session / history store / frame-batched LiveStore
+Local / remote Follow v2 → shared consumer and bounded record store
                                ↓
                      Transcript session adapter
                                ↓
@@ -16,7 +16,7 @@ Local controller / remote session / history store / frame-batched LiveStore
                        native document flow
 
 DOM resize + reader intent → ChatScrollController → TranscriptViewportWriter
-Full content references → ChatContentLoader → existing snapshot/legacy APIs
+Full content references → ChatContentLoader → bound session content APIs
 Markdown source → shared worker → stable prefix blocks + mutable streaming tail
 ```
 
@@ -27,15 +27,15 @@ Markdown source → shared worker → stable prefix blocks + mutable streaming t
 
 ## Product behavior
 
-The column is at most 800 px wide, with 24 px horizontal padding (16 px in narrow chat containers). Existing typography/themes apply. Native selection and scrollbars are used. Each explicit older-history action requests one page; pages accumulate. Navigation lists every turn of the conversation, not only the loaded ones.
+The column is at most 800 px wide, with 24 px horizontal padding (16 px in narrow chat containers). Existing typography/themes apply. Native selection and scrollbars are used. History uses a bidirectional bounded window, retaining three adjacent pages of 32 messages by default. Paging beyond the budget reclaims the opposite end. Navigation lists loaded turns only; complete persisted history remains searchable and reachable through canonical search/locate.
 
-## Turn outline and cross-page navigation
+## Loaded-turn navigation and history access
 
-The rail reads a complete turn index bound to the installed snapshot, supplied by the same `internal/transcript` projection that pages the body and shared by local and remote sessions through `GET /transcript/outline`. A turn keeps its stable record identity across snapshots, so loading an earlier page never renumbers the rail or drops a mark. Entries carry a bounded prompt preview (50 grapheme clusters) and answer preview (120) built from display bodies only: reasoning, tool output, submitted text and injected context are never part of an entry. Preview memory is accounted for in the existing snapshot cache budget, and the index is built once per frozen cut.
+Follow v2 intentionally derives the rail from loaded turns. Its marks reflect the resident window, not a complete conversation index. Reading older pages isolates live output; paging forward or locating a message makes reclaimed history reachable again. Reclaiming a page releases resident content without deleting persisted messages.
 
-Selecting a turn whose body is not loaded starts a jump transaction. It leaves tail following immediately, then reuses the ordinary older-history paging one page at a time, waiting for the progressive mount to advance between pages, and only moves the viewport once the target node is really mounted. An explicit cancel, reader intent (wheel, touch, reading keys, pointer, return-to-bottom), a newer target, or a session/snapshot replacement all end the pending transaction; a page already in flight may finish but cannot take scroll control back. Staleness is reported rather than silently answered against a newer revision.
+The rail navigates within loaded turns. To reach unloaded history, canonical search/locate resolves the target through the history index and requests its surrounding page; it does not sequentially load every intervening page from the newest position. Navigation obeys the scroll contract's generation and interaction fences: reader takeover cancels pending navigation, and stale callbacks cannot regain viewport ownership.
 
-Compatibility is additive. A client without the capability keeps the loaded-turn rail and does not claim complete navigation; the remote token `transcript-outline-v1` is advertised by the handshake, and an unsupported route answers 404/405/501 rather than an empty page. No persisted format, provider message, tool schema or prompt-cache byte changes.
+PR #10385 supersedes the complete-outline and cumulative-history behavior previously documented here. The [#10276 outline acceptance record](TRANSCRIPT_OUTLINE_NAVIGATION.md) preserves that earlier implementation and its validation; it does not define current production behavior. Desktop and Serve require `transcript-v2`, with an upgrade error for unsupported peers and no legacy chat fallback.
 
 | Capability | Result |
 | --- | --- |
@@ -80,13 +80,13 @@ One ResizeObserver observes the column, viewport and mounted nonempty node hosts
 
 Streaming and final messages share MarkdownHistory. Worker parsing reuses stable prefix blocks and changes the mutable tail. Final parsing resolves references, footnotes and incomplete syntax without replacing the whole answer. Parsing failure is isolated to a copyable raw fallback and lightweight notice. Tables have natural rows and horizontal overflow; long code uses disclosure, never vertical virtualization.
 
-Offscreen completed source text stays mounted as plain text until worker formatting activates near the viewport. Parsed blocks remain mounted afterwards. This defers parsing without deleting loaded text or promising fixed memory for unlimited history. Closed process bodies deliberately unmount.
+Within the resident history window, offscreen completed source text stays mounted as plain text until worker formatting activates near the viewport. Parsed blocks remain mounted while their page remains resident. Page reclamation releases the associated rows and parsing work; lazy formatting does not imply indefinite retention of previously loaded text. Closed process bodies deliberately unmount.
 
 Worker clients are leased by mounted sessions. Last release terminates pending tasks; aggregate diagnostics retain numbers only, not source or AST data. Disposal releases observers, source listeners and full-content results. Existing bounded caches own inactive history.
 
 ## Compatibility and verification
 
-No backend API, saved history shape, permissions, model input or prompt-cache bytes change. Old persisted display preferences remain for other clients but cannot select an old renderer. Rollback restores a complete prior frontend version.
+The current Desktop/Serve protocol boundary is `transcript-v2`; compatibility and derived-index changes are described in [Transcript v2](TRANSCRIPT_V2.md#compatibility-and-change-notes--兼容与变更说明). Persisted session-log encoding, provider messages, tool schemas and prompt-cache bytes remain unchanged. Old persisted display preferences cannot select an old renderer. Any rollback must keep Desktop and Serve protocol-compatible; a frontend-only rollback is not a general compatibility guarantee.
 
 Run from `desktop/frontend`:
 

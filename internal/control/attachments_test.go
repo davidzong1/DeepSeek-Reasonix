@@ -243,6 +243,34 @@ func TestImageDataURLRejectsSymlinkSubdirectory(t *testing.T) {
 	}
 }
 
+func TestValidateAttachmentInRootRejectsMissingAndSymlink(t *testing.T) {
+	root := t.TempDir()
+	rel, err := SaveAttachmentBytesInRoot(root, "notes.txt", []byte("saved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAttachmentInRoot(root, rel); err != nil {
+		t.Fatalf("valid attachment: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAttachmentInRoot(root, rel); err == nil {
+		t.Fatal("missing attachment should fail validation")
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, ".reasonix", "attachments", "link.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := ValidateAttachmentInRoot(root, filepath.ToSlash(filepath.Join(".reasonix", "attachments", "link.txt"))); err == nil {
+		t.Fatal("symlink attachment should fail validation")
+	}
+}
+
 func mustBase64(t *testing.T, s string) []byte {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(s)

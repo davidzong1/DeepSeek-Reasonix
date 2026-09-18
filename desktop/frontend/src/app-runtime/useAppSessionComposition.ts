@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { projectSessionAvailability } from "../lib/sessionAvailability";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
@@ -38,6 +38,7 @@ import { useTabProjectionLifecycle } from "./useTabProjectionLifecycle";
 import { useSessionUndo } from "./useSessionUndo";
 import { useSessionSubmission } from "../lib/useSessionSubmission";
 import { useControllerProfileCommands } from "../lib/useControllerProfileCommands";
+import { noteNavigationComposerEnabled } from "../lib/sessionDiagnostics";
 import { useSessionPromptCommands } from "./useSessionPromptCommands";
 import { useSessionControlCommands } from "./useSessionControlCommands";
 import { useTodoPanelCommands } from "./useTodoPanelCommands";
@@ -305,6 +306,9 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     !state.meta.startupErr &&
     !state.backendActivationPending &&
     !runtimeTransitioning;
+  useEffect(() => {
+    if (controllerReady && activeTabId && !remoteSurfaceActive) noteNavigationComposerEnabled(activeTabId);
+  }, [activeTabId, controllerReady, remoteSurfaceActive]);
   useAppDiagnostics({ activeTabId, tabCount: tabMetas.length, ready: controllerReady, running: state.running,
     hydrating: state.hydrating, runtimeTransitioning, contentRevision: state.historyLayoutRevision });
 
@@ -343,7 +347,15 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     workspaceConflict, pendingClose, clearContextPending,
   }), [clearContextPending, pendingClose, state.approval, state.ask, state.extensionForm, state.mcpInteraction, workspaceConflict]);
   const visibleDecisionSurface = decisionSurface;
-  const composerSurfaceHidden = runtimeTransitioning || Boolean(decisionSurface);
+  // Navigation used to hide the entire composer until the controller/runtime
+  // activation ticket and the transcript paint ticket both settled.  That made
+  // a local session switch look like a frozen blank surface even though its
+  // history was already available (or could be shown from the bounded
+  // transcript cache).  Keep the composer mounted during a local transition:
+  // the submission resources still use `controllerReady` as the write fence,
+  // so drafts remain editable while send/control actions stay disabled until
+  // the target runtime is ready.  Decision surfaces remain exclusive.
+  const composerSurfaceHidden = (runtimeTransitioning && remoteSurfaceActive) || Boolean(decisionSurface);
   useDecisionSurfaceFocus({ surface: decisionSurface, activeTabId, closeOverlays: closeTransientOverlays });
 
   // Extension form surface (stage 8b2): submit delivers the structured values
@@ -352,6 +364,9 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   // be reached is gone either way.
   const extensionSurface = useExtensionSurface({
     activeTabId,
+    hostId: state.meta?.session?.hostId,
+    sessionId: state.meta?.sessionId,
+    sessionGeneration: state.meta?.sessionGeneration,
     form: state.extensionForm,
     notifications: state.extensionNotifications,
     dismissForm: dismissExtensionForm,
@@ -448,8 +463,12 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   });
   const promptCommands = useSessionPromptCommands({
     target: { tabId: activeTabId ?? "", sessionKey: activeSessionIdentity },
-    approval: state.approval ? { id: state.approval.id, tool: state.approval.tool } : undefined,
-    questionId: state.ask?.id, remote: Boolean(activeTab?.remote), goal, toolApprovalMode,
+    session: state.meta?.session,
+    sessionGeneration: state.meta?.sessionGeneration,
+    approval: state.approval,
+    question: state.ask,
+    mcpInteraction: state.mcpInteraction,
+    remote: Boolean(activeTab?.remote), goal, toolApprovalMode,
     operations: sessionOperations,
     ports: {
       approveForTab, isPromptCurrentForTab, resolvePlanForTab: resolvePlanDecisionForTab,
@@ -515,6 +534,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   const sessionHasContent = exportItems.length > 0 || Boolean(exportLive?.text || exportLive?.reasoning);
 
   const sessionExportCommands = useSessionExportCommands({
+    selector: activeTab?.session?.sessionId ? { ref: activeTab.session } : activeTab?.sessionPath ? { sessionPath: activeTab.sessionPath } : { topicId: activeTab?.topicId },
     tabId: activeTabId,
     remote: remoteSurfaceActive,
     sessionTitle,
@@ -630,6 +650,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   // running sessions can't run two switchTab() calls concurrently. Concurrent
   // switches race on the backend SetActiveTab/confirmBackendActiveTab ordering,
   const availability = projectSessionAvailability({ local: state, remote: remoteSurfaceActive ? remoteSession : undefined });
+  const presentationTransitioning = runtimeTransitioning && remoteSurfaceActive;
   const {
     transcriptHydrating, emptyHero,
     visibleTranscriptItems, visibleTranscriptTabId, visibleTranscriptGeometryKey,
@@ -644,7 +665,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     remoteItems: remoteSession.transcript.items,
     activeTabId,
     geometrySessionKey: transcriptGeometrySessionKey,
-    transitioning: runtimeTransitioning,
+    transitioning: presentationTransitioning,
     navigationDataReady: navigationTargetDataReady,
     preserved: preservedTranscriptSurface,
     controllerReady,

@@ -20,8 +20,9 @@ React renderer ──typed IPC (preload)──▶ Electron main ──stdio JSON
 - Framing: newline-delimited JSON-RPC 2.0 (`rpcwire` strict mode). One frame
   per line, UTF-8, no batch arrays.
 - The Go service is started as `reasonix-desktop --host-rpc`. Its stdout carries
-  only protocol frames; stderr carries logs. The shell closes stdin to request
-  exit after `desktop/shutdown`.
+  only protocol frames; stderr carries logs. The shell closes stdin only after
+  `desktop/shutdown` has reported `completed`; closing stdin without that result
+  is treated as `connection_lost` and runs bounded cleanup.
 - Limits: 64 MiB per inbound frame on both sides, 512 concurrent inbound
   handlers on the service, 30 s write-stall watchdog. Large binary payloads never
   travel in frames; they use the resource origin below.
@@ -38,7 +39,7 @@ fails with `-32002 not_ready`.
 ```jsonc
 // shell → service
 {"method":"desktop/hello","params":{
-  "protocolVersion": 3,
+  "protocolVersion": 11,
   "contractDigest": "sha256:…",       // digest embedded in the shell bundle
   "build": {"version":"v1.30.0","channel":"stable","commit":"abc123"},
   "host": {"name":"electron","version":"44.2.0","chrome":"152.0.0","platform":"darwin","arch":"arm64"},
@@ -46,10 +47,11 @@ fails with `-32002 not_ready`.
 }}
 // service → shell
 {"result":{
-  "protocolVersion": 3,
+  "protocolVersion": 11,
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // new for every service process
+  "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}
 }}
@@ -87,6 +89,12 @@ Failure codes are terminal: the shell shows the real error and offers
 minted by this service process. A restarted service issues a new generation;
 the shell discards anything tagged with an old one.
 
+`runId` identifies this service run. `incidentId` links service and shell
+lifecycle evidence for the same failure chain. Both are random diagnostic
+identifiers; they do not contain a PID, local path, or user content. When
+diagnostics are disabled, `diagnosticsEnabled` is false and both identifiers
+may be omitted.
+
 ## Lifecycle requests (shell → service)
 
 | Method | Params | Result | Go owner |
@@ -95,14 +103,17 @@ the shell discards anything tagged with an old one.
 | `desktop/domReady` | `{}` | `{}` | `App.domReady` |
 | `desktop/rendererAttached` | `{"rendererGeneration":n}` | `{}` | frontend heartbeat/readiness |
 | `desktop/beforeClose` | `{"reason":"window"\|"quit"\|"tray"\|"updater"}` | `{"prevent":bool}` | `App.beforeClose` |
-| `desktop/shutdown` | `{}` | `{}` | `App.shutdown` |
+| `desktop/shutdown` | `{"requestId":string,"reason":string}` | shutdown phase/result | coordinated, retryable shutdown |
+| `desktop/shutdownStatus` | `{"requestId":string}` | same shutdown phase/result | query after timeout/unknown result |
 | `desktop/hostEvent` | `{"name":string,"payload":any}` | `{}` | second instance, tray open/quit, menu actions |
 | `desktop/browserControl` | `{"enabled":bool}` | `{}` | built-in browser switch, read when a session is built |
 
 Order: `hello` → `start` → window load → `domReady` → (`rendererAttached` after
-each renderer mount) → … → `beforeClose` → (`shutdown` → stdin close → exit).
-The service exits on its own when stdin closes, whether or not `shutdown` was
-called, so an abrupt shell death never leaves a headless Go process behind.
+each renderer mount) → … → `beforeClose` → (`shutdown` completed → stdin close
+fallback → exit). A shutdown RPC timeout is an unknown result: the shell queries
+`shutdownStatus` and keeps the window open on a retryable failure. An abrupt
+stdin EOF enters the same coordinator with reason `connection_lost`; it does
+not create a second cleanup flow after a completed shutdown.
 
 ## Business commands
 

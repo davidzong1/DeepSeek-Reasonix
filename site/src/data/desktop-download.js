@@ -1,2 +1,3 @@
-// Temporary website-only pin. Clear this value to resume latest selection.
-export const desktopDownloadVersion = "v1.38.3";
+// Set this temporarily to an exact vX.Y.Z only during a documented download
+// incident. The production default follows the current Stable manifest.
+export const desktopDownloadVersion = "";

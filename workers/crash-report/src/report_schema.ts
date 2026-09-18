@@ -39,6 +39,29 @@ export const WebRuntimeDiagnostic = z.object({
   recovery: z.enum(["not_applicable", "reload_succeeded", "reload_failed"]),
 });
 
+export const Diagnostics = z
+  .object({
+    subjectVersion: technicalString(64).optional(),
+    subjectBuildCommit: technicalString(64).optional(),
+    subjectChannel: technicalString(32).optional(),
+    observerVersion: technicalString(64).optional(),
+    observerBuildCommit: technicalString(64).optional(),
+    runId: technicalString(64).optional(),
+    incidentId: technicalString(64).optional(),
+    processRole: z.enum(["service", "shell", "renderer", "unknown"]).optional(),
+    lastPhase: runtimeBucket.optional(),
+    lastPhaseAt: technicalString(64).optional(),
+    observedAt: technicalString(64).optional(),
+    terminationReason: z.enum(["user_quit", "update_restart", "startup_failure", "connection_lost", "system_signal", "unknown"]).optional(),
+    cleanupOutcome: z.enum(["not_started", "in_progress", "success", "failed", "interrupted", "unknown"]).optional(),
+    exitCode: z.number().int().min(-2147483648).max(2147483647).optional(),
+    signal: technicalString(32).optional(),
+    evidence: z.enum(["confirmed", "observed", "unknown"]).optional(),
+    category: z.enum(["crash", "startup_failure", "unclean_exit", "historical_record"]).optional(),
+    legacyParsed: z.boolean().optional(),
+  })
+  .passthrough();
+
 export const Report = z.object({
   eventId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
   dedupKey: z.string().regex(/^[0-9a-f]{64}$/).optional(),
@@ -54,6 +77,11 @@ export const Report = z.object({
   label: z.string().max(64).optional(),
   errorType: z.string().max(128).optional(),
   errorMessage: z.string().max(4 * 1024).optional(),
+  errorFamily: z
+    .string()
+    .max(128)
+    .regex(/^[a-z0-9_.-]+$/)
+    .optional(),
   stack: z.string().max(16 * 1024).optional(),
   componentStack: z.string().max(16 * 1024).optional(),
   topFrame: z.string().max(300).optional(),
@@ -68,6 +96,7 @@ export const Report = z.object({
     msg: z.string().max(240).optional(),
   })).max(30).optional(),
   occurredAt: z.string().max(64).optional(),
+  diagnostics: Diagnostics.optional(),
   webRuntime: WebRuntimeDiagnostic.optional(),
   webview2: WebView2Diagnostic.optional(),
 });

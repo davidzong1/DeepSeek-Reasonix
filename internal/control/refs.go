@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"os"
@@ -545,98 +543,6 @@ func (c *Controller) HasRefs(line string) bool {
 	return len(c.detectRefs(line)) > 0
 }
 
-// inputImages resolves image @-references in the turn input to data URLs so the
-// turn can carry them to a vision-capable model. Best-effort: an unreadable image
-// is skipped — the @ref still lands as text via ResolveRefs.
-func (c *Controller) inputImages(line string) []string {
-	if !c.imageInputEnabled() {
-		return nil
-	}
-	return c.resolveInputImageCandidates(line)
-}
-
-// resolveInputImageCandidates resolves authorized image references without
-// consulting the active model capability. The parent controller uses this only
-// to hand candidates to a child; the child decides whether to embed them.
-func (c *Controller) resolveInputImageCandidates(line string) []string {
-	var urls []string
-	seen := map[string]bool{}
-	for _, r := range append(c.detectRefs(line), bareVisionRefs(line)...) {
-		baseDir := c.workspaceRoot
-		if r.baseDir != "" {
-			baseDir = r.baseDir
-		}
-		url, err := c.visionRefImageValue(r, baseDir)
-		if err != nil || url == "" || seen[url] {
-			continue
-		}
-		seen[url] = true
-		urls = append(urls, url)
-	}
-	return urls
-}
-
-func visionFileImageDataURL(path, baseDir string) (string, error) {
-	absPath, absBase, ok := resolveAbsRef(path, baseDir)
-	if !ok {
-		return "", os.ErrNotExist
-	}
-	if absBase == "" {
-		return "", fmt.Errorf("workspace root is required for file image references")
-	}
-
-	root, err := os.OpenRoot(absBase)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-
-	rel, err := filepath.Rel(absBase, absPath)
-	if err != nil {
-		return "", err
-	}
-
-	info, err := root.Lstat(rel)
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("image path must not be a symlink")
-	}
-	if info.IsDir() || info.Size() <= 0 || info.Size() > maxImageAttachmentBytes {
-		return "", fmt.Errorf("image must be between 1 byte and 64 MB")
-	}
-	f, err := root.Open(rel)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !os.SameFile(info, opened) {
-		return "", fmt.Errorf("image changed while opening")
-	}
-	return dataURLFromImageReader(f, path)
-}
-
-func dataURLFromImageReader(r io.Reader, path string) (string, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, maxImageAttachmentBytes+1))
-	if err != nil {
-		return "", err
-	}
-	if len(raw) == 0 || len(raw) > maxImageAttachmentBytes {
-		return "", fmt.Errorf("image must be between 1 byte and 64 MB")
-	}
-	mime := detectedImageMime(raw)
-	if mime == "" {
-		return "", fmt.Errorf("%s is not a supported image", path)
-	}
-	raw, mime = compressForVision(raw, mime)
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
-}
-
 // resolveBareNames batch-resolves simple filenames (no path separator) that
 // don't exist in cwd. It walks the working tree once and matches every
 // unresolved name against the set, stopping when all are found. This runs in
@@ -822,74 +728,6 @@ func workspaceRel(path, baseDir string) (rel, absPath, absBase string, ok bool) 
 		return "", "", "", false
 	}
 	return rel, absPath, absBase, true
-}
-
-// ResolveRefs resolves the @references in a line into a single tagged context
-// block (file/dir contents, MCP resource bodies), plus per-reference error
-// strings for any that failed. An empty block means no references resolved.
-// Safe to call off a frontend's event loop; honours ctx for the resource reads.
-func (c *Controller) ResolveRefs(ctx context.Context, line string) (block string, errs []string) {
-	return c.resolveRefs(ctx, line, false)
-}
-
-// ResolveScopedRefs is the HTTP/frontend variant: file references are honored
-// only when they can be resolved under the controller workspace root.
-func (c *Controller) ResolveScopedRefs(ctx context.Context, line string) (block string, errs []string) {
-	return c.resolveRefs(ctx, line, true)
-}
-
-func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bool) (block string, errs []string) {
-	refs := c.detectRefsMode(line, scopedOnly)
-	refs = resolveBareNames(refs, c.workspaceRoot)
-	var b strings.Builder
-	includedInstructionPaths := map[string]bool{}
-	includedInstructionBodies := map[string]bool{}
-	if current := c.memory.current(); current != nil {
-		for _, doc := range current.Docs {
-			includedInstructionPaths[cleanAbsPath(doc.Path)] = true
-			includedInstructionBodies[doc.Body] = true
-		}
-	}
-	for _, r := range refs {
-		switch r.kind {
-		case refResource:
-			text, err := c.mcp.readResource(ctx, r.server, r.uri)
-			if err != nil {
-				errs = append(errs, "@"+r.raw+" — "+err.Error())
-				continue
-			}
-			appendRefBlock(&b, "resource", `ref="@`+r.raw+`"`, text)
-		case refFile:
-			baseDir := c.workspaceRoot
-			if r.baseDir != "" {
-				baseDir = r.baseDir
-			}
-			text, isDir, err := readFileRefWithVision(r.path, baseDir, c.imageInputEnabled())
-			if err != nil {
-				errs = append(errs, "@"+r.raw+" — "+err.Error())
-				continue
-			}
-			pathInstructions, diagnostics := c.resolveReferencedInstructions(r, baseDir, includedInstructionPaths, includedInstructionBodies)
-			if pathInstructions != "" {
-				appendRefBlock(&b, "path-instructions", `target="`+html.EscapeString(displayPathForRef(r))+`"`, pathInstructions)
-			}
-			for _, diagnostic := range diagnostics {
-				errs = append(errs, "@"+r.raw+" — "+diagnostic.Message)
-			}
-			tag := "file"
-			if isDir {
-				tag = "dir"
-			}
-			displayPath := r.path
-			if r.displayPath != "" {
-				displayPath = r.displayPath
-			}
-			appendRefBlock(&b, tag, `path="`+displayPath+`"`, text)
-		case refImage, refRemoteImage, refFileID:
-			appendRefBlock(&b, "image", `path="`+r.path+`"`, imageAttachmentNote(r.path, c.imageInputEnabled()))
-		}
-	}
-	return b.String(), errs
 }
 
 func (c *Controller) resolveReferencedInstructions(r ref, baseDir string, includedPaths, includedBodies map[string]bool) (string, []instruction.Diagnostic) {

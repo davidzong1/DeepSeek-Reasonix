@@ -2,13 +2,16 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const groups = ["A-D", "E-H", "I-P", "Q-Z"];
+export const groups = ["A-B", "C", "D", "E-H", "I-P", "Q-S", "T-Z"];
 export const conptyProbe = "TestWindowsTerminalProcessConPTYSmoke";
 export const filters = {
-  "A-D": { skip: "^Test[E-Z]" },
+  "A-B": { skip: "^Test[C-Z]" },
+  "C": { run: "^TestC" },
+  "D": { run: "^TestD" },
   "E-H": { run: "^Test[E-H]" },
   "I-P": { run: "^Test[I-P]" },
-  "Q-Z": { run: "^Test[Q-Z]", skip: `^${conptyProbe}$` },
+  "Q-S": { run: "^Test[Q-S]" },
+  "T-Z": { run: "^Test[T-Z]", skip: `^${conptyProbe}$` },
 };
 
 export function owners(name) {
@@ -47,23 +50,25 @@ export function verifyInventory(inventory, requireProbe = process.platform === "
   return counts;
 }
 
-export function testArgs(group) {
+export function testArgs(group, race = false) {
   if (!groups.includes(group)) throw new Error(`Unknown desktop Windows test group: ${group}`);
   const { run, skip } = filters[group];
-  return ["test", ...(run ? ["-run", run] : []), ...(skip ? ["-skip", skip] : []), "./..."];
+  return ["test", ...(race ? ["-race"] : []), ...(run ? ["-run", run] : []), ...(skip ? ["-skip", skip] : []), "./..."];
 }
 
-function main(group) {
-  const args = group === "--verify" ? null : testArgs(group);
+function main(group, mode) {
+  if (mode && mode !== "--race") throw new Error(`Unknown test mode: ${mode}`);
+  const race = mode === "--race";
+  const args = group === "--verify" ? null : testArgs(group, race);
   // Ask Go for the current platform's inventory, including build-tagged tests,
   // examples and fuzz seeds. JSON is used only for listing, not test execution.
-  const listed = spawnSync("go", ["test", "-list", ".", "-json", "./..."], { encoding: "utf8", maxBuffer: 16 << 20 });
+  const listed = spawnSync("go", ["test", ...(race ? ["-race"] : []), "-list", ".", "-json", "./..."], { encoding: "utf8", maxBuffer: 16 << 20 });
   if (listed.error) throw listed.error;
   if (listed.status !== 0) {
     process.stderr.write(listed.stdout + listed.stderr);
     return listed.status ?? 1;
   }
-  console.log("Desktop Windows test partition:", verifyInventory(inventoryFromJSON(listed.stdout)));
+  console.log("Desktop test partition:", verifyInventory(inventoryFromJSON(listed.stdout)));
   if (!args) return 0;
   console.log(`go ${args.join(" ")}`);
   const result = spawnSync("go", args, { stdio: "inherit" });
@@ -72,5 +77,5 @@ function main(group) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main(process.argv[2]);
+  process.exitCode = main(process.argv[2], process.argv[3]);
 }

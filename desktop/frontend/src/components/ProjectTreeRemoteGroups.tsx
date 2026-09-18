@@ -50,17 +50,18 @@ export function mergeRemoteSessionsIntoTree(
     if (!node.remote) return node;
     const rows = sessions[remoteProjectKey(node.remote)] ?? [];
     const remoteChildren = rows.map((row): ProjectNode => {
+      const stableID = row.sessionId || row.path || row.name;
       const session = runtime?.sessions.find(session => session.hostId === node.remote!.hostId && session.workspaceRoot === node.remote!.workspace && (
         row.sessionId ? session.sessionId === row.sessionId : session.sessionPath === row.path
       ));
       const state = selectRuntime(session, failed);
       const status = state.unknown ? "unknown" : state.known && state.kind !== "idle" && state.kind !== "legacy" ? state.kind : undefined;
       return ({
-      key: `remote-session-${node.remote!.hostId}-${node.remote!.workspace}-${row.name}`,
+      key: `remote-session-${node.remote!.hostId}-${node.remote!.workspace}-${stableID}`,
       kind: "topic",
       label: row.title || row.name || t("projectTree.newTopic"),
       root: node.remote!.workspace,
-      topicId: `${node.remote!.hostId}\u0000${node.remote!.workspace}\u0000${row.name}`,
+      topicId: `${node.remote!.hostId}\u0000${node.remote!.workspace}\u0000${stableID}`,
       sessionPath: row.path,
       turns: row.turns,
       running: state.known ? state.unknown ? false : Boolean(state.running || session!.state.pendingPrompt || session!.state.backgroundJobs) : row.running,
@@ -80,10 +81,14 @@ export function useRemoteSessionActions(
   reportError: (error: unknown) => void,
 ) {
   const index = useMemo(() => {
-    const next = new Map<string, { hostId: string; workspace: string; name: string }>();
+    const next = new Map<string, { hostId: string; workspace: string; name: string; writable: boolean }>();
     for (const [groupKey, rows] of Object.entries(sessions)) {
       const [hostId, workspace] = groupKey.split("\u0000");
-      for (const row of rows) next.set(`${hostId}\u0000${workspace}\u0000${row.name}`, { hostId, workspace, name: row.name });
+      for (const row of rows) {
+        const stableID = row.sessionId || row.path || row.name;
+        const writable = rows.filter((candidate) => candidate.name === row.name).length === 1;
+        next.set(`${hostId}\u0000${workspace}\u0000${stableID}`, { hostId, workspace, name: row.name, writable });
+      }
     }
     return next;
   }, [sessions]);
@@ -94,6 +99,7 @@ export function useRemoteSessionActions(
   ) => {
     const remote = index.get(topicId);
     if (!remote) return false;
+    if (!remote.writable) throw new Error("This remote service cannot identify that session precisely. Upgrade the remote Reasonix service before changing it.");
     // The synthesized current blank session intentionally has an empty name.
     // Its rename/pin/delete bindings still own that row and must decide whether
     // the requested mutation is supported; never report success without

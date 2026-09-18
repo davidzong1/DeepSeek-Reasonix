@@ -85,3 +85,46 @@ func TestShortcutOwnershipResolvesLinksBeforeCheckingLayout(t *testing.T) {
 		t.Fatal("missing installation root must not establish ownership")
 	}
 }
+
+func TestCanonicalShortcutMigratesLegacyButPreservesCustomProperties(t *testing.T) {
+	root := t.TempDir()
+	canonical := filepath.Join(root, "Reasonix.exe")
+	legacy := filepath.Join(root, "reasonix-launcher.exe")
+	for _, path := range []string{canonical, legacy} {
+		if err := os.WriteFile(path, []byte("launcher"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, target, icon, id string
+		want                   shortcutRepair
+	}{
+		{"legacy stable", legacy, legacy, AppUserModelID, shortcutRepair{target: canonical, icon: canonical}},
+		{"custom icon", legacy, filepath.Join(root, "custom.ico"), AppUserModelID, shortcutRepair{target: canonical}},
+		{"canonical", canonical, canonical, AppUserModelID, shortcutRepair{}},
+		{"foreign identity", legacy, legacy, "io.reasonix.studio", shortcutRepair{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := planShortcutRepair(tc.target, tc.icon, tc.id, root, true); got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	oldTarget := filepath.Join(root, "versions", "v1.38.9", "app", "Reasonix.exe")
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"", true}, {filepath.Dir(oldTarget), true}, {root, false}, {t.TempDir(), false}, {filepath.Join(root, "workspace"), false},
+	} {
+		if got := repairShortcutWorkingDirectory(tc.dir, oldTarget, root); got != tc.want {
+			t.Fatalf("directory %q: got %v, want %v", tc.dir, got, tc.want)
+		}
+	}
+	if err := os.Remove(canonical); err != nil {
+		t.Fatal(err)
+	}
+	if got := planShortcutRepair(legacy, legacy, AppUserModelID, root, true); got != (shortcutRepair{}) {
+		t.Fatalf("missing canonical entry broke legacy shortcut: %+v", got)
+	}
+}

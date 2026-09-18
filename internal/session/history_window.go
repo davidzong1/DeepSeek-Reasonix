@@ -175,25 +175,36 @@ func (q *Query) ReadHistoryWindow(ctx context.Context, ref SessionRef, req Histo
 	if err != nil {
 		return HistoryWindowPage{}, err
 	}
-	for i := range result.Messages {
-		message := &result.Messages[i]
+	if err := q.attachHistoryWindowTurnStats(ctx, handle.DB, &result); err != nil {
+		return HistoryWindowPage{}, err
+	}
+
+	if err := q.attachToolObservations(ctx, handle.DB, ref, &result); err != nil {
+		return HistoryWindowPage{}, err
+	}
+	return attachWindowAnchor(result, page), nil
+}
+
+func (q *Query) attachHistoryWindowTurnStats(ctx context.Context, db *sql.DB, page *HistoryWindowPage) error {
+	for i := range page.Messages {
+		message := &page.Messages[i]
 		var duration int64
 		var turnID string
-		err := handle.DB.QueryRowContext(ctx, `SELECT MAX(0,ended_at-started_at),turn_id FROM turn_summaries WHERE final_message_id=? AND end_sequence>0 AND end_sequence<=? AND start_sequence<=? LIMIT 1`, message.MessageID, result.SnapshotSequence, message.EventSequence).Scan(&duration, &turnID)
+		err := db.QueryRowContext(ctx, `SELECT MAX(0,ended_at-started_at),turn_id FROM turn_summaries WHERE final_message_id=? AND end_sequence>0 AND end_sequence<=? AND start_sequence<=? LIMIT 1`, message.MessageID, page.SnapshotSequence, message.EventSequence).Scan(&duration, &turnID)
 		if err == nil {
 			message.TurnFinal, message.TurnDurationMs = true, duration
 			var samples, tools int
-			if err := handle.DB.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN kind='assistant/attempt' THEN 1 END),COUNT(CASE WHEN kind='tool/call' THEN 1 END) FROM turn_counts WHERE turn_id=? AND sequence<=?`, turnID, result.SnapshotSequence).Scan(&samples, &tools); err != nil {
-				return HistoryWindowPage{}, err
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN kind='assistant/attempt' THEN 1 END),COUNT(CASE WHEN kind='tool/call' THEN 1 END) FROM turn_counts WHERE turn_id=? AND sequence<=?`, turnID, page.SnapshotSequence).Scan(&samples, &tools); err != nil {
+				return err
 			}
 			if samples > 0 || tools > 0 {
 				message.SamplingCount, message.ToolCount = &samples, &tools
 			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return HistoryWindowPage{}, err
+			return err
 		}
 	}
-	return attachWindowAnchor(result, page), nil
+	return nil
 }
 
 // resolveWindowAnchor turns a request's anchor into the boundary and direction

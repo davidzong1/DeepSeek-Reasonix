@@ -125,8 +125,8 @@ func (c *Controller) refreshRuntimeStateAttempt(e event.Event, attempt int) {
 	ledger := c.turnEventLedger()
 	initialized := r.snapshot.SchemaVersion == 1
 	base, activity := r.snapshot, r.activity
-	if r.snapshot.RuntimeEpoch == "" || r.path != path || r.ledger != ledger {
-		base = event.RuntimeStateSnapshot{RuntimeEpoch: newRuntimeStateEpoch()}
+	if r.snapshot.ProjectionEpoch == "" || r.path != path || r.ledger != ledger {
+		base = event.RuntimeStateSnapshot{ProjectionEpoch: newRuntimeStateEpoch(), RuntimeEpoch: newRuntimeStateEpoch()}
 		activity = ""
 	}
 	next := base

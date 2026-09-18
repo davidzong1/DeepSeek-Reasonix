@@ -99,8 +99,11 @@ function installBridgeApp(methods: Record<string, unknown>) {
     ModelsForTab: async () => [],
     ListDir: async () => [],
     ListDirForTab: async () => [],
+    ListDirForTarget: async () => [],
     SearchFileRefs: async () => [],
     SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
+    AttachmentDataURLForTarget: async (_target: unknown, path: string) => path,
     ...methods,
   });
 }
@@ -940,7 +943,7 @@ console.log("\ncomposer session draft");
   const savePastedFile = deferred<string>();
   const sent: string[] = [];
   installBridgeApp({
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       saveStarted.resolve();
       return savePastedFile.promise;
     },
@@ -1283,6 +1286,43 @@ console.log("\ncomposer session draft");
     "submit serializes chat, code, and terminal selections deterministically",
   );
   eq(document.querySelector(".composer-context__item--selection"), null, "a completed submit clears the selection card");
+
+  await act(async () => root.unmount());
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const changes: string[] = [];
+  const empty = {
+    text: "restored draft",
+    invocations: [], attachments: [], workspaceRefs: [], pastedBlocks: [], openPastedLabels: [], sessionRefs: [], selectedTextRefs: [],
+  };
+  const onChange = (_draftId: string, _generation: number, value: typeof empty) => changes.push(value.text);
+  const { root, rerender } = await renderComposer({
+    sessionKey: "draft:draft-a",
+    tabId: undefined,
+    persistentDraft: { draftId: "draft-a", generation: 1, initial: empty, revision: 1, onChange },
+    composerTarget: { kind: "draft", draftId: "draft-a" },
+  });
+  eq(textarea().value, "restored draft", "persistent draft restores backend-confirmed text");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  eq(changes.length, 0, "restoring a persistent draft does not write an unchanged snapshot");
+
+  await act(async () => {
+    updateTextareaFromUser("edited draft", "insertText");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  eq(changes.join(","), "edited draft", "editing a persistent draft emits one debounced snapshot");
+
+  const saved = { ...empty, text: "saved in another window" };
+  await rerender({ persistentDraft: { draftId: "draft-a", generation: 1, initial: saved, revision: 2, onChange } });
+  eq(textarea().value, "edited draft", "a save acknowledgement revision does not replace newer local edits");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  eq(changes.length, 1, "a save acknowledgement does not echo or restore content");
+
+  await rerender({ persistentDraft: { draftId: "draft-a", generation: 2, initial: saved, revision: 2, onChange } });
+  eq(textarea().value, "saved in another window", "an explicit replacement generation installs the saved version");
 
   await act(async () => root.unmount());
   dom.window.close();

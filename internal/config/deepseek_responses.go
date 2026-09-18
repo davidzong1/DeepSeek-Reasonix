@@ -51,53 +51,6 @@ func backfillOfficialDeepSeekResponsesModels(p *ProviderEntry) {
 	backfillOfficialDeepSeekResponsesProPrice(p)
 }
 
-func backfillOfficialDeepSeekResponsesCapabilities(p *ProviderEntry) {
-	if !isOfficialDeepSeekResponsesProvider(p) {
-		return
-	}
-	backfillOfficialDeepSeekEffortOverrides(p)
-}
-
-func backfillOfficialDeepSeekEffortOverrides(p *ProviderEntry) {
-	if p == nil {
-		return
-	}
-	// A provider-level vocabulary is user-owned and remains the fallback for
-	// every model without an explicit per-model override. Do not shadow it with
-	// generated model defaults on multi-model providers.
-	if len(p.SupportedEfforts) > 0 {
-		return
-	}
-	capabilities := deepSeekV4EffortOverrides()
-	if model := strings.TrimSpace(p.Model); model != "" && len(p.Models) == 0 {
-		defaults, ok := capabilities[model]
-		if !ok {
-			return
-		}
-		p.SupportedEfforts = append([]string(nil), defaults.SupportedEfforts...)
-		if strings.TrimSpace(p.DefaultEffort) == "" {
-			p.DefaultEffort = defaults.DefaultEffort
-		}
-		return
-	}
-	if p.ModelOverrides == nil {
-		p.ModelOverrides = map[string]ProviderModelOverride{}
-	}
-	for model, defaults := range capabilities {
-		if !p.HasModel(model) {
-			continue
-		}
-		override := p.ModelOverrides[model]
-		if len(override.SupportedEfforts) == 0 {
-			override.SupportedEfforts = append([]string(nil), defaults.SupportedEfforts...)
-			if strings.TrimSpace(override.DefaultEffort) == "" {
-				override.DefaultEffort = defaults.DefaultEffort
-			}
-		}
-		p.ModelOverrides[model] = override
-	}
-}
-
 // backfillOfficialDeepSeekResponsesProPrice fills Prices[pro] when a legacy
 // singular Price would otherwise make Pro inherit the Flash list price.
 func backfillOfficialDeepSeekResponsesProPrice(p *ProviderEntry) {

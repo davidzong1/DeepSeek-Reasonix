@@ -8,7 +8,6 @@ import (
 
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
-	"reasonix/internal/provider"
 )
 
 // TestProviderModel sends a bounded, tool-free probe through the configured
@@ -31,35 +30,7 @@ func (a *App) TestProviderModel(p ProviderView, model, key string) error {
 		copied := entry.WithAPIKeyForProbe(key)
 		entry = &copied
 	}
-	client, err := boot.NewProviderWithProxy(entry, withProbeDirectHost(a.networkProxySpecForRoot(root), entry.BaseURL, p.NoProxy))
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(a.reqCtx(), 20*time.Second)
-	defer cancel()
-	chunks, err := client.Stream(ctx, provider.Request{Messages: []provider.Message{{Role: "user", Content: "Reply with OK."}}, MaxTokens: 16})
-	if err != nil {
-		return err
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case chunk, open := <-chunks:
-			if !open {
-				return fmt.Errorf("provider closed the connection without a response")
-			}
-			if chunk.Err != nil {
-				return chunk.Err
-			}
-			if chunk.Type == provider.ChunkText && strings.TrimSpace(chunk.Text) != "" {
-				return nil
-			}
-			if chunk.Type == provider.ChunkDone {
-				return nil
-			}
-		}
-	}
+	return boot.ProbeProviderConnection(a.reqCtx(), *entry, key, withProbeDirectHost(a.networkProxySpecForRoot(root), entry.BaseURL, p.NoProxy))
 }
 
 // FetchProviderModelCatalogDraft discovers models using an unsaved credential.
@@ -137,7 +108,9 @@ func (a *App) FetchProviderModelCatalogDraft(p ProviderView, key string) ([]Prov
 		entry := e
 		entry.Model = model.ID
 		resolved := capabilities.Resolve(&entry)
-		result = append(result, modelCapabilityView(resolved))
+		view := modelCapabilityView(resolved)
+		view.Reasoning = config.ResolveReasoningView(&entry)
+		result = append(result, view)
 	}
 	return result, nil
 }

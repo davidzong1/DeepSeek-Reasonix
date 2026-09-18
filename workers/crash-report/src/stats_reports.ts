@@ -26,6 +26,7 @@ export type CrashRow = {
   last_arch: string;
   last_channel: string;
   regressed_at: string;
+  last_category?: string;
   development?: boolean;
   affected_installs?: number;
   window_events?: number;

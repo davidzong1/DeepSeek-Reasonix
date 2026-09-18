@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
@@ -72,11 +77,152 @@ func TestAIRenameCanonicalSessionUsesDurableHistoryInsteadOfEmptyLegacyFile(t *t
 				t.Fatalf("canonical rename wrote legacy title: %+v, %v", meta, err)
 			}
 			if identity == "topic" {
-				if got := loadTopicTitle("", key); got != title || app.tabs["test"].TopicTitle != title {
+				if got := loadTopicTitle("", key); got == title || app.tabs["test"].TopicTitle != title {
 					t.Fatalf("sidebar title = %q, runtime title = %q", got, app.tabs["test"].TopicTitle)
 				}
 			}
 		})
+	}
+}
+
+func TestAIRenameDoesNotRenameSiblingCreatedDuringGeneration(t *testing.T) {
+	app, _, runtime, prov, _ := newCanonicalTitleFixture(t)
+	appendSessionTestMessage(t, runtime, "user", provider.Message{ID: "user", Role: provider.RoleUser, Content: "rename only A"})
+	prov.started, prov.chunks = make(chan struct{}), make(chan provider.Chunk, 2)
+	done := make(chan error, 1)
+	go func() { _, err := app.AIRenameSession(sessionRoute(runtime.Ref().SessionID)); done <- err }()
+	select {
+	case <-prov.started:
+	case err := <-done:
+		t.Fatalf("early result: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	app.mu.Lock()
+	app.tabs["sibling"] = &WorkspaceTab{ID: "sibling", Scope: "global", TopicID: "topic-canonical", TopicTitle: "B unchanged", SessionID: "sibling"}
+	app.mu.Unlock()
+	prov.chunks <- provider.Chunk{Type: provider.ChunkText, Text: "A changed"}
+	prov.chunks <- provider.Chunk{Type: provider.ChunkDone}
+	close(prov.chunks)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if app.tabs["sibling"].TopicTitle != "B unchanged" {
+		t.Fatal("late AI rename changed sibling title")
+	}
+}
+
+func TestAIRenameCanonicalSessionDoesNotRequireTargetTab(t *testing.T) {
+	app, _, runtime, prov, path := newCanonicalTitleFixture(t)
+	appendSessionTestMessage(t, runtime, "user", provider.Message{
+		ID: "user", Role: provider.RoleUser, Origin: provider.MessageOriginUser, Content: "rename a cold sidebar session",
+	})
+	if _, err := runtime.Session().Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "global", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspaceID, runtime.Ref().SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().EnsureSessionTopic(t.Context(), runtime.Ref().SessionID, "cold-topic", "Cold topic"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep another conversation active only as the provider host. The target
+	// has no tab/controller binding and must be resolved from durable identity.
+	generator := newDesktopSessionTitleController(filepath.Dir(path), path, prov)
+	t.Cleanup(generator.Close)
+	app.mu.Lock()
+	app.tabs["test"].Ctrl = generator
+	app.tabs["test"].TopicID = "active-other-topic"
+	app.tabs["test"].SessionID = "active-other-session"
+	app.mu.Unlock()
+
+	title, err := app.AIRenameSession(sessionRoute(runtime.Ref().SessionID))
+	if err != nil || title != "制作扫雷游戏" {
+		t.Fatalf("AIRenameSession = %q, %v", title, err)
+	}
+	if app.tabs["test"].TopicID != "active-other-topic" || app.tabs["test"].SessionID != "active-other-session" {
+		t.Fatal("AI rename navigated away from the active conversation")
+	}
+	info, err := app.desktopSessionService("").Query().Stat(t.Context(), runtime.Ref())
+	if err != nil || info.Title != title {
+		t.Fatalf("cold target title = %+v, %v", info, err)
+	}
+}
+
+func TestAIRenameCanonicalEmptySessionReturnsProductError(t *testing.T) {
+	app, _, _, _, _ := newCanonicalTitleFixture(t)
+	if _, err := app.AIRenameSession("topic-canonical"); err == nil || !strings.Contains(err.Error(), "session_operation:no_messages:") {
+		t.Fatalf("empty session error = %v", err)
+	}
+}
+
+func TestAIRenameSessionDeduplicatesSameTarget(t *testing.T) {
+	app, _, runtime, prov, _ := newCanonicalTitleFixture(t)
+	appendSessionTestMessage(t, runtime, "user", provider.Message{
+		ID: "user", Role: provider.RoleUser, Origin: provider.MessageOriginUser, Content: "deduplicate this rename",
+	})
+	prov.started = make(chan struct{})
+	prov.chunks = make(chan provider.Chunk, 2)
+	first := make(chan error, 1)
+	go func() {
+		_, err := app.AIRenameSession("topic-canonical")
+		first <- err
+	}()
+	<-prov.started
+	if _, err := app.AIRenameSession("topic-canonical"); err == nil || !strings.Contains(err.Error(), "session_operation:operation_busy:") {
+		t.Fatalf("duplicate rename error = %v", err)
+	}
+	prov.chunks <- provider.Chunk{Type: provider.ChunkText, Text: "Deduplicated title"}
+	prov.chunks <- provider.Chunk{Type: provider.ChunkDone}
+	close(prov.chunks)
+	if err := <-first; err != nil {
+		t.Fatalf("first rename: %v", err)
+	}
+}
+
+func TestAISessionTitleOldFinallyCannotClearNewOperation(t *testing.T) {
+	app := NewApp()
+	_, oldCancel := context.WithCancelCause(context.Background())
+	defer oldCancel(context.Canceled)
+	_, newCancel := context.WithCancelCause(context.Background())
+	defer newCancel(context.Canceled)
+	const key = "path:/session"
+	app.aiSessionTitleInFlight[key] = aiSessionTitleOperation{ID: "old", Cancel: oldCancel}
+	app.cancelAISessionTitle(key)
+	app.aiSessionTitleInFlight[key] = aiSessionTitleOperation{ID: "new", Cancel: newCancel}
+	app.finishAISessionTitle(key, "old")
+	if got := app.aiSessionTitleInFlight[key].ID; got != "new" {
+		t.Fatalf("old finally cleared operation %q, want new", got)
+	}
+	app.finishAISessionTitle(key, "new")
+	if _, ok := app.aiSessionTitleInFlight[key]; ok {
+		t.Fatal("owning finally did not clear completed operation")
+	}
+}
+
+func TestInvalidateAuxiliaryProviderOperationsCancelsAndFencesRequests(t *testing.T) {
+	app := NewApp()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(context.Canceled) })
+	app.aiSessionTitleInFlight["path:/cold"] = aiSessionTitleOperation{ID: "old", Cancel: cancel}
+	before := app.auxiliaryProviderGeneration.Load()
+
+	app.invalidateAuxiliaryProviderOperations()
+
+	if app.auxiliaryProviderGeneration.Load() != before+1 {
+		t.Fatalf("auxiliary provider generation did not advance")
+	}
+	if len(app.aiSessionTitleInFlight) != 0 {
+		t.Fatalf("invalidated operations remain in flight: %+v", app.aiSessionTitleInFlight)
+	}
+	var operationErr *SessionOperationError
+	if !errors.As(context.Cause(ctx), &operationErr) || operationErr.Code != "provider_unavailable" {
+		t.Fatalf("cancellation cause = %v, want provider_unavailable", context.Cause(ctx))
 	}
 }
 
@@ -87,7 +233,7 @@ func newCanonicalTitleFixture(t *testing.T) (*App, *control.Controller, *session
 	app := NewApp()
 	t.Cleanup(app.closeSessionServices)
 	service := app.desktopSessionService(dir)
-	runtime, err := service.Create(t.Context(), session.CreateOptions{SessionID: "canonical-title"})
+	runtime, err := service.Create(t.Context(), session.CreateOptions{SessionID: "canonical-title", CWD: globalWorkspaceRoot()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +246,49 @@ func newCanonicalTitleFixture(t *testing.T) (*App, *control.Controller, *session
 	chunks <- provider.Chunk{Type: provider.ChunkDone}
 	close(chunks)
 	prov := &desktopSessionTitleProvider{chunks: chunks}
+	// The cold path uses real config/resolver assembly and a disposable HTTP
+	// provider, not a controller borrowed from another conversation.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if prov.started != nil {
+			close(prov.started)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case chunk, ok := <-prov.chunks:
+				if !ok || chunk.Type == provider.ChunkDone {
+					fmt.Fprint(w, "data: [DONE]\n\n")
+					return
+				}
+				body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": chunk.Text}}}})
+				fmt.Fprintf(w, "data: %s\n\n", body)
+				w.(http.Flusher).Flush()
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.DefaultModel = "test/title-model"
+	cfg.Providers = []config.ProviderEntry{{Name: "test", Kind: "openai", Model: "title-model", BaseURL: server.URL, NoProxy: true}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := app.ensureDesktopWorkspace(t.Context(), "global", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspace, runtime.Ref().SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().EnsureSessionTopic(t.Context(), runtime.Ref().SessionID, "topic-canonical", ""); err != nil {
+		t.Fatal(err)
+	}
 	ctrl := control.New(control.Options{
 		SessionDir: dir, SessionPath: path, ModelRef: "test/title-model",
 		SessionService: service, SessionRuntime: runtime, ExclusiveSession: true,
@@ -111,7 +300,7 @@ func newCanonicalTitleFixture(t *testing.T) (*App, *control.Controller, *session
 	return app, ctrl, runtime, prov, path
 }
 
-func TestAIRenameCanonicalSessionPreservesManualRenameAndRejectsReboundController(t *testing.T) {
+func TestAIRenameCanonicalSessionPreservesManualRenameAndSurvivesTabClose(t *testing.T) {
 	for _, change := range []string{"manual-title", "manual-topic", "binding"} {
 		t.Run(change, func(t *testing.T) {
 			app, ctrl, runtime, prov, _ := newCanonicalTitleFixture(t)
@@ -144,14 +333,22 @@ func TestAIRenameCanonicalSessionPreservesManualRenameAndRejectsReboundControlle
 			prov.chunks <- provider.Chunk{Type: provider.ChunkText, Text: "stale AI title"}
 			prov.chunks <- provider.Chunk{Type: provider.ChunkDone}
 			close(prov.chunks)
-			if err := <-result; err == nil || !strings.Contains(err.Error(), "changed") {
-				t.Fatalf("stale completion = %v", err)
+			resultErr := <-result
+			if change == "binding" {
+				if resultErr != nil {
+					t.Fatalf("tab close cancelled persistent rename: %v", resultErr)
+				}
+			} else if resultErr == nil {
+				t.Fatal("manual title change did not reject stale AI completion")
 			}
 			info, err := ctrl.SessionService().Query().Stat(t.Context(), runtime.Ref())
-			if err != nil || info.Title == "stale AI title" || (change == "manual-title" && info.Title != "manual title") {
+			if err != nil ||
+				(change != "binding" && info.Title == "stale AI title") ||
+				(change == "binding" && info.Title != "stale AI title") ||
+				(change == "manual-title" && info.Title != "manual title") {
 				t.Fatalf("title = %+v, %v", info, err)
 			}
-			if change == "manual-topic" && loadTopicTitle("", "topic-canonical") != "manual topic title" {
+			if change == "manual-topic" && info.Title != "manual topic title" {
 				t.Fatal("manual sidebar title was overwritten")
 			}
 		})
@@ -169,7 +366,7 @@ func TestAIRenameSessionReadFailureIsNotEmptyHistory(t *testing.T) {
 	defer ctrl.Close()
 	app := NewApp()
 	installDesktopSessionTitleTab(app, ctrl, "topic-error", path)
-	if _, err := app.AIRenameSession("topic-error"); err == nil || !strings.Contains(err.Error(), "read conversation") || strings.Contains(err.Error(), "no user messages") {
+	if _, err := app.AIRenameSession("topic-error"); err == nil || !strings.Contains(err.Error(), "session_operation:operation_failed:") || strings.Contains(err.Error(), dir) {
 		t.Fatalf("read error = %v", err)
 	}
 }
@@ -253,7 +450,7 @@ func TestAIRenameSessionRejectsStaleProviderCompletion(t *testing.T) {
 	chunks <- provider.Chunk{Type: provider.ChunkDone}
 	close(chunks)
 
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "session changed") {
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "session_operation:target_changed:") {
 		t.Fatalf("stale completion error = %v", err)
 	}
 	for _, path := range []string{first, second} {
@@ -331,7 +528,7 @@ func TestDelayedTitleCallbackProjectsCurrentCanonicalTitle(t *testing.T) {
 	}
 }
 
-func TestSessionVersionNoteDoesNotReplaceTopicTitle(t *testing.T) {
+func TestIndependentSessionTitleOverridesSharedTopicTitle(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := t.TempDir()
 	topicID := "metadata-title"
@@ -358,11 +555,11 @@ func TestSessionVersionNoteDoesNotReplaceTopicTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Items) != 1 || page.Items[0].Label != "Original topic" {
-		t.Fatalf("version note replaced topic title: %+v", page.Items)
+	if len(page.Items) != 1 || page.Items[0].Label != "AI session title" {
+		t.Fatalf("independent session title was not projected: %+v", page.Items)
 	}
 	if meta, ok, err := agent.LoadBranchMeta(path); err != nil || !ok || meta.CustomTitle != "AI session title" {
-		t.Fatalf("version note was not preserved: meta=%+v ok=%v err=%v", meta, ok, err)
+		t.Fatalf("independent session title was not preserved: meta=%+v ok=%v err=%v", meta, ok, err)
 	}
 }
 

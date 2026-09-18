@@ -1,8 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { app } from "../lib/bridge";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 
-export type ExtensionSurfaceView = { pluginId: string; surfaceId: string };
+export type ExtensionSurfaceView = {
+  pluginId: string;
+  surfaceId: string;
+  sessionId?: string;
+  generation?: number;
+  formInstanceId: string;
+  formInstanceExact: boolean;
+};
 export type ExtensionNotificationView = { severity?: string; title: string; body?: string };
 
 /**
@@ -13,14 +20,21 @@ export type ExtensionNotificationView = { severity?: string; title: string; body
  */
 export function useExtensionSurface(input: {
   activeTabId: string | undefined;
+  hostId?: string;
+  sessionId?: string;
+  sessionGeneration?: number;
   form: ExtensionSurfaceView | undefined;
   notifications: readonly ExtensionNotificationView[] | undefined;
-  dismissForm(): void;
+  dismissForm(tabId?: string, identity?: Pick<ExtensionSurfaceView, "pluginId" | "surfaceId" | "formInstanceId">): void;
   drainNotifications(): void;
   showToast(message: string, level: "info" | "warn" | "error"): void;
 }) {
   const { activeTabId, form, notifications, dismissForm, drainNotifications, showToast } = input;
-  const [extensionFormBusy, setExtensionFormBusy] = useState(false);
+  const formKey = form ? JSON.stringify([activeTabId ?? "", form.pluginId, form.surfaceId, form.formInstanceId]) : "";
+  const visibleFormKeyRef = useRef(formKey);
+  visibleFormKeyRef.current = formKey;
+  const [busyFormKey, setBusyFormKey] = useState("");
+  const extensionFormBusy = Boolean(formKey && busyFormKey === formKey);
 
   useEffect(() => {
     const pending = notifications;
@@ -34,29 +48,56 @@ export function useExtensionSurface(input: {
 
   const submitExtensionForm = useCommittedCommand(async (values: Record<string, unknown>) => {
     const pending = form;
-    if (!pending || !activeTabId || extensionFormBusy) return;
-    setExtensionFormBusy(true);
+    if (!pending || !activeTabId || busyFormKey === formKey) return;
+    const target = {
+      tabId: activeTabId,
+      hostId: input.hostId ?? "local",
+      sessionId: pending.sessionId ?? input.sessionId ?? "",
+      sessionGeneration: input.sessionGeneration ?? 0,
+      pluginId: pending.pluginId,
+      surfaceId: pending.surfaceId,
+      pluginGeneration: pending.generation ?? 0,
+      formInstanceId: pending.formInstanceId,
+    };
+    const identity = { pluginId: pending.pluginId, surfaceId: pending.surfaceId, formInstanceId: pending.formInstanceId };
+    const requestKey = formKey;
+    setBusyFormKey(requestKey);
     try {
-      await app.SubmitExtensionForm(activeTabId, pending.pluginId, pending.surfaceId, values);
-      dismissForm();
+      if (!app.SubmitExtensionFormExact || !pending.formInstanceExact || !target.sessionId || !target.sessionGeneration || !target.pluginGeneration || !target.formInstanceId) {
+        throw new Error("Exact extension form submission is unavailable; refresh or upgrade Reasonix.");
+      }
+      await app.SubmitExtensionFormExact(target, values);
+      dismissForm(target.tabId, identity);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
+      if (visibleFormKeyRef.current === requestKey) showToast(err instanceof Error ? err.message : String(err), "error");
     } finally {
-      setExtensionFormBusy(false);
+      setBusyFormKey((current) => current === requestKey ? "" : current);
     }
   });
 
   const cancelExtensionForm = useCommittedCommand(async () => {
     const pending = form;
-    if (!pending || extensionFormBusy) return;
-    setExtensionFormBusy(true);
+    if (!pending || busyFormKey === formKey) return;
+    const target = {
+      tabId: activeTabId ?? "",
+      hostId: input.hostId ?? "local",
+      sessionId: pending.sessionId ?? input.sessionId ?? "",
+      sessionGeneration: input.sessionGeneration ?? 0,
+      pluginId: pending.pluginId,
+      surfaceId: pending.surfaceId,
+      pluginGeneration: pending.generation ?? 0,
+      formInstanceId: pending.formInstanceId,
+    };
+    const identity = { pluginId: pending.pluginId, surfaceId: pending.surfaceId, formInstanceId: pending.formInstanceId };
+    const requestKey = formKey;
+    setBusyFormKey(requestKey);
     try {
-      if (activeTabId) {
-        await app.SubmitExtensionForm(activeTabId, pending.pluginId, pending.surfaceId, { cancelled: true }).catch(() => {});
+      if (app.SubmitExtensionFormExact && pending.formInstanceExact && target.tabId && target.sessionId && target.sessionGeneration && target.pluginGeneration && target.formInstanceId) {
+        await app.SubmitExtensionFormExact(target, { cancelled: true }).catch(() => {});
       }
-      dismissForm();
+      dismissForm(target.tabId, identity);
     } finally {
-      setExtensionFormBusy(false);
+      setBusyFormKey((current) => current === requestKey ? "" : current);
     }
   });
 

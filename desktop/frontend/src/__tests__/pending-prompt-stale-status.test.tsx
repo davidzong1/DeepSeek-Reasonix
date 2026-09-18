@@ -22,6 +22,7 @@ import {
   useController,
 } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
+import { interactionTargetFromState } from "../lib/interactionOwnership";
 import type { ContextInfo, EffortInfo, Meta, TabMeta, WireEvent } from "../lib/types";
 import { installDesktopHostStub } from "./desktopHostStub";
 
@@ -49,6 +50,17 @@ console.log("\npending prompt vs stale runtime snapshots");
 const planApprovalEvent = { kind: "approval_request", approval: { id: "plan-1", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent;
 const askEvent = { kind: "ask_request", ask: { id: "ask-1", question: "Which option?" } } as WireEvent;
 const idleStatus = { type: "backend_status", running: false, pendingPrompt: false, backgroundJobs: 0, cancelRequested: false, cancellable: false } as const;
+const promptOwnerState = {
+  ...initialState,
+  meta: {
+    label: "test",
+    ready: true,
+    eventChannel: "agent:event",
+    cwd: "/workspace",
+    session: { hostId: "local", sessionId: "prompt-owner" },
+    sessionGeneration: 1,
+  } satisfies Meta,
+};
 
 const beforePrompt = promptEventClock();
 const withApproval = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
@@ -156,20 +168,22 @@ eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
 // actually fails — the prompt is still genuinely pending server-side, and a
 // later replay must be able to recover it instead of being swallowed forever.
 {
-  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
-  const answeredOptimistically = reducer(armed, { type: "clearApproval" });
+  const armed = reducer(promptOwnerState, { type: "event", e: planApprovalEvent });
+  const target = interactionTargetFromState("tab-prompt-owner", armed, "plan", "plan-1");
+  const answeredOptimistically = reducer(armed, { type: "clearApproval", target });
   eq(answeredOptimistically.resolvedPromptId, "plan-1", "the optimistic answer records a tombstone before the backend call resolves");
-  const submitFailed = reducer(answeredOptimistically, { type: "submit_prompt_failed", id: "plan-1", epoch: answeredOptimistically.promptEpoch });
+  const submitFailed = reducer(answeredOptimistically, { type: "submit_prompt_failed", target, epoch: answeredOptimistically.promptEpoch });
   eq(submitFailed.resolvedPromptId, undefined, "a failed submit undoes the tombstone for that id");
   const recovered = reducer(submitFailed, { type: "event", e: planApprovalEvent });
   eq(recovered.approval?.id, "plan-1", "a replay after a failed submit can recover the still-pending prompt");
 
   // A failure report for an id that is no longer the current tombstone (e.g.
   // a stale/duplicate failure callback) must not clobber a newer one.
-  const armed2 = reducer({ ...initialState }, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
-  const answered2 = reducer(armed2, { type: "clearApproval" });
+  const armed2 = reducer(promptOwnerState, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
+  const target2 = interactionTargetFromState("tab-prompt-owner", armed2, "plan", "plan-2");
+  const answered2 = reducer(armed2, { type: "clearApproval", target: target2 });
   eq(answered2.resolvedPromptId, "plan-2", "answering the second prompt records its own tombstone");
-  const staleFailure = reducer(answered2, { type: "submit_prompt_failed", id: "plan-1", epoch: answered2.promptEpoch });
+  const staleFailure = reducer(answered2, { type: "submit_prompt_failed", target, epoch: answered2.promptEpoch });
   eq(staleFailure.resolvedPromptId, "plan-2", "a stale failure for an older id does not clobber the current tombstone");
 }
 
@@ -209,23 +223,25 @@ eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
 // wrote for the same numeric id — approval ids restart from "1" per
 // controller, so the old failure names a different prompt.
 {
-  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const armed = reducer(promptOwnerState, { type: "event", e: planApprovalEvent });
   const epochA = armed.promptEpoch;
-  const answeredA = reducer(armed, { type: "clearApproval" });
+  const targetA = interactionTargetFromState("tab-prompt-owner", armed, "plan", "plan-1");
+  const answeredA = reducer(armed, { type: "clearApproval", target: targetA });
   // Controller rebuild lands while the epoch-A RPC is still in flight.
   const rebuilt = reducer(answeredA, { type: "controller_rebuilt" });
   eq(rebuilt.promptEpoch, epochA + 1, "a controller rebuild advances the prompt epoch");
   // The rebuilt controller reissues id "plan-1"; the user answers it too.
   const armedB = reducer(rebuilt, { type: "event", e: planApprovalEvent });
-  const answeredB = reducer(armedB, { type: "clearApproval" });
+  const targetB = interactionTargetFromState("tab-prompt-owner", armedB, "plan", "plan-1");
+  const answeredB = reducer(armedB, { type: "clearApproval", target: targetB });
   eq(answeredB.resolvedPromptId, "plan-1", "the new controller's answer records its own tombstone");
   // The old controller's RPC failure finally lands, carrying the old epoch.
-  const staleEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", id: "plan-1", epoch: epochA });
+  const staleEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", target: targetA, epoch: epochA });
   eq(staleEpochFailure.resolvedPromptId, "plan-1", "a failure from a pre-rebuild epoch cannot erase the new controller's tombstone");
   const zombie = reducer(staleEpochFailure, { type: "event", e: planApprovalEvent });
   eq(zombie.approval, undefined, "the answered prompt's delayed replay stays suppressed after the stale failure");
   // Same-epoch failures still recover the genuinely-unresolved prompt.
-  const currentEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", id: "plan-1", epoch: answeredB.promptEpoch });
+  const currentEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", target: targetB, epoch: answeredB.promptEpoch });
   eq(currentEpochFailure.resolvedPromptId, undefined, "a same-epoch failure still undoes the tombstone");
   // reset() starts a new session (new controller, ids restart) — the epoch
   // advances there too so pre-reset failures cannot touch post-reset state.

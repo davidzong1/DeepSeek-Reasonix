@@ -1334,7 +1334,12 @@ func UpdateBranchMeta(path string, touchUpdated bool, update func(*BranchMeta) e
 			return err
 		}
 	}
-	return saveBranchMeta(path, m, touchUpdated)
+	// The callback mutated the latest record while the cross-process lock was
+	// held, so write it verbatim. Re-merging title fields here would undo an
+	// intentional title mutation (including same-value saves that advance the
+	// opaque title revision). Whole-record transcript/listing writers use the
+	// preserving saveBranchMeta path instead.
+	return saveBranchMetaContextMode(context.Background(), path, m, touchUpdated, false)
 }
 
 func canonicalSessionSavePath(path string) string {

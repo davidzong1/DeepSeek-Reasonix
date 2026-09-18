@@ -96,7 +96,7 @@ import { StatusBarItemsEditor } from "./StatusBarItemsEditor";
 import { DesktopCloseBehaviorHint } from "./DesktopCloseBehaviorHint";
 export type SettingsInitialFocus =
   | { target: "bot-allowlist"; connectionId?: string; requestId?: number }
-  | { target: "model-access"; requestId?: number; onboarding?: boolean }
+  | { target: "model-access"; requestId?: number; onboarding?: boolean; providerName?: string; sourceTabId?: string }
   | { target: "model-stats"; requestId: number };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -425,7 +425,7 @@ export function SettingsPanel({
             ) : (
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
-                {(tab === "models" || tab === "providers" || tab === "model-stats") && s && <SettingsPageShell key="model-pages" s={s} tab={tab} busy={busy} apply={apply}><ModelsSection onOpenProviders={() => selectTab("providers")} s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} onboarding={initialFocus?.target === "model-access" && initialFocus.onboarding} onOnboardingComplete={onClose} subtab={tab === "providers" ? "access" : tab === "model-stats" ? "stats" : "usage"} /></SettingsPageShell>}
+                {(tab === "models" || tab === "providers" || tab === "model-stats") && s && <SettingsPageShell key="model-pages" s={s} tab={tab} busy={busy} apply={apply}><ModelsSection onOpenProviders={() => selectTab("providers")} s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} onboarding={initialFocus?.target === "model-access" && initialFocus.onboarding} focusProvider={initialFocus?.target === "model-access" ? initialFocus.providerName : undefined} focusRequestId={initialFocus?.target === "model-access" ? initialFocus.requestId : undefined} onOnboardingComplete={onClose} subtab={tab === "providers" ? "access" : tab === "model-stats" ? "stats" : "usage"} /></SettingsPageShell>}
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "remote" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><RemoteHostsPage /></Suspense></SettingsPageShell>}
@@ -504,10 +504,11 @@ export function SettingsPanel({
                 {tab === "browser" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><BrowserControlSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
-                    <UpdatesSection
+                    <AboutSection
                       configPath={s.configPath}
                       shadowedByPath={s.shadowedByPath}
                       checkUpdates={s.checkUpdates}
+                      updaterEnabled={s.updaterEnabled === true}
                       telemetry={s.telemetry !== false}
                       metrics={s.metrics !== false}
                       settingsBusy={busy}
@@ -580,6 +581,8 @@ type SectionProps = {
 type ModelsSectionProps = SectionProps & {
   onOpenProviders?: () => void;
   onboarding?: boolean;
+  focusProvider?: string;
+  focusRequestId?: number;
   onOnboardingComplete?: () => void;
   backgroundApply: (fn: () => Promise<void>) => Promise<void>;
   subtab: "usage" | "access" | "stats";
@@ -1524,6 +1527,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     statusBarItems: normalizeStatusBarItems(view.statusBarItems),
     conversationWidth: normalizeConversationWidth(view.conversationWidth),
     checkUpdates: view.checkUpdates !== false,
+    updaterEnabled: view.updaterEnabled === true,
     updateChannel: "stable",
   };
 }
@@ -4099,7 +4103,7 @@ function botDraftWithDerivedGatewayState(draft: BotSettingsView): BotSettingsVie
   };
 }
 
-export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboarding, onOnboardingComplete, onOpenProviders }: ModelsSectionProps) {
+export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboarding, focusProvider, focusRequestId, onOnboardingComplete, onOpenProviders }: ModelsSectionProps) {
   const t = useT();
   const autoRefreshKeyRef = useRef("");
   const autoRefreshGenerationRef = useRef(0);
@@ -4548,7 +4552,7 @@ export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboard
         </div>
       ) : null}
       <div className="model-access-page" hidden={subtab !== "access"}>
-        <ProvidersSection s={s} busy={busy} apply={apply} onboarding={onboarding} onOnboardingComplete={onOnboardingComplete} />
+        <ProvidersSection s={s} busy={busy} apply={apply} onboarding={onboarding} focusProvider={focusProvider} focusRequestId={focusRequestId} onOnboardingComplete={onOnboardingComplete} />
       </div>
       {subtab === "stats" && (
         <Suspense fallback={<div className="empty">{t("settings.loading")}</div>}>
@@ -4738,12 +4742,22 @@ function proxyModeLabel(mode: ProxyMode, t: ReturnType<typeof useT>): string {
   }
 }
 
-export function ProvidersSection({ s, busy, apply, onboarding, onOnboardingComplete }: SectionProps & { onboarding?: boolean; onOnboardingComplete?: () => void }) {
+export function ProvidersSection({ s, busy, apply, onboarding, focusProvider, focusRequestId, onOnboardingComplete }: SectionProps & { onboarding?: boolean; focusProvider?: string; focusRequestId?: number; onOnboardingComplete?: () => void }) {
   const t = useT();
   const existingConnection = s.providers.find(p => p.added);
   const [editing, setEditing] = useState<string | null>(() => onboarding ? existingConnection?.name ?? null : null);
   const [adding, setAdding] = useState<AddProviderMode>(() => onboarding && !existingConnection ? "official" : null);
   const [revealedProvider, setRevealedProvider] = useState<string | null>(() => onboarding ? existingConnection?.name ?? null : null);
+  useEffect(() => {
+    if (!focusProvider) return;
+    if (s.providers.some((provider) => provider.name === focusProvider)) {
+      setRevealedProvider(focusProvider);
+      setEditing(focusProvider);
+    } else {
+      setRevealedProvider(null);
+      setEditing(null);
+    }
+  }, [focusProvider, focusRequestId, s.providers]);
   const readyConnection = s.providers.find(p => p.added && providerIsConfigured(p) && p.models.length > 0);
   const startUsing = async () => {
     if (!readyConnection) return;
@@ -6481,8 +6495,8 @@ export function ProviderEditor({
       {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       {modelDialog !== null && <Suspense fallback={null}><ProviderModelDialog
         baseURL={effectiveRequestUrl} candidates={modelCandidateNames} contextDefault={Number(ctx) || undefined}
-        effortOptions={(modelDialog && modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts?.length ? (modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? []) : (supportedEfforts ?? [])).filter(Boolean)}
-        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? supportedEfforts, defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
+        effortOptions={Array.from(new Set([...(modelCapabilities.find(item=>item.model === modelDialog)?.reasoning?.options ?? []).map(option=>option.id), ...(modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? supportedEfforts ?? [])])).filter(Boolean)}
+        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? [], defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
         capability={modelCapabilities.find(item=>item.model === modelDialog)} busy={busy || fetchingModels}
         onClose={()=>setModelDialog(null)} onApply={applyModelDetails} onDelete={deleteModel}/></Suspense>}
       <ProviderEditorModelPicker
@@ -6978,14 +6992,13 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
 const MB = 1024 * 1024;
 const mb = (n: number) => (n / MB).toFixed(1);
 
-// UpdatesSection is the manual side of the auto-updater: it shows the startup
-// check preference, running version, and a Check button, then the same state
-// machine the top banner uses (useUpdater) — a single "update and restart"
-// action with inline progress and errors.
-function UpdatesSection({
+// AboutSection always exposes build, privacy, configuration, changelog, and
+// feedback information. Updater controls are an exact stable-build capability.
+function AboutSection({
   configPath,
   shadowedByPath,
   checkUpdates,
+  updaterEnabled,
   telemetry,
   metrics,
   settingsBusy,
@@ -6994,6 +7007,7 @@ function UpdatesSection({
   configPath: string;
   shadowedByPath?: string;
   checkUpdates: boolean;
+  updaterEnabled: boolean;
   telemetry: boolean;
   metrics: boolean;
   settingsBusy: boolean;
@@ -7063,19 +7077,21 @@ function UpdatesSection({
             <div className="updates-control__version">
               {t("updater.currentVersion", { v: version || "…" })}
             </div>
-            <div className={`updates-control__status updates-control__status--${updateStatusTone}`} role="status" aria-live="polite">
-              {updateStatus && (
-                <>
-                  {updateStatusTone === "success" && <CheckCircle2 size={14} aria-hidden="true" />}
-                  {updateStatusTone === "busy" && <Loader2 className="updates-control__spinner" size={14} aria-hidden="true" />}
-                  <span>{updateStatus}</span>
-                </>
-              )}
-            </div>
+            {updaterEnabled && (
+              <div className={`updates-control__status updates-control__status--${updateStatusTone}`} role="status" aria-live="polite">
+                {updateStatus && (
+                  <>
+                    {updateStatusTone === "success" && <CheckCircle2 size={14} aria-hidden="true" />}
+                    {updateStatusTone === "busy" && <Loader2 className="updates-control__spinner" size={14} aria-hidden="true" />}
+                    <span>{updateStatus}</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         }
       >
-        <div className="updates-control__controls">
+        {updaterEnabled && <div className="updates-control__controls">
           <Tooltip label={t("updater.checkButton")}>
             <button
               className="chip chip--icon"
@@ -7087,9 +7103,16 @@ function UpdatesSection({
               <RefreshCw className={status.kind === "checking" ? "updates-control__spinner" : undefined} size={14} aria-hidden="true" />
             </button>
           </Tooltip>
-        </div>
+        </div>}
       </SettingsField>
-      <div
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("updater.buildIdentity")}
+        hint={t("updater.buildIdentityHint")}
+      >
+        <span className="mem-hint">{typeof __BUILD_CHANNEL__ === "string" ? __BUILD_CHANNEL__ : "development"}</span>
+      </SettingsField>
+      {updaterEnabled && <div
         className="updates-control__hint"
         style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px" }}
       >
@@ -7112,8 +7135,8 @@ function UpdatesSection({
           {t("updater.officialDownload")}
           <ExternalLink size={13} aria-hidden="true" />
         </button>
-      </div>
-      {status.kind === "available" && (
+      </div>}
+      {updaterEnabled && status.kind === "available" && (
         <div className="updates-control__action">
           <div className="updates-control__action-copy">
             {!status.info.canSelfUpdate && <div>{status.info.manualReason || t("updater.macHint")}</div>}
@@ -7127,7 +7150,7 @@ function UpdatesSection({
           </button>
         </div>
       )}
-      {status.kind === "error" && (
+      {updaterEnabled && status.kind === "error" && (
         <div
           className="banner banner--update banner--error"
           role="alert"
@@ -7201,7 +7224,7 @@ function UpdatesSection({
           </button>
         </div>
       </SettingsField>
-      <details
+      {updaterEnabled && <details
         className="provider-editor-advanced"
         style={{
           marginTop: 0,
@@ -7215,7 +7238,7 @@ function UpdatesSection({
         <summary style={{ padding: "0 2px" }}>
           <span className="provider-editor-advanced__title">
             <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
-            {t("updater.privacyAndUpdatePreferences")}
+            {t("updater.updatePreferences")}
           </span>
         </summary>
         <div className="provider-editor-advanced__body">
@@ -7230,27 +7253,31 @@ function UpdatesSection({
               onChange={(enabled) => void applySettings(() => app.SetDesktopCheckUpdates(enabled))}
             />
           </SettingsField>
-          <SettingsField
-            className="settings-field--wide-copy"
-            label={t("settings.telemetryLabel")}
-            hint={t("settings.telemetryHint")}
-          >
-            <ToggleSegment
-              value={telemetry}
-              disabled={settingsBusy}
-              onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))}
-            />
+        </div>
+      </details>}
+      <details
+        className="provider-editor-advanced"
+        style={{
+          marginTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          borderRadius: 0,
+          background: "transparent",
+        }}
+      >
+        <summary style={{ padding: "0 2px" }}>
+          <span className="provider-editor-advanced__title">
+            <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+            {t("updater.privacyAndConfig")}
+          </span>
+        </summary>
+        <div className="provider-editor-advanced__body">
+          <SettingsField className="settings-field--wide-copy" label={t("settings.telemetryLabel")} hint={t("settings.telemetryHint")}>
+            <ToggleSegment value={telemetry} disabled={settingsBusy} onChange={(enabled) => void applySettings(() => app.SetDesktopTelemetry(enabled))} />
           </SettingsField>
-          <SettingsField
-            className="settings-field--wide-copy"
-            label={t("settings.metricsLabel")}
-            hint={t("settings.metricsHint")}
-          >
-            <ToggleSegment
-              value={metrics}
-              disabled={settingsBusy}
-              onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))}
-            />
+          <SettingsField className="settings-field--wide-copy" label={t("settings.metricsLabel")} hint={t("settings.metricsHint")}>
+            <ToggleSegment value={metrics} disabled={settingsBusy} onChange={(enabled) => void applySettings(() => app.SetDesktopMetrics(enabled))} />
           </SettingsField>
           {configPath && (
             <Tooltip label={configPath} fill block className="mem-hint settings-config-path">

@@ -34,10 +34,8 @@ const summary = summarizeProjectTreeSessions({
   tree,
   visibleTree: tree,
   expanded: new Set(["project-a"]),
-  showAllTopics: new Set(),
-  classicTruncationActive: true,
   queryActive: false,
-  timeFilterActive: false,
+  folderProjection: (_folder, children) => ({ visible: children.slice(0, 5) }),
   projectNodeKey: (node) => node.key,
   isActive: (node) => node.topicId === "one",
   isUnread: (node) => node.topicId === "two",
@@ -61,10 +59,7 @@ const filtered = summarizeProjectTreeSessions({
   tree,
   visibleTree: [{ ...tree[0], children: [tree[0].children?.[0] ?? topic("one")] }],
   expanded: new Set(["project-a"]),
-  showAllTopics: new Set(["project-a"]),
-  classicTruncationActive: false,
   queryActive: true,
-  timeFilterActive: false,
   projectNodeKey: (node) => node.key,
 });
 assert.equal(filtered.workspaceSessions, 7);

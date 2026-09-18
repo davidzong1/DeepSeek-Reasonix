@@ -179,7 +179,7 @@ build_service() {
 # threaded through REASONIX_CHANNEL.
 package_shell() {
 	echo "==> package Electron shell ($PLATFORM)"
-	REASONIX_COMMIT="$GIT_COMMIT" REASONIX_BUILD_TIME="$BUILD_TIME_UTC" \
+	REASONIX_COMMIT="$SOURCE_SHA" REASONIX_BUILD_TIME="$BUILD_TIME_UTC" \
 		node "$ROOT/desktop/packaging/package.mjs" "$PLATFORM" "$VERSION" "$CHANNEL"
 }
 
@@ -340,13 +340,15 @@ windows)
 
 	# First NSIS pass: regenerate this release's uninstaller. A stale preserved
 	# uninstaller must never enter the signing payload.
+	# Compile only the shared uninstall section here; compressing the entire
+	# Electron payload just to discard this installer costs another five minutes.
 	rm -f "$installer_dir/reasonix-uninstall.exe"
 	find "$ROOT/desktop/build/bin" -maxdepth 1 -type f -name '*installer*.exe' -delete
 	arch_binary_define="ARG_REASONIX_AMD64_BINARY"
 	[ "$arch" = arm64 ] && arch_binary_define="ARG_REASONIX_ARM64_BINARY"
 	(
 		cd "$installer_dir"
-		makensis "-D${arch_binary_define}=$installer_dir/$BINNAME.exe" project.nsi
+		makensis -DARG_REASONIX_UNINSTALLER_ONLY "-D${arch_binary_define}=$installer_dir/$BINNAME.exe" project.nsi
 	)
 	[ -s "$installer_dir/reasonix-uninstall.exe" ] || { echo "first NSIS pass did not produce reasonix-uninstall.exe" >&2; exit 1; }
 

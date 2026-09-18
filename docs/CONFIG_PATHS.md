@@ -32,6 +32,8 @@ non-destructively when `<Reasonix home>/.env` is missing them.
 | --- | --- |
 | Global config | `<Reasonix home>/config.toml` |
 | Global provider credentials | `<Reasonix home>/.env` |
+| In-progress model credential commits | `<Reasonix home>/transactions/model-credentials/` |
+| Completed model settings receipts | `<Reasonix home>/transactions/model-settings-receipts/` |
 | Legacy credentials import source | `<Reasonix home>/credentials` |
 | Global slash commands | `<Reasonix home>/commands/` |
 | Global skills | `<Reasonix home>/skills/` |
@@ -80,11 +82,13 @@ Provider entries store the name of the credential variable in `api_key_env`, not
 the secret value.
 
 Saved provider and bot credential variables are removed from every
-model-controlled child-process environment. The global credential `.env` is
-also hidden from Reasonix's file readers, sandboxed shell commands, and MCP
-servers; this does not change the visibility of a project's ordinary `.env`.
-On Windows, shell commands remain outside an OS sandbox as documented in the
-Guide, so approve shell access only for trusted tasks.
+model-controlled child-process environment. On macOS and Linux, the global
+credential `.env` is also hidden from Reasonix's file readers, sandboxed shell
+commands, and MCP servers; this does not change the visibility of a project's
+ordinary `.env`. Windows uses Harness-style `WRITE_RESTRICTED` tokens that
+constrain writes but not reads. Its local tools run as the same OS user and can
+deliberately read user-readable files, including the credential store, so use
+restricted permissions as a write boundary rather than a credential vault.
 
 Example:
 
@@ -130,12 +134,15 @@ remain active. The default is `true`.
 
 ### Custom provider `api_key_env` names
 
-When a custom provider is added from the desktop settings or `reasonix setup`,
-Reasonix stores a generated `api_key_env` in `config.toml` and writes the secret
-value to the matching key in the global `.env`. The generated name is stable, so
-the same provider keeps using the same credential slot after restart.
+When a provider credential is added, replaced, or explicitly cleared from
+desktop settings, TUI `/setup`, or `reasonix setup`, Reasonix allocates a fresh
+`REASONIX_CONNECTION_*_KEY` slot. It writes that slot first and atomically
+publishes the selected provider's new `api_key_env` reference second. Other
+providers keep their current references, even when they previously shared a
+fixed variable. Existing fixed names remain readable and are not migrated at
+startup.
 
-Reasonix derives the default from the provider name. Names that normalize to
+Legacy and manually authored provider entries may derive a default from the provider name. Names that normalize to
 ASCII keep readable env names such as `LOCAL_GATEWAY_API_KEY`; names made
 entirely of non-ASCII characters get a stable hash suffix such as
 `CUSTOM_d39b9067_API_KEY` so two Chinese provider names do not share
@@ -143,18 +150,16 @@ entirely of non-ASCII characters get a stable hash suffix such as
 generated environment variable remains valid; for example, `9router` becomes
 `CUSTOM_9ROUTER_API_KEY`.
 
-In the CLI custom-provider wizard, the provider name is generated from the base
-URL first, then the same provider-name rule is applied. For example
+The CLI custom-provider wizard uses this rule while building its draft. For example
 `https://token.sensenova.cn/v1` creates provider name
 `custom-token-sensenova-cn`, whose default key env is
-`CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`. Press Enter to accept that default, or type
-an explicit env name such as `CUSTOM_API_KEY` if you intentionally want to share
-one credential across providers.
+`CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`; commit then switches the saved connection
+to its newly allocated private slot.
 
 Existing configs are not rewritten on upgrade. If an old custom provider already
 uses `CUSTOM_API_KEY`, it will keep working with that key. If several old custom
-providers accidentally share `CUSTOM_API_KEY`, edit each provider's
-`api_key_env` to a distinct name and save the corresponding API key again.
+providers accidentally share `CUSTOM_API_KEY`, save each provider's API key
+again to rotate that connection to a private slot.
 
 ### Custom provider endpoint URLs
 

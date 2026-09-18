@@ -37,7 +37,7 @@ func emitLegacyMigrationNotices(sink event.Sink, cfg *config.Config, m legacyMig
 	} else if m.configResult != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: m.configResult.Notice()})
 	}
-	emitUserConfigUpgradeNotice(sink, cfg, m.deepSeekProtocol.migrated, m.deepSeekProtocol.err)
+	emitUserConfigUpgradeNotice(sink, cfg, m.deepSeekProtocol.migrated, m.deepSeekProtocol.err, config.TakeProviderEndpointRepairReceipts(config.UserConfigPath()))
 	if m.stepLimits.migrated || cfg.IgnoredLegacyAgentStepLimits() {
 		level := event.LevelInfo
 		text := "Deprecated agent step limits were removed."

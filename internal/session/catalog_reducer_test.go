@@ -79,6 +79,30 @@ func TestCatalogReducerRejectsDuplicateCompleteAndMalformedPayload(t *testing.T)
 	}
 }
 
+func TestCatalogResultSequenceAdvancesOnlyForVisibleAssistantResults(t *testing.T) {
+	assistant, _ := json.Marshal(map[string]any{"message": provider.Message{ID: "answer", Role: provider.RoleAssistant, Content: "done"}})
+	commits := []Commit{
+		{TurnID: "turn-1", FirstSequence: 1, EventCount: 1, Events: []Event{{Kind: "turn/start", Sequence: 1, Payload: json.RawMessage(`{}`)}}},
+		{TurnID: "turn-1", FirstSequence: 2, EventCount: 1, Events: []Event{{Kind: "message/complete", Sequence: 2, Payload: assistant}}},
+		{TurnID: "turn-1", FirstSequence: 3, EventCount: 1, Events: []Event{{Kind: "turn/end", Sequence: 3, Payload: json.RawMessage(`{"status":"completed"}`)}}},
+		{FirstSequence: 4, EventCount: 1, Events: []Event{{Kind: "plan/state", Sequence: 4, Payload: json.RawMessage(`{"enabled":false}`)}}},
+		{FirstSequence: 5, EventCount: 1, Events: []Event{{Kind: "session/title", Sequence: 5, Payload: json.RawMessage(`{"title":"renamed"}`)}}},
+	}
+	r := catalogReducer{}
+	for _, commit := range commits {
+		if err := r.apply(commit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	metadata := r.metadata(Manifest{})
+	if metadata.ResultSequence != 3 {
+		t.Fatalf("result sequence = %d, want completed answer boundary 3", metadata.ResultSequence)
+	}
+	if metadata.Sequence != 5 {
+		t.Fatalf("event sequence = %d, want all events through 5", metadata.Sequence)
+	}
+}
+
 type largeCatalogReader struct {
 	count          int
 	baseline, peak uint64

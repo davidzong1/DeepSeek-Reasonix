@@ -45,6 +45,10 @@ type Projection struct {
 	PlanState     json.RawMessage
 	GoalState     json.RawMessage
 	Title         string
+	// TitleSequence is the sequence of the latest accepted session/title event.
+	// It is independent from CommittedSequence so ordinary chat appends do not
+	// conflict with a delayed title mutation.
+	TitleSequence uint64
 	ModelRef      string
 	ModelIdentity string
 }
@@ -329,6 +333,9 @@ func projectSessionTitle(projection *Projection, commit Commit, ev Event) error 
 		return damagedPayload(ev, err)
 	}
 	projection.Title = body.Title
+	// Sequence zero is a valid first event, so store the one-based identity;
+	// zero remains the durable "no title event yet" revision.
+	projection.TitleSequence = ev.Sequence + 1
 	return nil
 }
 

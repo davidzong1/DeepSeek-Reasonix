@@ -8,13 +8,13 @@ import {
   Database,
   Globe,
   HardDrive,
+  Info,
   Keyboard,
   LockKeyhole,
   Network,
   Package,
   Palette,
   Plug,
-  RefreshCw,
   Search,
   Server,
   Settings2,
@@ -150,6 +150,6 @@ function settingsTabIcon(id: SettingsTab): ReactNode {
     case "appearance": return <Palette {...props} />;
     case "storage": return <HardDrive {...props} />;
     case "browser": return <Globe {...props} />;
-    case "updates": return <RefreshCw {...props} />;
+    case "updates": return <Info {...props} />;
   }
 }

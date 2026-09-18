@@ -151,6 +151,7 @@ func (m chatTUI) refreshGitStatus() tea.Cmd {
 // runs after the render completes, avoiding corruption of the terminal's raw
 // mode that would occur if Close() were called from the build goroutine.
 type modelSwitchMsg struct {
+	resumeTurn    *controllerTurnIntent
 	ref           string
 	ctrl          control.SessionAPI
 	oldCtrl       control.SessionAPI

@@ -20,6 +20,7 @@ func (a *App) bumpExtensionGeneration() {
 		return
 	}
 	a.extensionGeneration.Add(1)
+	a.invalidateAuxiliaryProviderOperations()
 }
 
 func (a *App) currentExtensionGeneration() uint64 {

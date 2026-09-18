@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	SchemaVersion     = 2
+	SchemaVersion     = 3
 	GlobalWorkspaceID = "global"
 )
 
@@ -30,23 +30,26 @@ var (
 )
 
 type Workspace struct {
-	ID         string    `json:"id"`
-	Root       string    `json:"root"`
-	Title      string    `json:"title"`
-	SessionIDs []string  `json:"sessionIds"`
-	Visible    bool      `json:"visible"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	extra      map[string]json.RawMessage
+	Organization *Organization `json:"organization,omitempty"`
+	ID           string        `json:"id"`
+	Root         string        `json:"root"`
+	Title        string        `json:"title"`
+	SessionIDs   []string      `json:"sessionIds"`
+	Visible      bool          `json:"visible"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
+	extra        map[string]json.RawMessage
 }
 
 type PendingCreate struct {
-	OperationID   string    `json:"operationId"`
-	WorkspaceID   string    `json:"workspaceId"`
-	SessionID     string    `json:"sessionId"`
-	CreatedAt     time.Time `json:"createdAt"`
-	ArchiveSource string    `json:"archiveSource,omitempty"`
-	extra         map[string]json.RawMessage
+	ParentSessionID string        `json:"parentSessionId,omitempty"`
+	Presentation    *Presentation `json:"presentation,omitempty"`
+	OperationID     string        `json:"operationId"`
+	WorkspaceID     string        `json:"workspaceId"`
+	SessionID       string        `json:"sessionId"`
+	CreatedAt       time.Time     `json:"createdAt"`
+	ArchiveSource   string        `json:"archiveSource,omitempty"`
+	extra           map[string]json.RawMessage
 }
 
 type State struct {
@@ -199,11 +202,39 @@ func (s *Store) BeginCreate(ctx context.Context, pending PendingCreate) error {
 }
 
 func (s *Store) AttachSession(ctx context.Context, operationID, workspaceID, sessionID, beforeSessionID string) error {
+	return s.attachSession(ctx, operationID, workspaceID, sessionID, beforeSessionID, "", nil)
+}
+
+// AttachSessionFromSourceIfUnchanged publishes a derived child only while its
+// resolved source is still active, in the same workspace, and at the same
+// lifecycle generation.
+func (s *Store) AttachSessionFromSourceIfUnchanged(
+	ctx context.Context,
+	operationID, workspaceID, sessionID, beforeSessionID, sourceSessionID string,
+	sourceGeneration uint64,
+) error {
+	return s.attachSession(ctx, operationID, workspaceID, sessionID, beforeSessionID, sourceSessionID, &sourceGeneration)
+}
+
+func (s *Store) attachSession(
+	ctx context.Context,
+	operationID, workspaceID, sessionID, beforeSessionID, sourceSessionID string,
+	sourceGeneration *uint64,
+) error {
 	operationID, workspaceID, sessionID = strings.TrimSpace(operationID), strings.TrimSpace(workspaceID), strings.TrimSpace(sessionID)
 	if workspaceID == "" || sessionID == "" {
 		return errors.New("attach requires workspace and session ids")
 	}
 	return s.mutate(ctx, func(state *State) error {
+		if sourceGeneration != nil {
+			sourceSessionID = strings.TrimSpace(sourceSessionID)
+			sourceState := state.SessionStates[sourceSessionID]
+			sourceOwner, owned := sessionOwner(*state, sourceSessionID)
+			if sourceSessionID == "" || !owned || sourceOwner != workspaceID ||
+				sourceState.Lifecycle != Active || sourceState.Generation != *sourceGeneration {
+				return ErrMutationConflict
+			}
+		}
 		if state.SessionStates[sessionID].Lifecycle == Deleted {
 			return ErrMutationConflict
 		}
@@ -225,6 +256,14 @@ func (s *Store) AttachSession(ctx context.Context, operationID, workspaceID, ses
 			}
 		}
 		workspace.SessionIDs = insertBefore(workspace.SessionIDs, sessionID, beforeSessionID)
+		if sourceSessionID == "" {
+			sourceSessionID = state.PendingCreates[sessionID].ParentSessionID
+		}
+		attachOrganizationSession(&workspace, sessionID, sourceSessionID)
+		mirrorOrganizationOrder(&workspace)
+		if pending, ok := state.PendingCreates[sessionID]; ok && pending.Presentation != nil {
+			state.Presentation[sessionID] = *pending.Presentation
+		}
 		workspace.UpdatedAt = time.Now().UTC()
 		state.Workspaces[workspaceID] = workspace
 		delete(state.PendingCreates, sessionID)
@@ -255,6 +294,8 @@ func (s *Store) CommitRotation(ctx context.Context, operationID, workspaceID, se
 			return ErrMutationConflict
 		} else if !attached {
 			workspace.SessionIDs = insertBefore(workspace.SessionIDs, sessionID, beforeSessionID)
+			attachOrganizationSession(&workspace, sessionID, "")
+			mirrorOrganizationOrder(&workspace)
 			workspace.UpdatedAt = time.Now().UTC()
 			state.Workspaces[workspaceID] = workspace
 		}
@@ -276,7 +317,30 @@ func (s *Store) AbortCreate(ctx context.Context, sessionID string) error {
 	})
 }
 
+// AbortCreateIfOperation removes only the caller's reservation. A late cleanup
+// from an older draft operation must never erase a newer operation's claim.
+func (s *Store) AbortCreateIfOperation(ctx context.Context, sessionID, operationID string) error {
+	sessionID, operationID = strings.TrimSpace(sessionID), strings.TrimSpace(operationID)
+	return s.mutate(ctx, func(state *State) error {
+		pending, ok := state.PendingCreates[sessionID]
+		if ok && pending.OperationID == operationID {
+			delete(state.PendingCreates, sessionID)
+		}
+		return nil
+	})
+}
+
 func (s *Store) MoveSession(ctx context.Context, workspaceID, sessionID, beforeSessionID string) error {
+	return s.moveSession(ctx, workspaceID, sessionID, beforeSessionID, nil)
+}
+
+// MoveSessionIfUnchanged reorders one active session only while the caller's
+// resolved lifecycle generation and workspace owner remain current.
+func (s *Store) MoveSessionIfUnchanged(ctx context.Context, workspaceID, sessionID, beforeSessionID string, generation uint64) error {
+	return s.moveSession(ctx, workspaceID, sessionID, beforeSessionID, &generation)
+}
+
+func (s *Store) moveSession(ctx context.Context, workspaceID, sessionID, beforeSessionID string, generation *uint64) error {
 	return s.mutate(ctx, func(state *State) error {
 		workspace, ok := state.Workspaces[strings.TrimSpace(workspaceID)]
 		if !ok {
@@ -285,9 +349,28 @@ func (s *Store) MoveSession(ctx context.Context, workspaceID, sessionID, beforeS
 		if !contains(workspace.SessionIDs, sessionID) {
 			return ErrSessionNotFound
 		}
+		status := state.SessionStates[sessionID]
+		if status.Lifecycle != Active {
+			return ErrSessionNotFound
+		}
+		if generation != nil && status.Generation != *generation {
+			return ErrMutationConflict
+		}
 		workspace.SessionIDs = insertBefore(remove(workspace.SessionIDs, sessionID), sessionID, beforeSessionID)
+		if o := workspace.Organization; o != nil {
+			key, before := SessionKey(sessionID), ""
+			if beforeSessionID != "" {
+				before = SessionKey(beforeSessionID)
+			}
+			o.Order = insertBefore(remove(o.Order, key), key, before)
+			o.ManualOrderEnabled = true
+			o.Revision++
+			mirrorOrganizationOrder(&workspace)
+		}
 		workspace.UpdatedAt = time.Now().UTC()
 		state.Workspaces[workspace.ID] = workspace
+		status.Generation++
+		state.SessionStates[sessionID] = status
 		return nil
 	})
 }
@@ -309,6 +392,56 @@ func (s *Store) Contains(ctx context.Context, sessionID string) (bool, error) {
 	return ok, nil
 }
 
+// WithSessionUnchanged serializes a durable metadata commit with lifecycle and
+// workspace changes, including writers in other processes. The callback must
+// not call the registry; it may only commit session content metadata.
+func (s *Store) WithSessionUnchanged(ctx context.Context, id, workspaceID string, generation uint64, commit func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := filelock.Acquire(ctx, s.path+".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err := load(s.path)
+	if err != nil {
+		return err
+	}
+	owner, ok := sessionOwner(state, id)
+	status := state.SessionStates[id]
+	if !ok || status.Lifecycle != Active {
+		return ErrSessionNotFound
+	}
+	if owner != workspaceID || status.Generation != generation {
+		return ErrMutationConflict
+	}
+	return commit()
+}
+
+// WithStateLocked holds the registry's process and file locks while commit
+// validates a read-only state snapshot and performs a related external write.
+// The callback must not call this Store.
+func (s *Store) WithStateLocked(ctx context.Context, commit func(State) error) error {
+	if s == nil || strings.TrimSpace(s.path) == "" || s.path == "." {
+		return errors.New("workspace state path is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := filelock.Acquire(ctx, s.path+".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err := load(s.path)
+	if err != nil {
+		return err
+	}
+	if commit == nil {
+		return nil
+	}
+	return commit(state)
+}
+
 func (s *Store) mutate(ctx context.Context, change func(*State) error) error {
 	if s == nil || strings.TrimSpace(s.path) == "" || s.path == "." {
 		return errors.New("workspace state path is required")
@@ -328,7 +461,7 @@ func (s *Store) mutate(ctx context.Context, change func(*State) error) error {
 		var header struct {
 			Version int `json:"version"`
 		}
-		upgrading = json.Unmarshal(body, &header) == nil && header.Version == 1
+		upgrading = json.Unmarshal(body, &header) == nil && header.Version < SchemaVersion
 	}
 	if s.beforeUpgrade != nil {
 		body, readErr := os.ReadFile(s.path)
@@ -345,6 +478,9 @@ func (s *Store) mutate(ctx context.Context, change func(*State) error) error {
 		}
 	}
 	if err := backupV1(s.path); err != nil {
+		return err
+	}
+	if err := backupV2(s.path); err != nil {
 		return err
 	}
 	state, err := load(s.path)
@@ -390,7 +526,7 @@ func load(path string) (State, error) {
 	if err := json.Unmarshal(body, &state); err != nil {
 		return State{}, fmt.Errorf("decode workspace state: %w", err)
 	}
-	if state.Version != 1 && state.Version != SchemaVersion {
+	if state.Version != 1 && state.Version != 2 && state.Version != SchemaVersion {
 		return State{}, fmt.Errorf("%w: %d", ErrUnsupportedVersion, state.Version)
 	}
 	if state.Version == 1 {
@@ -411,6 +547,7 @@ func load(path string) (State, error) {
 			}
 		}
 	}
+	state.Version = SchemaVersion
 	normalize(&state)
 	if err := validate(state); err != nil {
 		return State{}, err
@@ -584,7 +721,7 @@ func (w *Workspace) UnmarshalJSON(body []byte) error {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return err
 	}
-	for _, key := range []string{"id", "root", "title", "sessionIds", "visible", "createdAt", "updatedAt"} {
+	for _, key := range []string{"id", "root", "title", "sessionIds", "visible", "createdAt", "updatedAt", "organization"} {
 		delete(fields, key)
 	}
 	*w = Workspace(decoded)

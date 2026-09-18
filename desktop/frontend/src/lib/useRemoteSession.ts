@@ -5,7 +5,8 @@ import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
 import { useRemoteForkTurn } from "./remoteForkTurn";
 import { useT } from "./i18n";
 import type { CancelOutcome } from "./inboxCancel";
-import { initialState, reducer, type ControllerLiveStore, type HistoryLoadOutcome, type HistoryLoadTrigger, type State } from "./useController";
+import { createTurnSubmissionId, initialState, reducer, type ControllerLiveStore, type HistoryLoadOutcome, type HistoryLoadTrigger, type State } from "./useController";
+import { isUnknownSubmissionError } from "./localSubmissionState";
 import { TranscriptSessionFollower } from "./transcriptSessionFollower";
 import { getTranscriptStore } from "./transcriptStore";
 import { isAuthoritativeRemoteStatus, remoteCheckpoints, remoteComposerState, remoteGoalRuntime, remoteGoalView } from "./remoteStatus";
@@ -55,7 +56,7 @@ export interface RemoteSessionApi {
   approve: (callId: string, decision: string) => Promise<void>;
   resolvePlanDecision: (callId: string, action: "start_execution" | "revise_plan" | "exit_plan", feedback?: string) => Promise<void>;
   answer: (callId: string, answers: RemoteAskAnswer[]) => Promise<void>;
-  clearExtensionForm: (pluginId: string, surfaceId: string) => void;
+  clearExtensionForm: (pluginId: string, surfaceId: string, formInstanceId?: string) => void;
   rewind: (turn: number, scope: string) => Promise<void>;
   /** Creates the child session for one turn; returns its id, or undefined with the reason in promptError. */
   forkTurn: (target: ForkTargetView) => Promise<{ sessionId: string; operationId: string } | undefined>;
@@ -134,8 +135,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const olderRef = useRef<((trigger?: HistoryLoadTrigger) => Promise<HistoryLoadOutcome>) | undefined>(undefined);
   const newerRef = useRef<(() => Promise<HistoryLoadOutcome>) | undefined>(undefined);
   const transcriptRef = useRef(transcript);
+  const submitBindingRef = useRef<object>({});
   const setTranscript = useCallback((update: State | ((state: State) => State)) => {
-    const next = typeof update === "function" ? update(transcriptRef.current) : update;
+    const owned = (tabId ? getTranscriptStore().states.get(tabId) : undefined) ?? initialState;
+    const next = typeof update === "function" ? update(owned) : update;
     transcriptRef.current = next;
     if (tabId) getTranscriptStore().setState(tabId, next);
   }, [tabId]);
@@ -182,6 +185,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
 
   useEffect(() => {
     if (!tabId) return;
+    transcriptRef.current = getTranscriptStore().states.get(tabId) ?? initialState;
+    submitBindingRef.current = {};
     // Restored shells arrive as disconnected shells. Activation must kick the
     // backend revive (SetActiveTab → bootstrap) and never park the UI on a
     // reconnect placeholder — treat them as connecting until ready/error.
@@ -245,7 +250,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         if (!cancelled && ticket === generation) setError(String(error));
       }
     };
-    const offContent = getTranscriptStore().subscribe(tabId, change => dispatch({ type: "history_items_patch", patches: change.patches }));
+    const offContent = getTranscriptStore().subscribe(tabId, change => dispatch({ type: "history_items_patch", patches: change.patches, expected: change.expected }));
     olderRef.current = async () => {
       if (transcriptRef.current.historyOlderLoading) return "empty";
       dispatch({ type: "history_older_start" });
@@ -302,6 +307,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     if (revivedFromShell) void app.SetActiveTab(tabId).catch(() => undefined);
     void hydrate();
     return () => {
+      submitBindingRef.current = {};
       cancelled = true;
       generation++;
       follower?.stop();
@@ -325,7 +331,10 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     if (!trimmed) return;
     // Optimistic user bubble, exactly like the local send path. seq rides
     // the reducer's counter; the submission id only needs uniqueness.
-    const submissionId = `remote-${Date.now()}`;
+    const before = getTranscriptStore().states.get(tabId) ?? initialState;
+    const binding = submitBindingRef.current;
+    const current = () => submitBindingRef.current === binding && getTranscriptStore().states.get(tabId)?.sessionGen === before.sessionGen;
+    const submissionId = createTurnSubmissionId(tabId, before.sessionGen, before.seq, before.meta?.runtime?.epoch);
     activityRevisionRef.current += 1;
     runtimeAtActivityRef.current = runtimeState.state;
     pendingTurnRef.current = { previousTurnId: runtimeState.state?.turnId };
@@ -333,14 +342,15 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     try {
       if (app.SubmitRemoteTabWithSubmission) await app.SubmitRemoteTabWithSubmission(tabId, trimmed, submissionId);
       else await app.SubmitRemoteTab(tabId, trimmed);
+      if (current()) setTranscript(s => reducer(s, { type: "send_confirmed", submissionId }));
     } catch (e) {
       // Roll the optimistic running flag back — a refused/failed submit must
       // never leave the pill spinning (same contract as the local send path).
       const error = `Send failed: ${e instanceof Error ? e.message : String(e)}`;
-      setTranscript((s) => reducer(s, { type: "send_failed", submissionId, error }));
+      if (current()) setTranscript((s) => reducer(s, { type: isUnknownSubmissionError(e) ? "turn_submit_unknown" : "send_failed", submissionId, error }));
       throw e;
     }
-  }, [tabId, runtimeState.state]);
+  }, [tabId, runtimeState.state, setTranscript]);
 
   const runManagementCommand = useCallback(async (text: string, rehydrate = false) => {
     if (!tabId) return;
@@ -404,8 +414,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     }
   }, [tabId]);
 
-  const clearExtensionForm = useCallback((pluginId: string, surfaceId: string) => {
-    setTranscript((s) => s.extensionForm?.pluginId === pluginId && s.extensionForm.surfaceId === surfaceId
+  const clearExtensionForm = useCallback((pluginId: string, surfaceId: string, formInstanceId?: string) => {
+    setTranscript((s) => s.extensionForm?.pluginId === pluginId && s.extensionForm.surfaceId === surfaceId &&
+      (!formInstanceId || s.extensionForm.formInstanceId === formInstanceId)
       ? reducer(s, { type: "clearExtensionForm" }) : s);
   }, []);
 

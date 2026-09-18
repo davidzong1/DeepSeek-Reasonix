@@ -15,6 +15,12 @@ import (
 // rename (required on Windows). The callback durably withdraws the identity.
 // The deterministic staging directory makes interrupted removal replayable.
 func (p *FilesystemPersistence) PurgeWithTombstone(ctx context.Context, id string, prepare func() error) error {
+	return p.purgeWithTombstone(ctx, id, prepare, func(string) {})
+}
+
+// checkpoint belongs to one invocation; tests terminate a child process here
+// to exercise real lock release and restart, without process-global hooks.
+func (p *FilesystemPersistence) purgeWithTombstone(ctx context.Context, id string, prepare func() error, checkpoint func(string)) error {
 	source, err := p.sessionDir(id, false)
 	if err != nil {
 		return err
@@ -43,22 +49,26 @@ func (p *FilesystemPersistence) PurgeWithTombstone(ctx context.Context, id strin
 		if err != nil {
 			return err
 		}
+		checkpoint("before-tombstone")
 		if err := prepare(); err != nil {
 			release()
 			return err
 		}
+		checkpoint("after-tombstone")
 		if err := os.MkdirAll(filepath.Dir(staged), 0700); err != nil {
 			release()
 			return err
 		}
-		if err := fileutil.AtomicCreateFile(receipt, []byte(proof), 0600); err != nil && !os.IsExist(err) {
+		if err := fileutil.AtomicCreateFile(receipt, []byte(proof), 0600); err != nil && !errors.Is(err, os.ErrExist) {
 			release()
 			return err
 		}
 		release()
+		checkpoint("before-rename")
 		if err := os.Rename(source, staged); err != nil {
 			return err
 		}
+		checkpoint("after-rename")
 	} else if !os.IsNotExist(err) {
 		return err
 	} else {
@@ -76,12 +86,14 @@ func (p *FilesystemPersistence) PurgeWithTombstone(ctx context.Context, id strin
 	if err := os.RemoveAll(staged); err != nil {
 		return err
 	}
+	checkpoint("after-content-removal")
 	if err := os.RemoveAll(filepath.Join(p.Root, ".query-cache", id)); err != nil {
 		return err
 	}
 	if err := os.Remove(receipt); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	checkpoint("after-cleanup")
 	return nil
 }
 

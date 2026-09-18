@@ -59,6 +59,19 @@ lack count records do not invent counts.
 
 ## Compatibility and change notes / 兼容与变更说明
 
+PR #10385 intentionally supersedes the complete turn-outline navigation and
+cumulative history retention previously described in the architecture document.
+The [#10276 acceptance record](TRANSCRIPT_OUTLINE_NAVIGATION.md) is historical;
+current behavior is defined above and in the
+[scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md). Bounded body
+residency alone does not require a loaded-only rail; this is the current v2
+product choice.
+
+PR #10385 明确替代旧架构文档中的完整轮次大纲导航与累积保留历史约定。
+[#10276 验收记录](TRANSCRIPT_OUTLINE_NAVIGATION.zh-CN.md)属于历史记录；当前行为以
+上文及[滚动与历史契约](TRANSCRIPT_SCROLL_CONTRACT.zh-CN.md)为准。有界正文驻留
+本身并不要求导航仅展示已加载轮次；这是当前 v2 的产品选择。
+
 | Boundary / 边界 | Behavior / 行为 |
 | --- | --- |
 | Desktop ↔ Serve | Both must advertise/support `transcript-v2`; old Serve gets an upgrade error, no legacy chat fallback. / 双端必须支持 v2；旧 Serve 提示升级，不回退拼接。 |

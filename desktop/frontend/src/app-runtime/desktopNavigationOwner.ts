@@ -119,6 +119,10 @@ export async function executeDesktopNavigation(input: DesktopNavigationCapture, 
     if (isChannelSession(session)) {
       tab = await openBlank(scope === "project" ? "project" : "global", session.workspaceRoot || "");
       checkpoint(); await ports.openChannelSession(session.path, tab.id, seq);
+    } else if (session.sessionId && (!session.hostId || session.hostId === "local")) {
+      tab = await openTopic(scope, session.workspaceRoot || "", session.topicId || `canonical-${session.sessionId}`, `session-id:${session.sessionId}`);
+    } else if (session.source) {
+      tab = await openTopic(scope, session.workspaceRoot || "", session.topicId || "", `session-source:${encodeURIComponent(JSON.stringify(session.source))}`);
     } else if (scope === "project" && session.workspaceRoot && session.topicId) {
       tab = await openTopic("project", session.workspaceRoot, session.topicId, session.path);
     } else if (scope === "global" && session.topicId) {

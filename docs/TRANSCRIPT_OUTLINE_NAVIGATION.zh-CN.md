@@ -2,7 +2,14 @@
 
 [English](TRANSCRIPT_OUTLINE_NAVIGATION.md)
 
-本记录对应"对话导航条改为读取完整会话轮次"的改造。架构与产品行为见[自然流正文](TRANSCRIPT_ARCHITECTURE.zh-CN.md)。
+> **历史验收记录——已被 PR #10385（Follow v2）替代。**
+> 本文记录 PR #10276 的完整大纲实现及当时执行的验证。文中的前后对比与测试结果
+> 不构成当前生产链路的验收证据。
+
+当前行为采用双向有界历史窗口，导航条仅展示已加载轮次；完整持久化历史仍可通过
+权威历史搜索与定位访问。现行约定见[会话同步 v2](TRANSCRIPT_V2.md)、
+[滚动与历史契约](TRANSCRIPT_SCROLL_CONTRACT.zh-CN.md)及
+[自然流正文](TRANSCRIPT_ARCHITECTURE.zh-CN.md)。以下历史设计与验证结果保留用于追溯。
 
 ## 原始问题
 

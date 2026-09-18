@@ -132,13 +132,17 @@ func startPowerShell(req Request, fp string) (*session, error) {
 		return nil, err
 	}
 	p := &powershellProcess{output: reader, cmd: cmd, job: job, stop: make(chan struct{})}
+	// Windows PowerShell 5.1 can take more than 10 seconds to initialize on a
+	// cold or contended host. Bound the complete connect-and-ready handshake by
+	// one deadline so a late connection cannot silently start a second budget.
+	deadline := time.Now().Add(powerShellStartupTimeout)
 	type accepted struct {
 		conn net.Conn
 		err  error
 	}
 	ready := make(chan accepted, 1)
 	go func() { conn, err := listener.Accept(); ready <- accepted{conn, err} }()
-	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	select {
 	case result := <-ready:
@@ -156,7 +160,7 @@ func startPowerShell(req Request, fp string) (*session, error) {
 		_ = p.Close()
 		return nil, ctx.Err()
 	}
-	_ = p.control.SetDeadline(time.Now().Add(startupTimeout))
+	_ = p.control.SetDeadline(deadline)
 	frame, err := readShellFrame(p.control)
 	if err != nil || frame.Kind != "ready" {
 		_ = p.Close()

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/mcpinteraction"
@@ -28,8 +27,8 @@ func awaitPromptLedgerTest[T any](t *testing.T, ch <-chan T, description string)
 	select {
 	case result := <-ch:
 		return result
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", description)
+	case <-t.Context().Done():
+		t.Fatalf("test cancelled waiting for %s: %v", description, t.Context().Err())
 		var zero T
 		return zero
 	}

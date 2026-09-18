@@ -73,7 +73,7 @@ func migrateLegacySessionsIntoGlobalTopicsWithGates(dir string, migrationDone, r
 	// session that may gain content, failed write) sets it, keeping the dir
 	deferred := false
 	for _, info := range infos {
-		if sessionOrderInfoIsUnmodifiedRecoveryCopy(info, dir) {
+		if sessionOrderInfoIsHiddenRecovery(info, dir) {
 			continue
 		}
 		if strings.TrimSpace(info.TopicID) != "" {
@@ -245,7 +245,7 @@ func repairIndexedSessionTopicsWithGate(dir string, repairDone func(string) bool
 	sourcesChanged := false
 	deferred := false
 	for _, info := range infos {
-		if sessionOrderInfoIsUnmodifiedRecoveryCopy(info, dir) {
+		if sessionOrderInfoIsHiddenRecovery(info, dir) {
 			continue
 		}
 		topicID := strings.TrimSpace(info.TopicID)

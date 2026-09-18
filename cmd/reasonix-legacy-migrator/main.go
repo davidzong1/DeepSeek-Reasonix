@@ -311,10 +311,6 @@ func activateInstallerStagingWithRecovery(installRoot, activeVersion, stagingRoo
 		{Name: cliName, Path: cliEntrySource},
 	}
 	requiredRootNames := []string{launcherName, cliName}
-	if alias := installlayout.PortableAliasName(); alias != "" {
-		rootMembers = append(rootMembers, installlayout.Member{Name: alias, Path: launcherSource})
-		requiredRootNames = append(requiredRootNames, alias)
-	}
 
 	home := config.ReasonixHomeDir()
 	release, err := desktopinstance.PrepareInstall(installRoot, home, interactive)
@@ -324,7 +320,7 @@ func activateInstallerStagingWithRecovery(installRoot, activeVersion, stagingRoo
 	defer release()
 	// The installer only shows an exit code; the recovery log keeps the reason.
 	finish := desktopinstance.AttemptLog(home, "activate-staging", installRoot)
-	err = installlayout.ActivateVersion(installlayout.ActivationRequest{
+	request := installlayout.ActivationRequest{
 		InstallRoot:       installRoot,
 		Version:           activeVersion,
 		RequestID:         "signed-installer-" + activeVersion,
@@ -333,7 +329,15 @@ func activateInstallerStagingWithRecovery(installRoot, activeVersion, stagingRoo
 		RequiredNames:     requiredNames,
 		RootMembers:       rootMembers,
 		RequiredRootNames: requiredRootNames,
-	})
+	}
+	if runtime.GOOS == "windows" {
+		request.RootMembers, request.RequiredRootNames = nil, nil
+		request.WindowsRootEntries = &installlayout.WindowsRootEntrySources{
+			LauncherPath: launcherSource,
+			CLIEntryPath: cliEntrySource,
+		}
+	}
+	err = installlayout.ActivateVersion(request)
 	finish(err)
 	if err != nil {
 		return fmt.Errorf("activate signed installer staging: %w", err)
@@ -346,7 +350,8 @@ func runningAsLauncher() bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(filepath.Base(exe), installlayout.LauncherBinaryName())
+	return strings.EqualFold(filepath.Base(exe), installlayout.LauncherBinaryName()) ||
+		strings.EqualFold(filepath.Base(exe), installlayout.CanonicalLauncherBinaryName())
 }
 
 func optionalRegular(path string) string {
@@ -382,6 +387,22 @@ func acquireMigrationLock(installRoot string) (func(), error) {
 }
 
 func ensureLauncherEntry(installRoot string) error {
+	if runtime.GOOS == "windows" {
+		for _, name := range []string{installlayout.CanonicalLauncherBinaryName(), installlayout.LauncherBinaryName()} {
+			info, err := os.Lstat(filepath.Join(installRoot, name))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("migrate: inspect launcher %s: %w", name, err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("migrate: thin launcher %s is not a regular file", name)
+			}
+			return nil
+		}
+		return fmt.Errorf("migrate: thin launcher is missing; install a signed package")
+	}
 	launcher := installlayout.LauncherBinaryName()
 	path := filepath.Join(installRoot, launcher)
 	if info, err := os.Lstat(path); err == nil {
@@ -390,14 +411,6 @@ func ensureLauncherEntry(installRoot string) error {
 		}
 		return nil
 	}
-	// On Windows also accept Reasonix.exe as the alias.
-	if runtime.GOOS == "windows" {
-		if _, err := os.Lstat(filepath.Join(installRoot, "Reasonix.exe")); err == nil {
-			return nil
-		}
-		return fmt.Errorf("migrate: thin launcher %s is missing; install a signed package", launcher)
-	}
-
 	// Legacy Linux archives cannot deliver a fourth member through the old
 	// updater. Copy this signed multicall migrator as the permanent thin launcher.
 	exe, err := os.Executable()
@@ -532,17 +545,14 @@ func archiveInstallRootLegacyMarkers(installRoot string) error {
 }
 
 func startLauncher(installRoot string) error {
-	launcher := "reasonix-launcher"
-	if runtime.GOOS == "windows" {
-		launcher += ".exe"
-	}
-	path := filepath.Join(installRoot, launcher)
-	if _, err := os.Lstat(path); err != nil {
-		if runtime.GOOS == "windows" {
-			path = filepath.Join(installRoot, "Reasonix.exe")
+	path := ""
+	for _, name := range []string{installlayout.CanonicalLauncherBinaryName(), installlayout.LauncherBinaryName()} {
+		if candidate := optionalRegular(filepath.Join(installRoot, name)); candidate != "" {
+			path = candidate
+			break
 		}
 	}
-	if _, err := os.Lstat(path); err != nil {
+	if path == "" {
 		// Migration succeeded; user can start manually.
 		return nil
 	}

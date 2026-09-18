@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func newOwnedTestController(t testing.TB, options Options) *Controller {
@@ -14,12 +13,7 @@ func newOwnedTestController(t testing.TB, options Options) *Controller {
 		// Close only starts teardown; finalizeControllerClose joins the workers
 		// that may still write under SessionDir. Waiting keeps a late Flush from
 		// racing t.TempDir removal, so it is unconditional.
-		select {
-		case <-controller.closeFinalized:
-		case <-time.After(5 * time.Second):
-			t.Error("controller resources did not settle after close")
-			return
-		}
+		<-controller.closeFinalized
 		if options.SessionService == nil {
 			return
 		}

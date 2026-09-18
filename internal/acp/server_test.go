@@ -164,42 +164,6 @@ func (f *configurableFactory) NewSession(_ context.Context, p SessionParams) (*c
 
 func (f *configurableFactory) SessionDir() string { return f.dir }
 
-type teardownFactory struct {
-	dir     string
-	grace   time.Duration
-	mu      sync.Mutex
-	manager *jobs.Manager
-}
-
-func (f *teardownFactory) SessionDir() string { return f.dir }
-
-func (f *teardownFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(f.grace))
-	f.mu.Lock()
-	f.manager = jm
-	f.mu.Unlock()
-	runner := &fakeRunner{
-		sink:     p.Sink,
-		behavior: func(context.Context, event.Sink, string) error { return nil },
-	}
-	return control.New(control.Options{
-		Runner:     runner,
-		Sink:       p.Sink,
-		SessionDir: f.dir,
-		Jobs:       jm,
-	}), nil
-}
-
-func (f *teardownFactory) lastManager(t *testing.T) *jobs.Manager {
-	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.manager == nil {
-		t.Fatal("session manager was not created")
-	}
-	return f.manager
-}
-
 func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
@@ -401,8 +365,8 @@ func (c *rpcClient) call(t *testing.T, method string, params any) frame {
 	select {
 	case f := <-c.callAsync(method, params):
 		return f
-	case <-time.After(2 * time.Second):
-		t.Fatalf("%s: timed out", method)
+	case <-t.Context().Done():
+		t.Fatalf("%s: %v", method, t.Context().Err())
 		return frame{}
 	}
 }
@@ -1948,11 +1912,9 @@ func TestServeSessionClose(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
+func TestSessionDeleteWithStuckJobWaitsOnlyForDestroyGrace(t *testing.T) {
 	dir := t.TempDir()
-	grace := time.Second
-	maxElapsed := grace + 750*time.Millisecond
-	factory := &teardownFactory{dir: dir, grace: grace}
+	factory := &teardownFactory{dir: dir, grace: 0}
 	client, stop := startServer(t, factory)
 	defer stop()
 
@@ -1969,14 +1931,13 @@ func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	releaseJob := startNonCooperativeACPJob(t, factory.lastManager(t), path)
 	defer releaseJob()
 
-	start := time.Now()
 	resp := client.call(t, "session/delete", SessionDeleteParams{SessionID: nr.SessionID})
-	elapsed := time.Since(start)
 	if resp.Error != nil {
 		t.Fatalf("session/delete errored: %+v", resp.Error)
 	}
-	if elapsed > maxElapsed {
-		t.Fatalf("session/delete took %s, want one teardown grace plus scheduling slack", elapsed)
+	timeouts := factory.teardownTimeoutDetails()
+	if len(timeouts) != 1 || !strings.Contains(timeouts[0], "during destroy session") {
+		t.Fatalf("teardown timeout events = %q, want one destroy-session wait and no close wait", timeouts)
 	}
 	if !agent.IsCleanupPending(path) {
 		t.Fatalf("stuck ACP delete should mark cleanup pending")

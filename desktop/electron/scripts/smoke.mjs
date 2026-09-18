@@ -34,6 +34,15 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 };
 
+async function mainRenderer(app) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const page = app.windows().find((candidate) => candidate.url().startsWith("reasonix://app/"));
+    if (page) return page;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  throw new Error("Reasonix main renderer is unavailable");
+}
+
 function processTree(pid) {
   if (process.platform === "win32") return [];
   const rows = execFileSync("ps", ["-axo", "pid=,ppid=,comm="], { encoding: "utf8" }).split("\n");
@@ -81,7 +90,8 @@ const app = await electron.launch({
 const shellPid = app.process().pid;
 let exitCode = 1;
 try {
-  const page = await app.firstWindow({ timeout: 60_000 });
+  let page = await app.firstWindow({ timeout: 60_000 });
+  await page.waitForURL("reasonix://app/index.html", { timeout: 60_000 });
   await page.waitForFunction(() => Boolean(window.reasonixDesktop), null, { timeout: 30_000 });
   const contract = await page.evaluate(() => ({
     digest: window.reasonixDesktop.contract.digest,
@@ -123,8 +133,24 @@ try {
   const errors = await page.evaluate(() => document.querySelector(".error-boundary, [data-crash-overlay]") !== null);
   check("no crash overlay is showing", !errors);
 
-  const tab = await page.evaluate(() => window.reasonixDesktop.browser.open("example.com", { temporary: true }));
-  check("browser opens a website view", typeof tab.id === "string" && new URL(tab.url).origin === "https://example.com", `${tab.id} ${tab.url}`);
+  let tab;
+  try {
+    tab = await page.evaluate(() => window.reasonixDesktop.browser.open("example.com", { temporary: true }));
+  } catch (error) {
+    // Electron can replace Playwright's execution context when the first
+    // WebContentsView is attached. The application renderer remains alive;
+    // reacquire it by URL and verify the native operation's committed result.
+    if (!String(error).includes("Execution context was destroyed")) throw error;
+    page = await mainRenderer(app);
+    tab = await page.evaluate(async () => {
+      const tabs = await window.reasonixDesktop.browser.list();
+      return tabs.find((entry) => {
+        try { return new URL(entry.url).origin === "https://example.com"; } catch { return false; }
+      });
+    });
+  }
+  check("browser opens a website view", Boolean(tab) && typeof tab.id === "string" && new URL(tab.url).origin === "https://example.com", tab ? `${tab.id} ${tab.url}` : "tab missing");
+  if (!tab) throw new Error("example.com browser tab was not created");
   const title = await page.evaluate(async (tabId) => {
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const tabs = await window.reasonixDesktop.browser.list();

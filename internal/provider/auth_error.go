@@ -12,6 +12,7 @@ import "fmt"
 // Body and extract it themselves. Providersshould return this (rather than a generic status error)
 // forauthfailures.
 type AuthError struct {
+	ModelRef            string // actual request model, assigned at the shared request boundary
 	Provider            string // stable provider instance id, e.g. "deepseek"
 	ProviderDisplayName string // user-editable display label
 	Protocol            string // configured wire adapter id

@@ -251,16 +251,22 @@ func TestRequestEffortOverrideRefusedBeforeIO(t *testing.T) {
 		extra    map[string]any
 		refused  []string
 		accepted []string
+		// refusal is the diagnostic vocabulary this endpoint's metadata produces:
+		// an endpoint that declares nothing has unknown metadata, while a
+		// declared protocol only lacks the requested level.
+		refusal string
 	}{
 		{
 			name:    "generic endpoint declares nothing",
 			refused: []string{"max", "high", "low", "turbo"},
+			refusal: "UNKNOWN_MODEL_REASONING",
 		},
 		{
 			name:     "deepseek protocol without a declaration",
 			extra:    map[string]any{"reasoning_protocol": "deepseek"},
 			refused:  []string{"medium", "xhigh", "turbo"},
 			accepted: []string{"max", "high", "disabled"},
+			refusal:  "UNSUPPORTED_REASONING_EFFORT",
 		},
 	}
 	want := 0
@@ -276,8 +282,8 @@ func TestRequestEffortOverrideRefusedBeforeIO(t *testing.T) {
 			}
 			for _, level := range tc.refused {
 				_, err := p.Stream(context.Background(), provider.Request{EffortOverride: level})
-				if err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
-					t.Fatalf("override %q: Stream error = %v, want a refusal", level, err)
+				if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+					t.Fatalf("override %q: Stream error = %v, want a %s refusal", level, err, tc.refusal)
 				}
 			}
 			for _, level := range tc.accepted {

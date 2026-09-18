@@ -1,6 +1,4 @@
-import type { HistoryWindowPage, PersistentMessage } from "../generated/desktopContract.generated";
-import { asArray } from "./array";
-import { app } from "./bridge";
+import type { PersistentMessage } from "../generated/desktopContract.generated";
 import { HistoryPreparingError } from "./historyPreparation";
 import { canonicalUserDisplay } from "./canonicalUserDisplay";
 import type { HistoryContentChunk, HistoryContentRef, HistoryEntry, HistoryMessage, HistorySlice, HistorySliceRequest, HistoryWindowPageView, HistoryWindowRequestView, MemoryCitation } from "./types";
@@ -17,6 +15,7 @@ function asWireObject(value: unknown): Record<string, unknown> {
 
 export function canonicalMessage(message: PersistentMessage, body: unknown): HistoryMessage {
   const raw = asWireObject(body);
+  if (raw.role === "notice") return { role: "notice", messageId: String(raw.id ?? message.messageId), content: String(raw.content ?? ""), detail: typeof raw.detail === "string" ? raw.detail : undefined, code: typeof raw.code === "string" ? raw.code : undefined, level: raw.level === "warn" ? "warn" : "info" };
   const decisionReceipt = asWireObject(raw.decision_receipt);
   if (Object.keys(decisionReceipt).length > 0) {
     return { role: "notice", messageId: String(raw.id ?? message.messageId), content: "", code: "decision_receipt", level: "info", decisionReceipt: decisionReceipt as unknown as HistoryMessage["decisionReceipt"] };
@@ -34,6 +33,7 @@ export function canonicalMessage(message: PersistentMessage, body: unknown): His
     return { role: "notice", messageId: String(raw.id ?? message.messageId), content: "", code: "protocol_recovery", level: "info", pending: true, protocolRecovery: { id: protocolRecovery.id } };
   }
   const toolCalls = (Array.isArray(raw.tool_calls) ? raw.tool_calls as Record<string, unknown>[] : []).map(call => ({
+    resultObservation: message.toolObservations?.[String(call.id ?? "")],
     id: String(call.id ?? ""), name: String(call.name ?? ""), arguments: String(call.arguments ?? ""),
     resolvedName: typeof call.resolved_name === "string" ? call.resolved_name : undefined,
     capabilityId: typeof call.capability_id === "string" ? call.capability_id : undefined,
@@ -124,48 +124,10 @@ export function entriesFor(messages: PersistentMessage[], snapshotSequence: numb
   });
 }
 
-function unsupportedWindow(): HistoryWindowPageView {
-  return {
-    entries: [], status: "unsupported", olderCursor: "", newerCursor: "",
-    hasOlder: false, hasNewer: false, totalTurns: 0, startTurn: 0, endTurn: 0,
-    revision: 0, revisionKnown: false, digest: "",
-  };
-}
-
 export async function canonicalHistoryWindow(tabId: string, req: HistoryWindowRequestView): Promise<HistoryWindowPageView> {
   const remote = identityFor(tabId) === "remote";
-  let page: HistoryWindowPage;
-  if (remote) {
-    if (typeof app.RemoteSessionHistoryWindowForTab !== "function") {
-      return unsupportedWindow();
-    }
-    page = await app.RemoteSessionHistoryWindowForTab(tabId, req);
-  } else {
-    if (typeof app.SessionHistoryWindowForTab !== "function") {
-      return unsupportedWindow();
-    }
-    page = await app.SessionHistoryWindowForTab(tabId, req);
-  }
-  const status = (page.status || "ready") as HistoryWindowPageView["status"];
-  if (status === "unsupported") {
-    return unsupportedWindow();
-  }
-  const entries = entriesFor(asArray<PersistentMessage>(page.messages), page.snapshotSequence);
-  const turns = entries.map(entry => entry.turn).filter(turn => turn > 0);
-  return {
-    entries,
-    status,
-    olderCursor: page.olderCursor ?? "",
-    newerCursor: page.newerCursor ?? "",
-    hasOlder: Boolean(page.hasOlder),
-    hasNewer: Boolean(page.hasNewer),
-    totalTurns: page.totalTurns ?? (turns.length > 0 ? Math.max(...turns) : 0),
-    startTurn: turns.length > 0 ? Math.min(...turns) : 0,
-    endTurn: turns.length > 0 ? Math.max(...turns) : 0,
-    revision: page.snapshotSequence ?? 0,
-    revisionKnown: (page.snapshotSequence ?? 0) > 0,
-    digest: page.generation ?? "",
-  };
+  const { readCanonicalHistoryWindow } = await import("./canonicalHistoryWindow");
+  return readCanonicalHistoryWindow(tabId, req, remote);
 }
 
 function staleSlice(): HistorySlice {
@@ -238,36 +200,12 @@ export async function canonicalHistorySlice(tabId: string, req: HistorySliceRequ
   throw new Error("Transcript v2 requires an updated Desktop and Serve");
 }
 
-function decodeBase64Bytes(data: string): Uint8Array {
-  const binary = atob(data);
-  return Uint8Array.from(binary, character => character.charCodeAt(0));
-}
-
+/** Deferred bodies are loaded only after a transcript requests their content. */
 export async function canonicalHistoryContent(tabID: string, ref: HistoryContentRef, chunkIndex: number): Promise<HistoryContentChunk> {
-  if (ref.transcriptRef) {
-    const recover = contentRecovery.get(tabID);
-    const read = identityFor(tabID) === "remote" ? app.RemoteTranscriptContentForTab : app.TranscriptContentForTab;
-    if (!read) throw new Error("Transcript v2 content is unavailable");
-    let offset = 0, data = "";
-    while (true) {
-      const chunk = await read(tabID, { ...ref.transcriptRef, offset });
-      if (chunk.stale) {
-        if (contentRecovery.get(tabID) === recover) recover?.();
-        throw new Error("Transcript content snapshot expired; synchronizing, retry after recovery");
-      }
-      data += chunk.data;
-      if (chunk.done) return { entryId: ref.entryId, field: ref.field, chunk: chunkIndex, chunks: 1, data, done: true, stale: false };
-      if (chunk.nextOffset <= offset) throw new Error("Transcript content did not advance");
-      offset = chunk.nextOffset;
-    }
-  }
-  if (!ref.canonicalRef) return app.HistoryContentForTab(tabID, ref, chunkIndex);
-  const offset = chunkIndex * (1 << 20);
-  const chunk = identityFor(tabID) === "remote"
-    ? await app.RemoteSessionHistoryContentForTab(tabID, ref.canonicalRef, offset)
-    : await app.SessionHistoryContentForTab(tabID, ref.canonicalRef, offset);
-  const bytes = decodeBase64Bytes(chunk.data ?? "");
-  let data = "";
-  for (let start = 0; start < bytes.length; start += 0x8000) data += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
-  return { entryId: ref.entryId, field: ref.field, chunk: chunkIndex, chunks: ref.chunks, data, done: chunk.done, stale: false };
+  const remote = identityFor(tabID) === "remote";
+  const recover = contentRecovery.get(tabID);
+  const { readCanonicalHistoryContent } = await import("./canonicalHistoryContent");
+  return readCanonicalHistoryContent(tabID, ref, chunkIndex, remote, () => {
+    if (contentRecovery.get(tabID) === recover) recover?.();
+  });
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { initialState, reducer, type State } from "../lib/useController";
+import { sessionIdentityStableKey } from "../lib/sessionIdentity";
 
 const originalNow = Date.now;
 let now = 1_000;
@@ -71,6 +72,7 @@ try {
   now = 5_000;
   const bothPrompts: State = { ...initialState, running: true, turnActive: true,
     turnStartAt: 1_000, promptWaitStartedAt: 1_000,
+    meta: { label: "", ready: true, eventChannel: "agent:event", cwd: "", session: { hostId: "local", sessionId: "session-a" }, sessionGeneration: 1 },
     approval: { id: "a1", tool: "write_file", subject: "Run command" },
     mcpInteraction: { id: "m1", server: "srv", mode: "form", message: "Fill the form" } };
   const approvalCleared = reducer(bothPrompts, { type: "clearApproval" });
@@ -80,7 +82,8 @@ try {
     "an outstanding MCP interaction still counts as a pending prompt");
   now = 9_000;
   const mcpAnswered = reducer(approvalCleared, {
-    type: "expire_prompt", id: "m1", epoch: approvalCleared.promptEpoch, kind: "mcp" });
+    type: "expire_prompt", target: { tabId: "tab-a", sessionKey: sessionIdentityStableKey(bothPrompts.meta), hostId: "local", sessionId: "session-a", sessionGeneration: 1,
+      promptId: "m1", kind: "mcp", instanceKey: "mcp-1" }, epoch: approvalCleared.promptEpoch });
   assert.equal(mcpAnswered.promptWaitStartedAt, undefined, "the last prompt closes the interval");
   assert.equal(mcpAnswered.turnWaitAccumMs, 8_000, "the whole MCP wait is charged exactly once");
 

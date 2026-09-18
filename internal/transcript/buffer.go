@@ -322,6 +322,7 @@ func (buffer *Buffer) applyNotice(e event.Event) {
 	}
 	buffer.messages = append(buffer.messages, &bufferedMessage{message: Message{
 		Role:            "notice",
+		MessageID:       e.MessageID,
 		Level:           level,
 		Content:         e.Text,
 		Detail:          e.Detail,

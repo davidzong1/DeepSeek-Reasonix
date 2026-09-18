@@ -32,6 +32,8 @@ export interface RemoteTabMetaFields {
   remoteState?: RemoteTabStateValue;
   /** Host-emitted: this tab's serve advertised session-fork-targets-v1. */
   forkTargetsSupported?: boolean;
+  interactionTargetSupported?: boolean;
+  extensionFormInstanceSupported?: boolean;
 }
 
 export interface RemoteProjectNodeFields {

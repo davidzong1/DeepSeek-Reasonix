@@ -13,7 +13,7 @@ import (
 	"reasonix/internal/sessioncatalog"
 )
 
-func TestStartTopicActivationPrefersLiveRuntimeOverRepresentative(t *testing.T) {
+func TestStartTopicActivationKeepsExplicitRepresentativeSeparateFromLiveSibling(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	projectRoot := t.TempDir()
 	sessionDir := desktopSessionDir(projectRoot)
@@ -68,17 +68,15 @@ func TestStartTopicActivationPrefersLiveRuntimeOverRepresentative(t *testing.T) 
 	if tab == nil {
 		t.Fatal("activated tab missing")
 	}
-	if tab.Ctrl != stub {
-		t.Fatal("clicking the live topic row opened the catalog representative instead of attaching the live controller")
+	if tab.Ctrl == stub {
+		t.Fatal("explicit history selection reused the same-topic sibling controller")
 	}
-	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(livePath) {
-		t.Fatalf("session path = %q, want live %q", tab.currentSessionPath(), livePath)
-	}
+	assertActivatedSourceMapping(t, app, tab, oldPath)
 	if stub.closed.Load() {
 		t.Fatal("live controller was closed while attaching")
 	}
-	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(livePath) {
-		t.Fatalf("ticket session path = %q, want live %q", ticket.Meta.SessionPath, livePath)
+	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(oldPath) {
+		t.Fatalf("ticket session path = %q, want selected %q", ticket.Meta.SessionPath, oldPath)
 	}
 }
 
@@ -90,7 +88,7 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	pathA := writeTopicSession(t, sessionDir, "a.jsonl", "topic-a", "Topic A", projectRoot)
-	oldB := writeTopicSessionWithPrompt(t, sessionDir, "b-old.jsonl", "topic-b", "Topic B", projectRoot, "old b", time.Now().Add(-time.Hour))
+	writeTopicSessionWithPrompt(t, sessionDir, "b-old.jsonl", "topic-b", "Topic B", projectRoot, "old b", time.Now().Add(-time.Hour))
 	liveB := writeTopicSessionWithPrompt(t, sessionDir, "b-live.jsonl", "topic-b", "Topic B", projectRoot, "live b", time.Now())
 
 	app := NewApp()
@@ -148,7 +146,7 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 		Scope:         "project",
 		WorkspaceRoot: projectRoot,
 		TopicID:       "topic-b",
-		SessionPath:   oldB,
+		SessionPath:   liveB,
 		RequestID:     "req-rebuild",
 	})
 	if err != nil {
@@ -278,7 +276,7 @@ func TestResolveOpenTopicSessionPathKeepsPausedLiveOnCoveringParent(t *testing.T
 	}
 }
 
-func TestStartTopicActivationAttachesPausedLiveWhenOpeningCoveringParent(t *testing.T) {
+func TestStartTopicActivationKeepsRecoveryContinuationSeparateFromLiveSibling(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()
 	app.ctx = context.Background()
@@ -336,13 +334,25 @@ func TestStartTopicActivationAttachesPausedLiveWhenOpeningCoveringParent(t *test
 	if tab == nil {
 		t.Fatal("activated tab missing")
 	}
-	if tab.Ctrl != stub {
-		t.Fatal("clicking the covering parent opened the catalog leaf instead of attaching the paused live controller")
+	if tab.Ctrl == stub {
+		t.Fatal("recovery parent selection reused an unrelated same-topic controller")
 	}
-	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(livePath) {
-		t.Fatalf("session path = %q, want live %q (parent %q leaf %q)", tab.currentSessionPath(), livePath, parent, leaf)
+	assertActivatedSourceMapping(t, app, tab, leaf)
+	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(leaf) {
+		t.Fatalf("ticket session path = %q, want recovery leaf %q", ticket.Meta.SessionPath, leaf)
 	}
-	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(livePath) {
-		t.Fatalf("ticket session path = %q, want live %q", ticket.Meta.SessionPath, livePath)
+}
+
+func assertActivatedSourceMapping(t *testing.T, app *App, tab *WorkspaceTab, sourcePath string) {
+	t.Helper()
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
+	for _, mapping := range state.SourceMappings {
+		if sessionRuntimeKey(mapping.Path) == sessionRuntimeKey(sourcePath) && mapping.SessionID == tab.SessionID && tab.SessionID != "" {
+			return
+		}
+	}
+	t.Fatalf("activated session %q has no verified mapping for %q: %#v", tab.SessionID, sourcePath, state.SourceMappings)
 }

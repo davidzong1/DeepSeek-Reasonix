@@ -14,16 +14,16 @@ Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
 });
 
-const hostExports: Array<{ tabId: string; path: string; title: string }> = [];
-const rendererExports: Array<{ path: string; content: string }> = [];
+const hostExports: Array<{ tabId: string; format: string; title: string }> = [];
+const finishes: string[] = [];
 const stub = installDesktopHostStub({
-  PickExportFile: async (name: string) => `/tmp/${name}`,
-  SaveSessionMarkdownForTab: async (tabId: string, path: string, title: string) => {
-    hostExports.push({ tabId, path, title });
+  BeginSessionExportForTarget: async (_selector: unknown, tabId: string, format: string, title: string) => {
+    hostExports.push({ tabId, format, title });
+    return { exportId: `export-${hostExports.length}`, format, snapshot: { title } };
   },
-  SaveExportFile: async (path: string, content: string) => {
-    rendererExports.push({ path, content });
-  },
+  FinishSessionExport: async (id: string) => { finishes.push(id); return { paths: ["/tmp/full.md"], records: 137, pages: 0 }; },
+  CancelSessionExport: async () => {},
+  SaveExportFile: async () => { throw new Error("resident exports are forbidden"); },
 });
 
 let exportSession!: (format: SessionExportFormat) => Promise<void> | undefined;
@@ -45,14 +45,13 @@ const root = createRoot(document.getElementById("root")!);
 try {
   await act(async () => root.render(<Probe remote={false} />));
   await act(async () => { await exportSession("markdown"); });
-  assert.deepEqual(hostExports, [{ tabId: "tab-export", path: "/tmp/Bounded session.md", title: "Bounded session" }]);
-  assert.equal(rendererExports.length, 0, "local Markdown never materializes the bounded renderer projection");
-
+  assert.deepEqual(hostExports, [{ tabId: "tab-export", format: "markdown", title: "Bounded session" }]);
+  assert.deepEqual(finishes, ["export-1"]);
   await act(async () => root.render(<Probe remote />));
   await act(async () => { await exportSession("markdown"); });
-  assert.equal(rendererExports.length, 1, "remote compatibility export uses the renderer projection");
-  assert.match(rendererExports[0]?.content ?? "", /resident projection/);
-  console.log("session export routing: local host streaming and remote fallback passed");
+  assert.equal(hostExports.length, 2, "remote export uses the same authoritative host API");
+  assert.deepEqual(finishes, ["export-1", "export-2"]);
+  console.log("session export routing: both sources use fixed host snapshots");
 } finally {
   await act(async () => root.unmount());
   stub.uninstall();

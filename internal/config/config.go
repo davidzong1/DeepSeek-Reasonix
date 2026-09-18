@@ -74,6 +74,7 @@ type Config struct {
 	// default. It is transient edit metadata and is never serialized directly.
 	explicitProjectSkillKeys map[string]bool
 	stagedModelCredentials   []string
+	modelCredentialCommit    *modelCredentialCommitJournal
 	editLoadErr              error
 	// loadWarnings are non-fatal issues observed while loading config (corrupt
 	// user/project files recovered via last-known-good or defaults). They never

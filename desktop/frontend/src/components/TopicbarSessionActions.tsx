@@ -6,6 +6,7 @@ import { t } from "../lib/i18n";
 
 const loadExportMenu = () => import("./TopicbarExportMenu");
 const TopicbarExportMenu = lazy(async () => ({ default: (await loadExportMenu()).TopicbarExportMenu }));
+const SessionExportProgress = lazy(async () => ({ default: (await import("./SessionExportProgress")).SessionExportProgress }));
 
 export interface TopicbarSessionActionsProps {
   sessionHasContent: boolean;
@@ -60,6 +61,7 @@ export function TopicbarSessionActions({
 
   return (
     <>
+      <Suspense fallback={null}><SessionExportProgress /></Suspense>
       <Tooltip label={t("topicBar.copyAll")}>
         <CopyButton getText={getSessionMarkdown} label={t("topicBar.copyAll")} className={actionClass} showInlineLabel={false} />
       </Tooltip>

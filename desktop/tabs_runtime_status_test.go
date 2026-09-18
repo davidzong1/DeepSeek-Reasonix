@@ -135,25 +135,21 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 	}
 
 	nodes := app.ListProjectTree()
-	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
-		t.Fatalf("project tree = %#v, want one global topic", nodes)
-	}
-	topic := nodes[0].Children[0]
-	if topic.Status != "" || topic.Running {
-		t.Fatalf("topic should not merge child runtime statuses: %+v", topic)
-	}
-	if len(topic.Children) != 2 {
-		t.Fatalf("topic children = %#v, want two session runtime rows", topic.Children)
+	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
+		t.Fatalf("project tree = %#v, want two independent global sessions", nodes)
 	}
 	statusByPath := map[string]string{}
-	for _, child := range topic.Children {
+	for _, child := range nodes[0].Children {
+		if child.TopicID != topicID || len(child.Children) != 0 {
+			t.Fatalf("session projection = %#v, want flat independent row", child)
+		}
 		statusByPath[sessionRuntimeKey(child.SessionPath)] = child.Status
 	}
 	if statusByPath[sessionRuntimeKey(sessionA)] != topicStatusWaitingConfirmation {
-		t.Fatalf("session A status = %q, want waiting; children=%#v", statusByPath[sessionRuntimeKey(sessionA)], topic.Children)
+		t.Fatalf("session A status = %q, want waiting; sessions=%#v", statusByPath[sessionRuntimeKey(sessionA)], nodes[0].Children)
 	}
 	if statusByPath[sessionRuntimeKey(sessionB)] != topicStatusThinking {
-		t.Fatalf("session B status = %q, want thinking; children=%#v", statusByPath[sessionRuntimeKey(sessionB)], topic.Children)
+		t.Fatalf("session B status = %q, want thinking; sessions=%#v", statusByPath[sessionRuntimeKey(sessionB)], nodes[0].Children)
 	}
 
 	close(runnerA.release)

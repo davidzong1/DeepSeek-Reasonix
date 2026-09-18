@@ -291,6 +291,24 @@ export class MainWindow {
     this.browserWindow?.close();
   }
 
+  async flushSessionDraft(): Promise<void> {
+    const win = this.browserWindow;
+    if (!win || this.content !== "app" || win.webContents.isDestroyed()) return;
+    await win.webContents.executeJavaScript(
+      "Promise.resolve(globalThis.__reasonixFlushSessionDraft?.())",
+      true,
+    );
+  }
+
+  async resumeSessionDraftEditing(): Promise<void> {
+    const win = this.browserWindow;
+    if (!win || this.content !== "app" || win.webContents.isDestroyed()) return;
+    await win.webContents.executeJavaScript(
+      "Promise.resolve(globalThis.__reasonixResumeSessionDraftEditing?.())",
+      true,
+    );
+  }
+
   contentSize(): { width: number; height: number } | null {
     const win = this.browserWindow;
     if (!win) return null;
@@ -325,8 +343,17 @@ export class MainWindow {
     if (this.closing) return;
     this.closing = true;
     try {
+      try {
+        await this.flushSessionDraft();
+      } catch (error) {
+        this.deps.log.warn(`window close paused because draft flush failed: ${errorText(error)}`);
+        return;
+      }
       const prevent = await this.deps.onCloseRequested();
-      if (prevent) this.hide();
+      if (prevent) {
+        await this.resumeSessionDraftEditing();
+        this.hide();
+      }
       else this.deps.onCloseAllowed();
     } catch (error) {
       this.deps.log.warn(`beforeClose(window) failed, closing anyway: ${errorText(error)}`);

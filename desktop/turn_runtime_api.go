@@ -60,6 +60,9 @@ func (a *App) CancelSessionForTab(tabID string) (control.CancelReceipt, error) {
 	if err != nil {
 		return control.CancelReceipt{}, err
 	}
+	if concrete, ok := ctrl.(*control.Controller); ok {
+		return concrete.CancelSessionFrom("user_stop"), nil
+	}
 	if session, ok := ctrl.(interface{ CancelSession() control.CancelReceipt }); ok {
 		return session.CancelSession(), nil
 	}

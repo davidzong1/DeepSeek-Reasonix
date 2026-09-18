@@ -14,11 +14,64 @@ TypeScript helpers used by that contract.
 
 ## Identity and recovery
 
-The controller reserves a user message ID before planning. Optimistic user
-items reconcile by submission ID and keep their mounted key. A sampling attempt
-reserves its assistant message ID before its first delta; successful persistence
-uses that ID, and discard removes only that attempt's owned records. Tool cards
-use tool call IDs. Equal bodies are allowed and are not duplicate identities.
+The controller reserves a user message ID before planning. The frontend keeps a
+local submission echo outside the durable transcript until the canonical row is
+installed. `submissionId` correlates one send attempt, `messageId` identifies the
+durable message, and the presentation key only preserves a mounted DOM node
+during handoff. Durable user rows always use `m:<messageId>`; history mutation,
+content lookup, and persistence never use the presentation key. Equal bodies are
+allowed and are not duplicate identities. A sampling attempt reserves its
+assistant message ID before its first delta; successful persistence uses that ID,
+and discard removes only that attempt's owned records. Tool cards use tool call
+IDs.
+
+Local submission handoff is independent of the resident history window. The
+follower sends formal user identities before window filtering alongside the
+visible projection in one reducer action. A record outside a reader's window
+retires its matching echo without inserting a row or requesting tail follow.
+Matching prefers an already bound message ID; only unbound echoes may match a
+submission ID. Conflicting bindings and different formal message IDs never merge.
+
+The same transaction records `visibleSubmissionHandoffs` for formal users in the
+resulting window. ChatSource uses these hints to inherit a previously mounted
+echo's key even when React skips the intermediate binding render. User, process,
+and tail nodes share that stable turn key. Hints are pruned to resident formal
+users; presentation maps are pruned to mounted groups. Neither survives session
+replacement or restores a reclaimed echo. A missing send anchor is not permission
+to prepend an echo to unrelated history: placement requires its original boundary
+or explicit turn identity.
+
+A late message-ID binding first reconciles resident records. If the formal user
+is no longer resident, the owning follower may use the existing exact-message
+history query solely to confirm identity, without installing that page. Reads
+are generation-fenced, coalesced per unresolved submission, and retried only after
+committed coverage advances or reconnect. An inconclusive read retains the echo.
+An identity event alone never starts a read: committed coverage must have advanced
+since the follower first observed the unresolved submission. This watermark is
+pruned with the submission. The synchronization engine loads on first follow,
+and stopping before its module loads cancels that start.
+RPC acceptance, failure, and unknown outcome belong to the local submission;
+request ownership separately controls runtime state. Only a new explicit send
+advances the scroll submission revision.
+Snapshots retain unresolved submissions for the same canonical session ID;
+a different snapshot owner clears echoes and handoffs and advances the session
+generation. Remote callbacks read the state owned by their tab, never another
+tab's last rendered state.
+
+History window and body I/O load on demand. Their routing identity is captured
+before the deferred import, and Store generation checks still discard stale
+completions. This keeps startup bytes within the existing bundle budget.
+
+`bench/submission-handoff.mjs` exercises the real follower, bounded Store, reducer,
+Composer, and Transcript using 1,000 deterministic turns and 20 paging round trips.
+Run it with `--electron` for the isolated Electron host. Its JSON evidence includes
+DOM continuity, native selection, reader displacement, viewport writes, resident
+entries, and presentation-map sizes. Scripted Electron input is not OS-native input
+qualification; the report records that evidence separately.
+In Linux CI, `--electron --native-input` runs inside Xvfb and uses X11 XTest
+wheel, keyboard and scrollbar input through `xdotool`. The evidence includes
+scroll extents and blank-frame samples as well as confirmation-time reader
+stability. Run this mode only in an isolated graphical session.
 
 Terminal projection checkpoints live in the session's
 `.transcript-projection.json` sidecar. The checkpoint records the provider prefix
@@ -67,9 +120,11 @@ Older pages merge by record/item identity and backend order, including an active
 user retained before the newest page. Delayed content patches check both the cut
 and intervening item mutations. A page cannot resurrect a discarded attempt.
 
-Content resolution uses message identity even when a user bubble retains its
-optimistic mounted key. Delayed patches resolve that identity back to the current
-item and reject intervening mutations before replacing its preview.
+Content resolution uses durable message identity. The presentation layer may
+carry a local echo's key across canonical handoff, but that key never replaces
+the item's `m:<messageId>` identity. Delayed patches target the current durable
+item and reject intervening mutations before replacing its preview; a reclaimed
+row cannot be recreated by a late patch.
 
 ## Bounds and compatibility
 

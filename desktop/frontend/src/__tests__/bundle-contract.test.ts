@@ -35,7 +35,6 @@ function lazyRuntimeImport(owner: string, target: string): boolean {
   return dynamic && !eager;
 }
 const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
-const exportOwnerSource = readFileSync(resolve(here, "../app-runtime/useSessionExportCommands.ts"), "utf8");
 const historyOwnerSource = readFileSync(resolve(here, "../app-runtime/useHistoryCommands.ts"), "utf8");
 const paletteOwnerSource = readFileSync(resolve(here, "../app-runtime/usePaletteCommands.tsx"), "utf8");
 const projectTreeSource = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf8");
@@ -57,8 +56,8 @@ ok(
   "App keeps session export code out of the initial chunk",
 );
 ok(
-  exportOwnerSource.includes('import("../lib/sessionExportData")') &&
-    exportOwnerSource.includes('import("../lib/sessionExport")'),
+  lazyRuntimeImport("../app-runtime/useSessionExportCommands.ts", "../lib/sessionExportOperation") &&
+    lazyRuntimeImport("../lib/sessionExportOperation.ts", "./sessionExport"),
   "App loads session export code on demand",
 );
 ok(

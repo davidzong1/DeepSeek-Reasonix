@@ -44,7 +44,7 @@ func (s *Service) summarizeImages(ctx context.Context, modelRef string, images, 
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	stream, err := visionProvider.Stream(requestCtx, provider.Request{
+	stream, err := provider.Stream(requestCtx, visionProvider, provider.Request{
 		Messages:    []provider.Message{{Role: provider.RoleUser, Content: visionSummaryPrompt, Images: append([]string(nil), images...)}},
 		Temperature: provider.TemperaturePtr(0),
 		MaxTokens:   visionSummaryMaxTokens,

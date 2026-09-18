@@ -627,6 +627,10 @@ func (c *Catalog) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 		where = append(where, `s.scope='project'`, `s.workspace_root=?`)
 		args = append(args, strings.TrimSpace(req.WorkspaceRoot))
 	}
+	if path := strings.TrimSpace(req.SessionPath); path != "" {
+		where = append(where, `d.source_path=?`)
+		args = append(args, filepath.Clean(path))
+	}
 	if len(req.Kinds) > 0 {
 		placeholders := make([]string, len(req.Kinds))
 		for i, kind := range req.Kinds {

@@ -79,3 +79,33 @@ func (a *App) clearRemotePendingExtensionForm(tabID, pluginID, surfaceID string)
 		a.emitRemoteEvent("remote-tab:updated", meta)
 	}
 }
+
+func (a *App) clearRemotePendingExtensionFormExact(tabID, pluginID, surfaceID, formInstanceID string) {
+	a.remoteTabMu.Lock()
+	var meta TabMeta
+	changed := false
+	if tab := a.remoteTabs[tabID]; tab != nil {
+		frame := tab.pendingEvents[remotePendingExtensionFormKey]
+		var probe struct {
+			Extension *struct {
+				PluginID       string `json:"pluginId"`
+				SurfaceID      string `json:"surfaceId"`
+				FormInstanceID string `json:"formInstanceId"`
+			} `json:"extension"`
+		}
+		if json.Unmarshal(frame, &probe) == nil && probe.Extension != nil &&
+			probe.Extension.PluginID == pluginID && probe.Extension.SurfaceID == surfaceID &&
+			probe.Extension.FormInstanceID == formInstanceID {
+			tab.runtime.revision++
+			delete(tab.pendingEvents, remotePendingExtensionFormKey)
+			pending := len(tab.pendingEvents) > 0
+			changed = tab.runtime.pendingPrompt != pending
+			tab.runtime.pendingPrompt = pending
+			meta = remoteTabMetaLocked(tab)
+		}
+	}
+	a.remoteTabMu.Unlock()
+	if changed {
+		a.emitRemoteEvent("remote-tab:updated", meta)
+	}
+}

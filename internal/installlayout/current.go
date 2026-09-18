@@ -402,7 +402,8 @@ func ActiveUpdateHelperPath(installRoot string) (string, error) {
 	return path, nil
 }
 
-// LauncherBinaryName is the permanent thin launcher at InstallRoot.
+// LauncherBinaryName is the payload launcher name. On Windows it is also the
+// legacy installed entry; do not rename it in signed update payloads.
 func LauncherBinaryName() string {
 	if runtime.GOOS == "windows" {
 		return "reasonix-launcher.exe"
@@ -410,7 +411,15 @@ func LauncherBinaryName() string {
 	return "reasonix-launcher"
 }
 
-// PortableAliasName is the Windows portable entry (Reasonix.exe).
+// CanonicalLauncherBinaryName is the preferred installed GUI entry.
+func CanonicalLauncherBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "Reasonix.exe"
+	}
+	return LauncherBinaryName()
+}
+
+// PortableAliasName is the historical name for the canonical Windows entry.
 func PortableAliasName() string {
 	if runtime.GOOS == "windows" {
 		return "Reasonix.exe"

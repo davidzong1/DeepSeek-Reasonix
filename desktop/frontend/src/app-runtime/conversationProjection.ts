@@ -20,11 +20,25 @@ export function projectNavigationSurfaceTarget(input: {
 }) {
   const { remote, local } = input;
   const availability = projectSessionAvailability(input);
+  if (!remote) {
+    // Local history has its own controller-independent canonical read path.
+    // Navigation paint therefore waits for the readable history cut, not for
+    // provider/MCP/lease runtime readiness. Write actions remain fenced by
+    // controllerReady in the composer and command owners.
+    return {
+      activeTabId: input.activeTabId,
+      sessionKey: input.sessionKey,
+      ready: Boolean(input.activeTabId) && !local.hydrating && !local.hydrateError,
+      backendActivationPending: false,
+      hydrating: Boolean(local.hydrating),
+      hydrateError: local.hydrateError,
+    };
+  }
   return {
     activeTabId: input.activeTabId,
-    sessionKey: remote ? JSON.stringify([input.sessionKey, remote.surfaceGeneration]) : input.sessionKey,
+    sessionKey: JSON.stringify([input.sessionKey, remote.surfaceGeneration]),
     ready: availability.kind === "ready",
-    backendActivationPending: remote ? false : Boolean(local.backendActivationPending),
+    backendActivationPending: false,
     hydrating: availability.kind === "loading",
     hydrateError: availability.kind === "error" ? availability.detail || availability.source : undefined,
   };

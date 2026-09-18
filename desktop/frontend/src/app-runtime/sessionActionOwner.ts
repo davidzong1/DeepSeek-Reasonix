@@ -1,11 +1,9 @@
 import type { CollaborationMode, QuestionAnswer, ToolApprovalMode } from "../lib/types";
+import type { InteractionTarget } from "../lib/interactionTarget";
+export { interactionInstanceKey as sessionPromptInstanceKey } from "../lib/interactionTarget";
 import type { SessionOperationAuthority } from "./useSessionOperations";
 
-export type SessionPromptTarget = Readonly<{
-  tabId: string;
-  sessionKey: string;
-  promptId: string;
-}>;
+export type SessionPromptTarget = InteractionTarget;
 
 export type PlanDecisionAction = "start_execution" | "revise_plan" | "exit_plan";
 export type RecoveryAction = "continue" | "continue_task" | "revise" | "stop";
@@ -13,11 +11,11 @@ export type MCPInteractionAction = "accept" | "decline" | "cancel";
 
 
 export type SessionActionPorts = {
-  approveForTab: (tabId: string, id: string, allow: boolean, session: boolean, persist: boolean) => void;
-  resolvePlanForTab: (tabId: string, id: string, action: PlanDecisionAction) => void;
-  resolveRecoveryForTab: (tabId: string, id: string, action: RecoveryAction, feedback: string) => void;
-  answerQuestionForTab: (tabId: string, id: string, answers: QuestionAnswer[]) => Promise<void>;
-  answerMCPForTab: (tabId: string, id: string, action: MCPInteractionAction, content?: Record<string, unknown>) => void;
+  approveForTab: (target: SessionPromptTarget, allow: boolean, session: boolean, persist: boolean) => void;
+  resolvePlanForTab: (target: SessionPromptTarget, action: PlanDecisionAction) => void;
+  resolveRecoveryForTab: (target: SessionPromptTarget, action: RecoveryAction, feedback: string) => void;
+  answerQuestionForTab: (target: SessionPromptTarget, answers: QuestionAnswer[]) => Promise<void>;
+  answerMCPForTab: (target: SessionPromptTarget, action: MCPInteractionAction, content?: Record<string, unknown>) => void;
   setCollaborationModeForTab: (tabId: string, mode: CollaborationMode) => Promise<void>;
   clearGoalForTab: (tabId: string) => Promise<void>;
   setRemoteComposerProfile: (
@@ -36,7 +34,7 @@ export function submitApproval(
   input: { allow: boolean; session: boolean; persist: boolean },
   ports: Pick<SessionActionPorts, "approveForTab">,
 ): void {
-  ports.approveForTab(target.tabId, target.promptId, input.allow, input.session, input.persist);
+  ports.approveForTab(target, input.allow, input.session, input.persist);
 }
 
 export async function submitPlanDecision(
@@ -69,7 +67,7 @@ export async function submitPlanDecision(
     ports.patchComposerProfile(target.tabId, "normal");
   }
   authority.checkpoint();
-  ports.resolvePlanForTab(target.tabId, target.promptId, input.action);
+  ports.resolvePlanForTab(target, input.action);
 }
 
 export function submitRecovery(
@@ -78,7 +76,7 @@ export function submitRecovery(
   feedback: string,
   ports: Pick<SessionActionPorts, "resolveRecoveryForTab">,
 ): void {
-  ports.resolveRecoveryForTab(target.tabId, target.promptId, action, feedback);
+  ports.resolveRecoveryForTab(target, action, feedback);
 }
 
 export function submitQuestion(
@@ -86,7 +84,7 @@ export function submitQuestion(
   answers: QuestionAnswer[],
   ports: Pick<SessionActionPorts, "answerQuestionForTab">,
 ): Promise<void> {
-  return ports.answerQuestionForTab(target.tabId, target.promptId, answers);
+  return ports.answerQuestionForTab(target, answers);
 }
 
 export function submitMCPInteraction(
@@ -95,5 +93,5 @@ export function submitMCPInteraction(
   content: Record<string, unknown> | undefined,
   ports: Pick<SessionActionPorts, "answerMCPForTab">,
 ): void {
-  ports.answerMCPForTab(target.tabId, target.promptId, action, content);
+  ports.answerMCPForTab(target, action, content);
 }

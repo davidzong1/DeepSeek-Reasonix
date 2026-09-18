@@ -1,7 +1,6 @@
 import { useEffect } from "react";
-import { app } from "../lib/bridge";
+import type { SessionSelector } from "../generated/desktopContract.generated";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
-import { safeFilename } from "../lib/sessionTitles";
 import { applyThemeScene } from "../lib/themePack";
 import { useOverlayStore } from "../store/overlays";
 import type { Translator } from "../lib/i18n";
@@ -13,11 +12,12 @@ export type SessionExportFormat = "markdown" | "json" | "pdf" | "image" | "diagn
  * Owns the session export commands (markdown/json/pdf/image file pickers and
  * writers), the export popover outside-click close and the theme scene that
  * switches between the empty home and the content task scene. Each command
- * captures the session title/items/live snapshot of the render that published
- * it; the renderer chunks stay lazy behind the file dialog.
+ * captures the source identity and title of the render that published
+ * it; resident items are used only for diagnostic counters; the renderer chunks stay lazy behind the file dialog.
  */
 export function useSessionExportCommands(input: {
   tabId?: string;
+  selector?: SessionSelector;
   remote: boolean;
   sessionTitle: string;
   items: readonly Item[];
@@ -45,58 +45,29 @@ export function useSessionExportCommands(input: {
     return () => document.removeEventListener("mousedown", onDown);
   }, [setTopicExportOpen, topicExportOpen]);
 
-  const getSessionMarkdown = useCommittedCommand(async () => (await import("../lib/sessionExportData")).sessionItemsToMarkdown(sessionTitle, Array.from(items), live));
-  const getSessionJson = useCommittedCommand(async () => (await import("../lib/sessionExportData")).sessionItemsToJson(sessionTitle, Array.from(items), live));
-
+  const run = useCommittedCommand(async (format: SessionExportFormat | "clipboard") => (await import("../lib/sessionExportOperation")).runSessionExport({
+    selector: input.selector ?? {}, tabId: tabId ?? "", format, title: sessionTitle, remote,
+    residentItems: items.length, runningStream: Boolean(live), unresolvedTools: items.filter(item => item.kind === "tool" && item.resultMissing).length,
+  }));
+  const getSessionMarkdown = useCommittedCommand(async () => {
+    try {
+      const result = await run("clipboard");
+      if (!result || result.cancelled) throw new DOMException("Export cancelled", "AbortError");
+      return result.text ?? "";
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) showToast(t("topicBar.exportFailed", { error: error instanceof Error ? error.message : String(error) }), "error", { durationMs: 8000 });
+      throw error;
+    }
+  });
   const exportSession = useCommittedCommand(async (format: SessionExportFormat) => {
-    const base = safeFilename(sessionTitle);
     setTopicExportOpen(false);
     try {
-      if (format === "diagnostic") {
-        const path = await app.ExportGoalDiagnostics();
-        if (path) showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
-      } else if (format === "json") {
-        const path = await app.PickExportFile(`${base}.json`, "application/json");
-        if (path) {
-          await app.SaveExportFile(path, await getSessionJson(), false);
-          showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
-        }
-      } else if (format === "pdf") {
-        const path = await app.PickExportFile(`${base}.pdf`, "application/pdf");
-        if (!path) return;
-        const { blobToBase64, renderSessionPdfBlob } = await import("../lib/sessionExport");
-        const blob = await renderSessionPdfBlob(await getSessionMarkdown(), sessionTitle);
-        await app.SaveExportFile(path, await blobToBase64(blob), true);
-        showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
-      } else if (format === "image") {
-        const path = await app.PickExportFile(`${base}.png`, "image/png");
-        if (!path) return;
-        const { renderSessionImageBase64Payloads } = await import("../lib/sessionExport");
-        const payloads = await renderSessionImageBase64Payloads(await getSessionMarkdown());
-        await app.SaveExportImageFiles(path, payloads);
-        showToast(
-          payloads.length > 1
-            ? t("topicBar.exportImageParts", { count: payloads.length })
-            : t("topicBar.exportSuccess", { count: 1 }),
-          "info",
-        );
-      } else {
-        const path = await app.PickExportFile(`${base}.md`, "text/markdown");
-        if (path) {
-          if (tabId && !remote) await app.SaveSessionMarkdownForTab(tabId, path, sessionTitle);
-          else await app.SaveExportFile(path, await getSessionMarkdown(), false);
-          showToast(t("topicBar.exportSuccess", { count: 1 }), "info");
-        }
-      }
+      const result = await run(format);
+      if (result && !result.cancelled) showToast(`${sessionTitle} · ${t("topicBar.exportSuccess", { count: result.files })}`, "info");
     } catch (err) {
-      console.error("Failed to export session", err);
-      showToast(
-        t("topicBar.exportFailed", { error: err instanceof Error ? err.message : String(err) }),
-        "error",
-        { durationMs: 8000 },
-      );
+      showToast(t("topicBar.exportFailed", { error: err instanceof Error ? err.message : String(err) }), "error", { durationMs: 8000 });
     }
   });
 
-  return { getSessionMarkdown, getSessionJson, exportSession };
+  return { getSessionMarkdown, exportSession };
 }

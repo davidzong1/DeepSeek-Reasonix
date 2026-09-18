@@ -25,6 +25,8 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 | --- | --- |
 | 全局配置 | `<Reasonix home>/config.toml` |
 | 全局 provider 凭据 | `<Reasonix home>/.env` |
+| 进行中的模型凭据提交 | `<Reasonix home>/transactions/model-credentials/` |
+| 已完成的模型设置回执 | `<Reasonix home>/transactions/model-settings-receipts/` |
 | 旧 credentials 导入来源 | `<Reasonix home>/credentials` |
 | 全局斜杠命令 | `<Reasonix home>/commands/` |
 | 全局 skills | `<Reasonix home>/skills/` |
@@ -62,10 +64,12 @@ event log 也仍是权威数据；可重建的跨项目投影见
 Reasonix 写入用户配置的 provider、plugin、UI、desktop、tool、skill、sandbox、
 bot 和 agent 设置。Provider 条目只保存 `api_key_env` 里的凭据变量名，不保存真实密钥值。
 
-已保存的 provider 与 bot 凭据变量不会进入任何由模型控制的子进程环境。Reasonix 的
-文件读取工具、受沙盒保护的 shell 命令和 MCP server 也无法读取全局凭据 `.env`；
-项目自身的普通 `.env` 可见性保持不变。Windows 的 shell 命令仍不具备 OS 级沙箱，
-详见《使用指南》，因此只应为可信任务批准 shell 权限。
+已保存的 provider 与 bot 凭据变量不会进入任何由模型控制的子进程环境。在 macOS
+和 Linux 上，Reasonix 的文件读取工具、受沙盒保护的 shell 命令和 MCP server 也
+无法读取全局凭据 `.env`；项目自身的普通 `.env` 可见性保持不变。Windows 使用与
+Harness 同类的 `WRITE_RESTRICTED` 令牌，只约束写入、不隔离读取。本地工具仍以当前
+系统用户运行，可以主动读取该用户可读的文件，包括凭据存储；因此受限权限应视为
+写入边界，而不是凭据保险库。
 
 示例：
 
@@ -108,25 +112,23 @@ CJK 双宽字符；如果偏好其它形状，可以设为 `block` 或 `underlin
 
 ### 自定义 provider 的 `api_key_env` 命名
 
-通过桌面端设置或 `reasonix setup` 添加自定义 provider 时，Reasonix 会把生成的
-`api_key_env` 保存到 `config.toml`，并把真实密钥值写入全局 `.env` 中同名的 key。
-生成结果是稳定的，因此同一个 provider 重启后仍会读取同一个凭据槽位。
+通过桌面端设置、TUI `/setup` 或 `reasonix setup` 新增、替换或明确清空 provider
+凭据时，Reasonix 会分配新的 `REASONIX_CONNECTION_*_KEY` 独立槽位，先写入槽位，再
+原子发布所选 provider 的新 `api_key_env` 引用。其他 provider 即使此前共享固定变量，也
+会保留原引用。已有固定名称继续可读，启动时不会批量迁移。
 
-Reasonix 会根据 provider 名称生成默认值。能规范化成 ASCII 的名称会得到可读的
+旧版或手工 provider 条目仍可能根据 provider 名称生成默认变量。能规范化成 ASCII 的名称会得到可读的
 env 名，例如 `LOCAL_GATEWAY_API_KEY`；如果名称全部由中文等非 ASCII 字符组成，则会
 生成带稳定 hash 后缀的名称，例如 `CUSTOM_d39b9067_API_KEY`，避免多个中文 provider
 都共用 `CUSTOM_API_KEY`。如果名称以数字开头，则会添加 `CUSTOM_` 前缀以保证生成的
 环境变量名合法；例如 `9router` 会生成 `CUSTOM_9ROUTER_API_KEY`。
 
-CLI 的自定义 provider 向导会先根据 base URL 生成 provider 名称，再套用同一套
-provider-name 规则。例如 `https://token.sensenova.cn/v1` 会生成 provider 名
-`custom-token-sensenova-cn`，默认 key env 是 `CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`。
-直接回车会接受这个默认值；如果你确实想让多个 provider 共用一个凭据，也可以手动输入
-`CUSTOM_API_KEY` 或其他自定义 env 名。
+CLI 的自定义 provider 向导在构建草稿时仍会先根据 base URL 生成 provider 名称，再套用
+同一规则；提交时会把保存后的连接切换到新分配的独立槽位。
 
 升级时不会自动改写已有配置。旧配置中已经使用 `CUSTOM_API_KEY` 的自定义 provider 会继续
-读取这个 key。若多个旧自定义 provider 已经意外共用了 `CUSTOM_API_KEY`，需要手动把各自的
-`api_key_env` 改成不同名称，并重新保存对应的 API key。
+读取这个 key。若多个旧自定义 provider 已经意外共用了 `CUSTOM_API_KEY`，重新保存每个
+连接的 API key，即可将对应连接轮换到独立槽位。
 
 ### 自定义 provider 的端点 URL
 

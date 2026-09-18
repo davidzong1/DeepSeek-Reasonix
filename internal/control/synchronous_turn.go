@@ -22,6 +22,9 @@ func (c *Controller) runSynchronousTurn(
 		return ErrTurnRunning
 	}
 	defer releaseAdmission()
+	if err := c.authentication.admissionError(); err != nil {
+		return err
+	}
 	if err := c.ensureWriteAuthorityReady(); err != nil {
 		return err
 	}
@@ -102,6 +105,7 @@ func (c *Controller) runSynchronousTurn(
 	run = c.prepareTurnAdmission(run)
 	releaseAdmission()
 	runErr := run(ctx)
+	c.authentication.recordFailure(runErr, c.ModelRef())
 	// Keep the execution binding through the synchronous terminal commit just
 	// like the asynchronous loop. Close may make the public controller view
 	// closed here, but it cannot release the ledger/session underneath TurnDone.

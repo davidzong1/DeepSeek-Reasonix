@@ -86,6 +86,7 @@ type pageCursor struct {
 	SortOrder   int64  `json:"o,omitempty"`
 	Activity    int64  `json:"a"`
 	TopicID     string `json:"t"`
+	Binding     string `json:"b,omitempty"`
 }
 
 func Open(ctx context.Context, opts Options) (*Catalog, error) {
@@ -660,6 +661,10 @@ func EncodeTopicCursor(pinned int, lastActivityAt int64, topicID string) string 
 	return encodeCursor(pageCursor{Pinned: pinned, Activity: lastActivityAt, TopicID: topicID})
 }
 
+func EncodeTopicCursorBound(pinned int, lastActivityAt int64, topicID, binding string) string {
+	return encodeCursor(pageCursor{Pinned: pinned, Activity: lastActivityAt, TopicID: topicID, Binding: binding})
+}
+
 // EncodeOrderedTopicCursor builds a cursor for a workspace with explicit
 // manual topic ordering. A negative sortOrder places metadata-free/runtime
 // topics after every explicitly ranked topic in the same pinned bucket.
@@ -671,6 +676,17 @@ func EncodeOrderedTopicCursor(pinned, sortOrder int, lastActivityAt int64, topic
 	return encodeCursor(pageCursor{
 		Pinned: pinned, ManualOrder: true, SortOrder: manualSortOrder,
 		Activity: lastActivityAt, TopicID: topicID,
+	})
+}
+
+func EncodeOrderedTopicCursorBound(pinned, sortOrder int, lastActivityAt int64, topicID, binding string) string {
+	manualSortOrder := int64(sortOrder)
+	if sortOrder < 0 {
+		manualSortOrder = unrankedTopicSortOrder
+	}
+	return encodeCursor(pageCursor{
+		Pinned: pinned, ManualOrder: true, SortOrder: manualSortOrder,
+		Activity: lastActivityAt, TopicID: topicID, Binding: binding,
 	})
 }
 

@@ -36,12 +36,7 @@ func (a *App) continueLegacySessionForTranscript(tab *WorkspaceTab, ctrl control
 	a.mu.RLock()
 	createOptions := desktopLegacyImportOptions(snapshotTabRuntimeLocked(tab).workspaceRoot)
 	a.mu.RUnlock()
-	var err error
-	if creator, ok := identity.(control.IdentityCreateLifecycle); ok {
-		_, err = creator.ContinueLegacySessionWithOptions(a.bootContext(), sourcePath, "", createOptions)
-	} else {
-		_, err = identity.ContinueLegacySession(a.bootContext(), sourcePath, "")
-	}
+	_, err := a.openOrImportDesktopLegacySession(a.bootContext(), identity, sourcePath, createOptions)
 	if err != nil {
 		return HistoryPage{}, err
 	}

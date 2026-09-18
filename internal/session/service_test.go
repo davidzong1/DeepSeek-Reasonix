@@ -492,7 +492,7 @@ func TestServiceImportValidatesSelfContainedContentAndPublishesAtomically(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = source.CloseAll(context.Background()) })
+	t.Cleanup(func() { _ = source.Shutdown(context.Background()) })
 	runtime, err := source.Create(t.Context(), CreateOptions{SessionID: "portable"})
 	if err != nil {
 		t.Fatal(err)
@@ -517,7 +517,7 @@ func TestServiceImportValidatesSelfContainedContentAndPublishesAtomically(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = target.CloseAll(context.Background()) })
+	t.Cleanup(func() { _ = target.Shutdown(context.Background()) })
 	ref, err := target.Import(t.Context(), bundle)
 	if err != nil {
 		t.Fatal(err)
@@ -542,6 +542,7 @@ func TestServiceImportValidatesSelfContainedContentAndPublishesAtomically(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = headerTarget.Shutdown(context.Background()) })
 	headerRef, err := headerTarget.ImportWithHeader(t.Context(), bundle, CreateOptions{SessionID: "portable", CWD: "/workspace", Origin: SessionOriginCanonicalImport})
 	if err != nil {
 		t.Fatal(err)

@@ -26,7 +26,20 @@ function submit(state: ReducerState, text: string, seq: number): ReducerState {
 
 function userById(state: ReducerState, id: string) {
   const item = state.items.find((candidate) => candidate.kind === "user" && candidate.id === id);
-  return item?.kind === "user" ? item : undefined;
+  if (item?.kind === "user") return item;
+  const local = Object.values(state.localSubmissions).find((candidate) => candidate.localId === id);
+  return local ? {
+    kind: "user" as const,
+    id: local.localId,
+    submissionId: local.submissionId,
+    text: local.text,
+    checkpointTurn: local.checkpointTurn,
+    failed: local.status === "failed",
+  } : undefined;
+}
+
+function localById(state: ReducerState, id: string) {
+  return Object.values(state.localSubmissions).find((candidate) => candidate.localId === id);
 }
 
 function checkpoint(state: ReducerState, id: string): number | undefined {
@@ -51,7 +64,7 @@ console.log("\nturn checkpoint submission binding");
   state = reducer(state, { type: "event", e: { kind: "turn_done", submissionId: "s0", checkpointTurn: 0 } });
 
   eq(checkpoint(state, "u0"), 0, "turn zero is assigned by exact submission id");
-  eq(userById(state, "u0")?.submissionId, undefined, "TurnDone clears the settled item's correlation");
+  eq(localById(state, "u0")?.settled, true, "TurnDone consumes the local checkpoint authority once");
   eq(state.pendingSubmissionId, undefined, "matching TurnDone confirms the optimistic submit");
   eq(state.items.some((item) => item.kind === "notice" && item.text === "runtime notice"), true, "intervening items cannot change the target");
 }
@@ -65,7 +78,7 @@ console.log("\nturn checkpoint submission binding");
   state = reducer(state, { type: "event", e: { kind: "turn_done", submissionId: "missing", checkpointTurn: 10 } });
   eq(checkpoint(state, "u1"), undefined, "unknown submission id cannot rewrite another user");
   state = reducer(state, { type: "event", e: { kind: "turn_done", submissionId: "s1" } });
-  eq(userById(state, "u1")?.submissionId, undefined, "matching checkpoint-less TurnDone still settles the correlation");
+  eq(localById(state, "u1")?.settled, true, "matching checkpoint-less TurnDone still settles the correlation");
   state = reducer(state, { type: "event", e: { kind: "turn_done", submissionId: "s1", checkpointTurn: 11 } });
   eq(checkpoint(state, "u1"), undefined, "duplicate TurnDone cannot backfill a settled checkpoint-less turn");
 }
@@ -206,11 +219,14 @@ console.log("\nturn checkpoint submission binding");
   state = submit(state, "new pending", 91);
   const unchanged = state;
   state = reducer(state, { type: "send_failed", submissionId: "s90", error: "late old rejection" });
-  eq(state, unchanged, "stale send_failed is a complete no-op for a newer pending id");
+  eq(state.pendingSubmissionId, unchanged.pendingSubmissionId, "old rejection preserves the newer pending id");
+  eq(state.running, unchanged.running, "old rejection preserves the newer runtime");
+  eq(state.localSubmissions.s91, unchanged.localSubmissions.s91, "old rejection leaves the newer echo unchanged");
+  eq(userById(state, "u90")?.failed, true, "old rejection settles only its own retained echo");
   state = reducer(state, { type: "send_failed", submissionId: "s91", error: "current rejection" });
   eq(userById(state, "u91")?.failed, true, "current send_failed marks the exact pending user");
   eq(userById(state, "u91")?.submissionId, "s91", "send_failed preserves durable identity for a late canonical receipt");
-  eq(userById(state, "u90")?.failed, undefined, "current send_failed cannot mark an older user");
+  eq(userById(state, "u90")?.failed, true, "current rejection preserves the older echo status");
 }
 
 {
@@ -232,7 +248,7 @@ console.log("\nturn checkpoint submission binding");
 
   state = submit(state, "new runtime prompt", 111);
   state = reducer(state, { type: "controller_rebuilt" });
-  eq(userById(state, "u111")?.submissionId, undefined, "controller rebuild retires the old item correlation");
+  eq(localById(state, "u111")?.settled, true, "controller rebuild retires the old checkpoint authority");
   state = reducer(state, { type: "event", e: { kind: "turn_done", submissionId: "s111", checkpointTurn: 99 } });
   eq(checkpoint(state, "u111"), undefined, "late pre-rebuild TurnDone cannot stamp the retired item");
   state = submit(state, "post-rebuild prompt", 112);

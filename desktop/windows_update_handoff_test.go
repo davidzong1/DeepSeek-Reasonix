@@ -110,7 +110,7 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`LangString reasonixUpdateSubtitle ${LANG_TRADCHINESE} "正在安裝已驗證的更新，完成後 Reasonix 將自動重新啟動。"`,
 		"Function reasonix.waitForExecutableUnlock",
 		`FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a`,
-		`FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a`,
+		`FileOpen $1 "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_GUARD}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a`,

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	historyIndexVersion     = 9
+	historyIndexVersion     = 10
 	HistoryPageDefaultLimit = 100
 	HistoryPageMaxLimit     = 500
 	HistoryPageMaxBytes     = 2 << 20
@@ -28,20 +28,21 @@ const (
 // deliberately separate from provider.Message: provider DTOs are materialized
 // only at model or compatibility boundaries.
 type PersistentMessage struct {
-	SubmissionID   string              `json:"submissionId,omitempty"`
-	SamplingCount  *int                `json:"samplingCount,omitempty"`
-	ToolCount      *int                `json:"toolCount,omitempty"`
-	TurnFinal      bool                `json:"turnFinal,omitempty"`
-	TurnDurationMs int64               `json:"turnDurationMs,omitempty"`
-	MessageID      string              `json:"messageId"`
-	Position       int64               `json:"position"`
-	Version        int                 `json:"version"`
-	Role           string              `json:"role"`
-	Preview        string              `json:"preview,omitempty"`
-	EventSequence  uint64              `json:"eventSequence"`
-	VisibleTurn    int                 `json:"visibleTurn"`
-	Inline         json.RawMessage     `json:"inline,omitempty"`
-	ContentRef     *sessioncontent.Ref `json:"contentRef,omitempty"`
+	ToolObservations map[string]ToolObservation `json:"toolObservations,omitempty"`
+	SubmissionID     string                     `json:"submissionId,omitempty"`
+	SamplingCount    *int                       `json:"samplingCount,omitempty"`
+	ToolCount        *int                       `json:"toolCount,omitempty"`
+	TurnFinal        bool                       `json:"turnFinal,omitempty"`
+	TurnDurationMs   int64                      `json:"turnDurationMs,omitempty"`
+	MessageID        string                     `json:"messageId"`
+	Position         int64                      `json:"position"`
+	Version          int                        `json:"version"`
+	Role             string                     `json:"role"`
+	Preview          string                     `json:"preview,omitempty"`
+	EventSequence    uint64                     `json:"eventSequence"`
+	VisibleTurn      int                        `json:"visibleTurn"`
+	Inline           json.RawMessage            `json:"inline,omitempty"`
+	ContentRef       *sessioncontent.Ref        `json:"contentRef,omitempty"`
 }
 
 type MessageHistoryPage struct {
@@ -203,6 +204,9 @@ var historyMigrations = []projectiondb.Migration{{Version: 1, Apply: func(ctx co
 	return err
 }}, {Version: 9, Apply: func(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `CREATE TABLE submissions (session_id TEXT NOT NULL, submission_id TEXT NOT NULL, message_id TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(session_id,submission_id)); CREATE INDEX submissions_message ON submissions(message_id)`)
+	return err
+}}, {Version: 10, Apply: func(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE tool_links (message_id TEXT NOT NULL,digest TEXT NOT NULL,call_id TEXT NOT NULL,is_result INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(message_id,digest,call_id,is_result)); CREATE INDEX tool_links_call ON tool_links(call_id,is_result); CREATE TABLE tool_states (call_id TEXT NOT NULL,sequence INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(call_id,sequence))`)
 	return err
 }}}
 

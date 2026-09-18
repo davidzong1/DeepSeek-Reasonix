@@ -27,7 +27,30 @@ func (e *RoleReasoningError) Unwrap() error { return e.Err }
 // ValidateReasoningSnapshot lets Desktop validate a pending configuration
 // before a workspace correction is allowed to retire its current controller.
 func ValidateReasoningSnapshot(cfg *config.Config, opts Options) error {
+	opts = rebindReasoningSelection(cfg, opts)
 	return preflightRoleReasoning(cfg, opts, opts.ProviderResolver, false)
+}
+
+func rebindReasoningSelection(cfg *config.Config, opts Options) Options {
+	if opts.EffortModel != "" {
+		target := opts.Model
+		if target == "" {
+			target, _, _ = cfg.ResolveNewSessionChatModel()
+		}
+		opts.EffortOverride = config.RebindSessionEffort(cfg, opts.EffortModel, target, opts.EffortOverride)
+	}
+	return opts
+}
+
+func resolveBuildSelection(root string, opts Options) (*config.Config, Options, error) {
+	cfg, err := resolveBuildConfiguration(root, opts.Model, opts.ConfigSnapshot)
+	if err != nil {
+		return nil, opts, err
+	}
+	if err := opts.ModelSettings.Apply(cfg, root); err != nil {
+		return nil, opts, err
+	}
+	return cfg, rebindReasoningSelection(cfg, opts), nil
 }
 
 // resolveBuildConfiguration gives a caller-owned snapshot the runtime contract
@@ -123,7 +146,7 @@ func preflightRoleReasoning(cfg *config.Config, opts Options, resolver provider.
 			}
 			return fmt.Errorf("%s_model %q: %w", selection.role, ref, err)
 		}
-		copy := *entry
+		copy := *config.ResolveReasoningEntry(entry)
 		source := "provider default"
 		if copy.Effort != "" {
 			source = "providers." + copy.Name + ".effort"

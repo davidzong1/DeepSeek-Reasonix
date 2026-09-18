@@ -23,8 +23,10 @@ Ordinary requests always enter the executor. There is no automatic simple /
 light / full task mode to pick. The dedicated planner runs only for an
 explicit Plan, an approval boundary, or Goal start.
 
-Running `reasonix` without a subcommand starts the interactive terminal UI. Use
-`reasonix setup` first when no provider is configured.
+Running `reasonix` without a subcommand starts the interactive terminal UI. If
+the selected connection has no credential, the local connection picker opens
+instead of sending a request. History and local commands remain available while
+authentication is incomplete.
 
 | Flag | Purpose |
 | --- | --- |
@@ -80,12 +82,28 @@ or CLI changes are retained, while an overlapping change is reported as a
 conflict instead of being overwritten.
 
 Provider definitions contain only the `api_key_env` variable name. Key values
-are stored in the shared Reasonix home `.env`, even with `--local`. When a
-variable name is already used by another provider, setup asks whether to share
-that credential; choose a different variable name when the providers use
-different keys. Providers added or removed through setup are also added to or
-removed from desktop provider access, so the same models are available in the
-desktop app.
+are stored in the shared Reasonix home `.env`, even with `--local`. Adding,
+replacing, or explicitly clearing a key creates a fresh private credential slot
+and atomically switches only the selected connection to it. Existing fixed
+variables remain readable and migrate only when that connection is edited.
+
+Inside the TUI, `/setup` opens the same connection flow and `/auth` is an alias.
+The key field is masked; press `Ctrl+T` to test the draft connection, Enter to
+save, or Escape to cancel. `/?` is an alias for `/help`. Authentication that is
+not ready never turns ordinary input into a provider request.
+
+```sh
+reasonix doctor credentials
+reasonix doctor credentials --json
+reasonix doctor credentials --probe
+reasonix doctor credentials --repair --dry-run
+reasonix doctor credentials --repair
+```
+
+The default diagnostic is read-only. `--probe` tests temporary create and
+atomic rename without replacing `.env`. Repair is limited to a current-user-
+owned regular file inside Reasonix home; it does not take ownership, remove deny
+rules, grant `Everyone`, follow links/reparse points, or kill a file holder.
 
 ### Configure fee display currency
 
@@ -262,7 +280,12 @@ Diagnose with `reasonix doctor billing`.
 
 Execution failures use `subtype: "error_during_execution"` and
 `is_error: true`. Structured modes keep runtime errors in JSON instead of also
-printing a duplicate human-readable error.
+printing a duplicate human-readable error. Authentication failures also include
+optional `error_code`, `authentication_status`, and `recovery_actions` fields.
+The same fields appear on the final `run_done` record from `--events-jsonl`.
+For example, a missing key reports `missing_credential` and actions such as
+`configure_credentials`, `select_model`, and `diagnose_credentials`; no model
+request is made.
 
 The completion validator has been removed. A clean model stop without tool
 calls ends the turn directly; a response with tools continues through the tool

@@ -3,28 +3,39 @@ package main
 import (
 	"errors"
 	"reasonix/internal/session"
+	"strings"
 )
 
 // DeleteSession is the legacy archive RPC. Canonical content and legacy
 // originals remain in place; the lifecycle owner rejects active runtimes.
 func (a *App) DeleteSession(path string) error {
-	if id, ok := parseSessionRoute(path); ok {
-		return friendlySessionFileError(a.ArchiveCanonicalSession(session.SessionRef{HostID: localDesktopHostID, SessionID: id}))
+	_, err := a.archiveSessionPathWithOperation(path, "archive-"+strings.TrimPrefix(newTabID(), "tab_"))
+	return friendlySessionFileError(err)
+}
+
+func (a *App) archiveSessionPathWithOperation(path, operationID string) (SessionTarget, error) {
+	target, err := a.resolveSessionMutationTarget(sessionTargetSelector{SessionPath: path})
+	if err != nil {
+		return SessionTarget{}, err
 	}
+	if target.SessionRef.SessionID != "" {
+		return a.archiveCanonicalSessionWithOperation(target.SessionRef, operationID)
+	}
+	a.cancelAISessionTitle(target.key())
 	_, valid, err := a.sessionDirForPath(path)
 	if err != nil {
-		return friendlySessionFileError(err)
+		return SessionTarget{}, err
 	}
 	ref, adopted, err := a.legacyCanonicalRef(a.bootContext(), valid)
 	if err != nil {
-		return friendlySessionFileError(err)
+		return SessionTarget{}, err
 	}
 	if adopted {
-		return friendlySessionFileError(a.ArchiveCanonicalSession(ref))
+		return a.archiveCanonicalSessionWithOperation(ref, operationID)
 	}
 	release, ok := a.tryLockRuntimeMutation("archive historical session")
 	if !ok {
-		return errTopicArchiveBusy
+		return SessionTarget{}, errTopicArchiveBusy
 	}
 	ref, dependency, err := a.stageArchiveSource(a.bootContext(), valid)
 	var fallback fallbackRuntimeTarget
@@ -33,7 +44,7 @@ func (a *App) DeleteSession(path string) error {
 		if dependency != "" {
 			dependencies = append(dependencies, dependency)
 		}
-		fallback, err = a.archiveSessionRefsLocked([]session.SessionRef{ref}, dependencies...)
+		fallback, err = a.archiveSessionRefsWithOperation([]session.SessionRef{ref}, operationID, dependencies...)
 	}
 	release()
 	if err == nil {
@@ -41,8 +52,17 @@ func (a *App) DeleteSession(path string) error {
 			_ = a.openFallbackRuntime(fallback)
 		}
 		a.emitProjectTreeChanged()
+		archived, resolveErr := a.resolveCanonicalSessionTargetState(ref, "", true)
+		if resolveErr != nil {
+			archived = SessionTarget{SessionRef: ref}
+		}
+		a.emitSessionTargetChange("session_archived", SessionTargetChangeEvent{
+			TargetKey: target.key(), OperationID: operationID,
+			LifecycleGeneration: archived.LifecycleGeneration, WorkspaceID: archived.WorkspaceID,
+		})
+		return archived, nil
 	}
-	return friendlySessionFileError(err)
+	return SessionTarget{}, err
 }
 
 // PurgeTrashedSession resolves a legacy trash identity and removes only its

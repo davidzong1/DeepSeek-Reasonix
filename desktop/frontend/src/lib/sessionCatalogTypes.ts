@@ -37,6 +37,9 @@ export interface ProjectTopicPageRequest {
   query?: string;
   timeFilter?: string;
   sortMode?: "created" | "updated" | string;
+  groupFilter?: "all" | "ungrouped" | "group" | string;
+  groupId?: string;
+  excludePinned?: boolean;
 }
 
 export interface ProjectTopicPage {
@@ -78,6 +81,8 @@ export interface SessionGroup {
   id: string;
   title: string;
   topicIds?: string[];
+  sessionKeys?: string[];
+  excludedSessionKeys?: string[];
 }
 
 export interface ProjectGroupsSnapshot {
@@ -98,7 +103,11 @@ export interface SessionCatalogBindings {
 }
 
 export interface ProjectTreeOrganizationBindings {
+  GetSessionOrganization?(workspace: import("../generated/desktopContract.generated").SessionOrganizationWorkspace): Promise<import("../generated/desktopContract.generated").SessionOrganizationSnapshot>;
+  UpdateSessionOrganization?(workspace: import("../generated/desktopContract.generated").SessionOrganizationWorkspace, expectedRevision: number,
+    mutation: import("../generated/desktopContract.generated").SessionOrganizationMutation): Promise<import("../generated/desktopContract.generated").SessionOrganizationSnapshot>;
   ReorderTopics(scope: string, workspaceRoot: string, orderedTopicIDs: string[]): Promise<void>;
+  ReorderSessions?(scope: string, workspaceRoot: string, orderedSessionKeys: string[]): Promise<void>;
   ListProjectGroups(scope: string, workspaceRoot: string): Promise<SessionGroup[]>;
   SaveSessionGroups(scope: string, workspaceRoot: string, groups: SessionGroup[]): Promise<void>;
   GetProjectGroups?(scope: string, workspaceRoot: string): Promise<ProjectGroupsSnapshot>;

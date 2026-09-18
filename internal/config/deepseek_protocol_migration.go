@@ -123,7 +123,11 @@ func UpgradeDeepSeekProviderProtocolLocked(path, name string) (bool, error) {
 	return editLegacyDeepSeekProtocolFileLocked(path, name, false)
 }
 
-func editLegacyDeepSeekProtocolFileLocked(path, target string, automatic bool) (bool, error) {
+func (c *Config) UpgradeDeepSeekProviderProtocolLocked(path, name string) (bool, error) {
+	return editLegacyDeepSeekProtocolFileLocked(path, name, false, c.publishModelConfigBytes)
+}
+
+func editLegacyDeepSeekProtocolFileLocked(path, target string, automatic bool, publisher ...func(string, []byte, os.FileMode) error) (bool, error) {
 	resolved, exists, err := statConfigPath(path)
 	if err != nil || !exists {
 		return false, err
@@ -142,7 +146,11 @@ func editLegacyDeepSeekProtocolFileLocked(path, target string, automatic bool) (
 	if err != nil || !changed {
 		return changed, err
 	}
-	if err := fileutil.AtomicWriteFile(resolved, fileencoding.Encode(next, encoding), info.Mode().Perm()); err != nil {
+	write := fileutil.AtomicWriteFileStrict
+	if len(publisher) > 0 {
+		write = publisher[0]
+	}
+	if err := write(resolved, fileencoding.Encode(next, encoding), info.Mode().Perm()); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -347,6 +355,13 @@ type providerTOMLInlineBlock struct {
 	start, end               int
 	kindStart, kindEnd       int
 	baseURLStart, baseURLEnd int
+	fields                   map[string]providerTOMLInlineField
+	segments                 [][2]int
+}
+
+type providerTOMLInlineField struct {
+	valueStart, valueEnd int
+	segment              int
 }
 
 type tomlReplacement struct {
@@ -460,7 +475,10 @@ func collectProviderTOMLInlineBlocks(raw string, arrayStart, arrayEnd int) ([]pr
 }
 
 func parseProviderTOMLInlineBlock(raw string, start, end int) (providerTOMLInlineBlock, error) {
-	block := providerTOMLInlineBlock{start: start, end: end, kindStart: -1, baseURLStart: -1}
+	block := providerTOMLInlineBlock{
+		start: start, end: end, kindStart: -1, baseURLStart: -1,
+		fields: make(map[string]providerTOMLInlineField),
+	}
 	segmentStart := start + 1
 	depth := 0
 	var segments [][2]int
@@ -493,7 +511,8 @@ func parseProviderTOMLInlineBlock(raw string, start, end int) (providerTOMLInlin
 		return block, err
 	}
 	segments = append(segments, [2]int{segmentStart, end})
-	for _, segment := range segments {
+	block.segments = append(block.segments, segments...)
+	for segmentIndex, segment := range segments {
 		start, end := trimTOMLWhitespace(raw, segment[0], segment[1])
 		if start >= end {
 			continue
@@ -511,6 +530,7 @@ func parseProviderTOMLInlineBlock(raw string, start, end int) (providerTOMLInlin
 			valueEnd = valueStart + comment
 			valueStart, valueEnd = trimTOMLWhitespace(raw, valueStart, valueEnd)
 		}
+		block.fields[key] = providerTOMLInlineField{valueStart: valueStart, valueEnd: valueEnd, segment: segmentIndex}
 		switch key {
 		case "request_url", "chat_url":
 			// Empty overrides are equivalent to omission and stay empty.

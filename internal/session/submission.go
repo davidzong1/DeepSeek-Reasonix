@@ -24,6 +24,12 @@ type SubmissionIndex struct {
 	byMessage map[string]SubmissionReceipt
 }
 
+// Lookup returns an immutable receipt from a query projection.
+func (index SubmissionIndex) Lookup(sessionID, submissionID string) (SubmissionReceipt, bool) {
+	receipt, ok := index.byID[sessionID+"\x00"+submissionID]
+	return receipt, ok
+}
+
 func attachSubmissionEntries(index SubmissionIndex, sessionID string, entries []PersistentMessage) {
 	for i := range entries {
 		if receipt, ok := index.byMessage[sessionID+"\x00"+entries[i].MessageID]; ok {

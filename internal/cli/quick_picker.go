@@ -20,6 +20,7 @@ const (
 	// quickPickerMemberAgentUser picks the agent-user entry a bound team member
 	// uses: for a member, the pool entry IS its model configuration.
 	quickPickerMemberAgentUser quickPickerKind = "member-agent-user"
+	quickPickerSetupProvider   quickPickerKind = "setup-provider"
 )
 
 type quickPickerItem struct {

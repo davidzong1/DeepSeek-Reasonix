@@ -8,7 +8,7 @@ import css from "./ToolRow.styles";
 
 export function ToolRow({ icon, title, summary, state, dot, statusLabel, errorSummary, children, inspectLabel, inspect, beforeToggle }: {
   dot?: StateDotState;
-  icon: ReactNode; title: string; summary: string; state: "running" | "done" | "error" | "stopped";
+  icon: ReactNode; title: string; summary: string; state: "running" | "done" | "error" | "stopped" | "unknown";
   statusLabel: string; errorSummary?: string; children: ReactNode;
   inspectLabel: string; inspect: (trigger: HTMLElement) => void; beforeToggle: () => void;
 }) {

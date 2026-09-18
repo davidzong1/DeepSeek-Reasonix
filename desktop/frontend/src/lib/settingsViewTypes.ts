@@ -34,6 +34,7 @@ export interface SettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   defaultToolApprovalMode: ToolApprovalMode | string; // default for newly-created sessions
   checkUpdates: boolean; // check for new versions on startup
+  updaterEnabled?: boolean; // build capability; absent/unknown is disabled
   updateChannel: string; // compatibility field; always "stable"
   telemetry: boolean; // anonymous launch ping + scrubbed next-launch native crash diagnostics
   metrics: boolean; // aggregate quality/lifecycle metrics (anonymous signal/bucket counts)

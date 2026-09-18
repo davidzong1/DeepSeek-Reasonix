@@ -1,5 +1,5 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { app, onProjectTreeChanged } from "../lib/bridge";
+import { app, onProjectTreeChanged, onTabMeta } from "../lib/bridge";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { activeTabMirror } from "./activeTabMirror";
 import { asArray } from "../lib/array";
@@ -66,6 +66,9 @@ export function useRuntimeEventHandlers(input: RuntimeEventHandlersInput) {
     input.setTabMetas((current) => seedActiveTabMetaList(current, tab));
     input.setTabOrderIds((current) => current.includes(tab.id) ? current : [...current, tab.id]);
   });
+  // Authentication changes belong to the current backend generation. Refresh
+  // the registry rather than granting a local, tab-id-only send bypass.
+  useEffect(() => onTabMeta(() => { void refreshTabMetas(undefined, { afterMutation: true }); }), [refreshTabMetas]);
   const updateRemoteTabMeta = useCommittedCommand((tab: TabMeta): void => {
     input.setTabMetas((current) => current.map((existing) => existing.id === tab.id
       ? { ...existing, ...tab, active: existing.active }

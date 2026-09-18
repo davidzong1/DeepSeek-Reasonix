@@ -38,7 +38,7 @@ export function SessionRecoveryBanner({ availability, onRetry }: {
   const detail = actionError || availability.detail;
   const Icon = loading ? Loader2 : connection ? CloudOff : TriangleAlert;
   return (
-    <section className={`session-recovery${loading ? " session-recovery--loading" : ""}`} role={loading ? "status" : "alert"} aria-busy={loading}>
+    <section id={`reasonix-session-recovery-${detailId}`} className={`session-recovery${loading ? " session-recovery--loading" : ""}`} role={loading ? "status" : "alert"} aria-busy={loading}>
       <Icon size={28} aria-hidden="true" className={loading ? "session-recovery__spinner" : undefined} />
       <div className="session-recovery__copy">
         <strong>{t(loading ? connection ? "remoteSurface.connecting" : "sessionRecovery.loadingHistory"

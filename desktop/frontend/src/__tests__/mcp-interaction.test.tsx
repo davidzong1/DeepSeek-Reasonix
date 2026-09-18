@@ -201,6 +201,7 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     root.render(
       <LocaleProvider>
         <MCPInteractionCard
+          instanceKey="test:7"
           interaction={{
             id: "7",
             server: "github",
@@ -260,6 +261,7 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     root.render(
       <LocaleProvider>
         <MCPInteractionCard
+          instanceKey="test:unsupported"
           interaction={{
             id: "unsupported",
             server: "future-server",
@@ -289,6 +291,7 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     root.render(
       <LocaleProvider>
         <MCPInteractionCard
+          instanceKey="test:8"
           interaction={{
             id: "8",
             server: "calendar-with-a-deliberately-long-server-name",
@@ -326,6 +329,7 @@ globalThis.MouseEvent = dom.window.MouseEvent;
     root.render(
       <LocaleProvider>
         <MCPInteractionCard
+          instanceKey="test:9"
           interaction={{
             id: "9",
             server: "linear",
@@ -366,6 +370,68 @@ globalThis.MouseEvent = dom.window.MouseEvent;
   await act(async () => {
     root.unmount();
   });
+}
+
+// ── Request-instance replacement ─────────────────────────────────────────────
+
+{
+  const root = createRoot(document.getElementById("root")!);
+  const interaction = {
+    id: "reused-form-id",
+    server: "identity-server",
+    mode: "form" as const,
+    message: "Enter an account",
+    requestedSchema: {
+      type: "object",
+      required: ["account"],
+      properties: {
+        account: { type: "string", title: "Account", format: "email" },
+        remember: { type: "boolean", title: "Remember this account" },
+      },
+    },
+  };
+  const render = (instanceKey: string) => (
+    <LocaleProvider>
+      <MCPInteractionCard instanceKey={instanceKey} interaction={interaction} busy={false} onAnswer={() => {}} />
+    </LocaleProvider>
+  );
+  await act(async () => root.render(render("request:first")));
+  const firstInput = document.querySelector(".structured-form-control") as HTMLInputElement;
+  const firstCheckbox = document.querySelector(".structured-form-checkbox") as HTMLInputElement;
+  await act(async () => firstCheckbox.click());
+  const submit = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Submit");
+  await act(async () => submit?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  ok(firstCheckbox.checked && firstInput.getAttribute("aria-invalid") === "true", "first MCP request owns its field value and validation error");
+
+  await act(async () => root.render(render("request:replacement")));
+  const replacementInput = document.querySelector(".structured-form-control") as HTMLInputElement;
+  const replacementCheckbox = document.querySelector(".structured-form-checkbox") as HTMLInputElement;
+  ok(!replacementCheckbox.checked && replacementInput.getAttribute("aria-invalid") !== "true", "same MCP id/schema resets values and errors for a new request instance");
+  await act(async () => root.unmount());
+}
+
+{
+  const root = createRoot(document.getElementById("root")!);
+  const interaction = {
+    id: "reused-url-id",
+    server: "identity-server",
+    mode: "url" as const,
+    message: "Authorize access",
+    url: "https://auth.example.com/reused",
+  };
+  const render = (instanceKey: string) => (
+    <LocaleProvider>
+      <MCPInteractionCard instanceKey={instanceKey} interaction={interaction} busy={false} onAnswer={() => {}} onOpenLink={() => {}} />
+    </LocaleProvider>
+  );
+  await act(async () => root.render(render("url:first")));
+  const open = Array.from(document.querySelectorAll("button")).find((button) => (button.textContent ?? "").startsWith("Open "));
+  await act(async () => open?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  ok(document.querySelector(".prompt-shelf-bar-hint")?.textContent === "Finish in your browser, then accept.", "first MCP URL request records that its link was opened");
+
+  await act(async () => root.render(render("url:replacement")));
+  ok(document.querySelector(".prompt-shelf-bar-hint")?.textContent === "Open the link, finish in your browser, then accept.", "same MCP id resets opened-link state for a new request instance");
+  await act(async () => root.unmount());
 }
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

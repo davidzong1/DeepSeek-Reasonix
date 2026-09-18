@@ -47,6 +47,7 @@ func editUserConfigIfChangedAtPath(
 	if cfg == nil {
 		cfg = config.Default()
 	}
+	baseline := cfg.ModelSettingsBaseline()
 	changed, err := mutate(cfg)
 	if err != nil {
 		return err
@@ -54,5 +55,5 @@ func editUserConfigIfChangedAtPath(
 	if !changed {
 		return nil
 	}
-	return cfg.SaveTo(path)
+	return cfg.SaveModelSettingsTo(path, baseline)
 }

@@ -318,7 +318,8 @@ await act(async () => {
   await controller?.send("corrected");
   await flushPromises();
 });
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "corrected"), "resubmission survives the completed cancellation cleanup");
+ok(Object.values(controller?.state.localSubmissions ?? {}).some((submission) => submission.text === "corrected"),
+  "resubmission keeps its local echo through completed cancellation cleanup");
 eq(historyLoads, 0, "resubmission cannot race a stale cancellation history response");
 
 await act(async () => {

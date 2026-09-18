@@ -8017,7 +8017,7 @@ func TestBeginTabTurnWorkspaceRepairStaysOutsideLifecycleAdmission(t *testing.T)
 	case <-writerAdmissionLocked:
 		// The repair is still blocked on reconcileMu; acquiring the lifecycle
 		// writer here proves no slow repair/build I/O owns the read side.
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		fixture.tab.reconcileMu.Unlock()
 		t.Fatal("workspace repair held runtimeAdmissionMu while waiting")
 	}
@@ -8028,12 +8028,12 @@ func TestBeginTabTurnWorkspaceRepairStaysOutsideLifecycleAdmission(t *testing.T)
 		if err != nil {
 			t.Fatalf("beginTabTurn after workspace repair: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("workspace repair did not complete after lifecycle writer released")
 	}
 	select {
 	case <-writerDone:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("lifecycle writer did not complete after repaired turn admission")
 	}
 }

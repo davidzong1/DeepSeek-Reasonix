@@ -106,6 +106,9 @@ type Options struct {
 	// EffortOverride is a session-local reasoning effort override. Nil means use
 	// the resolved provider config; a non-nil empty string means provider default.
 	EffortOverride *string
+	// EffortModel binds an inherited override to its original model. Empty
+	// means this build received an explicit selection for Options.Model.
+	EffortModel string
 	// ConfigSnapshot is an optional, caller-owned immutable configuration for
 	// this assembly. Desktop passes the snapshot used to resolve the selection
 	// so a concurrent settings edit cannot change another role halfway through.
@@ -275,11 +278,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	memoryCompilerMigrated, memoryCompilerMigErr := config.MigrateLegacyMemoryCompilerForRoot(root)
 	multiThresholdMigrated, multiThresholdMigErr := config.MigrateLegacyMultiThresholdCompactionForRoot(root)
 	config.MigrateLegacyMCPTiersForRoot(root)
-	cfg, err := resolveBuildConfiguration(root, opts.Model, opts.ConfigSnapshot)
+	cfg, opts, err := resolveBuildSelection(root, opts)
 	if err != nil {
-		return nil, err
-	}
-	if err := opts.ModelSettings.Apply(cfg, root); err != nil {
 		return nil, err
 	}
 	deepSeekProtocolMigErr = deepSeekProtocolMigrationNoticeError(handleConfigLoadWarnings(opts, cfg), deepSeekProtocolMigErr)
@@ -502,10 +502,20 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			entry.Thinking = "adaptive"
 		}
 	}
-	// RequireKey fails fast on a missing credential; plugin refs are resolved by
-	// their extension provider.
+	// RequireKey fails fast on a missing credential (run/serve); plugin-
+	// namespaced refs carry no config credential — the extension provider holds
+	// its own keys — so the merged resolver's resolution is their only gate.
+	authentication := authenticationStateForModelEntry(entry, modelRef)
 	if opts.RequireKey && opts.ProviderResolver == nil && providerext.PluginRefOwner(modelName) == "" {
 		if err := cfg.Validate(modelName); err != nil {
+			if entry.RequiresAPIKey() && entry.APIKey() == "" {
+				// One verdict, two audiences: the diagnostics UI reads the typed
+				// state, while the headless caller needs the strict observability
+				// text. Carry that text as Message so both hold on one error.
+				authentication.Message = fmt.Errorf("%w (config: %s)",
+					strictEntryFailure(entry, modelName, err), providerConfigSource(cfg)).Error()
+				return nil, &control.AuthenticationError{State: authentication}
+			}
 			return nil, fmt.Errorf("%w (config: %s)", strictEntryFailure(entry, modelName, err), providerConfigSource(cfg))
 		}
 		if err := ensureRegisteredKind(entry, modelName); err != nil {
@@ -523,9 +533,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		multiThreshold:   legacyMigration{migrated: multiThresholdMigrated, err: multiThresholdMigErr},
 	})
 
-	// Surface a missing credential up front when the UI remains reachable.
-	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
-		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but %s — requests will fail until you set it", modelName, strings.TrimPrefix(missingCredentialText(entry), "; "))})
+	// A resolvable model whose API key env is unset would otherwise build fine
+	// (RequireKey is false so the UI stays reachable) and then fail silently on the
+	// first request, showing as an empty/dead model. Surface the cause up front.
+	if !opts.RequireKey && !authentication.Ready() {
+		if authentication.Status == control.AuthenticationCredentialStoreUnavailable {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "The credential store is unavailable.", Detail: "Reasonix could not read its credential file; open credential diagnostics before retrying"})
+		} else {
+			sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
+		}
 	}
 	// Every role setting lazily acquires a workspace write lease on the first
 	// real writer. Read-only turns never take the lease.
@@ -1818,12 +1834,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		runner = agent.NewCoordinatorWithPlannerPolicy(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerPolicy())
 		label = entry.Model + " + planner " + pe.Model
 	}
-	imageEnabled := modelCapabilities.Resolve(entry).State == config.CapabilitySupported
-	if infoProvider, ok := execProv.(provider.ModelInfoProvider); ok {
-		imageEnabled = infoProvider.ModelInfo().SupportsInput(provider.ModalityImage)
-	}
+	imageEnabled := runtimeImageEnabled(execProv, modelCapabilities.Resolve(entry).State == config.CapabilitySupported)
 	imageSnapshot := config.ModelCapabilitySnapshot(cfg, modelCapabilities)
 	ctrlOpts := control.Options{
+		Authentication:                 authentication,
+		AuthenticationForModel:         authenticationReader(cfg, opts.ProviderResolver),
 		ModelSettingsRevision:          cfg.ModelRuntimeFingerprint(modelRef),
 		ModelSettingsCurrent:           runtimeModelSettingsReader(root, modelName, modelRef, opts.ModelSettings),
 		FrozenImageInput:               &imageEnabled,
@@ -2354,21 +2369,34 @@ func appendUniquePaths(base []string, extra ...string) []string {
 }
 
 // RuntimeForbidReadRoots returns the configured deny roots plus Reasonix's
-// global credential FILE when it exists. It also registers the corresponding
+// global credential file when the host can enforce that read boundary without
+// changing the caller's own ACL. It always registers the corresponding
 // credential environment names for subprocess filtering. Runtime tool
 // assemblers outside Build must use this helper instead of reading the config
 // roots directly.
 //
 // Provider and bot credentials are loaded into the parent process from this
-// file, so readers, shell commands, and MCP servers must not be able to recover
-// them even when the optional broad sensitive-file denylist is off. Project
-// .env files retain their existing behavior.
+// file. macOS/Linux also hide the file from readers, shell commands, and MCP
+// servers when the optional broad sensitive-file denylist is off. Windows only
+// filters the values from child environments: WRITE_RESTRICTED does not confine
+// reads, and denying the caller SID would also lock out the host. Project .env
+// files retain their existing behavior.
 func RuntimeForbidReadRoots(cfg *config.Config, root string) []string {
+	return runtimeForbidReadRootsForGOOS(cfg, root, runtime.GOOS)
+}
+
+func runtimeForbidReadRootsForGOOS(cfg *config.Config, root, goos string) []string {
 	if cfg == nil {
 		return nil
 	}
 	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
 	base := cfg.ForbidReadRootsForRoot(root)
+	// WRITE_RESTRICTED constrains writes only. Keep filtering credential values
+	// on Windows without denying the caller SID, which would also lock out the
+	// host settings process and could survive a crash.
+	if goos == "windows" {
+		return append([]string(nil), base...)
+	}
 	credentialPath := strings.TrimSpace(config.UserCredentialsPath())
 	if credentialPath == "" {
 		return append([]string(nil), base...)

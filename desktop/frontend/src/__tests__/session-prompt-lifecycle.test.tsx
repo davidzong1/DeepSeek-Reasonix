@@ -15,12 +15,12 @@ let gate = deferred();
 let prompt = "approval-A";
 const calls: string[] = [];
 const ports: PromptPorts = {
-  isPromptCurrentForTab: (tab, _kind, id) => tab === "A" && id === prompt,
-  approveForTab: tab => { calls.push(`approve:${tab}`); },
-  resolvePlanForTab: (tab, id) => { calls.push(`resolve:${tab}:${id}`); },
-  resolveRecoveryForTab: tab => { calls.push(`recover:${tab}`); },
-  answerQuestionForTab: async tab => { calls.push(`question:${tab}`); },
-  answerMCPForTab: tab => { calls.push(`mcp:${tab}`); },
+  isPromptCurrentForTab: target => target.tabId === "A" && target.promptId === prompt,
+  approveForTab: target => { calls.push(`approve:${target.tabId}`); },
+  resolvePlanForTab: target => { calls.push(`resolve:${target.tabId}:${target.promptId}`); },
+  resolveRecoveryForTab: target => { calls.push(`recover:${target.tabId}`); },
+  answerQuestionForTab: async target => { calls.push(`question:${target.tabId}`); },
+  answerMCPForTab: target => { calls.push(`mcp:${target.tabId}`); },
   setCollaborationModeForTab: async tab => { calls.push(`mode:${tab}`); },
   clearGoalForTab: async tab => { calls.push(`clear:${tab}`); entered.resolve(); await gate.promise; },
   setRemoteComposerProfile: async tab => { calls.push(`remote:${tab}`); entered.resolve(); await gate.promise; return [prompt]; },
@@ -33,7 +33,7 @@ let commands!: ReturnType<typeof useSessionPromptCommands>;
 function Probe({ tab, generation = "1", remote = false }: { tab: string; generation?: string; remote?: boolean }) {
   const target = { tabId: tab, sessionKey: tab + generation };
   const operations = useSessionOperations({ visible: target, resources: ["A", "B"].map(tabId => ({ tabId, sessionKey: tabId + generation })) });
-  commands = useSessionPromptCommands({ target, approval: { id: prompt, tool: "exit_plan_mode" }, questionId: prompt,
+  commands = useSessionPromptCommands({ target, session: { hostId: "local", sessionId: `session-${tab}` }, sessionGeneration: Number(generation), approval: { id: prompt, tool: "exit_plan_mode", subject: "plan", turnId: `turn-${tab}`, runtimeEpoch: `runtime-${tab}` },
     remote, goal: "fixture", toolApprovalMode: "ask", ports, operations, reportError: error => { throw error; } });
   return null;
 }

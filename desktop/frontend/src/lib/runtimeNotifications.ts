@@ -14,18 +14,25 @@ export function createRuntimeNotifications(readPorts: () => NotificationPorts | 
   let pendingSeen = new Set<string>();
   const handleAttention = (event: AttentionChimeEvent, source?: RuntimeSession) => {
     const ports = readPorts();
+    const snapshot = runtimeStateStore.getSnapshot();
+    const turnId = event.ask?.turnId || event.approval?.turnId || event.turnId;
+    const candidates = snapshot?.sessions.filter(item => (!event.hostId || (item.hostId || "local") === event.hostId)
+      && (!turnId || item.state.turnId === turnId)) ?? [];
+    const session = source ?? candidates.find(item => item.tabId === event.tabId)
+      ?? (turnId && candidates.length === 1 ? candidates[0] : undefined);
+    event = { ...event, hostId: session?.hostId || session?.state.hostId || event.hostId };
     const key = attentionChimeEventKey(event);
     if (!ports || !key || pendingSeen.has(key) || !shouldPlayAttentionChimeForEvent(event, seen)) return;
     playAttentionChime();
     const { activeTabId, t, showToast } = ports;
-    const snapshot = runtimeStateStore.getSnapshot();
-    const turnId = event.ask?.turnId || event.approval?.turnId || event.turnId;
-    const session = source ?? snapshot?.sessions.find(item => turnId ? item.state.turnId === turnId : item.open && item.tabId === event.tabId);
     const background = session ? !session.open || session.tabId !== activeTabId : Boolean(event.tabId && event.tabId !== activeTabId);
     if (!background) return;
-    const topic = session?.topicId ? snapshot?.topics.find(item => item.scope === session.scope
+    const topic = session ? snapshot?.topics.find(item => item.scope === session.scope
       && (session.scope !== "project" || (item.workspaceRoot ?? "") === session.workspaceRoot)
-      && item.node.topicId === session.topicId) : undefined;
+      && (session.sessionId ? (item.node.session?.sessionId || item.node.remoteSession?.sessionId) === session.sessionId
+        && (item.node.session?.hostId || item.node.remoteSession?.hostId || "local") === (session.hostId || "local")
+        : session.sessionPath && item.node.sessionPath === session.sessionPath
+          && (item.node.remoteSession?.hostId || item.node.session?.hostId || "local") === (session.hostId || "local"))) : undefined;
     const child = session?.sessionPath ? topic?.node.children?.find(node => node.sessionPath === session.sessionPath) : undefined;
     const title = child?.label || topic?.node.label || t("runtime.otherConversation");
     showToast(t(event.kind === "ask_request" ? "runtime.backgroundQuestion" : "runtime.backgroundApproval", { title }), "info", { durationMs: 8000 });
@@ -34,6 +41,7 @@ export function createRuntimeNotifications(readPorts: () => NotificationPorts | 
     if (runtimeStateStore.getFailed()) return;
     const nextPending = new Set<string>();
     const visit = (event: AttentionChimeEvent, session: RuntimeSession) => {
+      event = { ...event, hostId: session.hostId || session.state.hostId };
       const key = attentionChimeEventKey(event);
       if (!key || nextPending.has(key)) return;
       if (session.freshness !== "synced") {

@@ -205,6 +205,7 @@ func TestUpdaterArchivesSupersededUpdateBeforeReconciliation(t *testing.T) {
 }
 
 func TestUpdaterReconcilesBeforeDownloading(t *testing.T) {
+	setDesktopBuildIdentityForTest(t, "v1.20.0", "stable")
 	originalExists := pendingUpdateExistsForInstall
 	originalArchive := archiveSupersededPendingUpdateForInstall
 	originalReconcile := reconcilePendingUpdateForInstall
@@ -213,7 +214,6 @@ func TestUpdaterReconcilesBeforeDownloading(t *testing.T) {
 		archiveSupersededPendingUpdateForInstall = originalArchive
 		reconcilePendingUpdateForInstall = originalReconcile
 	})
-
 	pendingUpdateExistsForInstall = func() bool { return true }
 	archiveSupersededPendingUpdateForInstall = func() (bool, error) { return false, nil }
 	reconcilePendingUpdateForInstall = func(string) (repair.PendingUpdateReconcileResult, error) {

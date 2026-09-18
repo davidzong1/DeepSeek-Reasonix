@@ -393,3 +393,37 @@ func TestRepairShortcutsValidatesAllPathsBeforeWritingAnyShortcut(t *testing.T) 
 		t.Fatal("repair wrote the first shortcut before validating the full path list")
 	}
 }
+
+// Existing custom links must retain their launch context when only the stable
+// executable name changes. Exercise actual COM persistence, not just policy.
+func TestCanonicalShortcutPreservesCustomLaunchContext(t *testing.T) {
+	migrationTestCOM(t)
+	root := t.TempDir()
+	legacy, canonical := filepath.Join(root, "reasonix-launcher.exe"), filepath.Join(root, "Reasonix.exe")
+	migrationTestFile(t, legacy)
+	migrationTestFile(t, canonical)
+	customDir := t.TempDir()
+	icon := filepath.Join(customDir, "custom.ico")
+	migrationTestFile(t, icon)
+	link := filepath.Join(root, "Reasonix custom.lnk")
+	before := migrationShortcutState{
+		target: legacy, id: AppUserModelID, arguments: `--session "work space"`,
+		description: "Custom workspace", workingDirectory: customDir,
+		icon: icon, iconIndex: 2, showCmd: 3,
+	}
+	migrationTestShortcut(t, link, before)
+	if changed, err := repairOwnedShortcut(link, root); err != nil || !changed {
+		t.Fatalf("repair=%v, %v", changed, err)
+	}
+	got := migrationReadShortcut(t, link)
+	if !migrationSamePath(got.target, canonical) {
+		t.Fatalf("target=%q", got.target)
+	}
+	if got.arguments != before.arguments || got.description != before.description || got.showCmd != before.showCmd ||
+		got.iconIndex != before.iconIndex || !migrationSamePath(got.icon, icon) || !migrationSamePath(got.workingDirectory, customDir) || got.id != before.id {
+		t.Fatalf("custom context changed: before=%+v after=%+v", before, got)
+	}
+	if changed, err := repairOwnedShortcut(link, root); err != nil || changed {
+		t.Fatalf("second repair=%v, %v", changed, err)
+	}
+}

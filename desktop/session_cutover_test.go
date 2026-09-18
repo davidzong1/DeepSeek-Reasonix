@@ -4,16 +4,42 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
 )
+
+func TestTabMetaDoesNotCompareLegacyFingerprintWithCanonicalSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	sessionPath := filepath.Join(t.TempDir(), "legacy.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, agent.BranchMeta{
+		ID: "legacy", Revision: 41, ContentDigest: "legacy-digest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID: "canonical-without-head", SessionID: "missing-canonical-session",
+		SessionPath: sessionPath, disabledMCP: map[string]ServerView{},
+	}
+	meta := app.tabMeta(tab, true)
+	if meta.SessionRevision != 0 || meta.SessionDigest != "" {
+		t.Fatalf("canonical tab fell back to legacy fingerprint (%d, %q)", meta.SessionRevision, meta.SessionDigest)
+	}
+}
 
 func TestDesktopHistorySliceUsesCanonicalDurableIndex(t *testing.T) {
 	isolateDesktopUserDirs(t)
@@ -41,11 +67,35 @@ func TestDesktopHistorySliceUsesCanonicalDurableIndex(t *testing.T) {
 	// Append after the controller's agent projection was created. The legacy
 	// live-history path cannot see this message; the canonical query can.
 	appendSessionTestMessage(t, runtime, "history-assistant", provider.Message{ID: "history-assistant", Role: provider.RoleAssistant, Content: large})
-	tab := &WorkspaceTab{ID: "canonical-history-tab", Scope: "project", WorkspaceRoot: root, SessionID: runtime.Ref().SessionID, Ready: true, Ctrl: ctrl, sink: &tabEventSink{tabID: "canonical-history-tab", app: app}, disabledMCP: map[string]ServerView{}}
+	legacyPath := filepath.Join(dir, "legacy-projection.jsonl")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{ID: "canonical-history-tab", Scope: "project", WorkspaceRoot: root, SessionID: runtime.Ref().SessionID, SessionPath: legacyPath, Ready: true, Ctrl: ctrl, sink: &tabEventSink{tabID: "canonical-history-tab", app: app}, disabledMCP: map[string]ServerView{}}
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
 	t.Cleanup(func() { ctrl.Close() })
+
+	openView, err := app.SessionOpenForTab(tab.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(legacyPath, agent.BranchMeta{
+		ID:            "legacy-projection",
+		Revision:      int64(openView.SnapshotSequence) + 100,
+		ContentDigest: "legacy-projection-digest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meta := app.tabMeta(tab, true)
+	if meta.SessionRevision != int64(openView.SnapshotSequence) || meta.SessionDigest != openView.StorageGeneration {
+		t.Fatalf("tab canonical fingerprint = (%d, %q), want (%d, %q)",
+			meta.SessionRevision, meta.SessionDigest, openView.SnapshotSequence, openView.StorageGeneration)
+	}
 
 	page := app.HistorySliceForTab(tab.ID, HistorySliceRequest{Turns: 12, Entries: 120, Bytes: 512 << 10})
 	if page.Error != "" || page.Source != "canonical-index" {
@@ -118,6 +168,13 @@ func TestDesktopCanonicalHistoryRemainsReadableBeforeControllerReady(t *testing.
 	appendSessionTestMessage(t, runtime, "cold-history-assistant", provider.Message{
 		ID: "cold-history-assistant", Role: provider.RoleAssistant, Content: large,
 	})
+	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspaceID, runtime.Ref().SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
 
 	tab := &WorkspaceTab{
 		ID:            "canonical-cold-history-tab",
@@ -183,6 +240,38 @@ func TestDesktopCanonicalHistoryRemainsReadableBeforeControllerReady(t *testing.
 	decoded, decodeErr := base64.StdEncoding.DecodeString(chunk.Data)
 	if err != nil || decodeErr != nil || !chunk.Done || !strings.Contains(string(decoded), large) {
 		t.Fatalf("cold canonical content = done:%v bytes:%d, errors:%v/%v", chunk.Done, len(decoded), err, decodeErr)
+	}
+
+	// Explicit target readers remain bound to the durable session even after
+	// the tab disappears.
+	app.tabs = map[string]*WorkspaceTab{}
+	app.tabOrder = nil
+	app.activeTabID = ""
+	selector := SessionSelector{Ref: &session.SessionRef{HostID: localDesktopHostID, SessionID: runtime.Ref().SessionID}}
+	compatTarget, err := app.HistorySliceForTarget(selector, HistorySliceRequest{Turns: 12})
+	if err != nil || len(compatTarget.Entries) != 2 || len(compatTarget.Entries[1].Refs) != 1 {
+		t.Fatalf("target compatibility history = %+v, %v", compatTarget, err)
+	}
+	compatChunk, err := app.HistoryContentForTarget(selector, compatTarget.Entries[1].Refs[0], 0)
+	if err != nil || compatChunk.Stale || !compatChunk.Done || compatChunk.Data != large {
+		t.Fatalf("target compatibility content = %+v, %v", compatChunk, err)
+	}
+	targetPage, err := app.SessionHistoryPageForTarget(selector, "", 12)
+	if err != nil || len(targetPage.Messages) != 2 {
+		t.Fatalf("target history page = %+v, %v", targetPage, err)
+	}
+	targetLocation, err := app.LocateSessionMessageForTarget(selector, "cold-history-assistant", targetPage.SnapshotSequence)
+	if err != nil || targetLocation.Status != "ready" || targetLocation.MessageID != "cold-history-assistant" {
+		t.Fatalf("target location = %+v, %v", targetLocation, err)
+	}
+	targetRef := targetPage.Messages[1].ContentRef
+	if targetRef == nil {
+		t.Fatal("target large message has no content ref")
+	}
+	targetChunk, err := app.SessionHistoryContentForTarget(selector, *targetRef, 0)
+	targetDecoded, decodeErr := base64.StdEncoding.DecodeString(targetChunk.Data)
+	if err != nil || decodeErr != nil || !targetChunk.Done || !strings.Contains(string(targetDecoded), large) {
+		t.Fatalf("target content = done:%v bytes:%d, errors:%v/%v", targetChunk.Done, len(targetDecoded), err, decodeErr)
 	}
 }
 

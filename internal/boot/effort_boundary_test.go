@@ -84,21 +84,28 @@ func TestUndeclaredEffortIsRefusedNotClamped(t *testing.T) {
 		name    string
 		entry   config.ProviderEntry
 		refused []string
+		// refusal is the diagnostic vocabulary this entry's metadata produces:
+		// an endpoint that declares nothing has unknown metadata, while a
+		// declared vocabulary only lacks the requested level.
+		refusal string
 	}{
 		{
 			name:    "declared-high prefers no max fallback",
 			entry:   config.ProviderEntry{Name: "g", Kind: "openai", BaseURL: "https://gateway.example.invalid/v1", Model: "custom", SupportedEfforts: []string{"high"}},
 			refused: []string{"max", "xhigh", "medium"},
+			refusal: "UNSUPPORTED_REASONING_EFFORT",
 		},
 		{
 			name:    "mimo has no max to fall back to",
 			entry:   config.ProviderEntry{Name: "mimo", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "m"},
 			refused: []string{"max", "xhigh", "disabled"},
+			refusal: "UNSUPPORTED_REASONING_EFFORT",
 		},
 		{
 			name:    "generic endpoint declares nothing",
 			entry:   config.ProviderEntry{Name: "g", Kind: "openai", BaseURL: "https://gateway.example.invalid/v1", Model: "custom"},
 			refused: []string{"max", "high", "low", "medium"},
+			refusal: "UNKNOWN_MODEL_REASONING",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,8 +115,8 @@ func TestUndeclaredEffortIsRefusedNotClamped(t *testing.T) {
 					t.Errorf("explicit %q was accepted", level)
 					continue
 				}
-				if !strings.Contains(err.Error(), "UNSUPPORTED_REASONING_EFFORT") {
-					t.Errorf("explicit %q refused with %v, want the typed contract error", level, err)
+				if !strings.Contains(err.Error(), tc.refusal) {
+					t.Errorf("explicit %q refused with %v, want a %s refusal", level, err, tc.refusal)
 				}
 			}
 		})

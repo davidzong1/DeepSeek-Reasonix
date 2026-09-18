@@ -391,22 +391,29 @@ func TestSessionMetaConcurrentWritersKeepRevisionMonotonic(t *testing.T) {
 	assertNoRecoveryBranches(t, path)
 }
 
-func TestRenameSessionIfTitleUnchangedPreservesNewerTitle(t *testing.T) {
+func TestRenameSessionIfTitleRevisionPreservesNewerTitleAndRejectsABA(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := RenameSession(path, "original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenameSessionIfTitleUnchanged(path, "original", "first AI title"); err != nil {
+	_, originalRevision, err := SessionTitleSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSessionIfTitleRevision(path, originalRevision, "first AI title"); err != nil {
 		t.Fatalf("compare-and-rename: %v", err)
 	}
 	if err := RenameSession(path, "newer manual title"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenameSessionIfTitleUnchanged(path, "first AI title", "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
+	if err := RenameSession(path, "original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSessionIfTitleRevision(path, originalRevision, "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
 		t.Fatalf("stale compare-and-rename error = %v", err)
 	}
 	meta, ok, err := LoadBranchMeta(path)
-	if err != nil || !ok || meta.CustomTitle != "newer manual title" {
+	if err != nil || !ok || meta.CustomTitle != "original" || meta.TitleRevision == originalRevision {
 		t.Fatalf("meta = %+v, ok=%v, err=%v", meta, ok, err)
 	}
 }

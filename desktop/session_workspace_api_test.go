@@ -178,3 +178,210 @@ func TestForkSessionPublishesHeaderBackedChildAfterParent(t *testing.T) {
 		t.Fatalf("fork header = %+v", infos[child.SessionID])
 	}
 }
+
+func TestSidebarKeepsCanonicalSessionsWithSharedTopicIndependent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	app.ctx = t.Context()
+	app.desktopSessions.root = filepath.Join(root, "desktop-sessions-v5", "by-id")
+	app.desktopSessions.workspaceState = workspacestate.NewStore(filepath.Join(root, "desktop", "workspace-state-v1.json"))
+	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"branch-a", "branch-b"} {
+		if _, err := app.desktopSessionService("").Create(t.Context(), session.CreateOptions{SessionID: id, CWD: root, Origin: session.SessionOriginNew}); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspaceID, id, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.workspaceRegistry().EnsureSessionTopic(t.Context(), id, "shared-topic", "Shared topic"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := app.unifiedProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("two durable sessions should occupy two rows: %#v", page.Items)
+	}
+	seen := map[string]bool{}
+	for _, row := range page.Items {
+		if row.Session == nil {
+			t.Fatalf("row has no session identity: %#v", row)
+		}
+		if row.TopicID != "shared-topic" || len(row.Children) != 0 {
+			t.Fatalf("row is not an independent session: %#v", row)
+		}
+		seen[row.Session.SessionID] = true
+	}
+	if !seen["branch-a"] || !seen["branch-b"] {
+		t.Fatalf("lost a durable branch: %#v", seen)
+	}
+}
+
+func TestForkSessionTargetRetryReusesDurableChildWithoutOpeningTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	app.ctx = t.Context()
+	app.desktopSessions.root = filepath.Join(root, "desktop-sessions-v5", "by-id")
+	app.desktopSessions.workspaceState = workspacestate.NewStore(filepath.Join(root, "desktop", "workspace-state-v1.json"))
+	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := addProject(root, "Fork project"); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := app.desktopSessionService("").Create(t.Context(), session.CreateOptions{
+		SessionID: "target-fork-parent", CWD: root, Origin: session.SessionOriginNew,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"message": provider.Message{
+		ID: "answer", Role: provider.RoleAssistant, Content: "forked target history",
+	}})
+	if _, err := parent.Session().Append(t.Context(), session.Batch{
+		OperationID: "turn-1", TurnID: "turn-1",
+		Events: []session.Event{
+			{Kind: "turn/start"},
+			{Kind: "message/complete", Payload: payload},
+			{Kind: "turn/end", Payload: json.RawMessage(`{"status":"completed"}`)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.Session().Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.desktopSessions.workspaceState.AttachSession(t.Context(), "", workspaceID, parent.Ref().SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.desktopSessionService("").SetTitle(t.Context(), parent.Ref(), "Parent work"); err != nil {
+		t.Fatal(err)
+	}
+	parentTitle, parentPinned := "Parent work", true
+	if err := app.workspaceRegistry().UpdatePresentation(t.Context(), []string{parent.Ref().SessionID}, &parentTitle, &parentPinned); err != nil {
+		t.Fatal(err)
+	}
+	parentRef := parent.Ref()
+	if err := app.SaveSessionGroups("project", root, []desktopGroup{{
+		ID: "feature", Title: "Feature", SessionKeys: []string{projectNodeSessionKey(ProjectNode{Session: &parentRef})},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	app.tabs = map[string]*WorkspaceTab{"active": {ID: "active", SessionID: "unrelated"}}
+	app.activeTabID = "active"
+
+	selector := SessionSelector{Ref: &session.SessionRef{HostID: localDesktopHostID, SessionID: parent.Ref().SessionID}}
+	first, err := app.ForkSessionTarget(selector, "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.ForkSessionTarget(selector, "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("fork retry created another child: first=%+v second=%+v", first, second)
+	}
+	state, err := app.desktopSessions.workspaceState.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := state.Workspaces[workspaceID].SessionIDs
+	if len(ids) != 2 || ids[0] != parent.Ref().SessionID || ids[1] != first.SessionID {
+		t.Fatalf("workspace children after retry = %#v", ids)
+	}
+	childPresentation := state.Presentation[first.SessionID]
+	if childPresentation.Pinned || childPresentation.Title != "Parent work · 分叉" {
+		t.Fatalf("fork presentation = %+v, want inherited title suffix without pin", childPresentation)
+	}
+	groups, err := app.ListProjectGroups("project", root)
+	if err != nil || len(groups) != 1 || !containsDesktopString(groups[0].SessionKeys, projectNodeSessionKey(ProjectNode{Session: &first})) {
+		t.Fatalf("fork groups = %#v, err=%v; child should inherit parent group", groups, err)
+	}
+	if app.activeTabID != "active" || len(app.tabs) != 1 {
+		t.Fatalf("target fork changed navigation: active=%q tabs=%d", app.activeTabID, len(app.tabs))
+	}
+	journal, err := loadForkOperations(forkOperationsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(journal.Operations) != 1 || journal.Operations[0].State != "completed" ||
+		journal.Operations[0].ChildSessionID != first.SessionID {
+		t.Fatalf("fork journal = %+v", journal.Operations)
+	}
+}
+
+func TestCopySessionTargetCopiesFullHistoryIdempotentlyWithoutOpeningTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	app.ctx = t.Context()
+	app.desktopSessions.root = filepath.Join(root, "desktop-sessions-v5", "by-id")
+	app.desktopSessions.workspaceState = workspacestate.NewStore(filepath.Join(root, "desktop", "workspace-state-v1.json"))
+	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := app.desktopSessionService("").Create(t.Context(), session.CreateOptions{
+		SessionID: "copy-target-source", CWD: root, Origin: session.SessionOriginNew,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"message": provider.Message{
+		ID: "copy-message", Role: provider.RoleUser, Content: "copy the entire durable history",
+	}})
+	if _, err := source.Session().AppendBatch(t.Context(), "copy-message", []session.Event{{Kind: "message/complete", Payload: payload}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Session().Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspaceID, source.Ref().SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	app.tabs = map[string]*WorkspaceTab{"active": {ID: "active", SessionID: "unrelated"}}
+	app.activeTabID = "active"
+	selector := SessionSelector{Ref: &session.SessionRef{HostID: localDesktopHostID, SessionID: source.Ref().SessionID}}
+
+	first, err := app.CopySessionTarget(selector, "copy-request-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.CopySessionTarget(selector, "copy-request-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Committed || first.Ref != second.Ref || first.OperationID != "copy-request-1" {
+		t.Fatalf("copy retries = first:%+v second:%+v", first, second)
+	}
+	history, err := app.desktopSessionService("").Query().History(t.Context(), first.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Content != "copy the entire durable history" {
+		t.Fatalf("copy history = %+v", history)
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := state.Workspaces[workspaceID].SessionIDs
+	if len(ids) != 2 || ids[0] != source.Ref().SessionID || ids[1] != first.Ref.SessionID {
+		t.Fatalf("workspace copies = %#v", ids)
+	}
+	if app.activeTabID != "active" || len(app.tabs) != 1 {
+		t.Fatalf("target copy changed navigation: active=%q tabs=%d", app.activeTabID, len(app.tabs))
+	}
+}

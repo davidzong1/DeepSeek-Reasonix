@@ -291,7 +291,7 @@ export async function crashGroups(
       GROUP BY daily.fingerprint, installs.affected_installs
     ) diagnostics ON diagnostics.fingerprint = groups.fingerprint`;
   const sql = `SELECT groups.fingerprint, kind, count, first_version, last_version, substr(last_seen, 1, 10) AS seen,
-      status, title, source, label, error_type, top_frame, severity, last_os, last_arch, last_channel, regressed_at,
+      status, title, source, label, error_type, top_frame, severity, last_os, last_arch, last_channel, regressed_at, last_category,
       COALESCE(diagnostics.affected_installs, 0) AS affected_installs,
       COALESCE(diagnostics.window_events, 0) AS window_events,
       COALESCE(diagnostics.identified_events, 0) AS identified_events,
@@ -370,6 +370,10 @@ type ReportAggregateInput = {
     kernelVersion?: string;
     sessionType?: string;
   };
+  diagnostics?: {
+    subjectVersion?: string;
+    subjectChannel?: string;
+  };
 };
 
 type WebRuntimeAggregateInput = {
@@ -389,6 +393,8 @@ export function reportAggregateStatements(
   channel: string,
   webRuntime?: WebRuntimeAggregateInput,
 ): D1PreparedStatement[] {
+  const subjectVersion = report.diagnostics?.subjectVersion || report.version;
+  const subjectChannel = report.diagnostics?.subjectChannel || channel;
   const statements = [
     db.prepare(
       `INSERT INTO report_daily (date, fingerprint, events, identified_events)
@@ -411,10 +417,10 @@ export function reportAggregateStatements(
            runtime_engine = ?13, runtime_version = ?14, failure_kind = ?15, failure_reason = ?16,
            exit_code = ?17, recovery = ?18, gpu_mode = ?19, events = events + 1`,
       ).bind(
-        fingerprint, report.installId, report.version, report.os, report.arch,
+        fingerprint, report.installId, subjectVersion, report.os, report.arch,
         report.device?.osBuild ?? 0, report.device?.osRevision ?? 0,
         report.device?.distroId ?? "", report.device?.distroVersion ?? "", report.device?.kernelVersion ?? "",
-        report.device?.sessionType ?? "", channel,
+        report.device?.sessionType ?? "", subjectChannel,
         webRuntime?.engine ?? "", webRuntime?.runtimeVersion ?? "", webRuntime?.kind ?? "", webRuntime?.reason ?? "",
         webRuntime?.exitCode ?? null, webRuntime?.recovery ?? "", webRuntime?.gpuMode ?? "unknown",
       ),
@@ -433,10 +439,10 @@ export function reportAggregateStatements(
          runtime_engine, runtime_version, failure_kind, failure_reason, exit_code, recovery, gpu_mode
        ) DO UPDATE SET events = events + 1`,
     ).bind(
-      fingerprint, report.installId ?? "", report.version, report.os, report.arch,
+      fingerprint, report.installId ?? "", subjectVersion, report.os, report.arch,
       report.device?.osBuild ?? 0, report.device?.osRevision ?? 0,
       report.device?.distroId ?? "", report.device?.distroVersion ?? "", report.device?.kernelVersion ?? "",
-      report.device?.sessionType ?? "", channel,
+      report.device?.sessionType ?? "", subjectChannel,
       webRuntime?.engine ?? "", webRuntime?.runtimeVersion ?? "", webRuntime?.kind ?? "", webRuntime?.reason ?? "",
       webRuntime?.exitCode === undefined ? "unknown" : String(webRuntime.exitCode), webRuntime?.recovery ?? "",
       webRuntime?.gpuMode ?? "unknown",
@@ -449,6 +455,7 @@ export type GroupDiagnosticSummary = {
   windowEvents: number;
   identifiedEvents: number;
   affectedInstalls: number;
+  linkedIncidents: number;
   distributions: { facet: string; value: string; installs: number; events: number }[];
 };
 
@@ -457,12 +464,18 @@ export async function groupDiagnosticSummary(
   fingerprint: string,
   observe?: DiagnosticsQueryObserver,
 ): Promise<GroupDiagnosticSummary> {
-  const [totals, distributions] = await Promise.all([
-    observedFirst<{ window_events: number; identified_events: number; affected_installs: number }>(env.DB.prepare(
+  const [totals, distributions, attribution] = await Promise.all([
+    observedFirst<{
+      window_events: number;
+      identified_events: number;
+      affected_installs: number;
+      linked_incidents: number;
+    }>(env.DB.prepare(
       `SELECT
          COALESCE(daily.window_events, 0) AS window_events,
          COALESCE(daily.identified_events, 0) AS identified_events,
-         COALESCE(installs.affected_installs, 0) AS affected_installs
+         COALESCE(installs.affected_installs, 0) AS affected_installs,
+         COALESCE(incidents.linked_incidents, 0) AS linked_incidents
        FROM (
          SELECT SUM(events) AS window_events, SUM(identified_events) AS identified_events
          FROM report_daily WHERE fingerprint = ?1 AND date >= date('now', '-29 day')
@@ -470,7 +483,11 @@ export async function groupDiagnosticSummary(
        CROSS JOIN (
          SELECT COUNT(DISTINCT install_id) AS affected_installs
          FROM report_installations WHERE fingerprint = ?1 AND date >= date('now', '-29 day')
-       ) installs`,
+       ) installs
+       CROSS JOIN (
+         SELECT COUNT(*) AS linked_incidents FROM report_incidents
+         WHERE fingerprint = ?1 AND date >= date('now', '-29 day')
+       ) incidents`,
     ).bind(fingerprint), "group_diagnostic_totals", observe),
     observedAll<{ facet: string; value: string; installs: number; events: number }>(env.DB.prepare(
       `WITH window AS MATERIALIZED (
@@ -505,11 +522,31 @@ export async function groupDiagnosticSummary(
        SELECT facet, value, installs, events
        FROM ranked WHERE rank <= 20 ORDER BY facet, rank`,
     ).bind(fingerprint), "group_diagnostic_distributions", observe),
+    observedAll<{
+      facet: string;
+      value: string;
+      installs: number;
+      events: number;
+    }>(
+      env.DB.prepare(
+        `SELECT 'faultVersion' AS facet, subject_version AS value, 0 AS installs, SUM(events) AS events
+         FROM report_attribution_daily WHERE fingerprint = ?1 AND date >= date('now', '-29 day') AND subject_version <> ''
+         GROUP BY subject_version
+         UNION ALL
+         SELECT 'observerVersion' AS facet, observer_version AS value, 0 AS installs, SUM(events) AS events
+         FROM report_attribution_daily WHERE fingerprint = ?1 AND date >= date('now', '-29 day') AND observer_version <> ''
+         GROUP BY observer_version
+         ORDER BY facet, events DESC LIMIT 40`,
+      ).bind(fingerprint),
+      "group_attribution_distributions",
+      observe,
+    ),
   ]);
   return {
     windowEvents: Number(totals?.window_events ?? 0),
     identifiedEvents: Number(totals?.identified_events ?? 0),
     affectedInstalls: Number(totals?.affected_installs ?? 0),
-    distributions: distributions.results,
+    linkedIncidents: Number(totals?.linked_incidents ?? 0),
+    distributions: [...distributions.results, ...attribution.results],
   };
 }

@@ -475,7 +475,13 @@ func (a *App) recoverDesktopSessionOperations(ctx context.Context) error {
 	}
 	var joined error
 	for _, op := range state.PendingOperations {
-		if op.Phase == "committed" || op.Kind == "archive-import" || op.Kind == "command" {
+		if op.Kind != "purge" || op.Phase == "committed" {
+			continue
+		}
+		joined = errors.Join(joined, a.replayDesktopSessionOperation(ctx, state, op))
+	}
+	for _, op := range state.PendingOperations {
+		if op.Phase == "committed" || op.Kind == "archive-import" || op.Kind == "command" || op.Kind == "purge" {
 			continue
 		}
 		joined = errors.Join(joined, a.replayDesktopSessionOperation(ctx, state, op))
@@ -501,7 +507,10 @@ func (a *App) replayDesktopSessionOperation(ctx context.Context, state workspace
 		if len(op.SessionIDs) != 1 {
 			return workspacestate.ErrMutationConflict
 		}
-		return a.purgeCanonicalSession(ctx, session.SessionRef{HostID: localDesktopHostID, SessionID: op.SessionIDs[0]})
+		if err := a.resumeCanonicalPurge(ctx, session.SessionRef{HostID: localDesktopHostID, SessionID: op.SessionIDs[0]}, op); err != nil {
+			return fmt.Errorf("replay purge session=%s phase=%s expected_generation=%d: %w", op.SessionIDs[0], op.Phase, op.ExpectedGeneration, err)
+		}
+		return nil
 	}
 	checks := []workspacestate.Operation{op}
 	for _, dependency := range op.Dependencies {

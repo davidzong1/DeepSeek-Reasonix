@@ -22,11 +22,14 @@ type providerSetupSession struct {
 	originalProviders  map[string]config.ProviderEntry
 	originalDefault    string
 	pendingCredentials map[string]string
-	removed            map[string]bool
-	accessDeclared     bool
-	projectScoped      bool
-	declaredProviders  []string
-	operations         []providerSetupOperation
+	// Credentials are owned by selected connections, never by their previous
+	// shared environment variable. The legacy map above is summary-only.
+	pendingConnectionCredentials map[string]string
+	removed                      map[string]bool
+	accessDeclared               bool
+	projectScoped                bool
+	declaredProviders            []string
+	operations                   []providerSetupOperation
 }
 
 const setupManagerContinue = 2
@@ -89,11 +92,12 @@ func providerSetupFileSnapshotEqual(a, b providerSetupFileSnapshot) bool {
 
 func newProviderSetupSession(cfg *config.Config) *providerSetupSession {
 	s := &providerSetupSession{
-		cfg:                cfg,
-		originalProviders:  make(map[string]config.ProviderEntry, len(cfg.Providers)),
-		originalDefault:    cfg.DefaultModel,
-		pendingCredentials: map[string]string{},
-		removed:            map[string]bool{},
+		cfg:                          cfg,
+		originalProviders:            make(map[string]config.ProviderEntry, len(cfg.Providers)),
+		originalDefault:              cfg.DefaultModel,
+		pendingCredentials:           map[string]string{},
+		pendingConnectionCredentials: map[string]string{},
+		removed:                      map[string]bool{},
 	}
 	for _, p := range cfg.Providers {
 		s.originalProviders[p.Name] = p
@@ -339,6 +343,16 @@ func (s *providerSetupSession) recordAccessTransition(before []string) {
 }
 
 func (s *providerSetupSession) setCredential(key, value string) error {
+	var names []string
+	for _, entry := range s.cfg.Providers {
+		if entry.APIKeyEnv == strings.TrimSpace(key) {
+			names = append(names, entry.Name)
+		}
+	}
+	return s.setCredentialForProviders(names, key, value)
+}
+
+func (s *providerSetupSession) setCredentialForProviders(names []string, key, value string) error {
 	key = strings.TrimSpace(key)
 	if !config.IsValidCredentialKey(key) {
 		return fmt.Errorf("invalid API key variable name %q", key)
@@ -347,6 +361,21 @@ func (s *providerSetupSession) setCredential(key, value string) error {
 		return fmt.Errorf("API key for %s contains a newline", key)
 	}
 	s.pendingCredentials[key] = value
+	if s.pendingConnectionCredentials == nil {
+		s.pendingConnectionCredentials = map[string]string{}
+	}
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			entry, ok := s.cfg.Provider(name)
+			if !ok {
+				return fmt.Errorf("unknown provider %q", name)
+			}
+			// A credential-only edit still has a config precondition. Replay it
+			// at the same point as other edits so concurrent rotations conflict.
+			s.recordProviderMutation(name, providerSetupEntryPtr(*entry), providerSetupEntryPtr(*entry))
+			s.pendingConnectionCredentials[name] = value
+		}
+	}
 	return nil
 }
 
@@ -372,7 +401,7 @@ func (s *providerSetupSession) providerUsable(p *config.ProviderEntry) bool {
 	if p == nil || len(p.ModelList()) == 0 {
 		return false
 	}
-	return p.Configured() || s.pendingCredentials[p.APIKeyEnv] != ""
+	return p.Configured() || s.pendingConnectionCredentials[p.Name] != ""
 }
 
 // defaultModelUsable reports whether default_model resolves to a provider the
@@ -514,7 +543,7 @@ func providerManagerItems(s *providerSetupSession) []menuItem {
 	for _, p := range cfg.Providers {
 		models := p.ModelList()
 		keyStatus := i18n.M.SetupKeyMissing
-		if p.APIKeyEnv == "" || config.CredentialIsSet(p.APIKeyEnv) || s.pendingCredentials[p.APIKeyEnv] != "" {
+		if p.APIKeyEnv == "" || config.CredentialIsSet(p.APIKeyEnv) || s.pendingConnectionCredentials[p.Name] != "" {
 			keyStatus = i18n.M.SetupKeySet
 		}
 		desc := fmt.Sprintf("%s · %d %s · %s", p.Kind, len(models), i18n.M.SetupModelsUnit, keyStatus)
@@ -560,7 +589,13 @@ func addProviderToSession(s *providerSetupSession, anthropic bool) bool {
 	}
 	s.addProviderAccess(result.entries)
 	for key, value := range result.credentials {
-		if err := s.setCredential(key, value); err != nil {
+		var names []string
+		for _, entry := range result.entries {
+			if entry.APIKeyEnv == key {
+				names = append(names, entry.Name)
+			}
+		}
+		if err := s.setCredentialForProviders(names, key, value); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return false
 		}
@@ -681,13 +716,13 @@ func updateProviderKey(s *providerSetupSession, p config.ProviderEntry) {
 	if value == "" {
 		return
 	}
-	if err := s.setCredential(p.APIKeyEnv, value); err != nil {
+	if err := s.setCredentialForProviders([]string{p.Name}, p.APIKeyEnv, value); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 }
 
 func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
-	restore := temporarilySetCredential(p.APIKeyEnv, s.pendingCredentials[p.APIKeyEnv])
+	restore := temporarilySetCredential(p.APIKeyEnv, s.pendingConnectionCredentials[p.Name])
 	defer restore()
 	p.ResolveAPIKeyFromProcessEnvForProbe()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -857,7 +892,7 @@ func providerSetupAccessContains(names []string, want string) bool {
 }
 
 func commitProviderSetupSession(s *providerSetupSession, configPath string) (bool, error) {
-	if len(s.operations) == 0 {
+	if len(s.operations) == 0 && len(s.pendingConnectionCredentials) == 0 {
 		return false, nil
 	}
 	unlock, err := config.LockConfigFileEdits(configPath)
@@ -865,6 +900,11 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 		return false, err
 	}
 	defer unlock()
+	unlockCredentials, err := config.LockUserCredentialEdits()
+	if err != nil {
+		return false, err
+	}
+	defer unlockCredentials()
 
 	before, err := readProviderSetupFileSnapshot(configPath)
 	if err != nil {
@@ -878,9 +918,31 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	if err != nil {
 		return false, err
 	}
+	if err := fresh.BeginModelCredentialCommitLocked(configPath, "cli-setup"); err != nil {
+		return false, err
+	}
+	defer fresh.CleanupStagedModelCredentialsLocked(configPath)
+	baseline := fresh.ModelSettingsBaseline()
 	accessDeclared := declarations.DesktopProviderAccessDeclared
 	if err := s.replayOperations(fresh, &accessDeclared, declarations.ProviderNames); err != nil {
 		return false, err
+	}
+	for name, value := range s.pendingConnectionCredentials {
+		slot, err := fresh.StageModelCredentialLocked(value)
+		if err != nil {
+			return false, err
+		}
+		{
+			entry, ok := fresh.Provider(name)
+			if !ok {
+				return false, &providerSetupConflictError{field: fmt.Sprintf("provider %q", name)}
+			}
+			updated := *entry
+			updated.APIKeyEnv = slot
+			if err := fresh.UpsertProvider(updated); err != nil {
+				return false, err
+			}
+		}
 	}
 	current, err := readProviderSetupFileSnapshot(configPath)
 	if err != nil {
@@ -889,7 +951,17 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	if !providerSetupFileSnapshotEqual(before, current) {
 		return false, &providerSetupConflictError{field: "configuration file"}
 	}
-	if err := fresh.SaveTo(configPath); err != nil {
+	err = fresh.SaveModelSettingsTo(configPath, baseline)
+	if err != nil {
+		return false, err
+	}
+	if err := fresh.MarkModelCredentialConfigCommittedLocked(configPath); err != nil {
+		return false, err
+	}
+	if _, err := config.LoadForEditReadOnlyStrict(configPath); err != nil {
+		return false, err
+	}
+	if err := fresh.CompleteModelCredentialCommitLocked(); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -919,12 +991,8 @@ func saveProviderSetupSession(s *providerSetupSession, configPath, envPath strin
 	if configWritten {
 		fmt.Printf("\n%s %s\n", green("✓"), fmt.Sprintf(i18n.M.WroteFileFmt, displayPath(configPath)))
 	}
-	if lines := s.credentialLines(); len(lines) > 0 {
-		target, err := config.StoreCredentialLines(lines)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.WriteEnvErr, err)
-			return 1
-		}
+	if len(s.pendingCredentials) > 0 {
+		target := config.CredentialsTargetDescription()
 		if target == "" {
 			target = envPath
 		}

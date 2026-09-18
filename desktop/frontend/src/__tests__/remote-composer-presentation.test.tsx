@@ -25,6 +25,7 @@ const calls: string[] = [];
 let localWrites = 0;
 const forbidden = async () => { localWrites++; throw new Error("remote surface called local file/inbox mutation"); };
 installDesktopHostStub({ SavePastedFile: forbidden, SavePastedImage: forbidden,
+  SavePastedFileForTarget: forbidden, SavePastedImageForTarget: forbidden,
   ModelsForTab: async () => [], ListInboxItems: async () => [],
   EnqueueInboxFollowup: forbidden, EnqueueInboxSteer: forbidden, EnqueueInboxSteerForTurn: forbidden,
   EnqueueInboxFollowupWithInvocations: forbidden,

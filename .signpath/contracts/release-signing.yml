@@ -6,6 +6,8 @@ allowed_branch_names:
   - main-v2
 allowed_build_definitions:
   - .github/workflows/certum-signing-smoke.yml
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/release-promote.yml
   - .github/workflows/release-stable.yml
   - .github/workflows/release-desktop.yml
 fingerprint_files:
@@ -13,9 +15,12 @@ fingerprint_files:
   - .github/actions/setup-certum/action.yml
   - scripts/sign-certum.ps1
   - scripts/install-nsis.ps1
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/release-promote.yml
   - .github/workflows/release-stable.yml
-  - .github/workflows/release-stable-trigger.yml
   - .github/workflows/release-desktop.yml
+  - scripts/finalize-windows-signed-candidate.sh
+  - scripts/validate-release-control-plane.sh
   - scripts/package-windows-desktop.sh
   - scripts/verify-windows-authenticode.ps1
   - cmd/signpath-contract/main.go

@@ -329,21 +329,21 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		effortEntry = *entry
 	}
 	effortOverride := cloneStringPtr(p.EffortOverride)
-	hadEffortOverride := effortOverride != nil
 	if effortOverride != nil {
 		if strings.TrimSpace(*effortOverride) == "" {
 			effortEntry.Effort = ""
 		} else {
 			normalized, err := config.NormalizeEffort(&effortEntry, *effortOverride)
 			if err != nil {
-				effortEntry.Effort = ""
-				cleared := ""
-				effortOverride = &cleared
+				return acp.SessionConfigState{}, err
 			} else {
 				effortEntry.Effort = normalized
 				effortOverride = &normalized
 			}
 		}
+	}
+	if err := config.ReasoningCapabilityForEntry(&effortEntry).Validate(effortEntry.Model, config.EffectiveEffort(&effortEntry)); err != nil {
+		return acp.SessionConfigState{}, err
 	}
 
 	options := []acp.SessionConfigOption{{
@@ -357,9 +357,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 	if cap := config.EffortCapabilityForEntry(&effortEntry); cap.Supported {
 		currentEffort := config.EffortDisplay(&effortEntry)
 		if !containsString(cap.Levels, currentEffort) {
-			currentEffort = "auto"
-			auto := ""
-			effortOverride = &auto
+			currentEffort = config.EffectiveEffort(&effortEntry)
 		}
 		options = append(options, acp.SessionConfigOption{
 			ID:           "effort",
@@ -369,9 +367,6 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 			CurrentValue: currentEffort,
 			Options:      acpEffortOptions(cap.Levels),
 		})
-	} else if hadEffortOverride {
-		cleared := ""
-		effortOverride = &cleared
 	}
 	// RuntimeProfile stays pinned for old status readers; mode options are unpublished.
 	return acp.SessionConfigState{

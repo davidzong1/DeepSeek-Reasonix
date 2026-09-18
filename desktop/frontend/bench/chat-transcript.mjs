@@ -13,6 +13,7 @@ import {
   measureTranscriptPerformance,
   percentile,
 } from "./transcript-performance.mjs";
+import { launchTranscriptRetryHost } from "./transcript-retry.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.env.PLAYWRIGHT_BROWSERS_PATH = !process.env.PLAYWRIGHT_BROWSERS_PATH || process.env.PLAYWRIGHT_BROWSERS_PATH === ".pw-browsers"
@@ -194,6 +195,7 @@ try {
         const scenario = `${name}-${mode}-${turns}`;
         let attempts = [];
         let firstTraceActive = true;
+        let retryHost;
         await page.context().tracing.start({ screenshots: true, snapshots: true });
         try {
           const collected = await collectTranscriptPerformance(async attempt => {
@@ -207,28 +209,34 @@ try {
               await page.context().tracing.stop({ path: path.join(evidence, `${scenario}-first-limit-exceedance.zip`) });
               firstTraceActive = false;
             }
-            assert.ok(browser, "bounded transcript retry requires an isolated browser context");
+            assert.ok(browser, "bounded transcript retry requires an isolated browser process");
             const retryErrors = [];
-            const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-            const retryPage = await context.newPage();
-            await installTranscriptPerformanceObserver(retryPage);
-            retryPage.on("pageerror", error => { retryErrors.push(error.message); console.error(error.stack); });
-            retryPage.on("console", message => { if (/Maximum update depth|ResizeObserver loop/.test(message.text())) retryErrors.push(message.text()); });
-            await context.tracing.start({ screenshots: true, snapshots: true });
-            try {
-              await retryPage.goto(url);
-              await retryPage.locator(".chat-column .md h3").last().waitFor();
-              await retryPage.evaluate(() => document.fonts.ready);
-              const sample = await measureTranscriptPerformance({ page: retryPage, turns, attempt, frame: settleFrames, errors: retryErrors });
-              await writeAttempt(scenario, sample);
-              await context.tracing.stop();
-              return sample;
-            } catch (error) {
-              await context.tracing.stop({ path: path.join(evidence, `${scenario}-attempt-${attempt}-functional-failure.zip`) });
-              throw error;
-            } finally {
-              await context.close();
-            }
+            // Keep the primary page alive for the functional checks below, but
+            // do not make retries compete with its fully mounted 1000-turn
+            // transcript. A browser context is storage isolation, not process
+            // or scheduler isolation, so retries need a separate browser.
+            retryHost ??= await launchTranscriptRetryHost(engine, {
+              headless: !nativeThumb,
+              viewport: { width: 1280, height: 900 },
+            });
+            return retryHost.run(async (retryPage, context) => {
+              await installTranscriptPerformanceObserver(retryPage);
+              retryPage.on("pageerror", error => { retryErrors.push(error.message); console.error(error.stack); });
+              retryPage.on("console", message => { if (/Maximum update depth|ResizeObserver loop/.test(message.text())) retryErrors.push(message.text()); });
+              await context.tracing.start({ screenshots: true, snapshots: true });
+              try {
+                await retryPage.goto(url);
+                await retryPage.locator(".chat-column .md h3").last().waitFor();
+                await retryPage.evaluate(() => document.fonts.ready);
+                const sample = await measureTranscriptPerformance({ page: retryPage, turns, attempt, frame: settleFrames, errors: retryErrors });
+                await writeAttempt(scenario, sample);
+                await context.tracing.stop();
+                return sample;
+              } catch (error) {
+                await context.tracing.stop({ path: path.join(evidence, `${scenario}-attempt-${attempt}-functional-failure.zip`) });
+                throw error;
+              }
+            });
           });
           attempts = collected.attempts;
           if (firstTraceActive) {
@@ -239,6 +247,8 @@ try {
           if (firstTraceActive) await page.context().tracing.stop({ path: path.join(evidence, `${scenario}-functional-failure.zip`) });
           await writeFile(path.join(evidence, `${scenario}-failure.json`), JSON.stringify({ error: String(error), attempts }, null, 2));
           throw error;
+        } finally {
+          await retryHost?.close();
         }
         const decision = decideTranscriptPerformance(attempts);
         for (const attempt of attempts) await writeAttempt(scenario, attempt, decision);

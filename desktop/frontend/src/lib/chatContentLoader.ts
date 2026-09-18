@@ -13,7 +13,7 @@ export class ChatContentLoader {
   constructor(private tabId?: string, private resolve?: (item: Item, field: "content" | "reasoning" | "tool") => Promise<string>) {}
   activate() { this.closed = false; }
   needsFullContent(item: Item, field: "content" | "reasoning" | "tool"): boolean {
-    if (field === "tool" && item.kind === "tool" && (item.dataArchived || item.truncated)) return true;
+    if (field === "tool" && item.kind === "tool" && (item.dataArchived || item.truncated || item.contentState === "unloaded")) return true;
     const entry = historyEntryIdForItemId(item.id);
     return Boolean(entry && this.tabId && getTranscriptStore().hasContentReference(this.tabId, entry, field));
   }
@@ -43,6 +43,11 @@ export class ChatContentLoader {
   };
   private async fetch(item: Item, field: "content" | "reasoning" | "tool"): Promise<string> {
     if (field === "tool" && item.kind === "tool") {
+      if (this.tabId && item.contentState === "unloaded") {
+        const canonical = await getTranscriptStore().requestToolContent(this.tabId, item, { args: item.args, output: item.output, error: item.error, execution: item.execution });
+        if (canonical !== undefined) return canonical;
+      }
+
       if (this.tabId && getTranscriptStore().hasContentResolver(this.tabId)) {
         const full = await getTranscriptStore().requestFullContent(this.tabId, item.id, "tool");
         if (full === undefined) throw new Error("Tool content unavailable");

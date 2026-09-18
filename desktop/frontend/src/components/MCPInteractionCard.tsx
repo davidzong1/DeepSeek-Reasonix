@@ -24,11 +24,13 @@ function hostOfURL(raw: string | undefined): string {
 // unknown mode falls back to form, preserving pre-2025-11-25 behavior.
 export function MCPInteractionCard({
   interaction,
+  instanceKey,
   busy,
   onAnswer,
   onOpenLink,
 }: {
   interaction: WireMCPInteraction;
+  instanceKey: string;
   busy: boolean;
   onAnswer: (id: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => void;
   onOpenLink?: (url: string) => void;
@@ -45,7 +47,7 @@ export function MCPInteractionCard({
     setValues(initialStructuredValues(schema.fields));
     setOpenedLink(false);
     setShowErrors(false);
-  }, [interaction.id, schema.fields]);
+  }, [instanceKey, schema.fields]);
 
   const firstIssue = schema.fields.find((field) => structuredFieldIssue(field, values[field.key]));
   const formBlocked = schema.unsupported || firstIssue !== undefined;

@@ -9,6 +9,10 @@ desktop_tag="${DESKTOP_TAG:?DESKTOP_TAG is required}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 attempts="${VERIFY_ATTEMPTS:-6}"
 delay="${VERIFY_DELAY_SECONDS:-10}"
+verify_homepage="${VERIFY_HOMEPAGE:-false}"
+site_only="${VERIFY_PUBLIC_SITE_ONLY:-false}"
+operation="${RELEASE_OPERATION:-publish}"
+ledger_output="${RELEASE_LEDGER_OUTPUT:-}"
 
 if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
 	echo "::error::RELEASE_VERSION must be stable semver, got: $version" >&2
@@ -16,6 +20,16 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
 fi
 if [ "$cli_tag" != "v$version" ] || [ "$desktop_tag" != "desktop-v$version" ]; then
 	echo "::error::release tags do not match version $version: cli=$cli_tag desktop=$desktop_tag" >&2
+	exit 1
+fi
+case "$operation" in publish | recover) ;; *) echo "::error::RELEASE_OPERATION must be publish or recover" >&2; exit 1 ;; esac
+
+release_git_url="https://github.com/${repository}.git"
+cli_sha="$(git ls-remote --tags --refs "$release_git_url" "refs/tags/$cli_tag" | awk 'NR == 1 {print $1}')"
+npm_sha="$(git ls-remote --tags --refs "$release_git_url" "refs/tags/npm-v$version" | awk 'NR == 1 {print $1}')"
+desktop_sha="$(git ls-remote --tags --refs "$release_git_url" "refs/tags/$desktop_tag" | awk 'NR == 1 {print $1}')"
+if [ -z "$cli_sha" ] || [ "$cli_sha" != "$npm_sha" ] || [ "$cli_sha" != "$desktop_sha" ]; then
+	echo "::error::release tags are missing or do not identify one immutable commit" >&2
 	exit 1
 fi
 
@@ -27,6 +41,52 @@ cleanup() {
 	esac
 }
 trap cleanup EXIT
+
+verify_site() {
+	local manifest="$tmp_dir/desktop-pointer.json"
+	local homepage="$tmp_dir/homepage.html"
+	local changelog="$tmp_dir/changelog.html"
+	local cask="$tmp_dir/reasonix.rb"
+	curl -fsSL https://dl.reasonix.io/latest/latest.json >"$manifest"
+	jq -e --arg version "v$version" '
+		.version == $version and
+		([.platforms[], (.native_packages // {})[], (.downloads // {})[]] |
+		 all(.url | type == "string" and startswith("https://dl.reasonix.io/desktop-" + $version + "/")))
+	' "$manifest" >/dev/null
+	curl -fsSL "https://reasonix.io/?download=desktop&release-postflight=v$version" >"$homepage"
+	! grep -Eq 'href="[^"]*(tag|download)/desktop-v[0-9]+\.[0-9]+\.[0-9]+' "$homepage"
+	curl -fsSL "https://reasonix.io/changelog/v$version/" >"$changelog"
+	grep -Fq "v$version" "$changelog"
+	curl -fsSL https://raw.githubusercontent.com/esengine/homebrew-reasonix/main/Casks/reasonix.rb >"$cask"
+	grep -Eq "version ['\"]$version['\"]" "$cask"
+	local browser="${CHROME_BIN:-}"
+	if [ -z "$browser" ]; then
+		for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+			if command -v "$candidate" >/dev/null 2>&1; then browser="$candidate"; break; fi
+		done
+	fi
+	[ -n "$browser" ] || { echo "::error::a Chromium browser is required for hydrated homepage verification" >&2; return 1; }
+	"$browser" --headless=new --disable-gpu --no-sandbox --virtual-time-budget=10000 \
+		--dump-dom "https://reasonix.io/?download=desktop&release-postflight=v$version" \
+		>"$tmp_dir/homepage-hydrated.html"
+	grep -Fq "data-release-version=\"desktop\">v$version<" "$tmp_dir/homepage-hydrated.html"
+	while IFS= read -r asset; do
+		url="$(jq -er --arg asset "$asset" '
+			[.platforms[], (.native_packages // {})[], (.downloads // {})[]]
+			| map(select(.url | endswith("/" + $asset)))
+			| if length == 1 then .[0].url else error("visible asset is missing or ambiguous") end
+		' "$manifest")"
+		grep -Fq "$url" "$tmp_dir/homepage-hydrated.html"
+	done < <(grep -Eo 'data-desktop-asset="[^"]+"' "$homepage" | cut -d '"' -f 2 | sort -u)
+}
+
+if [ "$site_only" = "true" ]; then
+	verify_site
+	node "$script_dir/release-publication-ledger.mjs" site "$version" "$cli_sha" "$operation" \
+		"$tmp_dir/desktop-pointer.json" "${ledger_output:-$tmp_dir/site-ledger.json}"
+	echo "public site release inputs OK: v$version"
+	exit 0
+fi
 
 gh release view "$cli_tag" --repo "$repository" --json isDraft,isPrerelease,assets >"$tmp_dir/cli.json"
 jq -e '
@@ -66,17 +126,77 @@ if [ "${DESKTOP_MANUAL_ONLY:-false}" = "true" ]; then
 	gh release view "$desktop_tag" --repo "$repository" --json body --jq .body | grep -F 'manual-download only'
 fi
 
+npm_names=(
+	"reasonix"
+	"@reasonix/cli-darwin-arm64"
+	"@reasonix/cli-darwin-x64"
+	"@reasonix/cli-linux-arm64"
+	"@reasonix/cli-linux-x64"
+	"@reasonix/cli-win32-arm64"
+	"@reasonix/cli-win32-x64"
+)
 for attempt in $(seq 1 "$attempts"); do
-	latest="$(npm view reasonix dist-tags.latest 2>/dev/null || true)"
-	if [ "$latest" = "$version" ]; then
-		echo "stable release postflight OK: cli=$cli_tag desktop=$desktop_tag npm-latest=$latest"
-		exit 0
+	rm -rf "$tmp_dir/npm"
+	mkdir -p "$tmp_dir/npm"
+	visible=true
+	for index in "${!npm_names[@]}"; do
+		package="${npm_names[$index]}"
+		raw="$tmp_dir/npm/$index.raw.json"
+		if ! npm view "$package@$version" name version reasonixCandidateSha gitHead dist.integrity dist-tags.latest --json >"$raw" 2>/dev/null; then
+			visible=false
+			continue
+		fi
+		jq --arg name "$package" '
+			{
+				name: (.name // $name),
+				version,
+				reasonixCandidateSha,
+				gitHead,
+				integrity: (."dist.integrity" // .dist.integrity),
+				latest: (."dist-tags.latest" // ."dist-tags".latest)
+			}
+		' "$raw" >"$tmp_dir/npm/$index.json"
+		jq -e --arg name "$package" --arg version "$version" --arg sha "$cli_sha" '
+			.name == $name and .version == $version and
+			((.reasonixCandidateSha == null or .reasonixCandidateSha == $sha) and
+			 (.gitHead == null or .gitHead == $sha) and
+			 ((.reasonixCandidateSha // .gitHead) == $sha)) and
+			(.integrity | type == "string" and length > 0) and
+			(.latest | type == "string" and length > 0)
+		' "$tmp_dir/npm/$index.json" >/dev/null || {
+			echo "::error::npm package identity differs from the release candidate: $package@$version" >&2
+			exit 1
+		}
+	done
+	if [ "$visible" = "true" ]; then
+		jq -s '.' "$tmp_dir"/npm/[0-9].json >"$tmp_dir/npm.json"
+		if node "$script_dir/release-publication-ledger.mjs" core "$version" "$cli_sha" "$operation" \
+			"$tmp_dir/cli.json" "$tmp_dir/desktop.json" "$tmp_dir/npm.json" "$tmp_dir/core-ledger.json"; then
+			if [ "$verify_homepage" = "true" ]; then
+				pointer_version="$(curl -fsSL https://dl.reasonix.io/latest/latest.json | jq -r .version)"
+				if [ "$pointer_version" = "v$version" ]; then
+					verify_site
+					node "$script_dir/release-publication-ledger.mjs" site "$version" "$cli_sha" "$operation" \
+						"$tmp_dir/desktop-pointer.json" "$tmp_dir/site-ledger.json"
+					node "$script_dir/release-publication-ledger.mjs" merge "$tmp_dir/core-ledger.json" \
+						"$tmp_dir/site-ledger.json" "${ledger_output:-$tmp_dir/publication-ledger.json}"
+				elif [ "$operation" = "recover" ]; then
+					echo "Stable site remains on newer version $pointer_version; recovered immutable v$version files only."
+					[ -z "$ledger_output" ] || cp "$tmp_dir/core-ledger.json" "$ledger_output"
+				else
+					echo "::error::Stable manifest serves $pointer_version, want v$version" >&2
+					exit 1
+				fi
+			elif [ -n "$ledger_output" ]; then
+				cp "$tmp_dir/core-ledger.json" "$ledger_output"
+			fi
+			echo "stable release postflight OK: cli=$cli_tag desktop=$desktop_tag npm-packages=${#npm_names[@]}"
+			exit 0
+		fi
 	fi
-	echo "npm latest -> ${latest:-<unreadable>}, want $version (attempt $attempt/$attempts)"
-	if [ "$attempt" -lt "$attempts" ]; then
-		sleep "$delay"
-	fi
+	echo "npm publication has not converged (attempt $attempt/$attempts)"
+	if [ "$attempt" -lt "$attempts" ]; then sleep "$delay"; fi
 done
 
-echo "::error::npm latest did not reach $version" >&2
+echo "::error::npm package set or public pointers did not converge for $version" >&2
 exit 1

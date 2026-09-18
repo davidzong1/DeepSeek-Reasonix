@@ -26,6 +26,8 @@ var sessionReset = map[string]bool{
 	"compactionMu":                          true,
 	"compactionState":                       true,
 	"cacheState":                            true,
+	"checkpointState":                       true,
+	"pendingModelContextCommit":             true,
 	"compaction":                            true,
 	"todoMu":                                true,
 	"todoState":                             true,
@@ -38,7 +40,6 @@ var sessionReset = map[string]bool{
 var sessionCarryOver = map[string]bool{
 	"compactionRunMu": true, // a singleflight latch, not conversation state
 	"path":            true, // preflight rebinds on the next transcript bind
-	"checkpointState": true, // preflight rebinds with the transcript
 	// lastPrefixShape survives the swap today; the next request compares its
 	// prefix against the replaced conversation's shape. Left as found here.
 	"lastPrefixShape":     true,
@@ -148,6 +149,8 @@ func TestSetSessionRestartsTheConversationState(t *testing.T) {
 	a.sess.compaction.failedTurn.Store(8)
 	a.sess.compaction.lastTurn.Store(9)
 	a.sess.compactionState = CompactionState{}
+	a.sess.checkpointState = "pending"
+	a.sess.pendingModelContextCommit = &SessionModelContextCommit{OperationID: "old-operation"}
 	a.unwrittenResolve.at = time.Unix(1, 0)
 
 	next := NewSession("")
@@ -176,6 +179,9 @@ func TestSetSessionRestartsTheConversationState(t *testing.T) {
 	}
 	if a.sess.cacheState != CacheStateUnknown {
 		t.Errorf("cacheState = %q, want %q", a.sess.cacheState, CacheStateUnknown)
+	}
+	if a.sess.checkpointState != "none" || a.sess.pendingModelContextCommit != nil {
+		t.Errorf("pending model context leaked across session reset: state=%q pending=%+v", a.sess.checkpointState, a.sess.pendingModelContextCommit)
 	}
 	if a.unwrittenResolve.at.IsZero() {
 		t.Error("unwrittenResolve was cleared; the retry it owes belongs to the provider configuration, not the conversation")

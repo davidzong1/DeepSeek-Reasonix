@@ -9,11 +9,18 @@ const bundled = build({ entryPoints: [fileURLToPath(new URL("./window.ts", impor
 async function fixture() {
   const windows: FakeWindow[] = [];
   const loads: (() => void)[] = [];
+  const scripts: string[] = [];
   class FakeWindow {
     destroyed = false;
     shown = 0;
     bounds: unknown;
-    webContents = { setWindowOpenHandler() {}, on() {}, setZoomFactor() {} };
+    webContents = {
+      setWindowOpenHandler() {},
+      on() {},
+      setZoomFactor() {},
+      isDestroyed() { return false; },
+      executeJavaScript: async (script: string) => { scripts.push(script); },
+    };
     constructor(public options: unknown) { windows.push(this); }
     getNormalBounds() { return { x: 0, y: 0, width: 1280, height: 820 }; }
     on() {}
@@ -32,7 +39,7 @@ async function fixture() {
   new Function("require", "module", "exports", (await bundled).outputFiles[0].text)((name: string) => name === "electron" ? electron : require(name), module, module.exports);
   const window = new module.exports.MainWindow({ platform: "win32", appURL: "reasonix://app/index.html", preloadPath: "unused", zoomStore: { current: { appZoomFactor: 1 } }, log: { warn() {}, error() {} }, onShellAction() {}, onAppDomReady() {} });
   const geometry = { ...module.exports.DEFAULT_GEOMETRY };
-  return { window, windows, loads, geometry };
+  return { window, windows, loads, scripts, geometry };
 }
 
 test("compatible startup window survives transition and applies service geometry", async () => {
@@ -84,4 +91,31 @@ test("incompatible native frame creates the replacement before destroying startu
   f.loads.shift()!();
   await startup;
   assert.equal(f.windows[0].shown, 0);
+});
+
+test("app window flushes the renderer draft through a fixed internal script", async () => {
+  const f = await fixture();
+  f.window.create(f.geometry);
+  const app = f.window.loadApp();
+  await f.window.flushSessionDraft();
+  assert.deepEqual(f.scripts, ["Promise.resolve(globalThis.__reasonixFlushSessionDraft?.())"]);
+  f.loads.shift()!();
+  await app;
+});
+
+test("app window can release the renderer draft exit barrier after a veto", async () => {
+  const f = await fixture();
+  f.window.create(f.geometry);
+  const app = f.window.loadApp();
+  await f.window.resumeSessionDraftEditing();
+  assert.deepEqual(f.scripts, ["Promise.resolve(globalThis.__reasonixResumeSessionDraftEditing?.())"]);
+  f.loads.shift()!();
+  await app;
+});
+
+test("startup and failure pages do not execute renderer draft hooks", async () => {
+  const f = await fixture();
+  f.window.create(f.geometry);
+  await f.window.flushSessionDraft();
+  assert.deepEqual(f.scripts, []);
 });

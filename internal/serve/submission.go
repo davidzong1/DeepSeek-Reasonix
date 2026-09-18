@@ -85,7 +85,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	if routing, ok := ctrl.(interface{ SetTurnSubmissionID(string) }); ok {
 		routing.SetTurnSubmissionID(body.SubmissionID)
 	}
-	if identifiedOK && body.SubmissionID != "" && !isServeManagementCommand(trimmed) {
+	if identifiedOK && !isServeManagementCommand(trimmed) {
 		_, err := identified.SubmitIdentified(identity)
 		if err != nil {
 			s.bindMu.Unlock()
@@ -95,9 +95,8 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		s.bindMu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 		return
-	} else {
-		submitWithAction(ctrl, body.Input, body.Format, body.Action, body.RecoveryID)
 	}
+	submitWithAction(ctrl, body.Input, body.Format, body.Action, body.RecoveryID)
 	if isServeManagementCommand(trimmed) && !ctrl.Running() && !ctrl.RuntimeStatus().PendingPrompt {
 		// Management notices/status are successful non-turn operations.
 		s.bindMu.Unlock()

@@ -69,8 +69,11 @@ export function useHistoryCommands(input: HistoryCommandsInput) {
   });
   const onRenameHistorySession = useCommittedCommand(async (session: SessionMeta, title: string) => {
     if (running) return;
-    if (session.topicId) await app.RenameTopic(session.topicId, title);
-    else await ports.renameSession(session.path, title);
+    await app.RenameSessionTarget({
+      ref: session.sessionId ? { hostId: session.hostId || "local", sessionId: session.sessionId } : undefined,
+      source: session.source,
+      sessionPath: session.path,
+    }, title);
     const sessions = await ports.listSessions();
     setHistView((cur) =>
       cur === null

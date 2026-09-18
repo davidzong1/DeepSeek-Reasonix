@@ -5,16 +5,18 @@
 //
 // usage: node desktop/packaging/verify.mjs <artifact> [--kind <kind>] [--list]
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
-import { resolve } from "node:path";
-import { ARTIFACT_KINDS, checkEntryModes, checkMembers, inferArtifactKind, isDirectory, listZipEntries, parseVerboseListing, validateMacServiceLink, walkFiles } from "./lib.mjs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { ARTIFACT_KINDS, WINDOWS_PORTABLE_LAYOUTS, checkEntryModes, checkMembers, inferArtifactKind, isDirectory, listZipEntries, readZipMember, parseVerboseListing, validateMacServiceLink, walkFiles } from "./lib.mjs";
 
 const args = process.argv.slice(2);
 const artifactArg = args.find((arg) => !arg.startsWith("--"));
 const kindIndex = args.indexOf("--kind");
 const kindArg = kindIndex >= 0 ? args[kindIndex + 1] : undefined;
-if (!artifactArg || (kindArg && !ARTIFACT_KINDS.includes(kindArg))) {
-  console.error(`usage: verify.mjs <artifact> [--kind <${ARTIFACT_KINDS.join("|")}>] [--list]`);
+const layoutIndex = args.indexOf("--portable-layout");
+const portableLayout = layoutIndex >= 0 ? args[layoutIndex + 1] : "canonical";
+if (!artifactArg || (kindArg && !ARTIFACT_KINDS.includes(kindArg)) || !WINDOWS_PORTABLE_LAYOUTS.includes(portableLayout)) {
+  console.error(`usage: verify.mjs <artifact> [--kind <${ARTIFACT_KINDS.join("|")}>] [--portable-layout canonical|legacy-dual] [--list]`);
   process.exit(2);
 }
 const artifact = resolve(artifactArg);
@@ -39,8 +41,16 @@ const directory = isDirectory(artifact);
 const kind = kindArg ?? inferArtifactKind(artifact, directory, directory ? readdirSync(artifact) : []);
 const { entries, rows } = listingOf(artifact);
 if (args.includes("--list")) for (const entry of entries) console.log(entry);
-const { missing, forbidden } = checkMembers(entries, kind);
+const { missing, forbidden } = checkMembers(entries, kind, portableLayout);
 const layoutErrors = kind === "darwin-app-dir" ? validateMacServiceLink(artifact) : [];
+if (kind === "windows-portable-zip" && missing.length === 0 && forbidden.length === 0) {
+  const readMember = name => directory ? readFileSync(join(artifact, name)) : readZipMember(artifact, name);
+  const gui = readMember("Reasonix.exe");
+  if (gui.equals(readMember("reasonix-cli.exe"))) layoutErrors.push("GUI entry contains CLI bytes");
+  if (portableLayout === "legacy-dual" && !gui.equals(readMember("reasonix-launcher.exe"))) {
+    layoutErrors.push("legacy GUI entry differs from Reasonix.exe");
+  }
+}
 const modeErrors = checkEntryModes(rows, kind);
 for (const name of missing) console.error(`verify: ${kind} is missing ${name}`);
 for (const name of forbidden) console.error(`verify: ${kind} must not contain ${name}`);

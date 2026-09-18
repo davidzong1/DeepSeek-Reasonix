@@ -17,18 +17,18 @@ export function toolPresentation(item: ToolItem): {
     case "background_started": return { state: "stopped", dot: "ongoing", label: "chat.background" };
     case "failed": return { state: "error", dot: "error", label: "chat.failed", exitCode: execution.exitCode };
     case "completed":
-      if (execution.exitCode == null) return { state: "stopped", dot: "idle", label: "chat.unknown" };
+      if (execution.exitCode == null) return { state: "unknown", dot: "idle", label: "chat.unknown" };
       return execution.exitCode === 0 ? { state: "done", dot: "done", label: "chat.done", exitCode: 0 }
         : { state: "error", dot: "error", label: "chat.failed", exitCode: execution.exitCode };
   }
   if (item.status === "running") return { state: "running", dot: "ongoing", label: "chat.running" };
-  if (item.resultMissing) return { state: "stopped", dot: "idle", label: "chat.unknown" };
+  if (item.resultMissing || item.status === "unknown") return { state: "unknown", dot: "idle", label: "chat.unknown" };
   if (item.status === "error" || item.error || (execution?.exitCode != null && execution.exitCode !== 0)) {
     return { state: "error", dot: "error", label: "chat.failed", exitCode: execution?.exitCode };
   }
   if (item.status === "stopped") return { state: "stopped", dot: "warning", label: "chat.stopped" };
   if (classifyTool(item) === "shell" && (execution?.exitCode == null || (execution.state && execution.state !== "running"))) {
-    return { state: "stopped", dot: "idle", label: "chat.unknown" };
+    return { state: "unknown", dot: "idle", label: "chat.unknown" };
   }
   return { state: "done", dot: "done", label: "chat.done", exitCode: execution?.exitCode };
 }

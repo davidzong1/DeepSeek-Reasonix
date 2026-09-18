@@ -155,7 +155,7 @@ func TestActivateInstallerStagingPublishesVersionAndRootEntries(t *testing.T) {
 	if got, err := os.ReadFile(activeDesktop); err != nil || string(got) != "new-"+installlayout.DesktopBinaryName() {
 		t.Fatalf("active desktop=%q err=%v", got, err)
 	}
-	for _, name := range []string{installlayout.LauncherBinaryName(), installlayout.CLIBinaryName()} {
+	for _, name := range []string{installlayout.CanonicalLauncherBinaryName(), installlayout.CLIBinaryName()} {
 		if info, err := os.Lstat(filepath.Join(root, name)); err != nil || !info.Mode().IsRegular() {
 			t.Fatalf("root entry %s missing or invalid: %v", name, err)
 		}
@@ -163,6 +163,9 @@ func TestActivateInstallerStagingPublishesVersionAndRootEntries(t *testing.T) {
 	if alias := installlayout.PortableAliasName(); alias != "" {
 		if got, err := os.ReadFile(filepath.Join(root, alias)); err != nil || string(got) != "new-"+installlayout.LauncherBinaryName() {
 			t.Fatalf("portable alias=%q err=%v", got, err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, installlayout.LauncherBinaryName())); !os.IsNotExist(err) {
+			t.Fatalf("fresh installation created a legacy entry: %v", err)
 		}
 	}
 }
@@ -207,6 +210,24 @@ func TestActivateInstallerStagingPrefersThinCLIEntryAndRejectsInvalidEntry(t *te
 	}
 	if installlayout.HasCurrent(badRoot) {
 		t.Fatal("invalid CLI entry committed current.json")
+	}
+}
+
+func TestActivateInstallerStagingKeepsExistingLauncher(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, installlayout.LauncherBinaryName())
+	if err := os.WriteFile(legacy, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staging := writeInstallerStaging(t, root, "new", true)
+	if err := activateInstallerStaging(root, "v1.39.0", staging); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{installlayout.LauncherBinaryName(), installlayout.CanonicalLauncherBinaryName()} {
+		body, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil || string(body) != "new-"+installlayout.LauncherBinaryName() {
+			t.Fatalf("%s=%q (%v)", name, body, err)
+		}
 	}
 }
 

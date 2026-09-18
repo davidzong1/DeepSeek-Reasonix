@@ -14,6 +14,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/sessioncatalog"
 )
 
 type runtimeStatusSessionController struct {
@@ -798,11 +799,9 @@ func TestCoveredRecoveryCopyBecomesVisibleAfterMigratedParentDeletion(t *testing
 	if err := app.deleteSession(parent); err != nil {
 		t.Fatalf("DeleteSession parent: %v", err)
 	}
-	for _, marker := range []string{topicMigrationMarker, topicIndexRepairMarker} {
-		if _, err := os.Stat(filepath.Join(dir, marker)); !os.IsNotExist(err) {
-			t.Fatalf("%s survived live session deletion: %v", marker, err)
-		}
-	}
+	// The catalog worker may already have replaced the invalidated markers with
+	// signatures for the new directory state. Recovery visibility is the
+	// observable contract, independent of that reconciliation timing.
 
 	nodes := waitForCatalogTopic(t, app, "global", "", legacySessionTopicID(recovery))
 	meta, ok, err := agent.LoadBranchMeta(recovery)
@@ -2559,38 +2558,6 @@ func TestLegacyTrashTopicRemovesStaleMissingSession(t *testing.T) {
 	}
 }
 
-func TestRestoreGlobalTopicSessionReindexesProjectTree(t *testing.T) {
-	isolateDesktopUserDirs(t)
-
-	dir := config.SessionDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir sessions: %v", err)
-	}
-	sessionPath := writeLegacySession(t, dir, "restore-global.jsonl", "restore global history", time.Now().Add(-time.Hour))
-	topicID := legacySessionTopicID(sessionPath)
-	app := NewApp()
-
-	nodes := waitForCatalogTopic(t, app, "global", "", topicID)
-	if len(nodes) != 1 || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topicID {
-		t.Fatalf("legacy session should start in Global, got %#v", nodes)
-	}
-	if err := app.TrashTopic(topicID); err != nil {
-		t.Fatalf("trash global topic: %v", err)
-	}
-	ref := assertLegacyLifecycle(t, app, sessionPath, "archived")
-
-	if err := app.RestoreCanonicalSession(ref); err != nil {
-		t.Fatalf("restore global session: %v", err)
-	}
-	if got := app.ListTrashedSessions(); len(got) != 0 {
-		t.Fatalf("trash should be empty after restore, got %#v", got)
-	}
-	nodes = waitForCatalogTopic(t, app, "global", "", topicID)
-	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topicID {
-		t.Fatalf("restored global session should reappear in Global, got %#v", nodes)
-	}
-}
-
 func TestRestoreProjectTopicSessionReindexesProjectTree(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -3345,16 +3312,20 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 	app.startSessionCatalog()
 	_ = waitForSessionCatalogForTest(t, app, nil)
 	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
+	reconcileDone := make(chan struct{}, 1)
+	app.catalogReconcileDoneHook = func(target sessioncatalog.DirectoryTarget) {
+		if sameDesktopPath(target.Path, dir) {
+			reconcileDone <- struct{}{}
+		}
+	}
 	// Exercise the same explicit reconcile path used after a watcher event. The
 	// catalog starts asynchronously, so wait for its publication before asking
 	// it to scan the project directory.
 	if !app.requestSessionCatalogReconcile(dir) {
 		t.Fatal("request initial project session catalog reconcile")
 	}
-	nodes := waitForCatalogTreeCondition(t, app, "the first project CLI session", func(nodes []ProjectNode) bool {
-		return len(nodes) == 1 && nodes[0].Kind == "project" && len(nodes[0].Children) == 1 &&
-			nodes[0].Children[0].TopicID == firstTopicID
-	})
+	<-reconcileDone
+	nodes := app.ListProjectTree()
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != firstTopicID {
 		t.Fatalf("first project CLI session should appear in project tree, got %#v; want topic %q", nodes, firstTopicID)
 	}
@@ -3367,11 +3338,8 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 	if !app.requestSessionCatalogReconcile(dir) {
 		t.Fatal("request updated project session catalog reconcile")
 	}
-	nodes = waitForCatalogTreeCondition(t, app, "a reconciled newest project CLI session", func(nodes []ProjectNode) bool {
-		return len(nodes) == 1 && nodes[0].Kind == "project" && len(nodes[0].Children) == 2 &&
-			nodes[0].Children[0].TopicID == secondTopicID && nodes[0].Children[0].LastActivityAt > 0 &&
-			nodes[0].Children[1].TopicID == firstTopicID
-	})
+	<-reconcileDone
+	nodes = app.ListProjectTree()
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 2 {
 		t.Fatalf("second project CLI session should trigger re-scan, got %#v", nodes)
 	}

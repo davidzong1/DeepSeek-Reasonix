@@ -24,7 +24,7 @@ func (c *Controller) SubmitUserTurnOrError(input, display string) error {
 // runRefTurnResult is runRefTurn with the admission outcome surfaced.
 func (c *Controller) runRefTurnResult(input, display string) admissionResult {
 	return c.runGuardedResult(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
+		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.resolveUnscopedRefsForTurn)
 	})
 }
 

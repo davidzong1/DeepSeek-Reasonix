@@ -15,6 +15,10 @@ import (
 )
 
 func (s *Server) registerTranscriptRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /session-export/snapshot", s.sessionExportSnapshot)
+	mux.HandleFunc("POST /session-export/document", s.sessionExportDocument)
+	mux.HandleFunc("POST /session-export/validate", s.sessionExportValidate)
+	mux.HandleFunc("POST /session-export/diagnostic", s.sessionExportDiagnostic)
 	mux.HandleFunc("GET /transcript/follow", s.transcriptFollow)
 	mux.HandleFunc("GET /transcript/snapshot", s.transcriptSnapshot)
 	mux.HandleFunc("GET /transcript/page", s.transcriptSnapshot)

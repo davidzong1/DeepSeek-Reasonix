@@ -1,33 +1,31 @@
 import { asArray } from "./array";
 import { getLocale, type DictKey, type Translator } from "./i18n";
 import type { ProjectNode, ProjectTopicStatus } from "./types";
+import { projectSessionIdentity, projectSessionExcluded, projectSessionKeys, sameProjectSession } from "./projectSessionIdentity";
 
 export type ProjectTreeVariant = "workbench" | "creation";
-export type WorkbenchOrganizeMode = "project" | "recent" | "time";
 export type WorkbenchSortMode = "created" | "updated";
 
-export const WORKBENCH_ORGANIZE_KEY = "projectTree:workbenchOrganize";
-// Shared by workbench and creation; key string kept for existing saved choices.
+// Shared by workbench and creation; key string kept for existing saved choices
+// and for downgrade compatibility.
 export const WORKBENCH_SORT_KEY = "projectTree:workbenchSort";
-
-export function loadWorkbenchOrganizeMode(): WorkbenchOrganizeMode {
-  try {
-    const value = localStorage.getItem(WORKBENCH_ORGANIZE_KEY);
-    if (value === "recent" || value === "time") return value;
-  } catch {
-    /* localStorage unavailable */
-  }
-  return "project";
-}
+export const WORKBENCH_SORT_CREATED_DEFAULT_MIGRATION_KEY = "projectTree:workbenchSort:createdDefault:v1";
 
 export function loadWorkbenchSortMode(): WorkbenchSortMode {
   try {
+    if (localStorage.getItem(WORKBENCH_SORT_CREATED_DEFAULT_MIGRATION_KEY) !== "1") {
+      // This release intentionally resets every existing choice once. Keep the
+      // original preference key so older builds can still read the new value.
+      localStorage.setItem(WORKBENCH_SORT_KEY, "created");
+      localStorage.setItem(WORKBENCH_SORT_CREATED_DEFAULT_MIGRATION_KEY, "1");
+      return "created";
+    }
     const value = localStorage.getItem(WORKBENCH_SORT_KEY);
-    if (value === "created") return "created";
+    if (value === "created" || value === "updated") return value;
   } catch {
     /* localStorage unavailable */
   }
-  return "updated";
+  return "created";
 }
 
 export function isRuntimeSessionNode(node: ProjectNode): boolean {
@@ -63,26 +61,34 @@ export function projectTreeShouldApplyShellSnapshot(options: {
 }
 
 export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectNode[], append: boolean): ProjectNode[] {
+  // Owner aliases retire the source projection even when its old page arrives
+  // after adoption. Canonical identity always wins; its durable row metadata is retained.
+  incoming = incoming.map(row => !row.session ? current.find(old => old.session && sameProjectSession(old,row)) ?? row : row);
   if (!append) {
-    const incomingKeys = new Set(incoming.map((node) => node.key));
     // Project snapshots carry every pinned topic shell, while a lazy first
     // page is bounded. Keep off-page pins so expanding a busy project cannot
     // make its pinned section incomplete again.
-    const offPagePins = current.filter((node) => Boolean(node.pinned) && !incomingKeys.has(node.key));
+    const incomingKeys = new Set(incoming.flatMap(projectSessionKeys));
+    const offPagePins = current.filter((node) => Boolean(node.pinned) && !projectSessionKeys(node).some(key => incomingKeys.has(key)));
     return [...incoming, ...offPagePins];
   }
   const next = [...current];
-  const positions = new Map(next.map((node, index) => [node.key, index]));
+  const positions = new Map(next.flatMap((node, index) => projectSessionKeys(node).map(key => [key,index] as const)));
   for (const node of incoming) {
-    const index = positions.get(node.key);
+    const index = projectSessionKeys(node).map(key => positions.get(key)).find(index => index !== undefined);
     if (index === undefined) {
-      positions.set(node.key, next.length);
+      positions.set(projectSessionIdentity(node), next.length);
       next.push(node);
     } else {
       next[index] = node;
     }
   }
-  return next;
+  const seen = new Set<string>();
+  return next.filter(node => {
+    const keys = projectSessionKeys(node);
+    if (keys.some(key => seen.has(key))) return false;
+    keys.forEach(key => seen.add(key)); return true;
+  });
 }
 
 // A directory scan commits catalog rows in batches, but an incomplete page is
@@ -90,18 +96,12 @@ export function mergeProjectTopicPage(current: ProjectNode[], incoming: ProjectN
 // last complete resident rows byte-for-byte and append only newly discovered
 // keys until a complete page can replace the canonical first page.
 export function mergeIncompleteProjectTopicPage(current: ProjectNode[], incoming: ProjectNode[]): ProjectNode[] {
-  const residentKeys = new Set(current.map((node) => node.key));
-  const discovered = incoming.filter((node) => !residentKeys.has(node.key));
-  return discovered.length === 0 ? current : [...current, ...discovered];
-}
-
-export function projectTreeTopicPageSignature(
-  query: string,
-  timeFilter: string,
-  sortMode: WorkbenchSortMode,
-  limit: number,
-): string {
-  return [query.trim(), timeFilter, sortMode, String(limit)].join("\u001f");
+  const residents = new Map(current.flatMap(node => projectSessionKeys(node).map(key => [key, node] as const)));
+  const discovered = incoming.filter(node => {
+    const resident = projectSessionKeys(node).map(key => residents.get(key)).find(Boolean);
+    return !resident || Boolean(node.session && !resident.session);
+  });
+  return discovered.length === 0 ? current : mergeProjectTopicPage(current, discovered, true);
 }
 
 // Topic page loads rewrite children, so a signature keyed only on the project
@@ -127,7 +127,8 @@ export function projectTreeWithoutTopics(tree: ProjectNode[], topicIds: Readonly
   let changed = false;
   const next: ProjectNode[] = [];
   for (const node of tree) {
-    if (node.topicId && topicIds.has(node.topicId) && (isTopicNode(node) || isRuntimeSessionNode(node))) {
+    if ((isTopicNode(node) || isRuntimeSessionNode(node)) &&
+      projectSessionExcluded(node, topicIds)) {
       changed = true;
       continue;
     }
@@ -141,6 +142,10 @@ export function projectTreeWithoutTopics(tree: ProjectNode[], topicIds: Readonly
     }
   }
   return changed ? next : tree;
+}
+
+export function projectTreeWithoutSession(tree: ProjectNode[], target: ProjectNode): ProjectNode[] {
+  return projectTreeWithoutTopics(tree, new Set([projectSessionIdentity(target)]));
 }
 
 // After a successful rename, paint the new label immediately instead of
@@ -172,6 +177,18 @@ export function projectTreeWithTopicTitle(tree: ProjectNode[], topicId: string, 
   return changed ? next : tree;
 }
 
+export function projectTreeWithSessionTitle(tree: ProjectNode[], target: ProjectNode, title: string): ProjectNode[] {
+  const identity = projectSessionIdentity(target);
+  return tree.map((node) => {
+    if ((isTopicNode(node) || isRuntimeSessionNode(node)) && projectSessionIdentity(node) === identity) {
+      return node.label === title ? node : { ...node, label: title };
+    }
+    if (!node.children?.length) return node;
+    const children = projectTreeWithSessionTitle(node.children, target, title);
+    return children.every((child, index) => child === node.children?.[index]) ? node : { ...node, children };
+  });
+}
+
 export function projectTreeFolderKeyForTopic(tree: ProjectNode[], topicId: string): string {
   const id = topicId.trim();
   if (!id) return "";
@@ -186,7 +203,7 @@ export function projectTreeFolderKeyForSession(tree: ProjectNode[], sessionPath:
   const path = sessionPath.trim();
   if (!path) return "";
   const containsSession = (nodes: ProjectNode[]): boolean => nodes.some((node) =>
-    (isRuntimeSessionNode(node) && node.sessionPath?.trim() === path)
+    ((isRuntimeSessionNode(node) || isTopicNode(node)) && node.sessionPath?.trim() === path)
     || containsSession(asArray(node.children)),
   );
   for (const node of tree) {
@@ -197,7 +214,16 @@ export function projectTreeFolderKeyForSession(tree: ProjectNode[], sessionPath:
 }
 
 export function invalidateProjectTreeTopicLoads(sequences: Record<string, number>, keys: Iterable<string>): void {
-  for (const key of keys) sequences[key] = (sequences[key] ?? 0) + 1;
+  for (const key of keys) {
+    let matched = false;
+    const prefix = `${key}\u001f`;
+    for (const sequenceKey of Object.keys(sequences)) {
+      if (sequenceKey !== key && !sequenceKey.startsWith(prefix)) continue;
+      sequences[sequenceKey] = (sequences[sequenceKey] ?? 0) + 1;
+      matched = true;
+    }
+    if (!matched) sequences[key] = (sequences[key] ?? 0) + 1;
+  }
 }
 
 export function projectTreeShellChildren(
@@ -238,7 +264,8 @@ export function projectTreeTopicOpenRequest(node: ProjectNode): ProjectTreeTopic
     scope,
     workspaceRoot: scope === "global" ? "" : node.root ?? "",
     topicId: node.topicId ?? "",
-    sessionPath: node.session ? `session-id:${node.session.sessionId}` : node.sessionPath,
+    sessionPath: node.session ? `session-id:${node.session.sessionId}` : node.source?.headId
+      ? `session-source:${encodeURIComponent(JSON.stringify(node.source))}` : node.sessionPath,
   };
 }
 
@@ -287,6 +314,11 @@ function topicMatchesActiveIdentity(node: ProjectNode, activeScope?: string, act
 }
 
 export function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string, activeSessionPath?: string): boolean {
+  if (node.source?.headId) return projectTreeTopicOpenRequest(node)?.sessionPath === activeSessionPath;
+  if (node.session?.sessionId) {
+    return Boolean(activeSessionPath && (activeSessionPath === `session-id:${node.session.sessionId}` || activeSessionPath === node.sessionPath
+      || projectSessionKeys(node).includes(`path\u0000${activeSessionPath}`)));
+  }
   if (isRuntimeSessionNode(node)) {
     return Boolean(node.sessionPath && activeSessionPath && activeSessionPath === node.sessionPath);
   }
@@ -297,6 +329,7 @@ export function topicIsActive(node: ProjectNode, activeScope?: string, activeWor
   // host-qualified topicId, so never let the generic path fallback mark a row
   // from another host active.
   if (node.remoteSession) return topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId);
+  if (node.sessionPath) return Boolean(activeSessionPath && activeSessionPath === node.sessionPath);
   if (topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId)) return true;
   return Boolean(node.sessionPath && activeSessionPath && activeSessionPath === node.sessionPath);
 }
@@ -372,13 +405,52 @@ export function topicActivityAt(node: ProjectNode): number {
   return node.lastActivityAt || node.createdAt || 0;
 }
 
+export function topicReadRevision(node: ProjectNode): number {
+  if (node.session) return node.resultSequence ?? 0;
+  return topicActivityAt(node);
+}
+
 export function projectTreeReadActivityKey(node: ProjectNode): string | null {
+  if (node.session?.sessionId) return projectSessionIdentity(node);
+  if (node.sessionPath || node.source || node.remoteSession) return projectSessionIdentity(node);
   const request = projectTreeTopicOpenRequest(node);
   if (!request?.topicId) return null;
   return [request.scope, request.workspaceRoot, request.topicId].join("\u001f");
 }
 
 export type ProjectTreeReadActivity = Record<string, number>;
+
+export function projectTreeMigrateReadActivity(current: ProjectTreeReadActivity, storedVersion: number): ProjectTreeReadActivity {
+  if (storedVersion >= 2) return current;
+  let next = current;
+  for (const [key, revision] of Object.entries(current)) {
+    if (!key.startsWith("session\u001f") || revision !== 0) continue;
+    if (next === current) next = { ...current };
+    delete next[key];
+  }
+  return next;
+}
+
+export function projectTreeSeedReadActivity(nodes: readonly ProjectNode[], current: ProjectTreeReadActivity): ProjectTreeReadActivity {
+  let next = current;
+  const visit = (items: readonly ProjectNode[]) => {
+    for (const node of items) {
+      const key = projectTreeReadActivityKey(node);
+      // A stale catalog cache is exposed as a canonical session with pending
+      // metadata and resultSequence 0 while its durable log is rebuilt. Do not
+      // persist that placeholder as the read baseline: once the real sequence
+      // arrives it would make every historical result look newly unread.
+      if (node.session && node.turnsState === "ready" && key
+        && next[key] === undefined) {
+        if (next === current) next = { ...current };
+        next[key] = topicReadRevision(node);
+      }
+      visit(node.children ?? []);
+    }
+  };
+  visit(nodes);
+  return next;
+}
 
 export function projectTreeTopicHasUnreadActivity(
   node: ProjectNode,
@@ -391,12 +463,12 @@ export function projectTreeTopicHasUnreadActivity(
 ): boolean {
   if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return false;
   if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) return false;
-  if (topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId)) return false;
   if (topicStatus(node) !== "") return false;
   const key = projectTreeReadActivityKey(node);
-  const activityAt = topicActivityAt(node);
-  if (!key || activityAt <= 0) return false;
-  return Math.max(readActivity[key] ?? 0, baselineAt) < activityAt;
+  const revision = topicReadRevision(node);
+  if (!key || revision <= 0) return false;
+  if (node.session) return readActivity[key] !== undefined && readActivity[key] < revision;
+  return Math.max(readActivity[key] ?? 0, baselineAt) < revision;
 }
 
 export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, variant: ProjectTreeVariant, unread: boolean): boolean {

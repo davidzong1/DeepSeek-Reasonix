@@ -839,11 +839,11 @@ func TestResolveRefsWithoutWorkspaceDoesNotClaimImageAttachment(t *testing.T) {
 	}
 
 	block, errs := newOwnedTestController(t, Options{}).ResolveRefs(context.Background(), "see @"+imagePath)
-	if len(errs) != 0 {
-		t.Fatalf("ResolveRefs errors = %v", errs)
+	if len(errs) != 1 || !strings.Contains(errs[0], "workspace root is required") {
+		t.Fatalf("ResolveRefs errors = %v, want an explicit unscoped-image error", errs)
 	}
-	if !strings.Contains(block, "not sent as direct model image input") || !strings.Contains(block, "OCR/image/vision tool") {
-		t.Fatalf("unscoped image ref should not claim model image attachment:\n%s", block)
+	if strings.Contains(block, "attached as visual input") {
+		t.Fatalf("unscoped image ref claimed model image attachment:\n%s", block)
 	}
 }
 

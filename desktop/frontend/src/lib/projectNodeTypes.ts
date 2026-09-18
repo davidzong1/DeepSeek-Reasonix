@@ -7,8 +7,14 @@ export interface ProjectNode extends RemoteProjectNodeFields, CanonicalProjectNo
   label: string;
   root?: string;
   topicId?: string;
+  parentSession?: import("./sessionRef").SessionRef;
+  sessionOrigin?: string;
   recoveryPath?: string;
   sessionPath?: string;
+  source?: import("../generated/desktopContract.generated").SessionSourceRef;
+  identityAliases?: string[];
+  lifecycleGeneration?: number;
+  tabId?: string;
   preview?: string;
   projectColor?: string;
   turns?: number;
@@ -16,6 +22,7 @@ export interface ProjectNode extends RemoteProjectNodeFields, CanonicalProjectNo
   health?: "ok" | "missing" | "corrupt" | "degraded" | string;
   createdAt?: number;
   lastActivityAt?: number;
+  resultSequence?: number;
   open?: boolean;
   running?: boolean;
   status?: ProjectTopicStatus;

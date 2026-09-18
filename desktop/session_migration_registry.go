@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 
+	"reasonix/desktop/internal/legacycleanup"
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/filelock"
 	"reasonix/internal/session"
@@ -61,6 +63,12 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 	}
 	if err := a.commitDesktopImport(ctx, source, path, format, fingerprint, id, workspace); err != nil {
 		return err
+	}
+	if format == "legacy" {
+		if err := a.bindLegacyCleanupMigration(ctx, path, source.headID, id, workspace); err != nil &&
+			!errors.Is(err, legacycleanup.ErrNotInitialized) && !errors.Is(err, errLegacyCleanupStateChanged) {
+			slog.Warn("desktop: legacy cleanup migration binding unavailable")
+		}
 	}
 	return cp.complete(id, digest)
 }

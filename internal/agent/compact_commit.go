@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -38,7 +39,13 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	}
 	prev := a.sess.compactionState
 	a.sess.compactionState = state
-	if err := a.persistCompactionStateLocked(); err != nil {
+	accepted, err := a.persistInstalledProjectionLocked(context.Background(), state, current)
+	if err != nil {
+		if accepted {
+			a.sess.checkpointState = "pending"
+			a.sess.compactionMu.Unlock()
+			return CompactionState{}, fmt.Errorf("persist projection: %w", err)
+		}
 		a.sess.compactionState = prev
 		a.sess.compactionMu.Unlock()
 		if errors.Is(err, errCompressStaleContext) {
@@ -54,6 +61,44 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	a.sess.compactionMu.Unlock()
 	a.emitContextMaintenance(receipt)
 	return state, nil
+}
+
+func (a *Agent) persistInstalledProjectionLocked(ctx context.Context, state CompactionState, canonical []provider.Message) (bool, error) {
+	accepted := false
+	if recorder, ok := a.svc.sessionCheckpointer.(SessionModelContextRecorder); ok {
+		visible := modelVisibleFromProjection(state.Projection, canonical)
+		commit := cloneSessionModelContextCommit(SessionModelContextCommit{
+			OperationID: state.LastReceipt.OperationID,
+			Reason:      state.LastReceipt.Action,
+			Messages:    visible,
+		})
+		result, err := recorder.RecordSessionModelContext(ctx, commit)
+		accepted = result.Accepted
+		if err != nil {
+			if accepted {
+				a.sess.pendingModelContextCommit = &commit
+			}
+			return accepted, err
+		}
+		if result.Accepted && !result.Durable {
+			a.sess.pendingModelContextCommit = &commit
+			return true, errors.New("model context commit was accepted but is not durable")
+		}
+	}
+	if err := a.persistCompactionStateLocked(); err != nil {
+		if accepted {
+			visible := modelVisibleFromProjection(state.Projection, canonical)
+			commit := cloneSessionModelContextCommit(SessionModelContextCommit{
+				OperationID: state.LastReceipt.OperationID,
+				Reason:      state.LastReceipt.Action,
+				Messages:    visible,
+			})
+			a.sess.pendingModelContextCommit = &commit
+		}
+		return accepted, err
+	}
+	a.sess.pendingModelContextCommit = nil
+	return accepted, nil
 }
 
 func (a *Agent) summaryProjectionState(commit summaryProjectionCommit) CompactionState {

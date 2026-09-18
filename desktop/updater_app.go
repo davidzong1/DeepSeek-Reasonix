@@ -20,6 +20,7 @@ import (
 // download progress as "updater:progress" events and routes macOS to the manual
 // download path unless the macOS build was Developer ID signed and notarized.
 
+var errUpdateDisabled = errors.New("update: disabled for this build")
 var errUpdateManualRequired = errors.New("update: manual update required")
 var errUpdateInProgress = errors.New("update: another download or install is already in progress")
 
@@ -31,6 +32,8 @@ var (
 	reconcilePendingUpdateForInstall         = repair.ReconcilePendingUpdate
 	readPendingUpdateForHealth               = repair.ReadPendingUpdate
 	markPendingUpdateHealthyAfterReady       = repair.MarkUpdateHealthyExact
+	updaterHTTPClient                        = httpClient
+	updaterHTTPClientIPv4                    = httpClientIPv4
 )
 
 func validateUpdaterRequest(requestID, selectedChannel, expectedVersion string) (string, string, string, error) {
@@ -82,9 +85,12 @@ func (a *App) Version() string { return version }
 // build is available for this platform. Safe to call on startup: a network error
 // surfaces in UpdateInfo.Err rather than failing, so the UI can stay quiet.
 func (a *App) CheckUpdate(selectedChannel string) (*UpdateInfo, error) {
+	if !desktopUpdaterEnabled() {
+		return &UpdateInfo{Current: version, Channel: "stable"}, nil
+	}
 	selectedChannel = targetUpdateChannel(selectedChannel)
 	profile := detectInstallProfile()
-	c, err := httpClient()
+	c, err := updaterHTTPClient()
 	if err != nil {
 		a.recordUpdateError(err)
 		return &UpdateInfo{
@@ -101,7 +107,7 @@ func (a *App) CheckUpdate(selectedChannel string) (*UpdateInfo, error) {
 	}
 	ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 	defer cancel()
-	v4, _ := httpClientIPv4()
+	v4, _ := updaterHTTPClientIPv4()
 	m, err := fetchManifest(ctx, c, v4, selectedChannel)
 	if err != nil {
 		a.recordUpdateError(err)
@@ -124,16 +130,19 @@ func (a *App) CheckUpdate(selectedChannel string) (*UpdateInfo, error) {
 // OpenDownloadPage opens the install page in the browser — the macOS manual-update
 // path and a fallback link elsewhere.
 func (a *App) OpenDownloadPage() {
+	if !desktopUpdaterEnabled() {
+		return
+	}
 	a.openDownloadPage(targetUpdateChannel(""))
 }
 
 func (a *App) openDownloadPage(selectedChannel string) {
 	selectedChannel = targetUpdateChannel(selectedChannel)
 	page := downloadPage(selectedChannel)
-	if c, err := httpClient(); err == nil {
+	if c, err := updaterHTTPClient(); err == nil {
 		ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 		defer cancel()
-		v4, _ := httpClientIPv4()
+		v4, _ := updaterHTTPClientIPv4()
 		if m, err := fetchManifest(ctx, c, v4, selectedChannel); err == nil {
 			page = manifestDownloadPage(selectedChannel, m.DownloadPage)
 		}
@@ -154,13 +163,13 @@ func (a *App) downloadUpdateRequest(selectedChannel, expectedVersion, requestID 
 	if !profile.CanSelfUpdate || !canSelfUpdate() {
 		return nil, a.requireManualUpdate(requestID, selectedChannel, expectedVersion, profile)
 	}
-	c, err := httpClient()
+	c, err := updaterHTTPClient()
 	if err != nil {
 		return nil, a.failUpdate(requestID, selectedChannel, expectedVersion, err)
 	}
 	ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 	defer cancel()
-	v4, _ := httpClientIPv4()
+	v4, _ := updaterHTTPClientIPv4()
 	m, err := fetchManifest(ctx, c, v4, selectedChannel)
 	if err != nil {
 		return nil, a.failUpdate(requestID, selectedChannel, expectedVersion, err)
@@ -220,10 +229,10 @@ func (a *App) installUpdateRequest(selectedChannel, expectedVersion, requestID s
 	}
 	// Re-detect install type at install time so a path change between download
 	// and install cannot apply the wrong artifact kind.
-	if c, err := httpClient(); err == nil {
+	if c, err := updaterHTTPClient(); err == nil {
 		ctx, cancel := context.WithTimeout(a.reqCtx(), httpTimeout)
 		defer cancel()
-		v4, _ := httpClientIPv4()
+		v4, _ := updaterHTTPClientIPv4()
 		if m, err := fetchManifest(ctx, c, v4, selectedChannel); err == nil {
 			profile = profileForManifest(detectInstallProfile(), m)
 		} else {
@@ -321,6 +330,9 @@ func (a *App) reconcilePendingUpdateForRequest(requestID string, meta *cachedUpd
 // otherwise cancels or rolls back the unfinished transaction, and as a last
 // resort force-retires a probationary marker that already owns the install.
 func (a *App) AbandonPendingUpdate() error {
+	if !desktopUpdaterEnabled() {
+		return errUpdateDisabled
+	}
 	if !pendingUpdateExistsForInstall() {
 		return nil
 	}
@@ -441,6 +453,9 @@ func (a *App) installPortableUpdate(requestID string, meta *cachedUpdate, data [
 // path ("更新并重启"); there is no durable cross-restart pending state when the
 // operation fails — the user simply retries.
 func (a *App) ApplyUpdateRequest(selectedChannel, expectedVersion, requestID string) error {
+	if !desktopUpdaterEnabled() {
+		return errUpdateDisabled
+	}
 	requestID, selectedChannel, expectedVersion, err := validateUpdaterRequest(requestID, selectedChannel, expectedVersion)
 	if err != nil {
 		return err
@@ -474,11 +489,11 @@ func (a *App) ApplyUpdateRequest(selectedChannel, expectedVersion, requestID str
 // signature against the embedded public key, then its sha256. It returns the
 // verified bytes and the raw signature (needed for deb helper re-verification).
 func (a *App) downloadVerify(requestID, selectedChannel, expectedVersion string, asset update.Asset) (data, sig []byte, err error) {
-	c, err := httpClient()
+	c, err := updaterHTTPClient()
 	if err != nil {
 		return nil, nil, err
 	}
-	v4, _ := httpClientIPv4() // best-effort IPv4 fallback; nil just means retries reuse c
+	v4, _ := updaterHTTPClientIPv4() // best-effort IPv4 fallback; nil just means retries reuse c
 	data, err = downloadForChannel(a.reqCtx(), c, v4, selectedChannel, asset.URL, asset.Size, func(rcv, total int64) {
 		a.emitProgress(requestID, selectedChannel, expectedVersion, "downloading", rcv, total, "")
 	})

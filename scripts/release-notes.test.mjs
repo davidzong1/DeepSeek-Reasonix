@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inferPullTargetHints } from "./generate-release-notes.mjs";
+import {
+  editorialLimitInstruction,
+  inferPullTargetHints,
+  releaseOutputBudgets,
+} from "./generate-release-notes.mjs";
 import { loadCatalog, releaseForVersion, renderGitHubRelease, validateCatalog } from "./release-notes.mjs";
 import { validateReleaseEvent } from "./release-event.mjs";
 
@@ -127,6 +131,15 @@ test("release target hints prefer explicit product labels and identify shared or
   assert.deepEqual(inferPullTargetHints(["desktop", "tui"], ["desktop/app.go", "internal/cli/cli.go"]), ["desktop", "cli"]);
   assert.deepEqual(inferPullTargetHints([], ["internal/agent/agent.go"]), ["desktop", "cli"]);
   assert.deepEqual(inferPullTargetHints([], ["workers/crash-report/src/index.ts"]), ["service"]);
+});
+
+test("release generation uses bounded output and a tighter truncation retry", () => {
+  assert.ok(releaseOutputBudgets.standard.highlights > releaseOutputBudgets.compact.highlights);
+  assert.ok(releaseOutputBudgets.standard.changes > releaseOutputBudgets.compact.changes);
+  assert.ok(releaseOutputBudgets.standard.bodyChars > releaseOutputBudgets.compact.bodyChars);
+  assert.match(editorialLimitInstruction(), /Always return a complete JSON object/);
+  assert.match(editorialLimitInstruction(true), /at most 4 highlights/);
+  assert.match(editorialLimitInstruction(true), /9 total change items/);
 });
 
 test("validation rejects bilingual drift", () => {

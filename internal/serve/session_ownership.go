@@ -1040,32 +1040,31 @@ func (s *Server) mirrorEnd(w http.ResponseWriter, r *http.Request) {
 // maybeAutoReclaimMirrored recovers a mirror whose writer vanished without
 // calling /mirror-end (killed window, laptop died). The OS releases the lease
 // with the process; once the entry is stale and the lease is free, hand the
-// session back to the remote side.
-func (s *Server) maybeAutoReclaimMirrored(path string) {
+// session back to the remote side; a non-nil result closes after the attempt.
+func (s *Server) maybeAutoReclaimMirrored(path string) <-chan struct{} {
 	m, ok := s.mirroredEntry(path)
 	if !ok {
-		return
+		return nil
 	}
 	if time.Since(m.lastContact) < mirrorStaleAfter {
-		return
+		return nil
 	}
 	if leaseHeldByForeignRuntime(path) {
 		// The writer is alive but quiet (or another runtime took the file).
 		// Push the staleness window so a chatty-but-healthy writer never
 		// gets reclaimed under itself.
 		s.touchMirrored(path, m.mirrorID, "")
-		return
+		return nil
 	}
 	if m.reclaimRequested {
-		// The writer vanished AFTER a reclaim was requested: its OS lock died
-		// with it, so the outstanding reclaim can finally complete. Skipping
-		// here (as this function used to) left the entry mirrored with the
-		// flag set forever — the remote tab stayed a read-only spectator with
-		// every retry 409ing after the wait timeout.
+		// The vanished writer's OS lock is gone, so finish the request. Skipping
+		// it leaves the mirror stuck in read-only spectator mode.
 		slog.Info("serve: completing outstanding reclaim for vanished writer",
 			"session", agent.CanonicalSessionPath(path))
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		s.bindMu.Lock()
 		defer s.bindMu.Unlock()
 		current, ok := s.mirroredEntry(path)
@@ -1080,6 +1079,7 @@ func (s *Server) maybeAutoReclaimMirrored(path string) {
 		}
 		slog.Info("serve: stale mirror auto-reclaimed", "session", path)
 	}()
+	return done
 }
 
 type statusRecorder struct {

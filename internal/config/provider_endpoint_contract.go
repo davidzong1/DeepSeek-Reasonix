@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // ProviderEndpointMismatch describes a high-confidence conflict between a
@@ -14,6 +16,20 @@ type ProviderEndpointMismatch struct {
 	RequestURL  string
 	Recommended string
 }
+
+// ProviderEndpointRepair records a high-confidence correction where an exact
+// catalog request URL proves that the saved protocol is stale.
+type ProviderEndpointRepair struct {
+	ProviderName string
+	RequestURL   string
+	FromProtocol string
+	ToProtocol   string
+}
+
+var providerEndpointRepairReceipts = struct {
+	sync.Mutex
+	byPath map[string][]ProviderEndpointRepair
+}{byPath: make(map[string][]ProviderEndpointRepair)}
 
 func (e *ProviderEndpointMismatch) Error() string {
 	if e == nil {
@@ -110,6 +126,124 @@ func recommendedProviderRequestURL(kind string, catalog ProviderCatalog) string 
 		return ""
 	}
 	return ProviderRequestURL(kind, route.BaseURL)
+}
+
+func normalizedExactProviderRequestURL(raw string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	if path == "" {
+		path = "/"
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + path, true
+}
+
+// RepairProviderEndpointContract changes a provider protocol only when its
+// effective request URL exactly and uniquely identifies another registered
+// route in the provider catalog. Custom gateways and query-bearing overrides
+// remain user-owned and continue through the validation path unchanged.
+func RepairProviderEndpointContract(entry *ProviderEntry) (*ProviderEndpointRepair, bool) {
+	if entry == nil {
+		return nil, false
+	}
+	fromProtocol := normalizedProviderProtocol(entry.Kind)
+	requestURL := ProviderEffectiveRequestURL(entry)
+	current, ok := normalizedExactProviderRequestURL(requestURL)
+	if !ok {
+		return nil, false
+	}
+	_, catalog, ok := CatalogForProviderEntry(entry)
+	if !ok {
+		return nil, false
+	}
+
+	// Sort for deterministic behavior even though a repair is accepted only
+	// when one normalized protocol matches.
+	kinds := make([]string, 0, len(catalog.Protocols))
+	for kind := range catalog.Protocols {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	matches := make(map[string]ProviderProtocolEndpoint)
+	for _, kind := range kinds {
+		route := catalog.Protocols[kind]
+		candidate, exact := normalizedExactProviderRequestURL(ProviderRequestURL(kind, route.BaseURL))
+		if exact && candidate == current {
+			matches[normalizedProviderProtocol(kind)] = route
+		}
+	}
+	if len(matches) != 1 {
+		return nil, false
+	}
+	var toProtocol string
+	var route ProviderProtocolEndpoint
+	for toProtocol, route = range matches {
+	}
+	if toProtocol == "" || toProtocol == fromProtocol {
+		return nil, false
+	}
+
+	repair := &ProviderEndpointRepair{
+		ProviderName: entry.DisplayName,
+		RequestURL:   requestURL,
+		FromProtocol: fromProtocol,
+		ToProtocol:   toProtocol,
+	}
+	if strings.TrimSpace(repair.ProviderName) == "" {
+		repair.ProviderName = entry.Name
+	}
+	entry.Kind = toProtocol
+	entry.BaseURL = route.BaseURL
+	entry.RequestURL = ""
+	entry.ChatURL = ""
+	entry.AuthHeader = route.AuthHeader
+	entry.ResponsesStateful = nil
+	if toProtocol == "responses" {
+		entry.ResponsesMode = route.ResponsesMode
+	} else {
+		entry.ResponsesMode = ""
+	}
+	return repair, true
+}
+
+func repairProviderEndpointContracts(c *Config) []ProviderEndpointRepair {
+	if c == nil {
+		return nil
+	}
+	var repairs []ProviderEndpointRepair
+	for i := range c.Providers {
+		if repair, changed := RepairProviderEndpointContract(&c.Providers[i]); changed {
+			repairs = append(repairs, *repair)
+		}
+	}
+	return repairs
+}
+
+func recordProviderEndpointRepairs(path string, repairs []ProviderEndpointRepair) {
+	path = strings.TrimSpace(path)
+	if path == "" || len(repairs) == 0 {
+		return
+	}
+	providerEndpointRepairReceipts.Lock()
+	providerEndpointRepairReceipts.byPath[path] = append(providerEndpointRepairReceipts.byPath[path], repairs...)
+	providerEndpointRepairReceipts.Unlock()
+}
+
+// TakeProviderEndpointRepairReceipts returns startup repairs that occurred
+// before the active runtime had an event sink, then clears the process-local
+// receipt so concurrent tab builds do not repeat the notice.
+func TakeProviderEndpointRepairReceipts(path string) []ProviderEndpointRepair {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	providerEndpointRepairReceipts.Lock()
+	defer providerEndpointRepairReceipts.Unlock()
+	repairs := append([]ProviderEndpointRepair(nil), providerEndpointRepairReceipts.byPath[path]...)
+	delete(providerEndpointRepairReceipts.byPath, path)
+	return repairs
 }
 
 // ProviderEndpointMismatchForEntry validates only explicit, recognizable

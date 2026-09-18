@@ -39,6 +39,35 @@ func TestSaveProviderRejectsProtocolEndpointMismatch(t *testing.T) {
 	}
 }
 
+func TestSaveProviderRepairsExactCatalogProtocolMismatch(t *testing.T) {
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek-anthropic/deepseek-v4-flash"
+	cfg.Providers = []config.ProviderEntry{{
+		Name: "deepseek-anthropic", DisplayName: "Deepseek2", PresetID: "deepseek-anthropic",
+		Kind: "anthropic", BaseURL: "https://api.deepseek.com/anthropic",
+		Model: "deepseek-v4-flash", Models: []string{"deepseek-v4-flash"},
+	}}
+	view := providerViewFromEntry(cfg.Providers[0], false, true)
+	view.Kind = "responses"
+	view.BaseURL = "https://api.deepseek.com"
+	view.RequestURL = "https://api.deepseek.com/anthropic/v1/messages"
+	view.ChatURL = "https://stale.example/chat/completions"
+	if err := saveProviderConfig(cfg, view); err != nil {
+		t.Fatalf("save repaired provider: %v", err)
+	}
+	got := cfg.Providers[0]
+	if got.Name != "deepseek-anthropic" || got.DisplayName != "Deepseek2" ||
+		got.Kind != "anthropic" || got.BaseURL != "https://api.deepseek.com/anthropic" ||
+		got.RequestURL != "" || got.ChatURL != "" ||
+		cfg.DefaultModel != "deepseek-anthropic/deepseek-v4-flash" {
+		t.Fatalf("saved provider = %+v default=%q", got, cfg.DefaultModel)
+	}
+	refreshed := providerViewFromEntry(got, false, true)
+	if refreshed.Kind != "anthropic" || refreshed.BaseURL != "https://api.deepseek.com/anthropic" {
+		t.Fatalf("refreshed provider view = %+v", refreshed)
+	}
+}
+
 func TestProtocolSwitchKeepsStableProviderAndModelReferences(t *testing.T) {
 	cfg := config.Default()
 	cfg.DefaultModel = "deepseek-anthropic/deepseek-v4-flash"

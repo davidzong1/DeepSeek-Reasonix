@@ -11,7 +11,7 @@ export type PromptRequest =
   | { kind: "question"; answers: QuestionAnswer[] }
   | { kind: "mcp"; action: MCPInteractionAction; content?: Record<string, unknown> };
 export type PromptPorts = SessionActionPorts & {
-  isPromptCurrentForTab: (tabId: string, kind: SessionPromptKind, promptId: string) => boolean;
+  isPromptCurrentForTab: (target: SessionPromptTarget) => boolean;
   rememberRevision: (tabId: string, revision: string) => void;
 };
 export type PromptInput = { target: SessionPromptTarget; promptKind: SessionPromptKind; request: PromptRequest; ports: PromptPorts };
@@ -22,7 +22,7 @@ export async function executeSessionPrompt(input: PromptInput, source: SessionOp
   const authority: SessionOperationAuthority = {
     checkpoint() {
       source.checkpoint();
-      if (!ports.isPromptCurrentForTab(target.tabId, input.promptKind, target.promptId)) throw new CommandCancelled("superseded");
+      if (!ports.isPromptCurrentForTab(target)) throw new CommandCancelled("superseded");
     },
     ownsUI: () => source.ownsUI(),
   };

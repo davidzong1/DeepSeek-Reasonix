@@ -4,9 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import worker, {
   CLI_TELEMETRY_SCHEMA_SQL,
   Report,
-  isDevelopmentReport,
-  newestReleaseVersion,
 } from "./index";
+import { isDevelopmentReport, newestReleaseVersion } from "./report_classification";
 import {
   crashGroups,
   diagnosticFacets,
@@ -61,6 +60,18 @@ describe("diagnostics v2 compatibility and privacy", () => {
 
   it("accepts old reports plus Windows and Linux runtime diagnostics", () => {
     expect(Report.safeParse(oldReport).success).toBe(true);
+    expect(Report.safeParse({
+      ...oldReport,
+      kind: "exception",
+      schemaVersion: 3,
+      source: "desktop.session_migration",
+      label: "transcript.initialization",
+      errorType: "TranscriptInitializationError",
+      errorMessage: "Transcript initialization failed during legacy session migration.",
+      topFrame: "internal/transcript.NewProjection",
+      fingerprintHint: "desktop.session_migration.transcript_initialization.duplicate_record_identity",
+      message: "[transcript initialization]\n\nstage: legacy_import\nclassification: duplicate_record_identity",
+    }).success).toBe(true);
     expect(Report.safeParse({
       ...oldReport,
       installId: "b".repeat(32),
@@ -257,14 +268,67 @@ describe("diagnostics v2 storage consistency", () => {
     expect(batchCalls).toBe(1);
     expect(directRuns).toBe(0);
     expect(committed.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("INSERT INTO report_events"),
+      expect.stringContaining("automatic_regression"),
       expect.stringContaining("INSERT INTO groups"),
       expect.stringContaining("INSERT INTO reports"),
       expect.stringContaining("INSERT INTO report_daily"),
       expect.stringContaining("INSERT INTO report_installations"),
       expect.stringContaining("INSERT INTO report_event_dimensions"),
+      expect.stringContaining("INSERT INTO report_attribution_daily"),
       expect.stringContaining("DELETE FROM reports"),
     ]);
     expect(committed.every((statement) => !statement.sql.includes("firebase_crash_"))).toBe(true);
+  });
+
+  it("projects a repeated D1 eventId only once", async () => {
+    const projected = new Set<string>();
+    let batchCalls = 0;
+    const db = {
+      prepare(sql: string) {
+        let binds: unknown[] = [];
+        const statement = {
+          sql,
+          bind(...values: unknown[]) { binds = values; return statement; },
+          async first() {
+            return sql.includes("SELECT event_id FROM report_events") && projected.has(String(binds[0]))
+              ? { event_id: binds[0] }
+              : null;
+          },
+          async run() { return {}; },
+          binds() { return binds; },
+        };
+        return statement;
+      },
+      async batch(statements: Array<{ sql: string; binds(): unknown[] }>) {
+        batchCalls++;
+        const event = statements.find((statement) => statement.sql.includes("INSERT INTO report_events"));
+        if (event) projected.add(String(event.binds()[0]));
+        return [];
+      },
+    } as unknown as D1Database;
+    const env = {
+      DB: db,
+      RATE_LIMITER: { async limit() { return { success: true }; } },
+    } as unknown as Env;
+    const body = JSON.stringify({
+      eventId: "e".repeat(32), installId: "a".repeat(32), kind: "crash",
+      version: "v1.23.0", os: "windows", arch: "amd64", message: "same event",
+    });
+    const request = () => new Request("https://crash.reasonix.io/v1/report", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(new TextEncoder().encode(body).byteLength),
+        "cf-connecting-ip": "127.0.0.1",
+      },
+      body,
+    });
+
+    expect((await worker.fetch(request(), env)).status).toBe(202);
+    expect((await worker.fetch(request(), env)).status).toBe(202);
+    expect(batchCalls).toBe(1);
+    expect(projected).toEqual(new Set(["e".repeat(32)]));
   });
 
   it("preserves separate GPU and runtime event dimensions for one installation", () => {
@@ -507,7 +571,7 @@ describe("diagnostics v2 storage consistency", () => {
     let distributionSQL = "";
     const db = {
       prepare(sql: string) {
-        distributionSQL = sql;
+        if (sql.includes("WITH window AS MATERIALIZED")) distributionSQL = sql;
         const statement = {
           bind() { return statement; },
           async first() { return { window_events: 1, identified_events: 1, affected_installs: 1 }; },

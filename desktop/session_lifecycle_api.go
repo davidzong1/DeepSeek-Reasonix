@@ -64,7 +64,7 @@ func (a *App) ApplySessionLifecycle(req SessionLifecycleRequest) (SessionLifecyc
 	}
 	key := "command-" + req.OperationID
 	if old, ok := state.PendingOperations[key]; ok {
-		if old.RequestFingerprint != fingerprint {
+		if old.Kind != "command" || old.RequestFingerprint != fingerprint {
 			return out, workspacestate.ErrMutationConflict
 		}
 		if len(old.Result) > 0 {
@@ -76,14 +76,20 @@ func (a *App) ApplySessionLifecycle(req SessionLifecycleRequest) (SessionLifecyc
 		if old.Phase == "committed" {
 			return out, nil
 		}
-	} else if err := store.BeginCommand(ctx, key, fingerprint, body, req.ExpectedGeneration); err != nil {
-		return out, err
+	} else {
+		begin := store.BeginCommand
+		if req.Action == "purge" {
+			begin = store.BeginPurgeCommand
+		}
+		if err := begin(ctx, key, fingerprint, body, req.ExpectedGeneration); err != nil {
+			return out, err
+		}
 	}
 	previous := out.Items
 	out.Items = []SessionLifecycleItem{}
 	archiveErr := a.archiveLifecycleCommand(req, key)
 	for i, target := range req.Targets {
-		if i < len(previous) && previous[i].Committed {
+		if i < len(previous) && (previous[i].Committed || !previous[i].Retryable) {
 			out.Items = append(out.Items, previous[i])
 			continue
 		}
@@ -99,16 +105,22 @@ func (a *App) ApplySessionLifecycle(req SessionLifecycleRequest) (SessionLifecyc
 	}
 	out.Generation = state.Generation + 1
 	out.Committed = true
+	final := true
 	for _, item := range out.Items {
 		out.Committed = out.Committed && item.Committed
+		if !item.Committed && item.Retryable {
+			final = false
+		}
 	}
 	body, err = json.Marshal(out)
 	if err != nil {
 		return out, err
 	}
-	if err := store.SaveCommandResult(ctx, key, body, out.Committed); err != nil {
+	a.lifecycleCheckpoint("before-command-result")
+	if err := store.SaveCommandResult(ctx, key, body, final); err != nil {
 		return out, err
 	}
+	a.lifecycleCheckpoint("after-command-result")
 	state, err = store.Load(ctx)
 	if err != nil {
 		return out, err
@@ -119,17 +131,20 @@ func (a *App) ApplySessionLifecycle(req SessionLifecycleRequest) (SessionLifecyc
 }
 
 type TrashEntry struct {
-	ID             string             `json:"id"`
-	Ref            session.SessionRef `json:"ref"`
-	Title          string             `json:"title"`
-	WorkspaceID    string             `json:"workspaceId"`
-	WorkspaceTitle string             `json:"workspaceTitle"`
-	ArchivedAt     int64              `json:"archivedAt"`
-	Health         string             `json:"health"`
-	OperationPhase string             `json:"operationPhase,omitempty"`
-	CanPreview     bool               `json:"canPreview"`
-	CanRestore     bool               `json:"canRestore"`
-	CanPurge       bool               `json:"canPurge"`
+	ID              string              `json:"id"`
+	Ref             *session.SessionRef `json:"ref,omitempty"`
+	RecoveryEntryID string              `json:"recoveryEntryId,omitempty"`
+	Title           string              `json:"title"`
+	WorkspaceID     string              `json:"workspaceId"`
+	WorkspaceTitle  string              `json:"workspaceTitle"`
+	ArchivedAt      int64               `json:"archivedAt"`
+	Health          string              `json:"health"`
+	OperationPhase  string              `json:"operationPhase,omitempty"`
+	CanPreview      bool                `json:"canPreview"`
+	CanRestore      bool                `json:"canRestore"`
+	CanPurge        bool                `json:"canPurge"`
+	CleanupBatchID  string              `json:"cleanupBatchId,omitempty"`
+	CleanupKind     string              `json:"cleanupKind,omitempty"`
 }
 type TrashEntryPage struct {
 	Items      []TrashEntry `json:"items"`
@@ -150,13 +165,18 @@ func (a *App) ListTrashEntries(query, cursor string, limit int) (TrashEntryPage,
 	}
 	rows := []TrashEntry{}
 	service := a.desktopSessionService("")
+	cleanupState, _ := a.legacyCleanup.Load(a.bootContext())
+	cleanupBySession := legacyCleanupArchivedSessions(cleanupState)
 	for id, status := range state.SessionStates {
 		op := state.PendingOperations["purge-"+id]
-		pending := op.Kind == "purge" && op.Phase != "committed"
+		purgeState := workspacestate.ClassifyPurge(state, id)
+		pending := purgeState == workspacestate.PurgeTombstoned || purgeState == workspacestate.PurgeContentRemoved || purgeState == workspacestate.PurgeInvalid
 		if status.Lifecycle != workspacestate.Archived && !pending {
 			continue
 		}
-		row := TrashEntry{ID: id, Ref: session.SessionRef{HostID: localDesktopHostID, SessionID: id}, Title: state.Presentation[id].Title, ArchivedAt: status.ArchivedAt, CanPurge: true, Health: "ready"}
+		ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
+		row := TrashEntry{ID: id, Ref: &ref, Title: state.Presentation[id].Title, ArchivedAt: status.ArchivedAt, CanPurge: purgeState != workspacestate.PurgeInvalid, Health: "ready"}
+		decorateLegacyCleanupTrashEntry(&row, cleanupState.BatchID, cleanupBySession[id])
 		for wid, w := range state.Workspaces {
 			if containsDesktopString(w.SessionIDs, id) {
 				row.WorkspaceID = wid
@@ -164,7 +184,7 @@ func (a *App) ListTrashEntries(query, cursor string, limit int) (TrashEntryPage,
 				break
 			}
 		}
-		if info, e := service.Query().Stat(a.bootContext(), row.Ref); e == nil {
+		if info, e := service.Query().Stat(a.bootContext(), ref); e == nil {
 			if info.Title != "" {
 				row.Title = info.Title
 			}
@@ -184,6 +204,7 @@ func (a *App) ListTrashEntries(query, cursor string, limit int) (TrashEntryPage,
 			rows = append(rows, row)
 		}
 	}
+	rows = append(rows, legacyCleanupTopicTrashEntries(cleanupState, state, query)...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].ArchivedAt != rows[j].ArchivedAt {
 			return rows[i].ArchivedAt > rows[j].ArchivedAt
@@ -223,7 +244,7 @@ func validateLifecycleRequest(req SessionLifecycleRequest) error {
 			if err := validateLocalSessionRef(*target.Ref); err != nil {
 				return err
 			}
-		} else if req.Action != "restore" {
+		} else if req.Action != "restore" && !(req.Action == "purge" && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:")) {
 			return errors.New("historical recovery entries can only be restored")
 		}
 		body, _ := json.Marshal(target)
@@ -276,9 +297,13 @@ func (a *App) applyLifecycleTarget(req SessionLifecycleRequest, key string, inde
 	if loadErr != nil {
 		return item, loadErr
 	}
-	if target.Ref != nil && req.Action != "archive" && latest.PendingOperations[child].Phase != "committed" && latest.PendingOperations["purge-"+target.Ref.SessionID].Kind != "purge" && latest.SessionStates[target.Ref.SessionID].Generation > req.ExpectedGeneration {
-		item.ErrorCode = "state_conflict"
-		return item, nil
+	if target.Ref != nil && req.Action != "archive" && latest.PendingOperations[child].Phase != "committed" && latest.SessionStates[target.Ref.SessionID].Generation > req.ExpectedGeneration {
+		purgeState := workspacestate.ClassifyPurge(latest, target.Ref.SessionID)
+		resumingPurge := req.Action == "purge" && (purgeState == workspacestate.PurgeTombstoned || purgeState == workspacestate.PurgeContentRemoved || purgeState == workspacestate.PurgeCommitted)
+		if !resumingPurge {
+			item.ErrorCode = "state_conflict"
+			return item, nil
+		}
 	}
 	if target.Ref != nil {
 		for id, w := range state.Workspaces {
@@ -292,10 +317,19 @@ func (a *App) applyLifecycleTarget(req SessionLifecycleRequest, key string, inde
 	case "archive":
 		opErr = archiveErr
 	case "purge":
-		release := a.lockRuntimeMutation("purge lifecycle command")
-		opErr = a.purgeCanonicalSession(ctx, *target.Ref, req.ExpectedGeneration)
-		release()
+		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:") {
+			opErr = a.purgeLegacyCleanupTopic(strings.TrimPrefix(target.RecoveryEntryID, "legacy-cleanup:"), target.WorkspaceID)
+		} else {
+			release := a.lockRuntimeMutation("purge lifecycle command")
+			opErr = a.purgeCanonicalSession(ctx, *target.Ref, req.ExpectedGeneration)
+			release()
+		}
 	case "restore":
+		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:") {
+			opErr = a.restoreLegacyCleanupTopic(strings.TrimPrefix(target.RecoveryEntryID, "legacy-cleanup:"), target.WorkspaceID)
+			item.WorkspaceID = target.WorkspaceID
+			break
+		}
 		var restored SessionRestoreResult
 		if target.Ref == nil {
 			restored, opErr = a.restoreRecoveryEntryInWorkspace(target.RecoveryEntryID, child, target.WorkspaceID)

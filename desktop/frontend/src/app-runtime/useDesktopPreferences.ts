@@ -48,7 +48,9 @@ export function useDesktopPreferences() {
   const sidebarImConnections = useMemo(() => snapshot ? sidebarImConnectionsFromBot(snapshot.bot, t, botRuntime, nativeRuntime) : [], [snapshot, t, botRuntime, nativeRuntime]);
   const imTopicSources = useMemo(() => snapshot ? sidebarImTopicSourcesFromBot(snapshot.bot, t) : {}, [snapshot, t]);
   return {
-    startupUpdateChecksEnabled: snapshot ? snapshot.checkUpdates !== false : startupFailed ? true : null,
+    startupUpdateChecksEnabled: snapshot
+      ? snapshot.updaterEnabled === true && snapshot.checkUpdates !== false
+      : startupFailed ? false : null,
     statusBarStyle: snapshot?.statusBarStyle === "text" ? "text" as const : "icon" as const,
     statusBarItems: snapshot ? normalizeStatusBarItems(snapshot.statusBarItems) : DEFAULT_STATUS_BAR_ITEMS,
     sidebarImConnections, imTopicSources,

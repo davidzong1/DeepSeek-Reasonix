@@ -206,8 +206,8 @@ function testProjectTreeWiresEveryRaceGuard() {
   assert.match(source, /node\.sessionPath \?\? ""/);
   assert.match(sessionMenuSource, /disabled: !sessionPath \|\| blocked \|\| busy/);
   assert.match(source, /sessionPath=\{sessionPath\} blocked=\{archiveBlocked \|\| topicTrashing\}/);
-  assert.match(source, /void trashSession\(sessionPath\)/);
-  assert.match(archiveSource, /projectTreeFolderKeyForSession\(treeRef\.current, sessionPath\)[\s\S]*refreshRef\.current\(reloadOptions\)/);
+  assert.match(source, /void trashSession\(node\)/);
+  assert.match(archiveSource, /projectTreeFolderKeyForSession\(treeRef\.current, sessionPath\)[\s\S]*sessionLifecycleFences.archive\(target, receipt\)[\s\S]*optimisticallyRemoveSession\(target\)[\s\S]*refreshRef\.current\(reloadOptions\)/);
 }
 
 await testLatePreArchivePageCannotReinsertTopic();

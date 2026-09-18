@@ -24,6 +24,18 @@ func (r *exactTurnRunner) Run(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
 
+func cleanupExactTurnController(t *testing.T, ctrl *control.Controller) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctrl.Close()
+		select {
+		case <-ctrl.Closed():
+		case <-time.After(5 * time.Second):
+			t.Error("Controller teardown did not finish before removing its storage")
+		}
+	})
+}
+
 func TestTurnRuntimeAPIRoutesStopAnswerAndReplayByExactTurn(t *testing.T) {
 	dir := t.TempDir()
 	runner := &exactTurnRunner{started: make(chan struct{})}
@@ -38,7 +50,7 @@ func TestTurnRuntimeAPIRoutesStopAnswerAndReplayByExactTurn(t *testing.T) {
 		Runner: runner, Sink: sink, SessionDir: dir,
 		SessionPath: filepath.Join(dir, "session.jsonl"),
 	})
-	t.Cleanup(ctrl.Close)
+	cleanupExactTurnController(t, ctrl)
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
 	sink.app = app
@@ -116,7 +128,7 @@ func TestInterruptTurnForTabStopsActiveWorkDespiteStaleTurnID(t *testing.T) {
 		Runner: runner, Sink: sink, SessionDir: dir,
 		SessionPath: filepath.Join(dir, "session.jsonl"),
 	})
-	t.Cleanup(ctrl.Close)
+	cleanupExactTurnController(t, ctrl)
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
 	sink.app = app
@@ -153,7 +165,7 @@ func TestStartTurnForTabReturnsManagementDispositionWithoutTurnID(t *testing.T) 
 	dir := t.TempDir()
 	sink := &tabEventSink{tabID: "tab", ctx: context.Background()}
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Sink: sink})
-	t.Cleanup(ctrl.Close)
+	cleanupExactTurnController(t, ctrl)
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
 	sink.app = app
@@ -188,7 +200,7 @@ func TestStartTurnForTabRejectsManagementDuringActiveTurn(t *testing.T) {
 		Runner: runner, Sink: sink, SessionDir: dir,
 		SessionPath: filepath.Join(dir, "session.jsonl"),
 	})
-	t.Cleanup(ctrl.Close)
+	cleanupExactTurnController(t, ctrl)
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
 	sink.app = app

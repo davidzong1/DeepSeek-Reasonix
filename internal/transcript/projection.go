@@ -90,15 +90,15 @@ func NewProjection(identity Identity, baseline []Message, covered uint64) (*Proj
 	// reuse their conversion buffers immediately after construction.
 	encoded, err := json.Marshal(baseline)
 	if err != nil {
-		return nil, err
+		return nil, newBaselineError(err, "baseline_encode_failed", len(baseline), -1, -1, Message{})
 	}
 	var owned []Message
 	if err = json.Unmarshal(encoded, &owned); err != nil {
-		return nil, err
+		return nil, newBaselineError(err, "baseline_decode_failed", len(baseline), -1, -1, Message{})
 	}
 	p.buffer.byMessageID = make(map[string]*bufferedMessage)
-	seen := make(map[string]bool)
-	for _, m := range owned {
+	seen := make(map[string]int)
+	for index, m := range owned {
 		if m.Role == "user" {
 			p.buffer.userTurns++
 			if m.HistoryTurn == 0 {
@@ -112,13 +112,13 @@ func NewProjection(identity Identity, baseline []Message, covered uint64) (*Proj
 			case m.MessageID != "":
 				m.RecordID = "m:" + m.MessageID
 			default:
-				return nil, errors.New("transcript baseline has a record without identity")
+				return nil, newBaselineError(errors.New("transcript baseline has a record without identity"), "missing_record_identity", len(owned), index, -1, m)
 			}
 		}
-		if seen[m.RecordID] {
-			return nil, fmt.Errorf("duplicate transcript record %q", m.RecordID)
+		if previous, exists := seen[m.RecordID]; exists {
+			return nil, newBaselineError(fmt.Errorf("duplicate transcript record %q", m.RecordID), "duplicate_record_identity", len(owned), index, previous, m)
 		}
-		seen[m.RecordID] = true
+		seen[m.RecordID] = index
 		row := &bufferedMessage{message: m}
 		if m.Role == "assistant" {
 			row.content.replace(m.Content)

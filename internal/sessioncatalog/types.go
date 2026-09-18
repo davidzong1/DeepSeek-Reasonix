@@ -220,6 +220,13 @@ type TopicPageRequest struct {
 	Query         string `json:"query,omitempty"`
 	TimeFilter    string `json:"timeFilter,omitempty"`
 	SortMode      string `json:"sortMode,omitempty"`
+	// IncludeTopicIDsJSON and ExcludeTopicIDsJSON carry a JSON string array into
+	// SQLite's json_each table function. They keep large sidebar groups bounded
+	// to one SQL parameter instead of expanding one placeholder per topic.
+	IncludeTopicIDsJSON string `json:"-"`
+	ExcludeTopicIDsJSON string `json:"-"`
+	ExcludePinned       bool   `json:"-"`
+	CursorBinding       string `json:"-"`
 	// ManualOrder makes sort_order the primary key within each pinned bucket.
 	// It is intentionally request-scoped: users who have never reordered keep
 	// the activity/created ordering even though metadata rows have a sort value.

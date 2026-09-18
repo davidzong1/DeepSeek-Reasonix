@@ -8,7 +8,7 @@ func (v *PendingCreate) UnmarshalJSON(body []byte) error {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return err
 	}
-	extra, err := unknownFields(body, "operationId", "workspaceId", "sessionId", "createdAt", "archiveSource")
+	extra, err := unknownFields(body, "operationId", "workspaceId", "sessionId", "createdAt", "archiveSource", "presentation", "parentSessionId")
 	if err != nil {
 		return err
 	}

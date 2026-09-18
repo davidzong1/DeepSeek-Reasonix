@@ -17,6 +17,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/projectiondb"
+	"reasonix/internal/sqliteuri"
 )
 
 func (c *Catalog) ReconcileDirectory(ctx context.Context, target DirectoryTarget) error {
@@ -664,6 +665,9 @@ func Inspect(ctx context.Context, path string) (Status, error) {
 		return status, nil
 	}
 	inspection := projectiondb.Inspect(ctx, path)
+	if err := ctx.Err(); err != nil {
+		return status, err
+	}
 	if inspection.Error != "" && !inspection.Exists {
 		status.LastError = inspection.Error
 		return status, nil
@@ -680,38 +684,78 @@ func Inspect(ctx context.Context, path string) (Status, error) {
 		status.LastError = inspection.Error
 		return status, nil
 	}
-	u := &url.URL{Scheme: "file", Path: path}
-	db, err := sql.Open("sqlite", u.String()+"?mode=ro&_pragma=busy_timeout%28150%29")
+	dsn, err := sqliteuri.Disk(path, url.Values{
+		"mode":    {"ro"},
+		"_pragma": {"busy_timeout(150)"},
+	})
 	if err != nil {
-		return status, err
+		status.LastError = "build read-only database URI: " + err.Error()
+		return status, nil
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		status.LastError = "open read-only database: " + err.Error()
+		return status, nil
 	}
 	defer db.Close()
-	status.State = StateReady
-	_ = db.QueryRowContext(ctx, `SELECT revision FROM catalog_state WHERE id=1`).Scan(&status.Revision)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions`).Scan(&status.Indexed)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown'`).Scan(&status.RepairPending)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state IN ('pending','active')`).Scan(&status.RepairActive)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='deferred'`).Scan(&status.RepairDeferred)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='blocked'`).Scan(&status.RepairBlocked)
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(MIN(repair_retry_at),0) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='deferred'`).Scan(&status.NextRepairAt)
-	rows, queryErr := db.QueryContext(ctx, `SELECT repair_error_kind,COUNT(*) FROM catalog_sessions
-		WHERE turns_state='unknown' AND repair_error_kind<>'' GROUP BY repair_error_kind`)
-	if queryErr == nil {
-		status.RepairErrorKinds = map[string]int64{}
-		for rows.Next() {
-			var kind string
-			var count int64
-			if rows.Scan(&kind, &count) == nil {
-				status.RepairErrorKinds[kind] = count
-			}
+	result := status
+	fail := func(stage string, err error) (Status, error) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return status, ctxErr
 		}
-		_ = rows.Close()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return status, err
+		}
+		status.LastError = stage + ": " + err.Error()
+		return status, nil
 	}
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE missing_since=0`).Scan(&status.PhysicalSessions)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_topics`).Scan(&status.LogicalSessions)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT recovery_group_id) FROM catalog_sessions WHERE recovered=1 AND recovery_group_id<>'' AND missing_since=0`).Scan(&status.RecoveryGroups)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND missing_since=0`).Scan(&status.RecoveryBranches)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND recovery_role='diverged' AND missing_since=0`).Scan(&status.RecoveryDiverged)
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND recovery_role='covered_copy' AND missing_since=0`).Scan(&status.CleanupEligible)
-	return status, nil
+	queries := []struct {
+		stage string
+		query string
+		dest  any
+	}{
+		{"read catalog revision", `SELECT revision FROM catalog_state WHERE id=1`, &result.Revision},
+		{"count indexed sessions", `SELECT COUNT(*) FROM catalog_sessions`, &result.Indexed},
+		{"count pending repairs", `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown'`, &result.RepairPending},
+		{"count active repairs", `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state IN ('pending','active')`, &result.RepairActive},
+		{"count deferred repairs", `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='deferred'`, &result.RepairDeferred},
+		{"count blocked repairs", `SELECT COUNT(*) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='blocked'`, &result.RepairBlocked},
+		{"read next repair time", `SELECT COALESCE(MIN(repair_retry_at),0) FROM catalog_sessions WHERE turns_state='unknown' AND repair_state='deferred'`, &result.NextRepairAt},
+		{"count physical sessions", `SELECT COUNT(*) FROM catalog_sessions WHERE missing_since=0`, &result.PhysicalSessions},
+		{"count logical sessions", `SELECT COUNT(*) FROM catalog_topics`, &result.LogicalSessions},
+		{"count recovery groups", `SELECT COUNT(DISTINCT recovery_group_id) FROM catalog_sessions WHERE recovered=1 AND recovery_group_id<>'' AND missing_since=0`, &result.RecoveryGroups},
+		{"count recovery branches", `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND missing_since=0`, &result.RecoveryBranches},
+		{"count diverged recoveries", `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND recovery_role='diverged' AND missing_since=0`, &result.RecoveryDiverged},
+		{"count cleanup eligible recoveries", `SELECT COUNT(*) FROM catalog_sessions WHERE recovered=1 AND recovery_role='covered_copy' AND missing_since=0`, &result.CleanupEligible},
+	}
+	for _, query := range queries {
+		if err := db.QueryRowContext(ctx, query.query).Scan(query.dest); err != nil {
+			return fail(query.stage, err)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT repair_error_kind,COUNT(*) FROM catalog_sessions
+		WHERE turns_state='unknown' AND repair_error_kind<>'' GROUP BY repair_error_kind`)
+	if err != nil {
+		return fail("count repair error kinds", err)
+	}
+	result.RepairErrorKinds = map[string]int64{}
+	for rows.Next() {
+		var kind string
+		var count int64
+		if err := rows.Scan(&kind, &count); err != nil {
+			_ = rows.Close()
+			return fail("scan repair error kinds", err)
+		}
+		result.RepairErrorKinds[kind] = count
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fail("iterate repair error kinds", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fail("close repair error kinds", err)
+	}
+	result.State = StateReady
+	result.LastError = ""
+	return result, nil
 }

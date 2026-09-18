@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { EventFrame, ServiceState } from "../shared/ipc.js";
 import { eventFrame } from "../shared/eventStream.js";
 import type { HelloResult } from "./handshake.js";
@@ -7,6 +8,7 @@ import { RestartBudget } from "./restartBudget.js";
 import { RpcClient } from "./rpc.js";
 
 export const LIFECYCLE_TIMEOUT_MS = 10_000;
+const SHUTDOWN_STATUS_POLL_MS = 250;
 export const EXIT_GRACE_MS = 5_000;
 
 export interface ServiceHandlers {
@@ -43,6 +45,34 @@ interface Session {
   exited: Promise<void>;
 }
 
+type ShutdownResult = {
+  requestId: string;
+  reason: string;
+  phase: "idle" | "preparing" | "saving" | "closing" | "completed";
+  outcome: "not_started" | "in_progress" | "success" | "failed";
+  completed: boolean;
+  retryable: boolean;
+  errorCode?: string;
+  error?: string;
+};
+
+export type ShutdownPhase = ShutdownResult["phase"];
+
+function shutdownResult(value: unknown): ShutdownResult {
+  if (!value || typeof value !== "object") throw new Error("desktop shutdown returned an invalid result");
+  const result = value as Partial<ShutdownResult>;
+  if (
+    typeof result.requestId !== "string" ||
+    typeof result.phase !== "string" ||
+    typeof result.outcome !== "string" ||
+    typeof result.completed !== "boolean" ||
+    typeof result.retryable !== "boolean"
+  ) {
+    throw new Error("desktop shutdown returned an invalid result");
+  }
+  return result as ShutdownResult;
+}
+
 function describeExit(code: number | null, signal: NodeJS.Signals | null): string {
   return signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
 }
@@ -58,6 +88,7 @@ export class ServiceSupervisor {
   private launching: Promise<HelloResult> | null = null;
   private stopping = false;
   private shutdownPending: Promise<void> | null = null;
+  private shutdownRequestId = "";
   private revision = 0;
   private restarting: Promise<HelloResult> | null = null;
   private readonly budget: RestartBudget;
@@ -65,7 +96,10 @@ export class ServiceSupervisor {
   private readonly now: () => number;
   private readonly exitGraceMs: number;
 
-  constructor(private readonly options: ServiceOptions, private readonly handlers: ServiceHandlers) {
+  constructor(
+    private readonly options: ServiceOptions,
+    private readonly handlers: ServiceHandlers,
+  ) {
     this.budget = options.budget ?? new RestartBudget();
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions));
     this.now = options.now ?? (() => Date.now());
@@ -95,11 +129,15 @@ export class ServiceSupervisor {
   async restart(): Promise<HelloResult> {
     if (this.stopping) throw new Error("desktop service is shutting down");
     if (this.launching) return this.launching;
-    if (!this.restarting) this.restarting = (async () => {
-      const old = this.session;
-      if (old?.alive) await this.terminate(old);
-      return this.begin(true);
-    })().finally(() => { this.restarting = null; });
+    if (!this.restarting) {
+      this.restarting = (async () => {
+        const old = this.session;
+        if (old?.alive) await this.terminate(old);
+        return this.begin(true);
+      })().finally(() => {
+        this.restarting = null;
+      });
+    }
     return this.restarting;
   }
 
@@ -119,25 +157,85 @@ export class ServiceSupervisor {
     }
   }
 
-  shutdown(): Promise<void> {
+  shutdown(
+    reason: "user_quit" | "update_restart" | "system_signal" = "user_quit",
+    onProgress?: (phase: ShutdownPhase) => void,
+  ): Promise<void> {
     this.stopping = true;
     this.revision++;
-    if (!this.shutdownPending) this.shutdownPending = this.finishShutdown().finally(() => { this.shutdownPending = null; });
+    if (!this.shutdownPending) {
+      this.shutdownPending = this.finishShutdown(reason, onProgress).finally(() => {
+        this.shutdownPending = null;
+      });
+    }
     return this.shutdownPending;
   }
 
-  private async finishShutdown(): Promise<void> {
+  private async finishShutdown(
+    reason: "user_quit" | "update_restart" | "system_signal",
+    onProgress?: (phase: ShutdownPhase) => void,
+  ): Promise<void> {
+    // A restart may already own termination of the current generation. Let that
+    // operation settle before selecting the session to shut down, otherwise the
+    // shutdown RPC races a closing stdin and turns an intentional quit into an
+    // indeterminate transport error.
+    if (this.restarting) await this.restarting.catch(() => undefined);
     const session = this.session;
     if (!session?.alive) {
       this.setState({ phase: "exited", generation: "" });
       return;
     }
     session.expectExit = true;
+    if (!this.shutdownRequestId) this.shutdownRequestId = randomUUID();
+    let result: ShutdownResult | null = null;
     try {
-      await session.client.request("desktop/shutdown", {}, LIFECYCLE_TIMEOUT_MS);
+      result = shutdownResult(
+        await session.client.request(
+          "desktop/shutdown",
+          {
+            requestId: this.shutdownRequestId,
+            reason,
+          },
+          LIFECYCLE_TIMEOUT_MS,
+        ),
+      );
     } catch (error) {
-      this.options.log.warn(`desktop/shutdown failed: ${errorText(error)}`);
+      this.options.log.warn(`desktop/shutdown result unknown: ${errorText(error)}; querying status`);
+      result = shutdownResult(
+        await session.client.request(
+          "desktop/shutdownStatus",
+          {
+            requestId: this.shutdownRequestId,
+          },
+          LIFECYCLE_TIMEOUT_MS,
+        ),
+      );
     }
+    const deadline = Date.now() + LIFECYCLE_TIMEOUT_MS;
+    onProgress?.(result.phase);
+    while (!result.completed && result.outcome === "in_progress" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_STATUS_POLL_MS));
+      result = shutdownResult(
+        await session.client.request(
+          "desktop/shutdownStatus",
+          {
+            requestId: this.shutdownRequestId,
+          },
+          LIFECYCLE_TIMEOUT_MS,
+        ),
+      );
+      onProgress?.(result.phase);
+    }
+    if (result.outcome === "failed") {
+      throw new Error(`${result.errorCode ?? "shutdown_failed"}: ${result.error ?? "desktop shutdown failed"}`);
+    }
+    if (!result.completed || result.outcome !== "success") {
+      throw new Error(
+        `${result.errorCode ?? "shutdown_incomplete"}: ${result.error ?? `desktop shutdown stopped in ${result.phase}`}`,
+      );
+    }
+    // The service closes itself only after the completed result has reached the
+    // shell. stdin/kill are now a post-completion process-exit fallback.
     await this.terminate(session);
     this.setState({ phase: "exited", generation: "" });
   }
@@ -185,7 +283,11 @@ export class ServiceSupervisor {
 
   private spawnSession(): Session {
     const { binary, args, env, log } = this.options;
-    const child = this.spawnFn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
+    const child = this.spawnFn(binary, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env,
+    });
     const session: Session = {
       child,
       client: null as unknown as RpcClient,
@@ -291,7 +393,10 @@ export class ServiceSupervisor {
     this.state = state;
     // A destroyed renderer or failing observer must not turn confirmed service
     // exit into a failed shutdown, nor skip the shell's remaining cleanup.
-    try { this.handlers.onState(state); }
-    catch (error) { this.options.log.warn(`service state observer failed: ${errorText(error)}`); }
+    try {
+      this.handlers.onState(state);
+    } catch (error) {
+      this.options.log.warn(`service state observer failed: ${errorText(error)}`);
+    }
   }
 }

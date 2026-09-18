@@ -61,6 +61,16 @@ on:
         required: false
         default: ""
         type: string
+      candidate_artifact_name:
+        description: "Same-run artifact containing a verified sealed release candidate"
+        required: false
+        default: ""
+        type: string
+      candidate_verified:
+        description: "Protected Stable preflight verified candidate provenance and bytes"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -94,12 +104,16 @@ jobs:
           CALLER_SHA: ${{ github.sha }}
           APPROVED_CLI_TAG: ${{ inputs.approved_cli_tag }}
           APPROVED_SHA: ${{ inputs.approved_sha }}
-          APPROVED_CHANNEL: ${{ inputs.orchestrator }}
+          APPROVED_CHANNEL: ${{ inputs.orchestrator == 'promote' && 'stable' || inputs.orchestrator }}
           RELEASE_TAG: ${{ inputs.approved_cli_tag }}
           VERIFY_RELEASE_CHECKOUT: false
         run: |
           bash scripts/verify-release-authorization.sh
           bash scripts/verify-release-tag.sh
+          if [ -n "${{ inputs.candidate_artifact_name }}" ] && [ "${{ inputs.candidate_verified }}" != "true" ]; then
+            echo "::error::prepared npm packages require verified candidate provenance"
+            exit 1
+          fi
 
   release-gate:
     name: approve standalone npm release
@@ -121,11 +135,14 @@ jobs:
         with:
           ref: ${{ inputs.approved_sha || inputs.tag || github.ref }}
       - uses: actions/setup-go@v7
+        if: ${{ !inputs.candidate_verified }}
         with:
           go-version-file: go.mod
           cache: true
-      - run: ./scripts/cache-guard.sh
+      - if: ${{ !inputs.candidate_verified }}
+        run: ./scripts/cache-guard.sh
       - name: Verify embedded documentation identity
+        if: ${{ !inputs.candidate_verified }}
         env:
           DOCS_BUILD_VERSION: v${{ inputs.base_version }}
           DOCS_SOURCE_REVISION: ${{ inputs.approved_sha }}
@@ -162,8 +179,10 @@ jobs:
           git fetch --no-tags --depth=1 origin "$RECOVERY_CONTROL_SHA"
           git restore --source="$RECOVERY_CONTROL_SHA" -- \
             npm/publish.mjs \
+            npm/publish-candidate.mjs \
             scripts/finalize-npm-official-release.mjs
       - uses: actions/setup-go@v7
+        if: ${{ inputs.candidate_artifact_name == '' }}
         with:
           go-version-file: go.mod
           cache: true
@@ -171,6 +190,12 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      - name: Download sealed release candidate
+        if: ${{ inputs.candidate_artifact_name != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.candidate_artifact_name }}
+          path: ${{ runner.temp }}/release-candidate
       # Stable publication uses the exact npm-v* tag. build.mjs strips the
       # leading `npm-`/`v`; historical Preview inputs remain only for old
       # workflow-call compatibility and are not reachable from a public entry.
@@ -193,10 +218,18 @@ jobs:
           APPROVED_SHA: ${{ inputs.approved_sha }}
         run: bash scripts/verify-release-tag.sh
       - name: Publish or recover immutable npm packages
+        if: ${{ inputs.candidate_artifact_name == '' }}
         env:
           VERSION_ARG: ${{ steps.ver.outputs.arg }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node npm/build.mjs "$VERSION_ARG" --publish
+      - name: Publish or recover prepared npm packages
+        if: ${{ inputs.candidate_artifact_name != '' }}
+        env:
+          VERSION: ${{ inputs.base_version }}
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node npm/publish-candidate.mjs "$RUNNER_TEMP/release-candidate/npm" "$VERSION" "$APPROVED_SHA"
       - name: Align legacy aliases with the official release
         if: ${{ inputs.channel == 'stable' }}
         env:

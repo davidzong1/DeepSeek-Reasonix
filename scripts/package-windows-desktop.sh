@@ -149,7 +149,6 @@ cp "$PAYLOAD/$BINNAME.exe" "$portable_staging/versions/$version_label/$BINNAME.e
 cp "$PAYLOAD/$UPDATE_HELPER" "$portable_staging/versions/$version_label/$UPDATE_HELPER"
 cp "$PAYLOAD/$WINDOWS_CLINAME.exe" "$portable_staging/versions/$version_label/$WINDOWS_CLINAME.exe"
 cp -R "$PAYLOAD/app" "$portable_staging/versions/$version_label/app"
-cp "$PAYLOAD/$LAUNCHERNAME.exe" "$portable_staging/$LAUNCHERNAME.exe"
 cp "$PAYLOAD/$LAUNCHERNAME.exe" "$portable_staging/$APPNAME.exe"
 cli_entry="$PAYLOAD/app/resources/bin/$WINDOWS_CLI_ENTRY"
 [ -s "$cli_entry" ] || { echo "Windows CLI entry is missing: $cli_entry" >&2; exit 1; }
@@ -161,7 +160,7 @@ cat >"$portable_staging/current.json" <<EOF
   "activeDir": "versions/$version_label"
 }
 EOF
-"$ROOT/scripts/verify-windows-portable.sh" "$portable_staging"
+"$ROOT/scripts/verify-windows-portable.sh" "$portable_staging" canonical "$PAYLOAD/$LAUNCHERNAME.exe"
 
 if command -v powershell.exe >/dev/null 2>&1; then
 	portable_staging_win="$portable_staging"

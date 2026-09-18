@@ -13,12 +13,29 @@ import (
 // The gate pauses a real projection read after App bindings were copied. Its
 // result may then belong to a controller whose session was rotated meanwhile.
 type bindingRuntimeReader struct {
-	control.SessionAPI
-	mu      sync.Mutex
-	state   event.RuntimeStateSnapshot
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
+	stubSessionAPI
+	mu       sync.Mutex
+	state    event.RuntimeStateSnapshot
+	entered  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	resolved []control.PromptIdentity
+}
+
+func (*bindingRuntimeReader) AutoApproveTools() bool { return false }
+func (*bindingRuntimeReader) PlanMode() bool         { return false }
+func (*bindingRuntimeReader) Goal() string           { return "" }
+func (*bindingRuntimeReader) GoalStatus() string     { return control.GoalStatusStopped }
+func (*bindingRuntimeReader) GoalRuntime() control.GoalRuntimeView {
+	return control.GoalRuntimeView{}
+}
+func (*bindingRuntimeReader) ToolApprovalMode() string { return "ask" }
+
+func (r *bindingRuntimeReader) ResolvePromptExact(identity control.PromptIdentity, _ control.PromptAnswer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resolved = append(r.resolved, identity)
+	return nil
 }
 
 func (r *bindingRuntimeReader) RuntimeStateSnapshot() event.RuntimeStateSnapshot {
@@ -58,6 +75,74 @@ func TestRuntimeStateProjectionDoesNotHoldMutexAcrossControllerRead(t *testing.T
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("gated projection did not finish")
+	}
+}
+
+func TestMetaForTabRevalidatesBindingAndReadsControllerUnlocked(t *testing.T) {
+	old := &bindingRuntimeReader{
+		state: event.RuntimeStateSnapshot{SchemaVersion: 1, ProjectionEpoch: "old-producer", RuntimeEpoch: "old-runtime", Revision: 5,
+			Phase: "executing", Running: true, Todos: []event.Todo{{Content: "old", Status: "in_progress"}}},
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	newState := event.RuntimeStateSnapshot{SchemaVersion: 1, ProjectionEpoch: "new-producer", RuntimeEpoch: "new-runtime", Revision: 1,
+		Phase: "idle", Todos: []event.Todo{{Content: "new", Status: "pending"}}}
+	next := &bindingRuntimeReader{state: newState}
+	tab := &WorkspaceTab{ID: "meta-binding", Scope: "global", WorkspaceRoot: "/tmp/meta-binding", SessionPath: "/old.jsonl", SessionID: "old-session", SessionGeneration: 1, Ctrl: old, Ready: true}
+	// Keep the test focused on the runtime sample. A cache miss schedules an
+	// unrelated metadata refresh which briefly takes App.mu and can make the
+	// lock assertion nondeterministic under the race detector.
+	tab.metaExtras.Store(&tabMetaExtras{controller: old, workspaceRoot: tab.WorkspaceRoot, fetchedAt: time.Now()})
+	a := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, detachedSessions: map[string]*WorkspaceTab{}}
+	done := make(chan Meta, 1)
+	go func() { done <- a.MetaForTab(tab.ID) }()
+	select {
+	case <-old.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MetaForTab did not reach controller snapshot")
+	}
+	if !a.mu.TryLock() {
+		close(old.release)
+		t.Fatal("MetaForTab held App.mu while reading the controller")
+	}
+	tab.Ctrl = next
+	tab.SessionID = "new-session"
+	tab.SessionPath = "/new.jsonl"
+	tab.SessionGeneration = 2
+	a.mu.Unlock()
+	close(old.release)
+	select {
+	case got := <-done:
+		if got.SessionID != "new-session" || got.SessionGeneration != 2 || got.RuntimeStateSnapshot == nil ||
+			!reflect.DeepEqual(*got.RuntimeStateSnapshot, newState) || got.CanonicalTodos == nil || len(*got.CanonicalTodos) != 1 || (*got.CanonicalTodos)[0].Content != "new" {
+			t.Fatalf("MetaForTab paired stale identity and state: %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("MetaForTab did not finish after controller replacement")
+	}
+}
+
+func TestResolvePromptForSessionRejectsStaleBindingBeforeController(t *testing.T) {
+	reader := &bindingRuntimeReader{}
+	tab := &WorkspaceTab{ID: "prompt", SessionID: "session-a", SessionGeneration: 3, Ctrl: reader}
+	a := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}
+	target := InteractionTargetView{TabID: tab.ID, HostID: localDesktopHostID, SessionID: tab.SessionID,
+		SessionGeneration: 2, PromptID: "p1", TurnID: "t1", RuntimeEpoch: "r1", Kind: "ask"}
+	if err := a.ResolvePromptForSession(target, PromptAnswerView{}); err == nil {
+		t.Fatal("stale session generation reached prompt resolver")
+	}
+	reader.mu.Lock()
+	if len(reader.resolved) != 0 {
+		t.Fatalf("stale target called controller: %+v", reader.resolved)
+	}
+	reader.mu.Unlock()
+	target.SessionGeneration = 3
+	if err := a.ResolvePromptForSession(target, PromptAnswerView{}); err != nil {
+		t.Fatalf("current target rejected: %v", err)
+	}
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	if len(reader.resolved) != 1 || reader.resolved[0].PromptID != "p1" {
+		t.Fatalf("current target calls = %+v", reader.resolved)
 	}
 }
 

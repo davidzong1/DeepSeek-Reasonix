@@ -310,9 +310,18 @@ func lockInstall(root string) (func(), error) {
 }
 
 func Notify(err error) {
-	title, _ := windows.UTF16PtrFromString("Reasonix 启动 / Startup")
-	text, _ := windows.UTF16PtrFromString("Reasonix 未能完成启动或更新，请查看日志后重试。\nReasonix could not finish startup or update.\n\n" + err.Error())
+	titleText, bodyText := notificationContent(err)
+	title, _ := windows.UTF16PtrFromString(titleText)
+	text, _ := windows.UTF16PtrFromString(bodyText)
 	user32.NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x30)
+}
+
+func notificationContent(err error) (string, string) {
+	var failure *Error
+	if errors.As(err, &failure) && failure.Code == UnsupportedPortableLocation {
+		return "Reasonix 无法从当前位置启动", unsupportedPortableLocationMessage
+	}
+	return "Reasonix 启动 / Startup", "Reasonix 未能完成启动或更新，请查看日志后重试。\nReasonix could not finish startup or update.\n\n" + err.Error()
 }
 
 func confirmProcesses(list []*process) bool {

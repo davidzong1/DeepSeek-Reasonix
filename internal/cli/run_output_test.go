@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -51,6 +52,28 @@ func TestRunOutputJSONResult(t *testing.T) {
 	}
 	if !result.Usage.Estimated {
 		t.Fatalf("usage lost estimated marker: %+v", result.Usage)
+	}
+}
+
+func TestRunOutputJSONIncludesAuthenticationRecovery(t *testing.T) {
+	var out bytes.Buffer
+	sink := newRunOutputSink(&out, runOutputJSON)
+	err := &control.AuthenticationError{State: control.AuthenticationState{
+		Status: control.AuthenticationMissingCredential,
+		Code:   "missing_credential",
+	}}
+	if finalizeErr := sink.Finalize("", time.Now(), err); finalizeErr != nil {
+		t.Fatal(finalizeErr)
+	}
+	var result runResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if result.ErrorCode != "missing_credential" || result.Authentication != string(control.AuthenticationMissingCredential) {
+		t.Fatalf("authentication metadata = %+v", result)
+	}
+	if got := strings.Join(result.Recovery, ","); got != "configure_credentials,select_model,diagnose_credentials" {
+		t.Fatalf("recovery actions = %q", got)
 	}
 }
 

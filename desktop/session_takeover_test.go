@@ -344,10 +344,10 @@ func TestTakeoverMirrorReadoptsAfterServeMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(sessionDir, "session.jsonl")
-	deadServe := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	deadURL := deadServe.URL
-	deadClient := deadServe.Client()
-	deadServe.Close()
+	deadURL := "http://unreachable.invalid"
+	deadClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("injected stale serve connection")
+	})}
 	var delivered atomic.Bool
 	newServe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

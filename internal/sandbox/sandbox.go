@@ -31,6 +31,13 @@ var helperDispatchRegistered atomic.Bool
 
 func RegisterHelperDispatch() { helperDispatchRegistered.Store(true) }
 
+// RepairLegacyCredentialDeny removes only the exact current-user deny ACE that
+// older Windows builds placed on Reasonix's credential file. Other platforms
+// and unrelated ACLs are left untouched.
+func RepairLegacyCredentialDeny(path string) error {
+	return repairLegacyCredentialDeny(path)
+}
+
 const windowsSandboxFailureMarkerPrefix = "__reasonix_windows_sandbox_failure__:"
 
 func WindowsSandboxFailureMarker(payload string) string {

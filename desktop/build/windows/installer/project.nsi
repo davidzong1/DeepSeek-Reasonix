@@ -33,7 +33,8 @@ SetCompressorDictSize 32
 !define REQUEST_EXECUTION_LEVEL "user"
 
 ####
-## Product identity (generated; provides INFO_* defines and REASONIX_VERSION_TAG).
+## Product identity. REASONIX_VERSION_TAG is the release/install identity;
+## INFO_PRODUCTVERSION is numeric metadata only.
 ####
 !if /FileExists "reasonix_project.nsh"
 !include "reasonix_project.nsh"
@@ -147,8 +148,8 @@ VIFileVersion    "${INFO_PRODUCTVERSION}.0"
 
 VIAddVersionKey "CompanyName"     "${INFO_COMPANYNAME}"
 VIAddVersionKey "FileDescription" "${INFO_PRODUCTNAME} Installer"
-VIAddVersionKey "ProductVersion"  "${INFO_PRODUCTVERSION}"
-VIAddVersionKey "FileVersion"     "${INFO_PRODUCTVERSION}"
+VIAddVersionKey "ProductVersion"  "${REASONIX_DISPLAY_VERSION}"
+VIAddVersionKey "FileVersion"     "${REASONIX_DISPLAY_VERSION}"
 VIAddVersionKey "LegalCopyright"  "${INFO_COPYRIGHT}"
 VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 
@@ -233,9 +234,9 @@ ShowInstDetails show # This will always show the installation details.
 
     WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${INFO_PRODUCTNAME}"
-    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${REASONIX_DISPLAY_VERSION}"
     !if /FileExists "${REASONIX_LAUNCHER}"
-    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${REASONIX_LAUNCHER}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}"
     !else
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     !endif
@@ -302,6 +303,11 @@ ShowInstDetails show # This will always show the installation details.
 !macroend
 
 Function .onInit
+   !ifdef ARG_REASONIX_UNINSTALLER_ONLY
+   ; This compiler artifact exists only to extract the shared uninstaller.
+   ; It is never an installable or publishable product.
+   Quit
+   !endif
    !insertmacro reasonix.checkArchitecture
 
    ; The helper passes /REASONIXUPDATE=1 and a final /D=<current directory>.
@@ -419,9 +425,9 @@ reasonix_unlock_check:
 reasonix_unlock_stable_locked:
    StrCpy $2 1
 reasonix_unlock_versioned:
-   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_guard
+   IfFileExists "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_guard
    ClearErrors
-   FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a
+   FileOpen $1 "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" a
    IfErrors reasonix_unlock_versioned_locked
    FileClose $1
    Goto reasonix_unlock_guard
@@ -481,13 +487,18 @@ reasonix_unlock_ok:
 FunctionEnd
 
 
+!ifdef ARG_REASONIX_UNINSTALLER_ONLY
+Section
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+SectionEnd
+!else
 Section
     !insertmacro reasonix.setShellContext
 
     ; /REASONIXSTAGE=1: flat executables plus the Electron app/ tree for
     ; 1.18–1.19.1 helpers (and the new helper's staging extract). Do not write
     ; shortcuts/uninstaller.
-    ; Normal install: versioned-v1 layout under versions/v${INFO_PRODUCTVERSION}/
+    ; Normal install: versioned-v1 layout under versions/${REASONIX_VERSION_TAG}/
     ; with a permanent thin launcher at InstallRoot. Guard is only present in
     ; STAGE payloads (as the one-shot legacy migrator) and is not persisted on
     ; a normal install.
@@ -527,7 +538,7 @@ reasonix_normal_install:
     ; automatic updates instead of writing live files or current.json in place.
     System::Call 'kernel32::GetCurrentProcessId() i .R8'
     CreateDirectory "$INSTDIR\versions"
-    StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"
+    StrCpy $R9 "$INSTDIR\versions\.installer-${REASONIX_VERSION_TAG}-$R8"
     RMDir /r "$R9"
     CreateDirectory "$R9"
     SetOutPath "$R9"
@@ -557,7 +568,7 @@ reasonix_normal_install:
     IfSilent +2 0
     StrCpy $R7 "--interactive-recovery"
 reasonix_layout_activate:
-    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "v${INFO_PRODUCTVERSION}" --activate-staging "$R9" --no-relaunch $R7'
+    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "${REASONIX_VERSION_TAG}" --activate-staging "$R9" --no-relaunch $R7'
     Pop $0
     StrCmp $0 "0" reasonix_layout_activated
     DetailPrint "Reasonix layout activation failed with exit code $0; the previous version remains active."
@@ -598,17 +609,21 @@ reasonix_layout_activated:
     ; Keep both target and icon on the stable launcher. Pointing IconLocation at
     ; versions\vX\reasonix-desktop.exe leaves a blank shortcut as soon as version
     ; retention removes that directory after a later update.
-    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
-    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
+    ; Preserve user arguments, icons and working directories on existing links;
+    ; the owned-link repair below migrates their targets without replacing them.
+    IfFileExists "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" +2 0
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0
+    IfFileExists "$DESKTOP\${INFO_PRODUCTNAME}.lnk" +2 0
+    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0
     ; Stamp the exact paths created in this shell context before the user can pin them.
-    nsExec::ExecToLog /OEM '"$INSTDIR\${REASONIX_LAUNCHER}" --repair-shortcuts "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$DESKTOP\${INFO_PRODUCTNAME}.lnk"'
+    nsExec::ExecToLog /OEM '"$INSTDIR\${REASONIX_PORTABLE_ENTRY}" --repair-shortcuts "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$DESKTOP\${INFO_PRODUCTNAME}.lnk"'
     Pop $0
     ${If} $0 != "0"
         DetailPrint "Warning: shortcut identity repair failed ($0); the next normal launch will retry."
     ${EndIf}
     !else
-    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"
-    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}"
+    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}"
     !endif
 
     !insertmacro reasonix.associateFiles
@@ -618,6 +633,7 @@ reasonix_layout_activated:
 
 reasonix_section_done:
 SectionEnd
+!endif
 
 Section "uninstall"
     !insertmacro reasonix.setShellContext

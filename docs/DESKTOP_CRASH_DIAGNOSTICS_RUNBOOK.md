@@ -7,6 +7,56 @@ cross-platform Desktop diagnostics pipeline. Windows build `17763` remains a
 priority experiment, not a code whitelist. A diagnostic release does not by
 itself resolve a crash issue.
 
+## Local transcript initialization failures
+
+When session creation, opening, or legacy migration fails to initialize the
+transcript, search the Electron shell's `service.log` (and rotated
+`service.log.1`) for `session transcript initialization failed`. The service
+emits a structured `diagnostic` group to stderr, which the shell persists through
+its existing log writer. This diagnostic has `version=1` and
+`code=transcript_initialization_failed`; it does not change the migration ledger
+format. The separate content-free online report is described below.
+
+| Field | Meaning |
+| --- | --- |
+| `diagnostic.session_key` | SHA-256 of the session ID; correlates failures for that runtime session |
+| `diagnostic.covered_sequence` | Event sequence covered by the initial transcript |
+| `diagnostic.baseline_message_count` | Input messages selected for initialization, at most 96 |
+| `diagnostic.baseline_total_message_count` | Available candidate messages before tail selection; not necessarily the full history size |
+| `diagnostic.baseline.record_count` | Transcript records produced from those input messages |
+| `diagnostic.baseline.record_index` / `previous_record_index` | Zero-based failing record / first conflicting record in that selected baseline, when known |
+| `diagnostic.baseline.role` | Allowlisted role, or `other` |
+| `diagnostic.baseline.record_key` / `message_key` / `tool_call_key` | SHA-256 identity fingerprints; empty when the identity is absent |
+
+`diagnostic.baseline.code` distinguishes `duplicate_record_identity`,
+`missing_record_identity`, `baseline_encode_failed`, and
+`baseline_decode_failed`. Encoding/decoding failures have no record position.
+Positions refer to transcript records, not global message offsets.
+
+Legacy migration also emits
+`desktop session migration transcript initialization failed` with the same
+diagnostic, `stage=legacy_import`, and `source_key`. Match `source_key` to the
+existing `sourceKey` in `desktop/session-migration-v5.json` under the Reasonix
+configuration directory. It identifies the same source across retries even
+when a new attempt creates a different target session ID. Each failed attempt
+emits one runtime diagnostic and, for this migration path, one migration
+diagnostic. The failed source is retained and healthy migrations can continue.
+
+These new records exclude chat/reasoning bodies, tool arguments, original
+paths, raw identifiers, and unrestricted error text. Fingerprints support
+correlation; they do not by themselves prove which original data caused a
+reported failure. Old `1.38.10` logs cannot retroactively supply these fields;
+collect logs from a build containing this change after reproducing the failure.
+
+The same handled migration failure is queued as an `exception` report with
+`source=desktop.session_migration`, `label=transcript.initialization`, and a
+content-free classification in its fingerprint hint. It is delivered to
+`https://crash.reasonix.io/v1/report` and appears on `/stats/diagnostics` under
+the existing Desktop telemetry consent, retry, and per-version deduplication
+rules. Session/source fingerprints and record identity fingerprints remain
+local-only. Unrecovered panics from older builds continue through the existing
+`go.runtime` / `go.fatal` crash path and are shown as high-severity crashes.
+
 ## Release order
 
 1. Keep the Firebase project on Spark with no Cloud Billing account. Create

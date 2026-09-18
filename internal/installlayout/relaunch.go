@@ -15,7 +15,7 @@ func StableRelaunchPath(installRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{LauncherBinaryName(), PortableAliasName()} {
+	for _, name := range []string{CanonicalLauncherBinaryName(), LauncherBinaryName()} {
 		if name == "" {
 			continue
 		}

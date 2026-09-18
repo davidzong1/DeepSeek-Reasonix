@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"reasonix/internal/control"
+	"reasonix/internal/session"
 )
 
 type projectTreeRuntimeState struct {
@@ -69,6 +72,7 @@ func (a *App) catalogRuntimeSnapshots() []catalogRuntimeSnapshot {
 			return
 		}
 		snapshots = append(snapshots, catalogRuntimeSnapshot{
+			tabID: tab.ID,
 			scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID,
 			sessionPath: tab.SessionPath, activity: tab.ActivityStatus, topicTitle: tab.TopicTitle,
 			topicTitleSource: tab.topicTitleSource, ctrl: tab.Ctrl, open: open,
@@ -118,35 +122,52 @@ func cloneRuntimeTopics(topics []ProjectRuntimeTopic) []ProjectRuntimeTopic {
 }
 
 func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []ProjectRuntimeTopic {
-	type runtimeGroup struct {
-		scope         string
-		workspaceRoot string
-		snapshots     []catalogRuntimeSnapshot
-	}
-	groups := map[string]*runtimeGroup{}
+	bySession := map[string]ProjectRuntimeTopic{}
+	state, _ := a.workspaceRegistry().Load(a.bootContext())
 	for _, snapshot := range snapshots {
 		scope, root := normalizeDesktopTopicScope(snapshot.scope, snapshot.workspaceRoot)
 		snapshot.scope, snapshot.workspaceRoot = scope, root
-		key := topicSummaryKey(scope, root, snapshot.topicID)
-		group := groups[key]
-		if group == nil {
-			group = &runtimeGroup{scope: scope, workspaceRoot: root}
-			groups[key] = group
+		if snapshot.sessionPath == "" && snapshot.ctrl != nil {
+			snapshot.sessionPath = snapshot.ctrl.SessionPath()
 		}
-		group.snapshots = append(group.snapshots, snapshot)
+		nodes, _ := a.runtimeProjectTopicNodes(scope, root, []catalogRuntimeSnapshot{snapshot}, false)
+		if len(nodes) == 0 {
+			continue
+		}
+		node := nodes[0]
+		node.TabID = snapshot.tabID
+		path := strings.TrimSpace(snapshot.sessionPath)
+		if id, ok := parseSessionRoute(path); ok {
+			ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
+			node.Session, node.SessionPath, node.Key = &ref, sessionRoute(id), "canonical_"+id
+		} else if identity, ok := snapshot.ctrl.(control.IdentityLifecycle); ok {
+			if ref, bound := identity.SessionRef(); bound && ref.SessionID != "" {
+				node.Session, node.SessionPath, node.Key = &ref, sessionRoute(ref.SessionID), "canonical_"+ref.SessionID
+			}
+		}
+		if node.Session == nil && path != "" {
+			node.SessionPath, node.Key = path, projectSessionNodeKey(scope, path)
+		}
+		if node.Session != nil {
+			node.IdentityAliases = sourceAliases(state, desktopWorkspaceID(scope, root), node.Session.SessionID)
+			node.LifecycleGeneration = state.SessionStates[node.Session.SessionID].Generation
+			if snapshot.tabID != "" {
+				node.IdentityAliases = append(node.IdentityAliases, "tab\x00local\x00"+snapshot.tabID)
+			}
+		} else if path == "" && snapshot.tabID != "" {
+			node.Key = "tab_" + snapshot.tabID
+		}
+		key := scope + "\x00" + root + "\x00" + node.Key
+		bySession[key] = ProjectRuntimeTopic{Scope: scope, WorkspaceRoot: root, Node: node}
 	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
+	keys := make([]string, 0, len(bySession))
+	for key := range bySession {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	topics := make([]ProjectRuntimeTopic, 0, len(keys))
 	for _, key := range keys {
-		group := groups[key]
-		nodes, _ := a.runtimeProjectTopicNodes(group.scope, group.workspaceRoot, group.snapshots, false)
-		if len(nodes) > 0 {
-			topics = append(topics, ProjectRuntimeTopic{Scope: group.scope, WorkspaceRoot: group.workspaceRoot, Node: nodes[0]})
-		}
+		topics = append(topics, bySession[key])
 	}
 	return topics
 }
@@ -163,6 +184,12 @@ func (a *App) closeTab(tabID string, allowDetach bool) error {
 	err := a.closeTabRuntime(tabID, allowDetach)
 	if err == nil {
 		a.emitProjectTreeRuntimeChangedWithLegacy()
+		// Closing an idle view may release the last reason an upgrade candidate
+		// was classified busy. Retry the frozen batch once; unknown candidates
+		// remain manual/startup-only and detached work stays protected.
+		a.goSafe("retryLegacyEmptySessionCleanupAfterTabClose", func() {
+			a.retryLegacyEmptySessionCleanupAfterRuntimeRelease()
+		})
 	}
 	return err
 }

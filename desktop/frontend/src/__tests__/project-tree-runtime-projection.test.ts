@@ -30,7 +30,11 @@ assert.equal(projectTreeApplyRuntimeTopics(overlaid, [
     key: "known", kind: "topic", label: "Known live", root: "/a", topicId: "known", running: true, children: [],
   } },
 ], new Set(["known"]))[0]?.children?.length, 0);
-assert.equal(projectTreeApplyRuntimeTopics(overlaid, [])[0]?.children?.[0]?.children?.length, 0);
+const settled = projectTreeApplyRuntimeTopics(overlaid, []);
+assert.equal(settled[0]?.children?.[0]?.children?.length, 2,
+  "clearing runtime state preserves the topic's durable session children");
+assert.equal(settled[0]?.children?.[0]?.children?.some((session) => session.open || session.running), false,
+  "clearing runtime state removes only transient session status");
 
 const projects: ProjectNode[] = Array.from({ length: 100 }, (_, index) => ({
   key: `p-${index}`, kind: "project", label: `P ${index}`, root: `/p/${index}`, children: [],

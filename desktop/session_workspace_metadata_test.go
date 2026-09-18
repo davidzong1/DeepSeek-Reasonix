@@ -5,10 +5,38 @@ import (
 	"reflect"
 	"testing"
 
+	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/session"
 )
 
 type workspaceInfoProbe struct{ ids []string }
+
+type changingWorkspaceInfoProbe struct{ reads int }
+
+func (p *changingWorkspaceInfoProbe) Stat(_ context.Context, ref session.SessionRef) (session.SessionInfo, error) {
+	p.reads++
+	sequence := uint64(1)
+	if p.reads > 2 && ref.SessionID == "a" {
+		sequence = 2
+	}
+	return session.SessionInfo{SessionID: ref.SessionID, EventSequence: sequence, MetadataStatus: session.MetadataReady}, nil
+}
+
+func TestWorkspaceMetadataSnapshotRejectsChangeDuringMaterialization(t *testing.T) {
+	probe := &changingWorkspaceInfoProbe{}
+	ids := []string{"a", "b"}
+	before, err := listWorkspaceSessionInfo(t.Context(), probe, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspaceSessionInfoUnchanged(t.Context(), probe, ids, before) {
+		t.Fatal("published mixed metadata after A changed while building the page")
+	}
+	stable, _ := listWorkspaceSessionInfo(t.Context(), probe, ids)
+	if !workspaceSessionInfoUnchanged(t.Context(), probe, ids, stable) {
+		t.Fatal("rejected unchanged metadata")
+	}
+}
 
 func (p *workspaceInfoProbe) Stat(_ context.Context, ref session.SessionRef) (session.SessionInfo, error) {
 	p.ids = append(p.ids, ref.SessionID)
@@ -45,5 +73,60 @@ func TestWorkspacePendingMetadataIsNotBlank(t *testing.T) {
 	row = workspaceSessionRow("global", "named", session.SessionInfo{MetadataStatus: session.MetadataReady, Title: "Saved title"}, true, false, nil)
 	if row.Blank {
 		t.Fatal("named session should not be hidden")
+	}
+}
+
+func TestCanonicalSessionTopicIdentityUsesTargetPresentation(t *testing.T) {
+	state := workspacestate.State{Presentation: map[string]workspacestate.Presentation{
+		"target": {TopicID: "topic-target", Title: "Target"},
+	}}
+	topicID, title := canonicalSessionTopicIdentity(state, "target")
+	if topicID != "topic-target" || title != "Target" {
+		t.Fatalf("identity = %q/%q, want target presentation", topicID, title)
+	}
+	topicID, title = canonicalSessionTopicIdentity(state, "missing")
+	if topicID != "canonical-missing" || title != "" {
+		t.Fatalf("fallback identity = %q/%q", topicID, title)
+	}
+}
+
+func TestCanonicalBindingUsesRenamedSessionTitleAndRuntimeIdentity(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	ws, err := app.ensureDesktopWorkspace(t.Context(), "global", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := app.desktopSessionService("").Create(t.Context(), session.CreateOptions{SessionID: "renamed-binding", Origin: session.SessionOriginNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := runtime.Ref()
+	if err := app.workspaceRegistry().AttachSession(t.Context(), "", ws, ref.SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	old := "Old fork title"
+	if err := app.workspaceRegistry().UpdatePresentation(t.Context(), []string{ref.SessionID}, &old, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.RenameSessionTarget(SessionSelector{Ref: &ref}, "Renamed B"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{ID: "binding", SessionID: ref.SessionID}
+	app.tabs[tab.ID] = tab
+	if err := app.commitCanonicalSessionBinding(tab, nil, ref, state.Workspaces[ws], 0); err != nil {
+		t.Fatal(err)
+	}
+	if tab.TopicTitle != "Renamed B" {
+		t.Fatalf("reopened title=%q", tab.TopicTitle)
+	}
+	snapshot := app.GetRuntimeStateSnapshot()
+	if len(snapshot.Topics) != 1 || snapshot.Topics[0].Node.Session == nil || snapshot.Topics[0].Node.Session.SessionID != ref.SessionID {
+		t.Fatalf("runtime lost canonical identity: %+v", snapshot.Topics)
 	}
 }

@@ -80,6 +80,7 @@ func (a *App) applyModelConfigChangeWithSave(setting string, mutate func(*config
 }
 
 func (a *App) modelSettingsSaved(setting string) {
+	a.invalidateAuxiliaryProviderOperations()
 	a.mu.RLock()
 	count, active := len(a.tabs), a.activeTabID != ""
 	var retry []*WorkspaceTab

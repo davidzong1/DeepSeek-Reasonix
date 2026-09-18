@@ -50,7 +50,21 @@ try {
   await action.waitFor({ state: "visible", timeout: 30_000 });
   await action.click();
   await page.locator(".decision-confirm-bar__confirm").click();
-  await page.waitForFunction(() => !document.querySelector(".prompt-shelf--tool-approval"), undefined, { timeout: 10_000 });
+  try {
+    await page.waitForFunction(() => !document.querySelector(".prompt-shelf--tool-approval"), undefined, { timeout: 10_000 });
+  } catch (error) {
+    const diagnostics = await page.evaluate(() => {
+      const shelf = document.querySelector(".prompt-shelf--tool-approval");
+      const wrapper = shelf?.parentElement;
+      return {
+        shelfText: shelf?.textContent?.replace(/\s+/g, " ").trim(),
+        wrapperStyle: wrapper?.getAttribute("style"),
+        disabledActions: [...document.querySelectorAll(".prompt-shelf button:disabled")].map((button) => button.textContent?.trim()),
+        notices: [...document.querySelectorAll(".toast, .notice, [role='alert']")].map((notice) => notice.textContent?.replace(/\s+/g, " ").trim()),
+      };
+    });
+    throw new Error(`approval card did not resolve: ${JSON.stringify(diagnostics)}`, { cause: error });
+  }
 
   const calls = await page.evaluate(() => window.__reasonixApprovalAnimationCalls ?? []);
   assert(calls.length === 1, `approval invokes one native Web Animation (${JSON.stringify(calls)})`);

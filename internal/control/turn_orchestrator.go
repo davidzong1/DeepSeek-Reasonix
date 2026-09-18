@@ -369,3 +369,15 @@ func (o *turnOrchestrator) runEditedGoalLoopWithImageRefsRawDisplay(ctx context.
 	ctx = agent.WithSubagentImageCandidates(ctx, turn.imageCandidates)
 	return o.runOrchestratedTurn(ctx, turn)
 }
+
+func (o *turnOrchestrator) runEditedGoalLoopWithFrozenImagesRawDisplay(ctx context.Context, input, raw, display, original string, images []string) error {
+	turn := orchestratedTurn{
+		input: input, raw: raw, display: display, editedOriginal: original,
+		imageCandidates: append([]string(nil), images...), imagesResolved: true,
+	}
+	if o.c.imageInputEnabled() {
+		turn.userImages = append([]string(nil), images...)
+	}
+	ctx = agent.WithSubagentImageCandidates(ctx, turn.imageCandidates)
+	return o.runOrchestratedTurn(ctx, turn)
+}

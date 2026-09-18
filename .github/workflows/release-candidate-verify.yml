@@ -1,0 +1,109 @@
+name: Verify release candidate rehearsal
+run-name: Verify rehearsal ${{ inputs.candidate_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        description: "Sealed non-publishing rehearsal candidate ID"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: read
+  contents: read
+
+jobs:
+  verify:
+    name: verify signed files across runs without rebuilding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Require protected control and resolve exact record
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = esengine/DeepSeek-Reasonix
+          test "$GITHUB_REF" = refs/heads/main-v2
+          test "$GITHUB_REF_PROTECTED" = true
+          node scripts/resolve-release-candidate.mjs resolve-rehearsal "${{ inputs.candidate_id }}"
+      - name: Download and verify producer record
+        id: inspected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECORD_ID: ${{ steps.record.outputs.record_artifact_id }}
+          PRODUCER_RUN: ${{ steps.record.outputs.producer_run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECORD_ID" > "$RUNNER_TEMP/record-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER_RUN" > "$RUNNER_TEMP/producer-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECORD_ID/zip" > "$RUNNER_TEMP/record.zip"
+          node scripts/verify-release-artifact-archive.mjs "$RUNNER_TEMP/record-artifact.json" "$RUNNER_TEMP/record.zip"
+          mkdir record
+          unzip -q "$RUNNER_TEMP/record.zip" -d record
+          test -s record/record.json
+          signer_sha="$(jq -r .head_sha "$RUNNER_TEMP/producer-run.json")"
+          gh attestation verify record/record.json --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+            --signer-digest "$signer_sha" --source-ref refs/heads/main-v2 --deny-self-hosted-runners
+          node scripts/resolve-release-candidate.mjs inspect-rehearsal "${{ inputs.candidate_id }}" \
+            record/record.json "$RUNNER_TEMP/record-artifact.json" "$RUNNER_TEMP/producer-run.json"
+      - name: Verify exact signed payload and native acceptance evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_ID: ${{ steps.inspected.outputs.payload_artifact_id }}
+          PAYLOAD_NAME: ${{ steps.inspected.outputs.payload_artifact_name }}
+          PRODUCER_RUN: ${{ steps.inspected.outputs.producer_run_id }}
+          CONTROL_SHA: ${{ steps.inspected.outputs.candidate_control_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PAYLOAD_ID" > "$RUNNER_TEMP/payload-artifact.json"
+          test "$(jq -r .name "$RUNNER_TEMP/payload-artifact.json")" = "$PAYLOAD_NAME"
+          test "$(jq -r .workflow_run.id "$RUNNER_TEMP/payload-artifact.json")" = "$PRODUCER_RUN"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PAYLOAD_ID/zip" > "$RUNNER_TEMP/payload.zip"
+          node scripts/verify-release-artifact-archive.mjs "$RUNNER_TEMP/payload-artifact.json" "$RUNNER_TEMP/payload.zip"
+          mkdir payload
+          unzip -q "$RUNNER_TEMP/payload.zip" -d payload
+          while IFS= read -r -d '' file; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+              --signer-digest "$CONTROL_SHA" --source-ref refs/heads/main-v2 \
+              --deny-self-hosted-runners >/dev/null
+          done < <(find payload -type f -print0)
+          node scripts/release-candidate.mjs verify-rehearsal payload record/record.json >/dev/null
+          git fetch origin main-v2
+          git merge-base --is-ancestor "${{ steps.inspected.outputs.source_sha }}" origin/main-v2
+          jq -n \
+            --arg candidate "${{ inputs.candidate_id }}" \
+            --arg source "${{ steps.inspected.outputs.source_sha }}" \
+            --arg producer "$PRODUCER_RUN" \
+            --arg verifier "$GITHUB_RUN_ID" \
+            --arg record "$(sha256sum record/record.json | awk '{print $1}')" \
+            --arg payload "$(sha256sum "$RUNNER_TEMP/payload.zip" | awk '{print $1}')" \
+            '{candidateId:$candidate,sourceSHA:$source,producerRunId:$producer,verifierRunId:$verifier,recordSha256:$record,payloadArchiveSha256:$payload,publication:false,result:"verified"}' \
+            > rehearsal-verification.json
+          {
+            echo "### Independent rehearsal verification"
+            echo
+            echo "- Candidate: \`${{ inputs.candidate_id }}\`"
+            echo "- Producer run: \`$PRODUCER_RUN\`"
+            echo "- Record SHA-256: \`$(jq -r .recordSha256 rehearsal-verification.json)\`"
+            echo "- Payload archive SHA-256: \`$(jq -r .payloadArchiveSha256 rehearsal-verification.json)\`"
+            echo "- No tag, release channel, or update pointer was changed."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-rehearsal-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: rehearsal-verification.json
+          if-no-files-found: error
+          retention-days: 90

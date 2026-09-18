@@ -22,6 +22,9 @@ importers:
       '@electron/universal':
         specifier: 3.0.6
         version: 3.0.6
+      '@jridgewell/trace-mapping':
+        specifier: 0.3.31
+        version: 0.3.31
 
   electron:
     devDependencies:

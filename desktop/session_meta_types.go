@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	goaldomain "reasonix/internal/goal"
 	"reasonix/internal/session"
@@ -8,27 +9,29 @@ import (
 
 // Meta describes the session for the frontend's header and status line.
 type Meta struct {
-	Label                 string              `json:"label"`
-	Ready                 bool                `json:"ready"`
-	Runtime               SessionRuntimeView  `json:"runtime"`
-	StartupErr            string              `json:"startupErr,omitempty"`
-	EventChannel          string              `json:"eventChannel"`
-	SessionPath           string              `json:"sessionPath,omitempty"`
-	SessionID             string              `json:"sessionId,omitempty"`
-	Session               *session.SessionRef `json:"session,omitempty"`
-	SessionRevision       int64               `json:"sessionRevision,omitempty"`
-	SessionDigest         string              `json:"sessionDigest,omitempty"`
-	Cwd                   string              `json:"cwd"`
-	WorkspaceRoot         string              `json:"workspaceRoot,omitempty"`
-	WorkspaceName         string              `json:"workspaceName,omitempty"`
-	WorkspacePath         string              `json:"workspacePath,omitempty"`
-	GitBranch             string              `json:"gitBranch,omitempty"`
-	ImageInputEnabled     bool                `json:"imageInputEnabled"`
-	VisionFallbackEnabled bool                `json:"visionFallbackEnabled,omitempty"`
-	AutoApproveTools      bool                `json:"autoApproveTools"`
-	Bypass                bool                `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
-	CollaborationMode     string              `json:"collaborationMode"`
-	ToolApprovalMode      string              `json:"toolApprovalMode"`
+	Label                 string                      `json:"label"`
+	Ready                 bool                        `json:"ready"`
+	Runtime               SessionRuntimeView          `json:"runtime"`
+	StartupErr            string                      `json:"startupErr,omitempty"`
+	EventChannel          string                      `json:"eventChannel"`
+	SessionPath           string                      `json:"sessionPath,omitempty"`
+	SessionID             string                      `json:"sessionId,omitempty"`
+	Session               *session.SessionRef         `json:"session,omitempty"`
+	SessionRevision       int64                       `json:"sessionRevision,omitempty"`
+	SessionDigest         string                      `json:"sessionDigest,omitempty"`
+	SessionGeneration     uint64                      `json:"sessionGeneration"`
+	RuntimeStateSnapshot  *event.RuntimeStateSnapshot `json:"runtimeStateSnapshot,omitempty"`
+	Cwd                   string                      `json:"cwd"`
+	WorkspaceRoot         string                      `json:"workspaceRoot,omitempty"`
+	WorkspaceName         string                      `json:"workspaceName,omitempty"`
+	WorkspacePath         string                      `json:"workspacePath,omitempty"`
+	GitBranch             string                      `json:"gitBranch,omitempty"`
+	ImageInputEnabled     bool                        `json:"imageInputEnabled"`
+	VisionFallbackEnabled bool                        `json:"visionFallbackEnabled,omitempty"`
+	AutoApproveTools      bool                        `json:"autoApproveTools"`
+	Bypass                bool                        `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
+	CollaborationMode     string                      `json:"collaborationMode"`
+	ToolApprovalMode      string                      `json:"toolApprovalMode"`
 	// TokenMode and AgentPreset are deprecated dual-write wire values pinned to
 	// their safe defaults; one-version-old frontends still parse them.
 	TokenMode   string           `json:"tokenMode"`

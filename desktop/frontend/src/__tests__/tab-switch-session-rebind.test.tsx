@@ -161,9 +161,9 @@ const appStubTable = ({
       ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (tabID: string) => {
         if (tabID === "tab-o" && heldTabOHistory) {
-          const promise = heldTabOHistory;
-          heldTabOHistory = null;
-          return promise;
+          // Every reader of this binding observes the same unavailable cut,
+          // including the early baseline and the later authoritative Follow.
+          return heldTabOHistory;
         }
         const generation = tabsById.get(tabID)?.sessionGeneration ?? 0;
         return [userMessage(tabID === "tab-o" ? `history O generation ${generation}` : "history A")];
@@ -224,6 +224,7 @@ await waitFor("source restored after target history failure", () => controller?.
 eq(backendActiveId, "tab-a", "target history failure rebinds backend focus to the retained source session");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "history A") ?? false, "target history failure restores the retained source transcript");
 ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "history O generation 1") ?? false), "target history failure never restores the prior target generation");
+heldTabOHistory = null;
 
 await act(async () => {
   await controller?.openProjectTab(reboundTabO.workspaceRoot, reboundTabO.topicId || "");

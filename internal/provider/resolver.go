@@ -21,6 +21,7 @@ type Descriptor struct {
 	InputModalities                []ModelModality `json:"inputModalities,omitempty"`
 	Tools                          bool            `json:"tools,omitempty"`
 	Reasoning                      bool            `json:"reasoning,omitempty"`
+	ReasoningUnknown               bool            `json:"reasoningUnknown,omitempty"`
 	Efforts                        []string        `json:"efforts,omitempty"`
 	DefaultEffort                  string          `json:"defaultEffort,omitempty"`
 	ToolCallReasoning              bool            `json:"toolCallReasoning,omitempty"`

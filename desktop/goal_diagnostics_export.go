@@ -24,6 +24,22 @@ func (a *App) ExportGoalDiagnostics() (string, error) {
 	if tab == nil {
 		return "", errors.New("goal diagnostics are unavailable for this session")
 	}
+	// New peers and local canonical sessions share the explicit export owner.
+	if !a.isRemoteTab(tab.ID) || a.remoteSessionExportSupported(tab.ID) {
+		handle, err := a.BeginSessionExportForTarget(SessionSelector{}, tab.ID, "diagnostic", tab.TopicTitle, "")
+		if err != nil || handle.ExportID == "" {
+			return "", err
+		}
+		defer func() { _ = a.CancelSessionExport(handle.ExportID) }()
+		result, err := a.FinishSessionExport(handle.ExportID)
+		if err != nil {
+			return "", err
+		}
+		if len(result.Paths) == 0 {
+			return "", nil
+		}
+		return result.Paths[0], nil
+	}
 	path, err := a.nativeHost().SaveFileDialog(a.ctx, nativeDialogOptions{
 		Title:                "Export goal diagnostics",
 		DefaultDirectory:     dialogDefaultDirectory(tab.WorkspaceRoot),
@@ -125,4 +141,11 @@ func writeGoalDiagnosticsFile(path string, write func(io.Writer) error) error {
 	}
 	keep = true
 	return nil
+}
+
+func (a *App) remoteSessionExportSupported(tabID string) bool {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	tab := a.remoteTabs[tabID]
+	return tab != nil && tab.capabilities[servecontract.SessionExportV1]
 }

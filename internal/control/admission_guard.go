@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 
 	"reasonix/internal/event"
 	"reasonix/internal/session"
@@ -18,6 +19,7 @@ const (
 	turnDroppedClosed
 	turnDroppedDraining // generation no longer published after rebuild
 	turnDroppedWriteAuthority
+	turnDroppedAuthentication
 )
 
 // String names the outcome for an error a human reads. A bare enum index told a
@@ -74,6 +76,16 @@ func (c *Controller) runGuardedGoalRound(reservation *goalRoundReservation, body
 }
 
 func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, parkWhileRunning, parkWhileFinishing bool, onStart func(), goalRound *goalRoundReservation) admissionResult {
+	if err := c.authentication.admissionError(); err != nil {
+		var authErr *AuthenticationError
+		_ = errors.As(err, &authErr)
+		code := "authentication_not_ready"
+		if authErr != nil && authErr.State.Code != "" {
+			code = authErr.State.Code
+		}
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Code: code, Text: err.Error()})
+		return turnDroppedAuthentication
+	}
 	if err := c.ensureWriteAuthorityReady(); err != nil {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: this session is no longer writable — reopen it and try again"})
 		return turnDroppedWriteAuthority

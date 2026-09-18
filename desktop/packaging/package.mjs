@@ -7,9 +7,10 @@
 // usage: node desktop/packaging/package.mjs <os/arch> <version> [channel]
 import { defaultSanitizePackageJson, packager } from "@electron/packager";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildInfo,
@@ -22,7 +23,7 @@ import {
   sanitizeShellPackageJson,
   signingFileList,
   versionTag,
-  walkFiles,
+  walkFiles
 } from "./lib.mjs";
 import { verifyFrontendArtifact } from "../frontend/scripts/artifact-identity.mjs";
 
@@ -42,10 +43,14 @@ const buildTime = (process.env.REASONIX_BUILD_TIME ?? "").trim() || new Date().t
 
 function gitCommit() {
   try {
-    return execFileSync("git", ["-C", repo, "rev-parse", "--short=12", "HEAD"], { encoding: "utf8" }).trim();
+    return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8", }).trim();
   } catch {
     return "unknown";
   }
+}
+
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function require(path, what) {
@@ -70,7 +75,7 @@ if (process.env.REASONIX_PACKAGE_REUSE_FRONTEND === "1") {
   console.log(`==> reusing ${frontendDist}`);
 } else {
   console.log(`==> frontend build:electron (channel ${channel})`);
-  runBuildScript(join(desktop, "frontend"), "build-for-shell.mjs", ["electron"], { REASONIX_CHANNEL: channel });
+  runBuildScript(join(desktop, "frontend"), "build-for-shell.mjs", ["electron"], { REASONIX_CHANNEL: channel, REASONIX_COMMIT: commit });
 }
 require(join(frontendDist, "index.html"), "frontend dist");
 
@@ -88,11 +93,71 @@ mkdirSync(sourceMapDir, { recursive: true });
 for (const name of readdirSync(shellDist).filter((name) => name.endsWith(".map"))) {
   cpSync(join(shellDist, name), join(sourceMapDir, name));
 }
-for (const name of walkFiles(frontendDist).filter((name) => name.endsWith(".map"))) {
-  const destination = join(sourceMapDir, "frontend", name);
+const frontendMapArchive = join(desktop, "frontend", "sourcemaps", commit);
+require(join(frontendMapArchive, "manifest.json"), "frontend source map archive manifest");
+const frontendMapManifest = JSON.parse(readFileSync(join(frontendMapArchive, "manifest.json"), "utf8"));
+if (frontendMapManifest.commit !== commit) throw new Error(`frontend source map commit ${frontendMapManifest.commit} does not match ${commit}`);
+if (!Array.isArray(frontendMapManifest.maps) || frontendMapManifest.maps.length === 0) throw new Error("frontend source map archive manifest has no maps");
+for (const record of frontendMapManifest.maps) {
+  if (!record || typeof record.archive !== "string" || typeof record.map !== "string" || typeof record.bundle !== "string") {
+    throw new Error("frontend source map archive manifest has an invalid map record");
+  }
+  if (
+    !record.map.endsWith(".map") ||
+    record.map.startsWith("/") ||
+    record.map.includes("\\") ||
+    record.map.split("/").includes("..") ||
+    record.archive.includes("/") ||
+    record.archive.includes("\\") ||
+    record.archive.includes("..") ||
+    record.bundle !== record.map.slice(0, -4)
+  ) {
+    throw new Error(`frontend source map archive manifest has an unsafe map record: ${JSON.stringify(record)}`);
+  }
+  const archivedMap = join(frontendMapArchive, record.archive);
+  require(archivedMap, `archived frontend source map ${record.map}`);
+  const destination = join(sourceMapDir, "frontend", record.map);
   mkdirSync(dirname(destination), { recursive: true });
-  cpSync(join(frontendDist, name), destination);
+  cpSync(archivedMap, destination);
 }
+
+const sourceMapEntries = [];
+for (const mapPath of walkFiles(sourceMapDir)
+  .filter((name) => name.endsWith(".map"))
+  .sort()) {
+  const shellMap = !mapPath.startsWith("frontend/");
+  const bundleRelative = shellMap ? mapPath.slice(0, -4) : mapPath.slice("frontend/".length, -4);
+  if (!bundleRelative || bundleRelative.includes("..")) throw new Error(`source map has an invalid bundle path: ${mapPath}`);
+  const mapJSON = JSON.parse(readFileSync(join(sourceMapDir, mapPath), "utf8"));
+  if (mapJSON.file && String(mapJSON.file) !== basename(bundleRelative)) throw new Error(`source map bundle identity does not match ${mapPath}`);
+  const bundlePath = shellMap ? join(shellDist, bundleRelative) : join(frontendDist, bundleRelative);
+  require(bundlePath, `bundle for source map ${mapPath}`);
+  sourceMapEntries.push({
+    bundle: shellMap ? `electron/${bundleRelative}` : bundleRelative,
+    bundleHash: `sha256:${sha256File(bundlePath)}`,
+    map: mapPath,
+    mapHash: `sha256:${sha256File(join(sourceMapDir, mapPath))}`,
+  });
+}
+for (const requiredMap of ["main.cjs.map", "preload.cjs.map"]) {
+  if (!sourceMapEntries.some((entry) => entry.map === requiredMap)) throw new Error(`required Electron source map is missing: ${requiredMap}`);
+}
+if (!sourceMapEntries.some((entry) => entry.map.startsWith("frontend/"))) throw new Error("frontend source maps are missing");
+writeFileSync(
+  join(sourceMapDir, "manifest.json"),
+  JSON.stringify(
+    {
+      schemaVersion: 1,
+      commit: (process.env.GITHUB_SHA ?? "").trim() || gitCommit(),
+      target: target.spec,
+      channel,
+      createdAt: buildTime,
+      entries: sourceMapEntries,
+    },
+    null,
+    2,
+  ) + "\n",
+);
 
 const staging = mkdtempSync(join(tmpdir(), "reasonix-package-"));
 const outDir = join(desktop, "build", "electron", target.key);
@@ -105,9 +170,9 @@ try {
   cpSync(join(desktop, "build", "appicon.png"), join(staging, "icons", "appicon.png"));
   // Packaged launches always read this identity, including the full version
   // tag. Environment overrides belong only to the unpackaged development shell.
-  writeFileSync(join(staging, "build.json"), JSON.stringify(buildInfo({ version, channel, commit, electronVersion, target, buildTime }), null, 2) + "\n");
+  writeFileSync(join(staging, "build.json"), JSON.stringify(buildInfo({ version, channel, commit, electronVersion, target, buildTime, }), null, 2,) + "\n",);
 
-  const icon = { darwin: join(desktop, "build", "darwin", "icon.icns"), win32: join(desktop, "build", "windows", "icon.ico") }[target.packagerPlatform];
+  const icon = { darwin: join(desktop, "build", "darwin", "icon.icns"), win32: join(desktop, "build", "windows", "icon.ico"), }[target.packagerPlatform];
   if (icon) require(icon, "application icon");
   const options = packagerOptions({
     target,
@@ -140,7 +205,7 @@ try {
     writeFileSync(join(outDir, "signing-files.txt"), signing.join("\n") + "\n");
     console.log(`==> ${signing.length} Electron PE files need Authenticode (${join(outDir, "signing-files.txt")})`);
   }
-  writeFileSync(join(outDir, "summary.json"), JSON.stringify({ target: target.spec, version, channel, commit, electronVersion, bundle }, null, 2) + "\n");
+  writeFileSync(join(outDir, "summary.json"), JSON.stringify({ target: target.spec, version, channel, commit, electronVersion, bundle, }, null, 2,) + "\n",);
   console.log(`==> packaged ${bundle}`);
 } finally {
   rmSync(staging, { recursive: true, force: true });

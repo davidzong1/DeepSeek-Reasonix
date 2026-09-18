@@ -34,7 +34,7 @@ const event = (e: Partial<WireEvent> & { kind: WireEvent["kind"] }) =>
   const rolled = reducer(started, { type: "send_failed", submissionId: "remote-1", error: "Send failed: refused" });
   eq(rolled.running, false, "send_failed clears running");
   eq(rolled.turnActive, false, "send_failed clears turnActive");
-  eq(rolled.items.some((it) => it.kind === "user" && it.failed), true, "send_failed marks the bubble failed");
+  eq(rolled.localSubmissions["remote-1"]?.status, "failed", "send_failed marks the bubble failed");
   eq(rolled.items.some((it) => it.kind === "notice"), true, "send_failed adds a notice");
   // A stale send_failed for another submission must not clobber a live turn.
   const live = reducer(started, { type: "event", e: { kind: "turn_started" } as WireEvent });

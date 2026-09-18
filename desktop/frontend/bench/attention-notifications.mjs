@@ -55,9 +55,13 @@ try {
         pendingInteractions: [{ requestId: "1", kind, turnId, runtimeEpoch: "runtime-A", headId: "head-A" }],
         cancelRequested: false, cancellable: true, backgroundJobs: 0, activity: "" };
       runtimeStateStore.commit({ epoch: "attention-fixture", revision, sessions: [{ tabId: "detached:A", scope: "global",
-        workspaceRoot: "/fixture", topicId: "topic-A", sessionPath: "/fixture/a", sessionGeneration: 1,
+        workspaceRoot: "/fixture", topicId: "topic-A", sessionId: "session-A", sessionPath: "/fixture/a", sessionGeneration: 1,
         open: false, remote: false, freshness: "synced", state }], topics: [{ scope: "global", node: {
+        key: "session-B", topicId: "topic-A", kind: "global_session", label: "Conversation B",
+        session: { hostId: "local", sessionId: "session-B" },
+      } }, { scope: "global", node: {
         key: "topic-A", topicId: "topic-A", kind: "global_session", label: "Conversation A", status: "waiting_confirmation",
+        session: { hostId: "local", sessionId: "session-A" },
       } }] });
     };
     window.__publishAttention();

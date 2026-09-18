@@ -26,7 +26,7 @@ func (a *App) submissionAdmissionError(tabID string, req control.SubmissionReque
 			return lookupErr
 		}
 	}
-	return err
+	return errors.Join(control.ErrSubmissionNotAccepted, err)
 }
 
 func submitIdentified(ctrl control.SessionAPI, req control.SubmissionRequest, submit func()) error {

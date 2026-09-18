@@ -1,10 +1,17 @@
 name: Deploy site
+run-name: Deploy site ${{ inputs.release_version && format('v{0}', inputs.release_version) || github.sha }}
 
 on:
   push:
     branches: [main-v2]
     paths: ['site/**', 'release-notes/**', '.github/workflows/pages.yml']
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Optional release version that owns this deployment"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read

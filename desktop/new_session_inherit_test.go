@@ -312,7 +312,10 @@ func TestEnsureBlankTabConcurrentModelSwitchKeepsLastSelection(t *testing.T) {
 
 	select {
 	case <-firstSwitchReturned:
-	case <-time.After(5 * time.Second):
+	case err := <-ensureDone:
+		close(releaseFirstSwitch)
+		t.Fatalf("EnsureBlankTab completed before the default model switch: %v", err)
+	case <-time.After(30 * time.Second):
 		close(releaseFirstSwitch)
 		t.Fatal("timed out waiting for default model switch")
 	}
@@ -330,7 +333,7 @@ func TestEnsureBlankTabConcurrentModelSwitchKeepsLastSelection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureBlankTab: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for EnsureBlankTab")
 	}
 

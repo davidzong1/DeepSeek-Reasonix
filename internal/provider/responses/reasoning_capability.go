@@ -8,7 +8,7 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 	if protocol == "none" {
 		return provider.ReasoningOptions("")
 	}
-	cap := provider.ReasoningOptions("")
+	cap := provider.UnknownReasoning()
 	if protocol == "deepseek" {
 		return provider.DeclaredReasoning(cfg, provider.ReasoningOptions("high", "none", "low", "high", "max"))
 	}

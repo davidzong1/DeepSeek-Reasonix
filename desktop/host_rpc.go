@@ -14,10 +14,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"reasonix/desktop/internal/hostrpc"
@@ -32,9 +34,15 @@ const (
 	contractTSFile   = "desktopContract.generated.ts"
 	contractJSONFile = "desktopContract.generated.json"
 
-	desktopWindowMinWidth  = 760
-	desktopWindowMinHeight = 480
+	desktopWindowMinWidth       = 760
+	desktopWindowMinHeight      = 480
+	hostDetachedShutdownTimeout = 15 * time.Second
 )
+
+type detachedShutdownResult struct {
+	status shutdownStatus
+	err    error
+}
 
 func hostRPCRequested(args []string) bool { return slices.Contains(args, hostRPCFlag) }
 
@@ -131,6 +139,18 @@ func runHostRPC(app *App, stdin io.Reader, stdout io.Writer) int {
 	prepareDesktopDiagnostics(app)
 	capturePendingUpdateHealthIdentity(app)
 	defer app.releaseDesktopDiagnosticsOwnership()
+	shutdownAttempted := false
+	defer func() {
+		if shutdownAttempted || app.shutdownStatus("").Completed {
+			return
+		}
+		status, shutdownErr := requestDetachedShutdown(app, shutdownRequest{
+			RequestID: newDesktopLifecycleRunID(), Reason: shutdownReasonStartupFailure,
+		}, hostDetachedShutdownTimeout)
+		if shutdownErr != nil || !status.Completed {
+			slog.Error("desktop host: startup-failure cleanup failed", "err", shutdownErr, "phase", status.Phase)
+		}
+	}()
 	generation, err := randomHex(8)
 	if err != nil {
 		slog.Error("desktop host: runtime generation", "err", err)
@@ -150,6 +170,8 @@ func runHostRPC(app *App, stdin io.Reader, stdout io.Writer) int {
 
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	hostCtx, stopSignals := signal.NotifyContext(appCtx, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	conn := rpcwire.NewConn(stdin, stdout, rpcwire.Options{
 		StrictJSONRPC:         true,
 		MaxInboundBytes:       64 << 20,
@@ -172,11 +194,57 @@ func runHostRPC(app *App, stdin io.Reader, stdout io.Writer) int {
 	runtimeEventsEmitFallback = func(_ context.Context, name string, payload ...any) {
 		server.Emit(name, payload...)
 	}
-	if err := server.Serve(appCtx); err != nil {
+	if err := server.Serve(hostCtx); err != nil {
+		reason := shutdownReasonConnectionLost
+		if hostCtx.Err() != nil && appCtx.Err() == nil {
+			reason = shutdownReasonSystemSignal
+		}
 		slog.Error("desktop host: connection ended", "err", err)
+		shutdownAttempted = true
+		status, shutdownErr := requestDetachedShutdown(app, shutdownRequest{
+			RequestID: newDesktopLifecycleRunID(), Reason: reason,
+		}, hostDetachedShutdownTimeout)
+		if shutdownErr != nil || !status.Completed {
+			slog.Error("desktop host: connection-loss cleanup failed", "err", shutdownErr, "phase", status.Phase)
+		}
 		return 1
 	}
+	if !app.shutdownStatus("").Completed {
+		shutdownAttempted = true
+		status, shutdownErr := requestDetachedShutdown(app, shutdownRequest{
+			RequestID: newDesktopLifecycleRunID(), Reason: shutdownReasonConnectionLost,
+		}, hostDetachedShutdownTimeout)
+		if shutdownErr != nil || !status.Completed {
+			slog.Error("desktop host: EOF cleanup failed", "err", shutdownErr, "phase", status.Phase)
+			return 1
+		}
+	}
 	return 0
+}
+
+// requestDetachedShutdown bounds cleanup only after the shell transport or OS
+// signal is already gone. Explicit user shutdown remains unbounded and
+// retryable because its window is still available to surface a save failure.
+func requestDetachedShutdown(app *App, request shutdownRequest, timeout time.Duration) (shutdownStatus, error) {
+	result := make(chan detachedShutdownResult, 1)
+	go func() {
+		status, err := app.requestShutdown(context.Background(), request)
+		result <- detachedShutdownResult{status: status, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case completed := <-result:
+		return completed.status, completed.err
+	case <-timer.C:
+		status := app.shutdownStatus("")
+		reason := status.Reason
+		if reason == "" {
+			reason = normalizeShutdownReason(request.Reason)
+		}
+		app.lifecycle.tracker.markShutdown(reason, status.Phase, "interrupted")
+		return status, fmt.Errorf("detached shutdown timed out after %s: %w", timeout, context.DeadlineExceeded)
+	}
 }
 
 // hostRPCHooks binds the shell's lifecycle requests to the App hooks, always
@@ -184,9 +252,14 @@ func runHostRPC(app *App, stdin io.Reader, stdout io.Writer) int {
 func hostRPCHooks(ctx context.Context, app *App, bridge *hostShellBridge, resources hostrpc.Resources) hostrpc.Hooks {
 	return hostrpc.Hooks{
 		Hello: func(hostrpc.HelloParams) (hostrpc.HelloResult, error) {
+			runID := ""
+			if app.lifecycle.tracker != nil {
+				runID = app.lifecycle.tracker.state.RunID
+			}
 			return hostrpc.HelloResult{
-				Resources: resources,
-				Window:    initialDesktopWindowGeometry(),
+				Resources: resources, Window: initialDesktopWindowGeometry(),
+				RunID: runID, IncidentID: app.lifecycle.tracker.incidentID(),
+				DiagnosticsEnabled: app.diagnosticsTelemetry,
 			}, nil
 		},
 		Start:    func(context.Context) error { app.startup(ctx); return nil },
@@ -196,12 +269,26 @@ func hostRPCHooks(ctx context.Context, app *App, bridge *hostShellBridge, resour
 			return nil
 		},
 		BeforeClose: func(_ context.Context, reason string) bool { return bridge.beforeClose(ctx, reason) },
-		Shutdown:    func(context.Context) error { app.shutdown(ctx); return nil },
-		HostEvent:   bridge.handleHostEvent,
+		Shutdown: func(requestCtx context.Context, params hostrpc.ShutdownParams) (hostrpc.ShutdownResult, error) {
+			status, err := app.requestShutdown(requestCtx, shutdownRequest{RequestID: params.RequestID, Reason: params.Reason})
+			return hostRPCShutdownResult(status), err
+		},
+		ShutdownStatus: func(_ context.Context, params hostrpc.ShutdownStatusParams) (hostrpc.ShutdownResult, error) {
+			return hostRPCShutdownResult(app.shutdownStatus(params.RequestID)), nil
+		},
+		HostEvent: bridge.handleHostEvent,
 		BrowserControl: func(_ context.Context, enabled bool) error {
 			app.setBrowserControlEnabled(enabled)
 			return nil
 		},
+	}
+}
+
+func hostRPCShutdownResult(status shutdownStatus) hostrpc.ShutdownResult {
+	return hostrpc.ShutdownResult{
+		RequestID: status.RequestID, Reason: status.Reason, Phase: status.Phase, Outcome: status.Outcome,
+		Completed: status.Completed, Retryable: status.Retryable, ErrorCode: status.ErrorCode,
+		Error: status.Error, UpdatedAt: status.UpdatedAt,
 	}
 }
 

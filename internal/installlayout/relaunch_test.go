@@ -3,8 +3,29 @@ package installlayout
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+func TestStableRelaunchPrefersCanonicalWindowsEntry(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows installed entry names")
+	}
+	root := t.TempDir()
+	seedVersionedLayout(t, root, "v1.38.9", "old")
+	canonical := writeTempMember(t, root, "Reasonix.exe", "new")
+	got, err := StableRelaunchPath(root)
+	if err != nil || got != canonical {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+	if err := os.Remove(canonical); err != nil {
+		t.Fatal(err)
+	}
+	got, err = StableRelaunchPath(root)
+	if err != nil || got != filepath.Join(root, "reasonix-launcher.exe") {
+		t.Fatalf("fallback=%q err=%v", got, err)
+	}
+}
 
 func seedVersionedLayout(t *testing.T, root, version, payload string) string {
 	t.Helper()

@@ -101,12 +101,14 @@ var errNoSessionPath = errors.New("session has content but no session path; conv
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
-	runtimeState controllerRuntimeState
+	lifecycleDiagnostics lifecycleDiagnosticBuffer
+	runtimeState         controllerRuntimeState
 	controllerPromptRouting
-	runner       agent.Runner
-	executor     *agent.Agent
-	guardianSess *guardian.Session // nil when guardian is disabled
-	guardianPath string            // persisted guardian session file ("" when disabled)
+	authentication authenticationGate
+	runner         agent.Runner
+	executor       *agent.Agent
+	guardianSess   *guardian.Session // nil when guardian is disabled
+	guardianPath   string            // persisted guardian session file ("" when disabled)
 	// taskBudget is the configured spend gate, as passed at construction.
 	taskBudget agent.TaskBudget
 	// goalTokenBudget bounds an unattended Goal loop; 0 leaves it unbounded.
@@ -536,7 +538,11 @@ type externalFolderToolRefs interface {
 type Options struct {
 	Runner   agent.Runner
 	Executor *agent.Agent
-	Guardian *guardian.Session
+	// Authentication is the frozen runtime credential snapshot's initial
+	// admission state. An empty value remains Ready for source compatibility.
+	Authentication         AuthenticationState
+	AuthenticationForModel func(string) AuthenticationState
+	Guardian               *guardian.Session
 	// RecoveryHeadless is decoded for source compatibility and ignored. Auto
 	// Guard cannot be re-enabled through Controller options.
 	RecoveryHeadless bool
@@ -776,6 +782,7 @@ func New(opts Options) *Controller {
 	}
 	sessionRuntime, sessionBinding := bindInitialSessionRuntime(opts)
 	c := &Controller{
+		authentication:                    newAuthenticationGate(opts.Authentication, opts.ModelRef),
 		taskBudget:                        opts.TaskBudget,
 		goalTokenBudget:                   opts.GoalTokenBudget,
 		goalTokenLimit:                    opts.GoalTokenBudget,
@@ -845,6 +852,7 @@ func New(opts Options) *Controller {
 		turns:                             turnLoop{phase: session.RuntimeIdle},
 		closeFinalized:                    make(chan struct{}),
 	}
+	c.authentication.initialForModel = opts.AuthenticationForModel
 	c.initializeOwnedResources(opts)
 	return c
 }
@@ -1906,37 +1914,37 @@ func (c *Controller) runRefTurn(input, display string) {
 // plain-goal path; review #7234 binds format to the accepted turn).
 func (c *Controller) runRefTurnWithFormat(input, display, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.resolveUnscopedRefsForTurn)
 	})
 }
 
 func (c *Controller) runScopedRefTurnWithFormat(input, display, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.ResolveScopedRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, "", c.resolveScopedRefsForTurn)
 	})
 }
 
 func (c *Controller) runRefTurnWithRefsFormat(input, refLine, display, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.resolveUnscopedRefsForTurn)
 	})
 }
 
 func (c *Controller) runScopedRefTurnWithRefsFormat(input, refLine, display, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.ResolveScopedRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, "", c.resolveScopedRefsForTurn)
 	})
 }
 
 func (c *Controller) runEditedRefTurnWithFormat(input, display, original, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, original, c.ResolveRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, input, display, original, c.resolveUnscopedRefsForTurn)
 	})
 }
 
 func (c *Controller) runEditedRefTurnWithRefsFormat(input, refLine, display, original, format string) {
 	c.runGuarded(func(ctx context.Context) error {
-		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, original, c.ResolveRefs)
+		return c.runRefTurnWithResolverSync(c.withTurnFormat(ctx, format), input, refLine, display, original, c.resolveUnscopedRefsForTurn)
 	})
 }
 
@@ -1944,28 +1952,28 @@ func (c *Controller) runEditedRefTurnWithRefsFormat(input, refLine, display, ori
 // the user's actual prompt text. This lets compiler diagnostics such as
 // "/path/File.kt:12: error" attach @/path/File.kt without rewriting the error.
 func (c *Controller) runRefTurnWithRefs(input, refLine, display string) {
-	c.runRefTurnWithResolver(input, refLine, display, c.ResolveRefs)
+	c.runRefTurnWithResolver(input, refLine, display, c.resolveUnscopedRefsForTurn)
 }
 
-func (c *Controller) runRefTurnWithResolver(input, refLine, display string, resolve func(context.Context, string) (string, []string)) {
+func (c *Controller) runRefTurnWithResolver(input, refLine, display string, resolve func(context.Context, string) resolvedReferences) {
 	c.runGuarded(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, "", resolve)
 	})
 }
 
-func (c *Controller) runRefTurnWithResolverSync(ctx context.Context, input, refLine, display, original string, resolve func(context.Context, string) (string, []string)) error {
-	block, errs := resolve(ctx, refLine)
-	for _, e := range errs {
+func (c *Controller) runRefTurnWithResolverSync(ctx context.Context, input, refLine, display, original string, resolve func(context.Context, string) resolvedReferences) error {
+	resolved := resolve(ctx, refLine)
+	for _, e := range resolved.errs {
 		c.notice(e)
 	}
 	sent := input
-	if block != "" {
-		sent = "Referenced context:\n\n" + block + "\n\n" + input
+	if resolved.block != "" {
+		sent = "Referenced context:\n\n" + resolved.block + "\n\n" + input
 	}
 	if strings.TrimSpace(original) != "" {
-		return c.runEditedGoalLoopWithImageRefsRawDisplay(ctx, sent, input, refLine, display, original)
+		return c.runEditedGoalLoopWithFrozenImagesRawDisplay(ctx, sent, input, display, original, resolved.images)
 	}
-	return c.runGoalLoopWithImageRefsRawDisplay(ctx, sent, input, refLine, display)
+	return c.runGoalLoopWithFrozenImagesRawDisplay(ctx, sent, input, display, resolved.images)
 }
 
 // notice emits an informational Notice event.
@@ -2039,6 +2047,10 @@ func (c *Controller) runReady(ctx context.Context, input string) (err error) {
 // stdout rendering and exit status. readOnly selects the preview-safe runner
 // used by `reasonix subagent try`.
 func (c *Controller) RunSubagentProfile(ctx context.Context, name, task string, readOnly bool) (string, error) {
+	ctx = c.withAuthentication(ctx)
+	if err := c.authentication.admissionError(); err != nil {
+		return "", err
+	}
 	name = strings.TrimSpace(name)
 	task = strings.TrimSpace(task)
 	if name == "" {
@@ -2072,6 +2084,7 @@ func (c *Controller) RunSubagentProfile(ctx context.Context, name, task string, 
 	ctx = agent.WithReasoningLanguagePreference(ctx, c.reasoningLanguage)
 	ctx = agent.WithSubagentDepth(ctx, 0)
 	answer, err := runner(ctx, sk, task, skill.SubagentRunOptions{HostInitiated: true})
+	c.authentication.recordFailure(err, c.ModelRef())
 	if err != nil {
 		return "", err
 	}
@@ -2633,21 +2646,6 @@ func (c *Controller) AgentPreset() string {
 	return string(agentpreset.Standard)
 }
 
-func (c *Controller) applyPlanMode(v bool) {
-	c.mu.Lock()
-	c.sessionSettings.planMode = v
-	c.mu.Unlock()
-	if setter, ok := c.runner.(interface{ SetPlanMode(bool) }); ok {
-		setter.SetPlanMode(v)
-	} else if c.executor != nil {
-		c.executor.SetPlanMode(v)
-	}
-	payload, _ := json.Marshal(map[string]any{"enabled": v})
-	if err := c.appendDomainState("plan/state", payload, "mode"); err != nil {
-		slog.Warn("controller: append plan mode event", "err", err)
-	}
-}
-
 // SetResponseLanguage updates the final-answer language preference for
 // subsequent turns.
 func (c *Controller) SetResponseLanguage(lang string) {
@@ -2978,6 +2976,10 @@ func (c *Controller) GoalStatus() string {
 // Compact runs one compaction pass on the executor's session on demand.
 // instructions is optional `/compact <focus>` guidance steering what to keep.
 func (c *Controller) Compact(ctx context.Context, instructions string) error {
+	ctx = c.withAuthentication(ctx)
+	if err := c.authentication.admissionError(); err != nil {
+		return err
+	}
 	if c.executor == nil {
 		return nil
 	}
@@ -2990,7 +2992,9 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 		return err
 	}
 	defer c.endRotation()
-	return c.executor.CompactNow(ctx, instructions)
+	err := c.executor.CompactNow(ctx, instructions)
+	c.authentication.recordFailure(err, c.ModelRef())
+	return err
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
@@ -3320,6 +3324,10 @@ func (c *Controller) SummarizeUpTo(ctx context.Context, turn int) error {
 }
 
 func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error {
+	ctx = c.withAuthentication(ctx)
+	if err := c.authentication.admissionError(); err != nil {
+		return err
+	}
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -3343,6 +3351,7 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	} else {
 		err = c.executor.SummarizeUpTo(ctx, boundary)
 	}
+	c.authentication.recordFailure(err, c.ModelRef())
 	if err != nil {
 		return c.rewindFail(err)
 	}
@@ -4992,20 +5001,6 @@ func (c *Controller) ImageCapabilityChanged() bool {
 	return c.imageCapabilityChanged != nil && c.imageCapabilityChanged()
 }
 
-// ModelSettingsState compares this immutable runtime with current disk config.
-// It is intentionally separate from provider-visible messages and metadata.
-func (c *Controller) ModelSettingsState() (applied, desired string, err error) {
-	if c.modelSettings.current == nil {
-		return "", "", nil
-	}
-	desired, err = c.modelSettings.current()
-	return c.modelSettings.revision, desired, err
-}
-
-// ModelSettingsSourceRevision identifies an immutable Desktop resolver bundle.
-// It is transport bookkeeping only, never part of the conversation.
-func (c *Controller) ModelSettingsSourceRevision() string { return c.modelSettings.sourceRevision }
-
 // SessionAuthorizations snapshots this controller's same-session tool
 // grants ("Allow for this session") and Plan-mode read-only command trust,
 // for carrying into a replacement controller across a rebuild — see
@@ -5031,8 +5026,13 @@ func (c *Controller) ReleaseResources() {
 // Close stops plugin subprocesses and releases resources. A session that ever
 // started fires SessionEnd so a teardown hook runs.
 func (c *Controller) Close() {
+	c.recordLifecycle("close", "controller_close", "", 0, "")
 	c.close(true, closeJobsWithGrace)
 }
+
+// Closed is signalled after teardown has released all Controller-owned stores.
+// Close itself only requests teardown when a turn is still finalizing.
+func (c *Controller) Closed() <-chan struct{} { return c.closeFinalized }
 
 // CloseAfterDestroy releases controller resources after the caller has already
 // begun session-specific job teardown. It avoids a second synchronous job grace

@@ -1,8 +1,12 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
 
-import "reasonix/internal/provider"
+	"reasonix/internal/provider"
+)
 
 // SessionCheckpointBoundary identifies a semantic durability barrier. A
 // checkpoint is intentionally absent from ordinary message, todo, approval,
@@ -36,6 +40,30 @@ type SessionMessageMutationRecorder interface {
 	RecordSessionMessageUpsert(context.Context, string, provider.Message) error
 }
 
+// SessionModelContextCommit is an exact provider-visible projection produced by
+// one context-maintenance transaction. OperationID must be stable across
+// retries so the session log can deduplicate an accepted commit.
+type SessionModelContextCommit struct {
+	OperationID string
+	Reason      string
+	Messages    []provider.Message
+}
+
+// SessionModelContextCommitResult distinguishes a rejection before the event
+// log accepted the projection from a durability failure after acceptance. Once
+// accepted, the Agent must retain the matching in-memory projection even when
+// the durability wait returns an error.
+type SessionModelContextCommitResult struct {
+	Accepted bool
+	Durable  bool
+}
+
+// SessionModelContextRecorder durably records the exact context that the next
+// provider request would receive. It must not call back into the Agent.
+type SessionModelContextRecorder interface {
+	RecordSessionModelContext(context.Context, SessionModelContextCommit) (SessionModelContextCommitResult, error)
+}
+
 func (a *Agent) SetSessionCheckpointer(checkpointer SessionCheckpointer) {
 	if a != nil {
 		a.svc.sessionCheckpointer = checkpointer
@@ -43,6 +71,11 @@ func (a *Agent) SetSessionCheckpointer(checkpointer SessionCheckpointer) {
 }
 
 func (a *Agent) checkpointSession(ctx context.Context, boundary SessionCheckpointBoundary) error {
+	if boundary == CheckpointBeforeModel {
+		if err := a.confirmPendingModelContext(ctx); err != nil {
+			return err
+		}
+	}
 	if a == nil || a.svc.sessionCheckpointer == nil {
 		return ctx.Err()
 	}
@@ -50,6 +83,57 @@ func (a *Agent) checkpointSession(ctx context.Context, boundary SessionCheckpoin
 		return err
 	}
 	return ctx.Err()
+}
+
+// confirmPendingModelContext completes an accepted context-maintenance commit
+// before another model request can be prepared or dispatched. It deliberately
+// reuses the frozen operation ID and payload retained by the original attempt.
+func (a *Agent) confirmPendingModelContext(ctx context.Context) error {
+	if a == nil {
+		return ctx.Err()
+	}
+	a.sess.compactionMu.Lock()
+	pending := a.sess.pendingModelContextCommit
+	if pending == nil {
+		a.sess.compactionMu.Unlock()
+		return ctx.Err()
+	}
+	recorder, ok := a.svc.sessionCheckpointer.(SessionModelContextRecorder)
+	if !ok {
+		a.sess.compactionMu.Unlock()
+		return errors.New("confirm pending model context: recorder unavailable")
+	}
+	commit := cloneSessionModelContextCommit(*pending)
+	result, err := recorder.RecordSessionModelContext(ctx, commit)
+	if err != nil {
+		a.sess.compactionMu.Unlock()
+		return fmt.Errorf("confirm pending model context: %w", err)
+	}
+	if !result.Accepted || !result.Durable {
+		a.sess.compactionMu.Unlock()
+		return errors.New("confirm pending model context: commit is not durable")
+	}
+	if err := a.persistCompactionStateLocked(); err != nil {
+		a.sess.compactionMu.Unlock()
+		return fmt.Errorf("confirm pending model context sidecar: %w", err)
+	}
+	a.sess.pendingModelContextCommit = nil
+	a.sess.checkpointState = "applied"
+	var receipt *ContextMaintenanceReceipt
+	if a.sess.compactionState.LastReceipt != nil {
+		copy := *a.sess.compactionState.LastReceipt
+		receipt = &copy
+	}
+	a.sess.compactionMu.Unlock()
+	if receipt != nil {
+		a.emitContextMaintenance(receipt)
+	}
+	return ctx.Err()
+}
+
+func cloneSessionModelContextCommit(commit SessionModelContextCommit) SessionModelContextCommit {
+	commit.Messages = freezeProviderRequest(provider.Request{Messages: commit.Messages}).Messages
+	return commit
 }
 
 func (a *Agent) appendCommittedMessages(ctx context.Context, reason string, messages ...provider.Message) error {

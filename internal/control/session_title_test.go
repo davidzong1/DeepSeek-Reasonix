@@ -128,6 +128,38 @@ func TestGenerateSessionTitleDisablesAdvertisedReasoning(t *testing.T) {
 	}
 }
 
+func TestGenerateSessionTitleForModelUsesTargetModelWithoutMutatingControllerSelection(t *testing.T) {
+	active := &sessionTitleProviderStub{out: "active title"}
+	target := &sessionTitleProviderStub{out: "target title"}
+	resolver := &sessionTitleResolverStub{
+		descriptors: []provider.Descriptor{{Ref: "active/model"}, {Ref: "target/model"}},
+		resolve: func(selection provider.Selection) (provider.Provider, error) {
+			if selection.Ref == "target/model" {
+				return target, nil
+			}
+			return active, nil
+		},
+	}
+	ctrl := newOwnedTestController(t, Options{
+		ModelRef:         "active/model",
+		Sink:             event.Discard,
+		ProviderResolver: resolver,
+	})
+	title, err := ctrl.GenerateSessionTitleForModel(t.Context(), "target/model", "cold target transcript")
+	if err != nil || title != "target title" {
+		t.Fatalf("GenerateSessionTitleForModel = %q, %v", title, err)
+	}
+	if len(resolver.selections) != 1 || resolver.selections[0].Ref != "target/model" {
+		t.Fatalf("provider selections = %+v", resolver.selections)
+	}
+	if len(active.requests) != 0 || len(target.requests) != 1 {
+		t.Fatalf("active requests = %d, target requests = %d", len(active.requests), len(target.requests))
+	}
+	if ctrl.ModelRef() != "active/model" {
+		t.Fatalf("controller model changed to %q", ctrl.ModelRef())
+	}
+}
+
 func TestGenerateSessionTitleBoundsTranscriptAndOutput(t *testing.T) {
 	prov := &sessionTitleProviderStub{out: strings.Repeat("long title ", 20)}
 	ctrl := sessionTitleTestController(t, prov, event.Discard)

@@ -21,7 +21,8 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
   const [output, setOutput] = useState(initial?.maxOutputTokens ? String(Math.max(-1, initial.maxOutputTokens)) : "");
   const [vision, setVision] = useState(initial?.vision == null ? "auto" : String(initial.vision));
   const [effort, setEffort] = useState(initial?.defaultEffort ?? "");
-  const [selectedEfforts, setSelectedEfforts] = useState<string[]>(initial?.supportedEfforts ?? effortOptions ?? []);
+  const [explicitEfforts, setExplicitEfforts] = useState(Boolean(initial?.supportedEfforts?.length));
+  const [selectedEfforts, setSelectedEfforts] = useState<string[]>(initial?.supportedEfforts?.length ? initial.supportedEfforts : effortOptions ?? []);
   const [error, setError] = useState(false);
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -33,6 +34,7 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
   const imageBlocked = imageInputHardBlocked(baseURL, model, capability);
   const imageState = imageBlocked ? "unsupported" : imageInputState(vision === "auto" ? "auto" : vision === "true" ? "on" : "off", capability);
   const toggleEffort = (option: string, checked: boolean) => {
+    setExplicitEfforts(true);
     setSelectedEfforts(current => {
       const next = checked ? [...current, option] : current.filter(item => item !== option);
       if (!checked && effort === option) setEffort("");
@@ -41,7 +43,7 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
   };
   return createPortal(<dialog ref={dialog} className="provider-model-dialog" data-app-overlay="" aria-labelledby={titleId}
     onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-    <form onSubmit={event => { event.preventDefault(); if (validation) { setError(true); return; } const defaultEffort = effort && selectedEfforts.includes(effort) ? effort : ""; onApply({ model:model.trim(), contextWindow:context.trim(), maxOutputTokens:Number(output) || 0, vision:vision === "auto" ? null : !imageBlocked && vision === "true", supportedEfforts: selectedEfforts, defaultEffort }); }}>
+    <form onSubmit={event => { event.preventDefault(); if (validation) { setError(true); return; } const defaultEffort = effort && selectedEfforts.includes(effort) ? effort : ""; onApply({ model:model.trim(), contextWindow:context.trim(), maxOutputTokens:Number(output) || 0, vision:vision === "auto" ? null : !imageBlocked && vision === "true", supportedEfforts: explicitEfforts ? selectedEfforts : [], defaultEffort }); }}>
       <header><h2 id={titleId}>{t(initial ? "settings.modelDialog.edit" : "settings.models.add")}</h2><ModalCloseButton label={t("common.close")} disabled={busy} onClick={onClose}/></header>
       <label className="provider-model-dialog__id">{t("settings.modelDialog.id")}
         {initial ? <span><LockKeyhole size={16}/>{model}</span> : <input autoFocus className="mem-input" value={model} disabled={busy} onChange={e=>setModel(e.target.value)} placeholder="deepseek-v4-flash"/>}
@@ -58,7 +60,7 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
           <p>{t("settings.modelDialog.outputHint")}</p>
           {effortOptions && effortOptions.length > 0 && <div className="provider-model-dialog__effort-card">
             <label>{t("settings.modelDialog.reasoningEffortOptions")}
-              <button type="button" className="btn provider-icon-action" title={t("settings.modelDialog.reset")} aria-label={t("settings.modelDialog.resetReasoningEffort")} disabled={busy} onClick={()=>{setEffort("");setSelectedEfforts([]);}}><RotateCcw size={16}/></button>
+              <button type="button" className="btn provider-icon-action" title={t("settings.modelDialog.reset")} aria-label={t("settings.modelDialog.resetReasoningEffort")} disabled={busy} onClick={()=>{setEffort("");setExplicitEfforts(false);setSelectedEfforts(effortOptions ?? []);}}><RotateCcw size={16}/></button>
             </label>
             <div className="provider-model-dialog__chips">
               {effortOptions.map(option => <label key={option}><input type="checkbox" checked={selectedEfforts.includes(option)} disabled={busy} onChange={event=>toggleEffort(option, event.target.checked)}/>{option}</label>)}
@@ -70,6 +72,9 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
             </select>
             <p>{t("settings.modelDialog.reasoningEffortHint")}</p>
           </div>}
+          {capability?.reasoning?.state === "unknown" && <p>{t("settings.modelDialog.reasoningUnknown")}</p>}
+          {capability?.reasoning?.state === "unsupported" && <p>{t("settings.modelDialog.reasoningUnsupported")}</p>}
+          {capability?.reasoning?.error && <p role="alert">{capability.reasoning.error}</p>}
         </section>
         <aside><h3>{t("settings.modelDialog.capabilities")}</h3>
           <div className="provider-model-dialog__capability-title">{t("settings.modelDialog.input")}</div>

@@ -2,6 +2,7 @@ import type { AppBindings } from "./bridge";
 import { asArray } from "./array";
 import { removeEmptyAssistantItems } from "./assistantItems";
 import type { Item, State } from "./useController";
+import { removeLocalSubmission, updateLocalSubmission } from "./localSubmissionState";
 
 export function reduceSubmitFailure(
   state: State,
@@ -10,20 +11,21 @@ export function reduceSubmitFailure(
   conservative: boolean,
   observedAt: number,
 ): State {
-  if (state.pendingSubmissionId !== submissionId) return state;
-  const index = state.items.findIndex((item) => item.kind === "user" && item.submissionId === submissionId);
-  const items = index < 0
-    ? state.items
-    : state.items.map((item, itemIndex) => itemIndex === index ? { ...item, failed: true, submissionState: "failed" as const } : item);
-  const next = {
+  if (!state.localSubmissions[submissionId] || state.localSubmissions[submissionId].settled) return state;
+  const ownsRequest = state.pendingSubmissionId === submissionId;
+  const ownsTurn = Boolean(state.activeTurnId && state.localSubmissions[submissionId].turnId === state.activeTurnId);
+  if (!ownsRequest && (state.pendingSubmissionId || !ownsTurn)) {
+    return updateLocalSubmission(state, submissionId, { status: "failed" });
+  }
+  const next = updateLocalSubmission({
     ...state,
     pendingUser: undefined,
     pendingSubmissionId: undefined,
     deliveryRecoveryActive: false,
     cancelRequested: false,
     seq: state.seq + 1,
-    items: [...(state.transcriptProtocol === 2 ? items : removeEmptyAssistantItems(items)), { kind: "notice", id: `n${state.seq}`, local: true, level: "warn", text: error } as Item],
-  };
+    items: [...(state.transcriptProtocol === 2 ? state.items : removeEmptyAssistantItems(state.items)), { kind: "notice", id: `n${state.seq}`, local: true, level: "warn", text: error } as Item],
+  }, submissionId, { status: "failed" });
   return {
     ...next,
     running: conservative,
@@ -42,10 +44,9 @@ export function reduceSubmitFailure(
 }
 
 export function reduceManagementConfirmation(state: State, submissionId: string, observedAt: number): State {
-  if (state.pendingSubmissionId !== submissionId) return state;
-  return {
+  if (state.pendingSubmissionId !== submissionId) return removeLocalSubmission(state, submissionId);
+  return removeLocalSubmission({
     ...state,
-    items: state.items.filter((item) => !(item.kind === "user" && item.submissionId === submissionId)),
     pendingUser: undefined,
     pendingSubmissionId: undefined,
     running: false,
@@ -60,7 +61,7 @@ export function reduceManagementConfirmation(state: State, submissionId: string,
     streamAttemptJournal: undefined,
     deliveryRecoveryActive: false,
     turnLifecycleObservedAt: observedAt,
-  };
+  }, submissionId);
 }
 
 export async function findTabAfterSubmitFailure(

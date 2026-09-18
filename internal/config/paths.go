@@ -467,6 +467,28 @@ func DesktopWorkspaceStatePath() string {
 	return filepath.Join(dir, "desktop", "workspace-state-v1.json")
 }
 
+// DesktopDraftStatePath is the local-only session draft database. Drafts are
+// deliberately separate from the Workspace -> Session registry: a draft is an
+// editor surface and must not become a session until its first execution.
+func DesktopDraftStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "drafts-v1.sqlite")
+}
+
+// DesktopLegacyEmptySessionCleanupPath stores the one-shot upgrade batch used
+// to retire historical empty default-title sessions. It is intentionally
+// separate from the workspace registry so older binaries can ignore it.
+func DesktopLegacyEmptySessionCleanupPath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "legacy-empty-session-cleanup-v1.json")
+}
+
 // StatsDir is where usage statistics are persisted (one .jsonl per day, e.g.
 // stats/2026-08-02.jsonl). It lives under the user state root — not the install
 // directory, which is typically read-only and replaced on upgrade — so usage

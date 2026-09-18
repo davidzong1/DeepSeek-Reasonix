@@ -33,7 +33,7 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 	case protocol == "openai" || (protocol == "" && IsMiMo(cfg.BaseURL)):
 		cap = provider.ReasoningOptions("", "low", "medium", "high")
 	default:
-		cap = provider.ReasoningOptions("")
+		cap = provider.UnknownReasoning()
 	}
 	endpointScale := cap.IDs()
 	cap = provider.DeclaredReasoning(cfg, cap)

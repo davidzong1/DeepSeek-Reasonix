@@ -39,3 +39,10 @@ const localPresentedRef: FileResourceRef = { source: "presented", hostId: "local
 assert.equal(fileResourceCapabilities(localPresentedRef).browser, true);
 
 console.log("chat tool presentation: trusted renderer matching, shell labels and file facts passed");
+
+const { historyToolStatus } = await import("../lib/historyToolStatus");
+const { toolPresentation } = await import("../lib/chatToolPresentation");
+assert.equal(historyToolStatus(undefined), "unknown", "unloaded results must not become stopped");
+assert.equal(historyToolStatus(undefined, { id: "call", name: "bash", arguments: "{}", resultObservation: { state: "completed", messageId: "result", version: 1 } }), "done");
+assert.equal(toolPresentation(tool({ status: "unknown", resultMissing: true })).state, "unknown");
+assert.equal(historyToolStatus({ role: "tool", content: "", execution: { state: "cancelled" } }), "stopped");

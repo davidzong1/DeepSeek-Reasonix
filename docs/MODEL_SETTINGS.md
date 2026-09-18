@@ -29,13 +29,38 @@ An accepted run includes its planning, tools, retries, approval waits, and child
 
 The page distinguishes **saved, pending application** from **saved, application failed**. The latter lists the affected sessions and offers **Retry application**. Retry uses the latest saved configuration; it does not save the key again. A failed application retains the previous controller and history but blocks affected new runs. Editing while a save is in progress retains the newer draft.
 
+Authentication is tracked separately from persistence and runtime application.
+A locally ready connection may still fail remotely. Missing credentials block a
+turn before its user message, hooks, or provider request are created. A 401
+blocks automatic requests for the same connection and credential; a 403 is
+scoped to the failed model where possible. The recovery banner keeps the draft
+and attachments and offers credential editing, model selection, connection
+testing, and one explicit retry. Saving or testing never replays a failed turn.
+
 Desktop-managed remote sessions use immutable tunnel tokens. Remote browser turns and queued follow-ups check Desktop settings before starting; existing requests keep their old token until their work ends. An older Serve without snapshot support must be upgraded or safely reconnected after its current work finishes. Desktop does not force-stop it to apply a setting. Independently configured remote sessions continue to use remote configuration.
 
 ## Recovery and older versions
 
 Configuration remains TOML, credentials remain in `.env`, and conversation history keeps its existing format. A key change writes a fresh credential reference before committing the configuration that names it. A failure before the configuration commit leaves the old connection usable; it may leave an unreferenced new credential. Cleanup only considers references created by that failed edit. It does not scan or delete user-defined credential variables.
 
-After a lost save response, the page reads the request receipt and current settings before offering another save. If the process restarted and the result cannot be confirmed, review the saved values first. It does not automatically repeat an uncertain credential write.
+After a lost save response, the page reads the request receipt and current settings before offering another save. Completed receipts survive restart and contain request identity and revisions, never a key. If no durable evidence exists, the result is `unknown_result`; review the saved values first. Reasonix does not automatically repeat an uncertain write.
+
+In-progress records live in a private transaction directory under Reasonix
+home. Recovery removes only a new slot named by that record and only while the
+old configuration revision is still authoritative. Before publication, the
+record stores the exact candidate configuration revision. Recovery completes
+the receipt only when that revision and its credential references match,
+including edits that allocate no credential slots. Concurrent or unreadable
+state and failed cleanup are retained for diagnosis instead of being overwritten.
+
+Request digests use a private, persistent authentication key so identical
+requests remain identifiable across process restarts. Receipts from versions
+without a stable digest cannot verify replayed request content; reload settings
+instead of treating them as a new write.
+
+Credential repair never rewrites `.env` to verify permissions. It checks access
+without truncating the file and refuses linked or replaced targets. A successful
+access check does not prove that the existing file can be atomically replaced.
 
 Older versions can read the saved TOML and `.env` references. Downgrading loses the new application behavior and can reintroduce the active-session dependency and immediate runtime refresh defects. Downgrade does not require deleting configuration or history.
 

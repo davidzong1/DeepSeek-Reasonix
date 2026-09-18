@@ -127,7 +127,7 @@ func (m *chatTUI) commitSpacer() {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
-	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.copyPick != nil || m.teamOverlayModal() || m.rewind != nil || m.pendingApproval != nil {
+	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.quickPick != nil || m.setup != nil || m.copyPick != nil || m.teamOverlayModal() || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
 	return (m.chooser != nil && !m.chooser.typing) || (m.elicit != nil && !m.elicit.typing)

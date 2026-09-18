@@ -13,7 +13,7 @@ import (
 
 const (
 	desktopProjectOrganizationFile    = "desktop-project-tree-organization.json"
-	desktopProjectOrganizationVersion = 1
+	desktopProjectOrganizationVersion = 2
 )
 
 var desktopProjectOrganizationFileMu sync.Mutex
@@ -23,11 +23,13 @@ var desktopProjectOrganizationFileMu sync.Mutex
 // inline fields for one-release interoperability, while this file is the
 // durable source when a user temporarily downgrades and the old build saves.
 type desktopProjectOrganization struct {
-	Root             string         `json:"root,omitempty"`
-	ManualTopicOrder bool           `json:"manualTopicOrder,omitempty"`
-	TopicOrder       []string       `json:"topicOrder,omitempty"`
-	Groups           []desktopGroup `json:"groups"`
-	GroupsRevision   uint64         `json:"groupsRevision,omitempty"`
+	Root               string         `json:"root,omitempty"`
+	ManualTopicOrder   bool           `json:"manualTopicOrder,omitempty"`
+	TopicOrder         []string       `json:"topicOrder,omitempty"`
+	ManualSessionOrder bool           `json:"manualSessionOrder,omitempty"`
+	SessionOrder       []string       `json:"sessionOrder,omitempty"`
+	Groups             []desktopGroup `json:"groups"`
+	GroupsRevision     uint64         `json:"groupsRevision,omitempty"`
 }
 
 type desktopProjectOrganizationFileData struct {
@@ -52,20 +54,24 @@ func organizationFromProjectsFile(f desktopProjectFile) desktopProjectOrganizati
 	out := desktopProjectOrganizationFileData{
 		Version: desktopProjectOrganizationVersion,
 		Global: desktopProjectOrganization{
-			ManualTopicOrder: f.GlobalManualTopicOrder,
-			TopicOrder:       append([]string(nil), f.GlobalTopics...),
-			Groups:           normalizeGroups(f.GlobalGroups),
-			GroupsRevision:   f.GlobalGroupsRevision,
+			ManualTopicOrder:   f.GlobalManualTopicOrder,
+			TopicOrder:         append([]string(nil), f.GlobalTopics...),
+			ManualSessionOrder: f.GlobalManualSessionOrder,
+			SessionOrder:       append([]string(nil), f.GlobalSessionOrder...),
+			Groups:             normalizeGroups(f.GlobalGroups),
+			GroupsRevision:     f.GlobalGroupsRevision,
 		},
 		Projects: make([]desktopProjectOrganization, 0, len(f.Projects)),
 	}
 	for _, project := range f.Projects {
 		out.Projects = append(out.Projects, desktopProjectOrganization{
-			Root:             project.Root,
-			ManualTopicOrder: project.ManualTopicOrder,
-			TopicOrder:       append([]string(nil), project.Topics...),
-			Groups:           normalizeGroups(project.Groups),
-			GroupsRevision:   project.GroupsRevision,
+			Root:               project.Root,
+			ManualTopicOrder:   project.ManualTopicOrder,
+			TopicOrder:         append([]string(nil), project.Topics...),
+			ManualSessionOrder: project.ManualSessionOrder,
+			SessionOrder:       append([]string(nil), project.SessionOrder...),
+			Groups:             normalizeGroups(project.Groups),
+			GroupsRevision:     project.GroupsRevision,
 		})
 	}
 	return out
@@ -115,6 +121,8 @@ func applyProjectOrganization(f desktopProjectFile, organization desktopProjectO
 		deleted[topicID] = true
 	}
 	f.GlobalManualTopicOrder = organization.Global.ManualTopicOrder
+	f.GlobalManualSessionOrder = organization.Global.ManualSessionOrder
+	f.GlobalSessionOrder = append([]string(nil), organization.Global.SessionOrder...)
 	if f.GlobalManualTopicOrder {
 		f.GlobalTopics = applyPersistedTopicOrder(f.GlobalTopics, organization.Global.TopicOrder)
 	}
@@ -127,6 +135,8 @@ func applyProjectOrganization(f desktopProjectFile, organization desktopProjectO
 		}
 		project := &f.Projects[index]
 		project.ManualTopicOrder = persisted.ManualTopicOrder
+		project.ManualSessionOrder = persisted.ManualSessionOrder
+		project.SessionOrder = append([]string(nil), persisted.SessionOrder...)
 		if project.ManualTopicOrder {
 			project.Topics = applyPersistedTopicOrder(project.Topics, persisted.TopicOrder)
 		}
@@ -143,7 +153,7 @@ func loadProjectOrganizationFile() (desktopProjectOrganizationFileData, bool) {
 		return desktopProjectOrganizationFileData{}, false
 	}
 	var organization desktopProjectOrganizationFileData
-	if json.Unmarshal(b, &organization) != nil || organization.Version != desktopProjectOrganizationVersion {
+	if json.Unmarshal(b, &organization) != nil || organization.Version < 1 || organization.Version > desktopProjectOrganizationVersion {
 		return desktopProjectOrganizationFileData{}, false
 	}
 	if organization.Global.Groups == nil {

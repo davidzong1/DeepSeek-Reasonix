@@ -155,6 +155,19 @@ test("fills a partially published package set before advancing canary", (t) => {
   }
 });
 
+test("publishes the exact prepared tarball instead of rebuilding a package directory", (t) => {
+  const fx = fixture(t);
+  const tarball = join(fx.packages[0].dir, "reasonix-cli-linux-x64-1.5.0-canary.42.tgz");
+  writeFileSync(tarball, "sealed tarball bytes");
+  fx.packages[0].tarball = tarball;
+
+  fx.publish();
+
+  const call = fx.calls.find(({ args }) => args[0] === "publish" && args[1] === tarball);
+  assert.ok(call, "npm publish must receive the sealed tarball path");
+  assert.equal(call.args.filter(argument => argument === tarball).length, 1);
+});
+
 test("waits through multi-minute npm registry visibility lag", (t) => {
   const fx = fixture(t, "1.5.0-canary.42", { visibilityDelayReads: 45 });
 

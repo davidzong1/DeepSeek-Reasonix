@@ -18,3 +18,6 @@ const TranscriptOutlineV1 = "transcript-outline-v1"
 // turns (with the reason an unavailable one is refused) and create an
 // independent child session from one of them without switching the parent.
 const SessionForkTargetsV1 = "session-fork-targets-v1"
+
+// SessionExportV1 provides identity-bound complete display snapshots.
+const SessionExportV1 = "session-export-v1"

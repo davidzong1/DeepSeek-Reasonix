@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"reasonix/internal/filelock"
+	"reasonix/internal/sqliteuri"
 
 	moderncsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -181,23 +182,6 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 	return &Handle{DB: db, Status: status}, nil
 }
 
-// diskFileDSN builds a cross-platform SQLite file URI. Windows drive paths must
-// be file:///C:/...; a bare file:C:\... URI fails to open and previously forced
-// silent memory fallback during rebuild.
-func diskFileDSN(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	slash := filepath.ToSlash(abs)
-	if runtime.GOOS == "windows" && len(slash) >= 2 && slash[1] == ':' {
-		// C:/Users/... → /C:/Users/... so the URI becomes file:///C:/Users/...
-		slash = "/" + slash
-	}
-	u := &url.URL{Scheme: "file", Path: slash}
-	return u.String() + "?_pragma=busy_timeout%28150%29&_pragma=foreign_keys%281%29"
-}
-
 func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 	var dsn string
 	if mode == ModeMemory {
@@ -207,7 +191,13 @@ func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 		dsn = fmt.Sprintf("file:reasonix-%s-%d-%d?mode=memory&cache=shared", url.PathEscape(opts.MemoryName),
 			opts.Now().UnixNano(), memoryDatabaseSequence.Add(1))
 	} else {
-		dsn = diskFileDSN(opts.Path)
+		var err error
+		dsn, err = sqliteuri.Disk(opts.Path, url.Values{
+			"_pragma": {"busy_timeout(150)", "foreign_keys(1)"},
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -346,7 +336,17 @@ func Inspect(ctx context.Context, path string) Inspection {
 	}
 	out.Exists = true
 	out.Size = info.Size()
-	db, err := sql.Open("sqlite", diskFileDSN(path)+"&mode=ro&immutable=1")
+	// A live projection may hold its schema and latest commits only in WAL.
+	// immutable=1 would ignore that WAL and report a healthy database as broken.
+	dsn, err := sqliteuri.Disk(path, url.Values{
+		"_pragma": {"busy_timeout(150)", "foreign_keys(1)"},
+		"mode":    {"ro"},
+	})
+	if err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		out.Error = err.Error()
 		return out

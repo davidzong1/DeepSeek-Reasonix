@@ -19,6 +19,21 @@ export type SubmissionInput = {
   target: SessionResource; read(target: SessionResource): SubmissionResource; ports: SubmissionPorts;
   request: { kind: "direct" | "composer"; content: Submission } | { kind: "goal"; goal: string };
 };
+
+export function buildInitialGoalSubmission(
+  content: Submission,
+  collaborationMode: CollaborationMode,
+  toolApprovalMode: ToolApprovalMode,
+): Submission {
+  const display = content.display.trim();
+  const submit = (content.submit ?? content.display).trim();
+  return {
+    display,
+    submit: content.structured ? submit : `/goal ${submit}`,
+    structured: content.structured,
+    initialGoal: { goal: display, collaborationMode, toolApprovalMode },
+  };
+}
 const legacyFlags = new Set(["--research", "--auto-research", "--deep", "--simple", "--no-research"]);
 export function goalCommand(input: string) {
   const match = /^\/goal(?:\s+(.*))?$/.exec(input);
@@ -69,8 +84,9 @@ export async function executeSubmission(input: SubmissionInput, authority: Sessi
   }
   if (!source.ready) return;
   if (source.goalDraft) {
-    await send(input, { display, submit: content.structured ? submit.trim() : `/goal ${submit.trim()}`,
-      structured: content.structured, initialGoal: { goal: display, collaborationMode: source.collaboration, toolApprovalMode: source.approval } }, authority);
+	await send(input, buildInitialGoalSubmission(
+	  { display, submit, structured: content.structured }, source.collaboration, source.approval,
+	), authority);
     authority.checkpoint();
     input.ports.patchGoal(input.target.tabId, display);
     return;
