@@ -3,13 +3,17 @@ package team
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"reasonix/internal/filelock"
 )
 
 // Team context/session paths (route §4): each member owns one directory under
@@ -77,6 +81,9 @@ type SessionSelection struct {
 	Team      string `json:"team"`
 	MemberID  string `json:"member_id,omitempty"` // empty = no selection (e.g. no leader)
 	Suspended bool   `json:"suspended,omitempty"` // deliberate exit: the next entry parks on the management page
+	// Revision advances on every published write; it is the compare-and-swap
+	// basis for the selection's read-modify-write. Absent reads as 0.
+	Revision uint64 `json:"revision,omitempty"`
 }
 
 // TeamSessionStore is the member-context and session-selection store (route
@@ -121,6 +128,15 @@ func (s *TeamSessionStore) MemberDir(teamName, memberID string) (string, error) 
 		return "", err
 	}
 	return filepath.ToSlash(dir), nil
+}
+
+// Root returns the team data dir this store is rooted at, so a caller can
+// resolve a returned project-relative path (MemberDir, TeamDir) to disk.
+func (s *TeamSessionStore) Root() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	return s.store.root
 }
 
 // TeamDir returns the team's context root directory path.
@@ -315,6 +331,12 @@ func (s *TeamSessionStore) ReadSelection(teamName string) (SessionSelection, err
 	if err := validateSessionKey(teamName); err != nil {
 		return SessionSelection{}, err
 	}
+	return s.readSelection(teamName)
+}
+
+// readSelection is ReadSelection without the key validation, for callers that
+// already hold the selection lock and validated the key.
+func (s *TeamSessionStore) readSelection(teamName string) (SessionSelection, error) {
 	var sel SessionSelection
 	err := s.store.Load(filepath.Join(sessionDir, teamName+".json"), &sel)
 	if errors.Is(err, os.ErrNotExist) {
@@ -326,14 +348,79 @@ func (s *TeamSessionStore) ReadSelection(teamName string) (SessionSelection, err
 	return sel, nil
 }
 
-// WriteSelection persists the team's session selection atomically.
-func (s *TeamSessionStore) WriteSelection(teamName string, sel SessionSelection) error {
+// selectionLockPath is the cross-process lock serializing one team's selection
+// read-modify-write. It sits beside the selection document, so the lock is
+// scoped to exactly the file it protects.
+func (s *TeamSessionStore) selectionLockPath(teamName string) string {
+	return filepath.Join(s.store.root, sessionDir, teamName+".json.lock")
+}
+
+// UpdateSelection applies mutate to the team's persisted selection under the
+// selection file's cross-process lock, then publishes the result with a
+// revision one higher than the stored one. It is the only correct way to change
+// part of the selection: a caller that reads, edits and writes in separate
+// calls loses its edit whenever another process — a second window, a member
+// runtime — writes the same team's selection in between, and the field it drops
+// is silently the one it never touched (the deliberate-exit preference is the
+// one that matters). writeMu alone cannot close that window: it is per-process.
+//
+// expected pins the revision the caller read: zero accepts whatever is stored,
+// a non-zero mismatch returns ErrCASConflict instead of clobbering a concurrent
+// writer. A mutate error publishes nothing.
+func (s *TeamSessionStore) UpdateSelection(teamName string, expected uint64, mutate func(*SessionSelection) error) (SessionSelection, error) {
 	if err := validateSessionKey(teamName); err != nil {
-		return err
+		return SessionSelection{}, err
 	}
-	sel.Document = Document{SchemaVersion: SchemaVersion}
-	sel.Team = teamName
-	return s.store.Save(filepath.Join(sessionDir, teamName+".json"), &sel)
+	// The lock file's own directory may not exist yet on a first write; the
+	// lock is taken on a path, so the directory has to be there first.
+	if err := os.MkdirAll(filepath.Join(s.store.root, sessionDir), 0o700); err != nil {
+		return SessionSelection{}, err
+	}
+	release, err := filelock.Acquire(context.Background(), s.selectionLockPath(teamName))
+	if err != nil {
+		return SessionSelection{}, fmt.Errorf("team: lock session selection: %w", err)
+	}
+	defer release()
+	current, err := s.readSelection(teamName)
+	if err != nil {
+		return SessionSelection{}, err
+	}
+	if expected != 0 && current.Revision != expected {
+		return SessionSelection{}, fmt.Errorf("%w: %s selection at revision %d, expected %d",
+			ErrCASConflict, teamName, current.Revision, expected)
+	}
+	if mutate != nil {
+		if err := mutate(&current); err != nil {
+			return SessionSelection{}, err
+		}
+	}
+	current.Document = Document{SchemaVersion: SchemaVersion}
+	current.Team = teamName
+	current.Revision++
+	if err := s.store.Save(filepath.Join(sessionDir, teamName+".json"), &current); err != nil {
+		return SessionSelection{}, err
+	}
+	return current, nil
+}
+
+// WriteSelection persists the team's session selection atomically, replacing
+// the selection fields wholesale. The stored revision advances monotonically
+// whatever the caller passes, so a writer cannot rewind the document another
+// process is tracking.
+func (s *TeamSessionStore) WriteSelection(teamName string, sel SessionSelection) error {
+	return s.WriteSelectionCAS(teamName, sel, 0)
+}
+
+// WriteSelectionCAS is WriteSelection pinned to the revision the caller read:
+// a stored revision other than expected is refused with ErrCASConflict rather
+// than overwritten. expected == 0 accepts whatever is stored.
+func (s *TeamSessionStore) WriteSelectionCAS(teamName string, sel SessionSelection, expected uint64) error {
+	_, err := s.UpdateSelection(teamName, expected, func(cur *SessionSelection) error {
+		cur.MemberID = sel.MemberID
+		cur.Suspended = sel.Suspended
+		return nil
+	})
+	return err
 }
 
 // MemberDirs lists the team's member context directories, or nil when the

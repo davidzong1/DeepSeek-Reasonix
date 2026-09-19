@@ -19,6 +19,7 @@ import (
 type teamDataRoots struct {
 	store    *team.TeamStore        // registry + agent-user pool
 	sessions *team.TeamSessionStore // member context / session selection
+	owners   *team.OwnerStore       // canonical owner storage over the same data dir
 	dataDir  string                 // team data dir hosting board.db and the files above
 	note     string                 // adoption outcome for a notice; "" when uneventful
 }
@@ -47,7 +48,11 @@ func openTeamDataRoots(cwd string) (*teamDataRoots, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &teamDataRoots{store: store, sessions: sessions, dataDir: projectDir}, nil
+	owners, err := team.NewOwnerStore(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	return &teamDataRoots{store: store, sessions: sessions, owners: owners, dataDir: projectDir}, nil
 }
 
 // teamUserDataDir returns the user-global team data root, <user state dir>/team
@@ -80,9 +85,14 @@ func openUserTeamData(userDir, projectDir string) (*teamDataRoots, bool) {
 	if err != nil {
 		return nil, false
 	}
+	owners, err := team.NewOwnerStore(userDir)
+	if err != nil {
+		return nil, false
+	}
 	return &teamDataRoots{
 		store:    store,
 		sessions: sessions,
+		owners:   owners,
 		dataDir:  userDir,
 		note:     adoptLegacyTeams(userDir, projectDir),
 	}, true

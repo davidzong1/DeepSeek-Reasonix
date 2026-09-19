@@ -177,17 +177,19 @@ type agentEventDrain struct {
 	cmds                      []tea.Cmd
 }
 
+// consumeAgentEvent ingests one event from the ambient session's own channel.
+// The owner is the zero key: these events belong to the chat's own backend, and
+// nothing a team member produces reaches this path.
 func (m *chatTUI) consumeAgentEvent(e event.Event, drained *agentEventDrain) {
 	// Record before ingest so TurnDone still counts as an active heartbeat.
 	m.noteWatchdogHeartbeat(watchdogAgentSource(e.Kind))
 	if e.Kind == event.TurnStarted {
-		m.todos = nil
-		m.todosDismissed = false
+		m.todo.reset(ownerKey{})
 		if cmd := m.noteControllerTurnStarted(); cmd != nil {
 			drained.cmds = append(drained.cmds, cmd)
 		}
 	}
-	m.ingestEvent(e)
+	m.ingestEventOwned(e, ownerKey{})
 	drained.turnDone = drained.turnDone || e.Kind == event.TurnDone
 	drained.gitMaybeChanged = drained.gitMaybeChanged || e.Kind == event.ToolResult && !e.Tool.ReadOnly
 }

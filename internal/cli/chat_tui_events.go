@@ -8,7 +8,92 @@ import (
 	"time"
 )
 
+// ownerKey identifies the session that owns a piece of mounted view state: the
+// team a member belongs to and the member itself. The two components are the
+// only stable identities the TUI has — a team has no id of its own and no
+// rename operation exists, so the validated name is the team's identity, and
+// MemberSlot.MemberID is immutable once the slot exists (the member editor
+// cannot rename it). Zero value = the chat's own (ambient) session.
+type ownerKey struct {
+	Team   string
+	Member string
+}
+
+// sessionTodoOwner is the owner of the To-do state the window is showing right
+// now: the bound member, or the ambient session when the window is not on a
+// member. It is the fallback for callers with no route of their own (the /todo
+// command, a bare ingestEvent in a test); event routes inject their own owner,
+// so an event can never be mounted under whoever happens to be focused.
+func (m *chatTUI) sessionTodoOwner() ownerKey {
+	if !m.teamSessionBound() {
+		return ownerKey{}
+	}
+	return memberOwner(m.teamPick.sessionTeamName(), m.boundMember())
+}
+
+// memberOwner builds the owner key of one team member.
+func memberOwner(teamName, memberID string) ownerKey {
+	return ownerKey{Team: teamName, Member: memberID}
+}
+
+// todoView is the pinned task panel's mounted state together with the owner that
+// produced it. event.Todo has no owner field, so the panel cannot tell whose list
+// it holds; every write is gated on the owner, and a reset clears only its own.
+type todoView struct {
+	owner     ownerKey
+	todos     []event.Todo
+	dismissed bool
+}
+
+// mount installs a committed list under owner, dropping a list that belongs to
+// any other session. This is the only path that publishes a todo_write result.
+func (v *todoView) mount(owner ownerKey, todos []event.Todo) {
+	if owner != v.owner {
+		return
+	}
+	v.todos = append([]event.Todo(nil), todos...)
+	v.dismissed = false
+}
+
+// bind points the panel at a new owner and discards whatever the previous one
+// left: the incoming session has produced no list this window has seen, so
+// carrying the outgoing one over would render one member's tasks as another's.
+func (v *todoView) bind(owner ownerKey) {
+	v.owner = owner
+	v.todos = nil
+	v.dismissed = false
+}
+
+// reset clears the list at the host's real turn boundary — but only for the
+// owner that boundary belongs to. A turn of another session must not wipe the
+// list this window is showing.
+func (v *todoView) reset(owner ownerKey) {
+	if owner != v.owner {
+		return
+	}
+	v.todos = nil
+	v.dismissed = false
+}
+
+// dismiss hides the mounted panel, but only for the owner the command was
+// issued against.
+func (v *todoView) dismiss(owner ownerKey) {
+	if owner != v.owner {
+		return
+	}
+	v.dismissed = true
+}
+
 func (m *chatTUI) ingestEvent(e event.Event) {
+	m.ingestEventOwned(e, m.sessionTodoOwner())
+}
+
+// ingestEventOwned is ingestEvent with an explicit owner for the event's
+// session. A route knows whose event it is carrying — the ambient session's,
+// or one named member's — and the To-do panel is the one piece of ingested
+// state that must be filed under that session rather than under whoever the
+// window happens to be showing when the event lands.
+func (m *chatTUI) ingestEventOwned(e event.Event, owner ownerKey) {
 	if m.ingestPreflight(e) {
 		return
 	}
@@ -19,12 +104,17 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		m.ingestText(e)
 	case event.Message:
 		m.ingestMessage(e)
+	case event.TurnStarted:
+		// The turn boundary resets the panel of the session that started it. A
+		// bound member's events reach this switch and nothing else — member
+		// events go through handleMemberEvent, which has no turn-boundary case.
+		m.todo.reset(owner)
 	case event.ToolDispatch:
 		m.ingestToolDispatch(e)
 	case event.ToolProgress:
 		m.ingestToolProgress(e)
 	case event.ToolResult:
-		m.ingestToolResult(e)
+		m.ingestToolResult(e, owner)
 	case event.Usage:
 		m.ingestUsage(e)
 	case event.ReadStatus:
@@ -146,14 +236,17 @@ func (m *chatTUI) ingestToolProgress(e event.Event) {
 	m.streamToolOutput(e.Tool.ID, e.Tool.Output)
 }
 
-func (m *chatTUI) ingestToolResult(e event.Event) {
+// ingestToolResult files a tool result under owner. owner is what the To-do
+// panel is keyed by, so the caller's route — not the window's current focus —
+// decides whose list a todo_write result becomes: a result that arrives for a
+// session the window has left is dropped, never mounted under the new one.
+func (m *chatTUI) ingestToolResult(e event.Event, owner ownerKey) {
 	// A successful result is silent (it only feeds the model); a blocked/failed
 	// call surfaces a red card. Pass the final output so collapseToolOutput has
 	// a last-resort line count when live state was already reset.
 	m.collapseFinalToolOutput(e.Tool)
 	if e.Tool.Name == "todo_write" && e.Tool.Err == "" && e.Tool.TodoWritten {
-		m.todos = append([]event.Todo(nil), e.Tool.Todos...)
-		m.todosDismissed = false
+		m.todo.mount(owner, e.Tool.Todos)
 	}
 	m.rememberSearchResult(e.Tool)
 	if e.Tool.Err != "" {

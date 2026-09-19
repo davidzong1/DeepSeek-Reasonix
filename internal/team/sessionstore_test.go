@@ -1,11 +1,17 @@
 package team
 
 import (
+	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
+
+	"reasonix/internal/filelock"
 )
 
 func newTestSessionStore(t *testing.T) *TeamSessionStore {
@@ -309,5 +315,273 @@ func TestSessionPathsStayUnderTeamRoot(t *testing.T) {
 		if _, err := os.Stat(leaked); !os.IsNotExist(err) {
 			t.Errorf("%s must not exist in the project root (err = %v)", leaked, err)
 		}
+	}
+}
+
+// TestSessionStoreUpdateSelectionIsReadModifyWrite pins the fix for the lost
+// update: a caller that only changes the member id must not reset the
+// deliberate-exit preference, and a writer holding a stale revision must be
+// refused rather than clobber the newer document.
+func TestSessionStoreUpdateSelectionIsReadModifyWrite(t *testing.T) {
+	s := newTestSessionStore(t)
+	// The preference is set first, by the path that owns it.
+	if err := s.WriteSelection("t", SessionSelection{Team: "t", Suspended: true}); err != nil {
+		t.Fatal(err)
+	}
+	// A member selection then lands without knowing about it.
+	sel, err := s.UpdateSelection("t", 0, func(cur *SessionSelection) error {
+		cur.MemberID = "leader-1"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sel.Suspended {
+		t.Fatal("a partial update dropped the suspension it never touched")
+	}
+	if sel.Revision != 2 {
+		t.Fatalf("revision = %d, want 2 (one per published write)", sel.Revision)
+	}
+	// A writer pinned to the revision it read is refused once it moved.
+	if _, err := s.UpdateSelection("t", 1, func(cur *SessionSelection) error {
+		cur.MemberID = "someone-else"
+		return nil
+	}); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("stale expected revision err = %v, want ErrCASConflict", err)
+	}
+	// A mutate error publishes nothing.
+	boom := errors.New("refused")
+	if _, err := s.UpdateSelection("t", 0, func(*SessionSelection) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("mutate error = %v, want %v", err, boom)
+	}
+	stored, err := s.ReadSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MemberID != "leader-1" || stored.Revision != 2 {
+		t.Fatalf("a failed mutate published: %+v", stored)
+	}
+	// A document written before the revision field existed reads as revision 0,
+	// so an unpinned writer still accepts it.
+	if _, err := s.UpdateSelection("t", 0, nil); err != nil {
+		t.Fatalf("unpinned update err = %v", err)
+	}
+}
+
+// TestSessionStoreWriteSelectionCASRefusesStaleRevision pins the pinned form:
+// WriteSelectionCAS is refused when the document moved since the caller read it,
+// which is what makes a whole-document write safe to use from a caller that did
+// read first. expected == 0 is the documented "unconditional" case and accepts
+// whatever is stored, so the pinned revision here is a real one: a document that
+// has been written at least once.
+func TestSessionStoreWriteSelectionCASRefusesStaleRevision(t *testing.T) {
+	s := newTestSessionStore(t)
+	if err := s.WriteSelection("t", SessionSelection{Team: "t", MemberID: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := s.ReadSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Revision != 1 {
+		t.Fatalf("revision after one write = %d, want 1", sel.Revision)
+	}
+	if err := s.WriteSelectionCAS("t", SessionSelection{Team: "t", MemberID: "a"}, sel.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteSelectionCAS("t", SessionSelection{Team: "t", MemberID: "b"}, sel.Revision); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("stale CAS write err = %v, want ErrCASConflict", err)
+	}
+	stored, err := s.ReadSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MemberID != "a" {
+		t.Fatalf("the refused write changed the selection: %+v", stored)
+	}
+}
+
+// TestSessionStoreConcurrentSelectionWritersKeepEveryField pins the cross-process
+// half of the read-modify-write: two writers that each change a different field
+// must both survive. A read-modify-write without the lock loses one of them —
+// whichever publishes second overwrites the other's field with the value it read
+// before that field was set.
+func TestSessionStoreConcurrentSelectionWritersKeepEveryField(t *testing.T) {
+	s := newTestSessionStore(t)
+	if err := s.WriteSelection("t", SessionSelection{Team: "t", MemberID: "start"}); err != nil {
+		t.Fatal(err)
+	}
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Go(func() {
+			// Each writer does the read-modify-write the CAS form is for: read the
+			// revision, publish against it, retry while another writer won the race.
+			for range 200 {
+				sel, err := s.ReadSelection("t")
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				_, err = s.UpdateSelection("t", sel.Revision, func(cur *SessionSelection) error {
+					// Each writer owns one field of its own, so a lost update is
+					// visible as a missing marker rather than a last-writer-wins
+					// value that happens to look plausible.
+					if i%2 == 0 {
+						cur.MemberID = "member-" + string(rune('a'+i))
+					} else {
+						cur.Suspended = i%4 == 1
+					}
+					return nil
+				})
+				if err == nil {
+					return
+				}
+				if !errors.Is(err, ErrCASConflict) {
+					errs[i] = err
+					return
+				}
+			}
+			errs[i] = errors.New("exhausted retries")
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("writer %d: %v", i, err)
+		}
+	}
+	stored, err := s.ReadSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every writer advanced the revision exactly once, so the document carries
+	// the sum of all of them rather than one writer's snapshot.
+	if stored.Revision != 1+writers {
+		t.Fatalf("revision = %d, want %d (a writer's update was lost)", stored.Revision, 1+writers)
+	}
+}
+
+// TestSessionStoreSelectionCrossProcessLostUpdate pins the cross-process half of
+// the read-modify-write, which the in-process test cannot: filelock's in-process
+// registry would serialize two goroutines even if the file lock were missing, so
+// only a second process proves the flock is what protects the document.
+//
+// The peer takes the lock and signals before it writes, so an unlocked parent
+// would read the pre-peer revision and publish over it — the classic lost
+// update. With the lock the parent blocks at Acquire, reads what the peer left,
+// and publishes on top of it. The peer's field and the parent's must both
+// survive, and the revision must show two publishes after the seed.
+func TestSessionStoreSelectionCrossProcessLostUpdate(t *testing.T) {
+	if os.Getenv("REASONIX_SELECTION_HELPER") == "1" {
+		runSelectionHelper(t)
+		return
+	}
+	root := t.TempDir()
+	s, err := NewTeamSessionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteSelection("t", SessionSelection{Team: "t", MemberID: "start"}); err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(root, "peer-ready")
+	release := filepath.Join(root, "peer-release")
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestSessionStoreSelectionCrossProcessLostUpdate$")
+	cmd.Env = append(os.Environ(),
+		"REASONIX_SELECTION_HELPER=1",
+		"REASONIX_SELECTION_ROOT="+root,
+		"REASONIX_SELECTION_READY="+ready,
+		"REASONIX_SELECTION_RELEASE="+release,
+	)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Wait()
+	waitForFile(t, ready, "the peer did not take the selection lock")
+	// The peer holds the lock and has written nothing yet: an update that took no
+	// lock would read the seed here and publish over whatever the peer writes.
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.UpdateSelection("t", 0, func(cur *SessionSelection) error {
+			cur.MemberID = "parent"
+			return nil
+		})
+		done <- err
+	}()
+	// Long enough for an unlocked parent to have read and published by now.
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("the update returned while the peer still held the selection lock: %v", err)
+	default:
+	}
+	if err := os.WriteFile(release, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("parent update: %v", err)
+	}
+	stored, err := s.ReadSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MemberID != "parent" {
+		t.Fatalf("member id = %q, want parent (the peer's write clobbered the update)", stored.MemberID)
+	}
+	if !stored.Suspended {
+		t.Fatal("the update dropped the field the peer wrote: lost update across processes")
+	}
+	if stored.Revision != 3 {
+		t.Fatalf("revision = %d, want 3 (seed + peer + parent)", stored.Revision)
+	}
+}
+
+// runSelectionHelper is the peer process: it takes the selection lock, signals
+// readiness, and only then publishes its own field — still under the lock — so
+// the parent's concurrent update is forced to queue behind a real second process
+// and can only see the peer's document after the lock is released.
+func runSelectionHelper(t *testing.T) {
+	root := os.Getenv("REASONIX_SELECTION_ROOT")
+	s, err := NewTeamSessionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := filelock.Acquire(context.Background(), s.selectionLockPath("t"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := os.WriteFile(os.Getenv("REASONIX_SELECTION_READY"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, os.Getenv("REASONIX_SELECTION_RELEASE"), "the parent never released the peer")
+	// Written while still holding the lock, the way UpdateSelection publishes.
+	cur, err := s.readSelection("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Suspended = true
+	cur.Revision++
+	if err := s.store.Save(filepath.Join(sessionDir, "t.json"), &cur); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitForFile blocks until path exists, failing the test past a deadline rather
+// than hanging the suite when a peer dies before signalling.
+func waitForFile(t *testing.T, path, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(msg)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

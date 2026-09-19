@@ -144,8 +144,15 @@ func (m *chatTUI) restoreSessionLease() {
 // current session file after an operation that rotated it to a fresh path
 // (/new, /clear, /branch, fork). A fresh path cannot be held by anyone else,
 // so failure is theoretical — but never silent.
+//
+// While a team member is bound this is a no-op, and it must stay one: m.ctrl is
+// then the member's backend, so "the controller's session" is the member's own
+// file, guarded by the member's own keeper and rotated by its own
+// OnSessionTransition. Repointing the ambient keeper at it would hand the chat's
+// lease to a member's path — and, once that member rotates again, leave the
+// chat's own session unprotected.
 func (m *chatTUI) followSessionLease() {
-	if m.leases == nil {
+	if m.leases == nil || m.memberBackendBound() {
 		return
 	}
 	if err := m.leases.Rebind(m.ctrl.SessionPath()); err != nil {
@@ -155,6 +162,14 @@ func (m *chatTUI) followSessionLease() {
 	if err := bindChatTUIAuthority(m); err != nil {
 		m.notice(fmt.Sprintf("session write authority: %v", err))
 	}
+}
+
+// memberBackendBound reports whether m.ctrl is a team member's backend rather
+// than the chat's own: a member is bound and the chat's backend is parked in
+// m.ambient. The ambient keeper's single-writer lease is the chat session's, so
+// every path that would follow "the current controller" has to ask this first.
+func (m *chatTUI) memberBackendBound() bool {
+	return m != nil && m.teamSessionBound() && m.ambient != nil
 }
 
 // cliSessionRecoveredHandler moves the single-session CLI lease during the

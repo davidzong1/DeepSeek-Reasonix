@@ -1,20 +1,8 @@
 package cli
 
-// Member session root binding: the file name is fixed but the directory used to
-// come from the launching process's CWD, so a window opened from another
-// directory looked in a fresh empty store and silently started an empty
-// history. These tests pin the outcomes of the candidate-root probe on both
-// session axes: adopt the stable root's file, create under the canonical root on
-// a total miss without overwriting anything, prefer the current (versioned) root
-// over a stale copy in the logical one, and refuse a candidate that exists but
-// cannot be read instead of falling through to an empty session.
-//
-// The two axes differ in what "the execution identity" even is. A legacy
-// controller executes the path it was resumed with, so ctrl.SessionPath() is the
-// assertion. A v3-exclusive controller has no path identity: it imports the
-// legacy file and then clears the path, so the adopted identity is
-// ctrl.SessionRef() and SessionPath() is deliberately empty. Every identity
-// assertion below is written for the axis its subtest runs on.
+// Member session root binding on both session axes: the file name is fixed, but
+// the directory once came from the launching process's CWD, so a window opened
+// elsewhere silently started an empty history. These tests pin the probe.
 
 import (
 	"bytes"
@@ -478,10 +466,9 @@ func TestMemberSessionBindingFreshBindsV3AuthorityLease(t *testing.T) {
 			beforeRef, _ := ctrl.SessionRef()
 			assertMemberIdentity(t, ctrl, axis.v3, path)
 
-			// The authority binding is the same call the member backend makes. On
-			// the v3 axis it runs with a nil lease on purpose — there is no path to
-			// lease — and it must still succeed: it is what installs the controller's
-			// session-transition handler.
+			// The authority binding is the same call the member backend makes, run on
+			// the v3 axis with a nil lease on purpose: there is no path to lease, and
+			// it must still install the session-transition handler.
 			wl, err := bindMemberSessionAuthority(ctrl, path, true)
 			if err != nil {
 				t.Fatalf("bindMemberSessionAuthority: %v", err)

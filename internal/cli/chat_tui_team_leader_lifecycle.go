@@ -52,8 +52,8 @@ func (p *teamPicker) stepDownLeader(teamName, memberID string) error {
 	if err := p.store.SetMemberLeader(teamName, memberID, false); err != nil {
 		return err
 	}
-	if p.sessions != nil {
-		p.clearSelectedMember(teamName)
+	if err := p.clearSelectedMember(teamName); err != nil {
+		return err
 	}
 	if err := p.reload(""); err != nil {
 		return err

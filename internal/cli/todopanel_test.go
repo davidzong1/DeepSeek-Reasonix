@@ -14,7 +14,7 @@ import (
 func TestRenderTodoPanelIsFlat(t *testing.T) {
 	m := newTestChatTUI()
 	m.width = 60
-	m.todos = []event.Todo{
+	m.todo.todos = []event.Todo{
 		{Content: "Phase A", Status: "in_progress"},
 		{Content: "sub one", Status: "pending"},
 	}
@@ -31,7 +31,7 @@ func TestRenderTodoPanelIsFlat(t *testing.T) {
 func TestRenderTodoPanelScrollsToInProgressTodo(t *testing.T) {
 	m := newTestChatTUI()
 	m.width = 72
-	m.todos = []event.Todo{
+	m.todo.todos = []event.Todo{
 		{Content: "Item 01", Status: "completed"}, {Content: "Item 02", Status: "completed"},
 		{Content: "Item 03", Status: "completed"}, {Content: "Item 04", Status: "completed"},
 		{Content: "Item 05", Status: "completed"}, {Content: "Item 06", Status: "completed"},
@@ -51,7 +51,7 @@ func TestRenderTodoPanelScrollsToInProgressTodo(t *testing.T) {
 func TestRenderTodoPanelKeepsCompletedListVisible(t *testing.T) {
 	m := newTestChatTUI()
 	m.width = 60
-	m.todos = []event.Todo{{Content: "Verified", Status: "completed"}}
+	m.todo.todos = []event.Todo{{Content: "Verified", Status: "completed"}}
 	if out := ansi.Strip(m.renderTodoPanel()); !strings.Contains(out, "1/1") || !strings.Contains(out, "Verified") {
 		t.Fatalf("completed current-turn list must remain inspectable:\n%s", out)
 	}

@@ -177,7 +177,7 @@ func (m *chatTUI) rebindMemberToRef(teamName, member, ref string) (control.Sessi
 			return nil, fmt.Errorf("member %s is busy; the pool switch to %s applies when idle", member, ref)
 		}
 	}
-	m.bindBackend(backend)
+	m.bindBackend(backend, memberOwner(teamName, member))
 	backend.ReplayPendingPrompts()
 	return backend, nil
 }

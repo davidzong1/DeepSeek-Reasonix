@@ -17,7 +17,6 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
-	"reasonix/internal/session"
 	"reasonix/internal/team"
 )
 
@@ -255,6 +254,10 @@ type memberBackendDeps struct {
 	// escalations is the window-scoped decider for out-of-scope writes. Nil
 	// leaves every write-access card on the operator's surface.
 	escalations *writeAccessEscalations
+	// owners is the canonical owner storage over the team data root. Nil keeps
+	// the historical behavior — session-directory candidates only, no adoption.
+	// A host that has a team data root always supplies one.
+	owners *team.OwnerStore
 }
 
 // memberPoolLookup reads one pool entry. Narrowed to the one method the builder
@@ -433,6 +436,17 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			return nil, err
 		}
 		roots, createRoot := memberSessionRoots(ctrl, deps.workspaceRoot)
+		// Canonical owner storage comes first when the host has a team data root:
+		// a history still in a session-directory candidate is adopted into the
+		// member's owner directory once, and every later launch reads it there.
+		if deps.owners != nil {
+			ownerDir, err := adoptMemberOwnerHistory(deps.ctx, ctrl, deps.owners, b, roots)
+			if err != nil {
+				ctrl.Close()
+				return nil, err
+			}
+			roots, createRoot = memberSessionRootsWithOwner(ctrl, deps.workspaceRoot, ownerDir)
+		}
 		path, fresh, err := bindMemberSession(ctrl, b.SessionFile, roots, createRoot)
 		if err != nil {
 			ctrl.Close()
@@ -513,10 +527,9 @@ type memberWriteLease struct {
 // controller's immutable SessionRef rather than a path. Production releases that
 // lease at exactly this point (internal/serve/session_resume_commit.go,
 // internal/cli/session_lease.go), and holding it would refuse every other
-// runtime — including the member's own next launch — the frozen artifact. The
-// authority binding still runs, with a nil lease, because that is what installs
-// the controller's session-transition handler; it is a safe no-op on the write
-// side (a nil lease clears a binding the v3 session never reads).
+// runtime the frozen artifact. The authority binding still runs, with a nil
+// lease: that is what installs the session-transition handler, and a nil lease
+// clears a binding the v3 session never reads.
 func bindMemberSessionAuthority(ctrl *control.Controller, path string, strict bool) (*memberWriteLease, error) {
 	wl := &memberWriteLease{leases: control.NewSessionLeaseKeeper(), strict: strict}
 	if !strict {
@@ -543,118 +556,21 @@ func (w *memberWriteLease) Close() {
 	w.leases.Release()
 }
 
-// memberSessionRoots returns the directories one member's session file is looked
-// for in, in probe order, together with the directory a first-entry file is
-// created under.
-//
-// Why more than one: a member's file name is fixed (team-<team>-<member>.json)
-// but the directory it lands in is derived from the launching process's working
-// directory (resolveCLISessionDir → config.ProjectSessionDir(cwd)). A member
-// window opened from another directory, or after a version bump that moves the
-// state root, therefore looks in a fresh empty directory and silently starts an
-// empty history even though the member's conversation is intact elsewhere. The
-// controller's own directory is probed first — it is what the team picker resets
-// and what a same-directory launch writes — and the workspace's project root is
-// probed second, so a history written from any directory of the same workspace
-// is still found.
-//
-// The workspace root is the stable key: it is captured when the overlay opens
-// (memberBackendDeps.workspaceRoot) and does not depend on the process CWD at
-// build time. When it is unknown there is no stable root to fall back to, and
-// the controller's own directory stays the only candidate — the historical
-// behavior.
-//
-// Every candidate root contributes two directories: its versioned form and the
-// logical one. A version update moves the execution store from <root>/sessions
-// to <root>/sessions-v4 (session.RootForLegacyDir), so a member whose history
-// was written before the bump lives only under the logical root while this build
-// resolves the versioned one. All versioned candidates are probed before any
-// logical one — not root by root — because the versioned store is what this
-// build writes and executes on: when a stale copy of the same file is still
-// sitting in a logical root, the current one is the authority and the older one
-// is a read-only fallback, and probing per root would let the stable root's own
-// stale logical copy shadow its live versioned file. Adopting is read-only
-// either way: the file is never moved or rewritten.
-//
-// The create target is the canonical root of the axis this controller runs on,
-// and is returned separately rather than pinned to the end of the probe order:
-// a v3-exclusive controller creates under the versioned root, which is also its
-// highest-priority probe, so "create target last" would hand the stale logical
-// copy exactly the priority this ordering exists to deny it. A legacy
-// controller's file *is* its execution identity, so it creates under the logical
-// root. session.RootForLegacyDir is not injective — two logical roots can share
-// one versioned root — so seen collapses the versioned side as well as repeated
-// logical roots.
-func memberSessionRoots(ctrl *control.Controller, workspaceRoot string) (roots []string, create string) {
-	ctrlDir := strings.TrimSpace(ctrl.SessionDir())
-	stable := ""
-	if root := strings.TrimSpace(workspaceRoot); root != "" {
-		stable = config.ProjectSessionDir(root)
-	}
-	if stable == "" {
-		stable = config.SessionDir()
-	}
-	create = stable
-	if ctrl.UsesExclusiveSession() {
-		if versioned := session.RootForLegacyDir(stable); versioned != "" {
-			create = versioned
-		}
-	}
-	if create == "" {
-		create = ctrlDir
-	}
-	seen := make(map[string]bool, 4)
-	out := make([]string, 0, 4)
-	for _, versioned := range []bool{true, false} {
-		for _, root := range []string{ctrlDir, stable} {
-			if root == "" {
-				continue
-			}
-			candidate := root
-			if versioned {
-				candidate = session.RootForLegacyDir(root)
-			}
-			if candidate == "" || seen[candidate] {
-				continue
-			}
-			seen[candidate] = true
-			out = append(out, candidate)
-		}
-	}
-	// The create target is normally one of the probes; it is appended only when it
-	// is not, so a first entry always lands in a directory this build reads.
-	if create != "" && !seen[create] {
-		out = append(out, create)
-	}
-	return out, create
-}
-
 // bindMemberSession points a freshly built backend at the member's own session
-// file and reports the path it settled on. Each candidate root is probed for the
-// file: the first one holding it is adopted, so the member's history,
-// checkpoints and recovery state come back whatever directory this build was
-// launched from. A candidate that exists but cannot be read is a hard error —
-// corruption must never be papered over by falling through to an empty session.
+// file and reports the path it settled on. Each candidate root is probed: the
+// first holding the file is adopted, so history, checkpoints and recovery state
+// come back whatever directory this build launched from, and a candidate that
+// exists but cannot be read is a hard error, never papered over by a miss.
 //
 // Only a total miss is the member's first entry: the file is created under
-// createRoot (the canonical root of this controller's axis) rather than under
-// whichever directory this process happens to sit in, so the next launch — from
-// any directory — finds it. createRoot is passed separately instead of being
-// taken from the end of roots because the create target is also the
-// highest-priority probe on a v3 controller: pinning it last would hand a stale
-// logical copy exactly the priority the probe order exists to deny it.
-// fresh reports that branch: only then may a leader's ambient conversation be
-// handed over.
+// createRoot (this controller's canonical root), so the next launch finds it.
+// createRoot is separate because it is also the highest-priority probe on v3 —
+// pinning it last would hand a stale logical copy the priority the order exists
+// to deny. fresh reports that branch, when a leader's ambient chat may be used.
 //
-// The two axes need different calls to make the file the execution identity.
-// A legacy controller executes the path itself, so Resume pins it. A
-// v3-exclusive controller has no path identity at all: SetSessionPath is a
-// logged no-op and SetFreshSessionPath ignores its argument and swallows its
-// error, so a member bound that way would keep a session the store never
-// committed. Both v3 branches therefore go through the explicit APIs that
-// return an error — ContinueLegacySession imports the adopted file, and
-// BindFreshSession commits the first entry — and an unreachable execution
-// identity becomes a visible refusal instead of an empty history.
+// The axes differ: legacy executes its path, so Resume pins it; v3 has none, so
+// both branches use the error-returning ContinueLegacySession / BindFreshSession
+// rather than a logged no-op — an unreachable identity refuses visibly.
 func bindMemberSession(ctrl *control.Controller, name string, roots []string, createRoot string) (string, bool, error) {
 	if len(roots) == 0 {
 		return "", false, fmt.Errorf("member session %q has no candidate session root", name)

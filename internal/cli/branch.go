@@ -122,8 +122,7 @@ func (m *chatTUI) replayActiveBranch(title string) {
 	m.finalizeStreamed()
 	m.pending.Reset()
 	m.reasoning.Reset()
-	m.todos = nil
-	m.todosDismissed = false
+	m.todo.reset(m.sessionTodoOwner())
 	m.chooser = nil
 	m.pendingApproval = nil
 	m.bubblePending = false

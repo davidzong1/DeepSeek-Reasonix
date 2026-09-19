@@ -197,7 +197,11 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 		}
 	}
 	p.session = session
-	p.persistSessionSelection()
+	if err := p.persistSessionSelection(); err != nil {
+		// The window still opens on the member; only the restart preference
+		// failed to land, and the refusal banner is where the page says so.
+		p.refusal = "Selection not saved: " + pickerErrMsg(err)
+	}
 	return tea.Batch(m.switchTeamMember(member.ID), teamRosterRefresh())
 }
 
@@ -302,14 +306,24 @@ func (p *teamPicker) openSession(initial string) string {
 // persistSessionSelection writes the current member window through the
 // session store (§4.2): the only persisted session data is the selection —
 // histories live in the member context directories.
-func (p *teamPicker) persistSessionSelection() {
+//
+// Persisting a member clears the suspension: the window is open on someone, so
+// the user is not parked on the management page, and a stale suspension would
+// make the next [TEAM] click ignore the member this call just stored. The write
+// is a locked read-modify-write rather than a whole-document replace, so it
+// cannot reset a field another process changed in between. The error is
+// returned rather than dropped: a selection that did not persist is what a
+// relaunch resumes, so the caller has to be able to say so.
+func (p *teamPicker) persistSessionSelection() error {
 	if p.sessions == nil {
-		return
+		return nil
 	}
-	_ = p.sessions.WriteSelection(p.session.teamName, team.SessionSelection{
-		Team:     p.session.teamName,
-		MemberID: p.session.current,
+	_, err := p.sessions.UpdateSelection(p.session.teamName, 0, func(sel *team.SessionSelection) error {
+		sel.MemberID = p.session.current
+		sel.Suspended = false
+		return nil
 	})
+	return err
 }
 
 func (m *chatTUI) stepSession(d int) tea.Cmd {
@@ -331,7 +345,9 @@ func (m *chatTUI) stepSession(d int) tea.Cmd {
 	}
 	p.session.focus = next
 	p.session.current = target
-	p.persistSessionSelection()
+	if err := p.persistSessionSelection(); err != nil {
+		p.refusal = "Selection not saved: " + pickerErrMsg(err)
+	}
 	delete(p.session.unread, target)
 	return cmd
 }
@@ -385,11 +401,16 @@ func (m *chatTUI) exitTeam() {
 // subprocesses to process end.
 func (m *chatTUI) closeTeamResources() {
 	// Hand the controller identity back first, or the caller's own ctrl.Close()
-	// lands on a member controller the registry is about to close. Narrow swap,
-	// not bindBackend: no terminal is left to rebuild derived state for.
+	// lands on a member controller the registry is about to close. This path
+	// skips bindBackend, so the mounted view state is re-owned right here.
 	if m.ambient != nil {
 		m.ctrl = m.ambient
 		m.ambient = nil
+	}
+	m.todo.bind(ownerKey{})
+	m.todoArgs = ""
+	if m.teamPick != nil {
+		m.teamPick.dropMemberEditDraft()
 	}
 	if m.teamBackends != nil {
 		// Drop queued requests first: closeAll unblocks every blocked waiter, and
@@ -407,7 +428,12 @@ func (m *chatTUI) leaveTeamDeliberately() {
 	if m.teamPick == nil {
 		return
 	}
-	m.teamPick.suspendAutoSession()
+	if err := m.teamPick.suspendAutoSession(); err != nil {
+		// Ctrl+T leaves the team either way — the user asked to get out — but a
+		// preference that did not persist is the one thing the key was supposed
+		// to leave behind, so it is surfaced rather than dropped.
+		m.notice("team auto-session preference not saved: " + pickerErrMsg(err))
+	}
 	m.exitTeam()
 }
 
@@ -415,15 +441,25 @@ func (m *chatTUI) leaveTeamDeliberately() {
 // left. Disk, not a field: the flag has to outlive the process, or relaunching
 // silently re-enters the session the user just left. A deliberate entry clears it
 // by writing its own selection.
-func (p *teamPicker) suspendAutoSession() {
+//
+// The write is a locked partial update and it drops the member id: a suspend is
+// the user saying they are done with the window, so leaving a member id behind
+// would have the next entry — a click on [TEAM], a restart — resume a session
+// the user just left. Returns the store's error rather than swallowing it.
+func (p *teamPicker) suspendAutoSession() error {
 	if p.sessions == nil {
-		return
+		return nil
 	}
 	teamName := p.exitingTeamName()
 	if teamName == "" {
-		return
+		return nil
 	}
-	_ = p.sessions.WriteSelection(teamName, team.SessionSelection{Team: teamName, Suspended: true})
+	_, err := p.sessions.UpdateSelection(teamName, 0, func(sel *team.SessionSelection) error {
+		sel.MemberID = ""
+		sel.Suspended = true
+		return nil
+	})
+	return err
 }
 
 // exitingTeamName is the team a leave applies to: the bound session's team, else
@@ -439,18 +475,17 @@ func (p *teamPicker) exitingTeamName() string {
 
 // clearSelectedMember drops the persisted member while leaving the auto-session
 // preference alone: k removes a leader, it does not decide whether the next entry
-// opens a session.
-func (p *teamPicker) clearSelectedMember(teamName string) {
+// opens a session. It returns the store's error rather than swallowing it: a
+// clear that did not persist leaves a leader id a relaunch would try to resume.
+func (p *teamPicker) clearSelectedMember(teamName string) error {
 	if p.sessions == nil {
-		return
+		return nil
 	}
-	sel, err := p.sessions.ReadSelection(teamName)
-	if err != nil {
-		return // unreadable: leave the file alone rather than reset the preference
-	}
-	_ = p.sessions.WriteSelection(teamName, team.SessionSelection{
-		Team: teamName, Suspended: sel.Suspended,
+	_, err := p.sessions.UpdateSelection(teamName, 0, func(sel *team.SessionSelection) error {
+		sel.MemberID = ""
+		return nil
 	})
+	return err
 }
 
 // sessionSlot returns the current member's persisted slot for the session

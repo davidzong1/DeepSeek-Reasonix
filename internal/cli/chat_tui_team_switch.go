@@ -40,7 +40,10 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 	}
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
-		m.ingestEvent(msg.ev)
+		// The event is filed under the member it came from, not under whoever is
+		// bound when it is ingested: an event that arrives after a switch has
+		// already moved the window must not mount its state on the new member.
+		m.ingestEventOwned(msg.ev, memberOwner(m.teamPick.sessionTeamName(), msg.member))
 	} else if m.teamPick == nil {
 		m.noteOrphanedMemberPrompt(msg.member, msg.ev)
 	} else {
@@ -104,13 +107,16 @@ func (m *chatTUI) bufferMemberEvent(member string, ev event.Event) {
 // replayMemberLiveEvents renders the turn a member started while the window was
 // elsewhere. It runs after the history replay committed, so the buffered events
 // land on top of the member's committed transcript in the order they arrived —
-// the same order the bound path ingested them in.
+// the same order the bound path ingested them in. Each event is filed under the
+// member that produced it, so a buffered todo_write mounts on that member's
+// panel even if the window has moved on again by the time it replays.
 func (m *chatTUI) replayMemberLiveEvents(member string) {
 	if m.teamPick == nil || m.teamPick.session.live == nil {
 		return
 	}
+	owner := memberOwner(m.teamPick.sessionTeamName(), member)
 	for _, ev := range m.teamPick.session.live[member] {
-		m.ingestEvent(ev)
+		m.ingestEventOwned(ev, owner)
 	}
 }
 
@@ -215,8 +221,13 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	if i := slices.Index(p.session.members, memberID); i >= 0 {
 		p.session.focus = i
 	}
-	p.persistSessionSelection()
+	// The selection is persisted before the window settles: a failed write is
+	// reported on the session window rather than dropped, because the member a
+	// relaunch resumes is whatever this call managed to store.
 	p.session.errMsg = ""
+	if err := p.persistSessionSelection(); err != nil {
+		p.session.errMsg = "Selection not saved: " + pickerErrMsg(err)
+	}
 	p.hub.setTeam(p.sessionTeamName())
 	delete(p.session.unread, memberID) // showing a member is consuming it
 	// The record is the roster inbox's, for members the window is not showing.
@@ -226,7 +237,7 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	if m.ambient == nil {
 		m.ambient = m.ctrl // first member bind: remember the chat's own backend
 	}
-	m.bindBackend(backend)
+	m.bindBackend(backend, memberOwner(p.sessionTeamName(), memberID))
 	// The turn this member started while the window was elsewhere: bindBackend
 	// replayed its committed history, and these are the events that turn has
 	// produced since, which no History() snapshot can carry yet.
@@ -275,14 +286,19 @@ func (m *chatTUI) unbindTeamMember() {
 	}
 	ambient := m.ambient
 	m.ambient = nil
-	m.bindBackend(ambient)
+	m.bindBackend(ambient, ownerKey{})
 }
 
 // bindBackend swaps the window's backend and rebuilds everything derived from
 // it: the label and model line, the slash catalog, the session lease, and the
 // transcript. It mirrors the model switch's own post-swap sync (chat_tui.go's
 // modelSwitchMsg branch) so a member switch cannot drift from it.
-func (m *chatTUI) bindBackend(backend control.SessionAPI) {
+//
+// owner is the session the incoming backend belongs to. It is passed in rather
+// than derived from m.ctrl: the caller is the one that knows whether it is
+// binding a member or restoring the ambient session, and the derived owner
+// reads the session state, which a rebind deliberately leaves untouched.
+func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey) {
 	m.ctrl = backend
 	m.label = backend.Label()
 	m.modelRef = backend.ModelRef()
@@ -304,6 +320,13 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI) {
 	m.pending.Reset()
 	m.reasoning.Reset()
 	m.todoArgs = ""
+	// The pinned task panel is the outgoing session's: mounting it under the
+	// incoming owner would show one member's tasks as another's.
+	m.todo.bind(owner)
+	// A member-property draft was addressed to the member the editor opened on;
+	// the incoming session may be a different one, so it is discarded here
+	// rather than left to be published to the wrong member.
+	m.dropStaleMemberEdit(owner)
 	m.chooser = nil
 	m.pendingApproval = nil
 	m.bubblePending = false
@@ -403,6 +426,7 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 	tasks.setDiscussionDataDir(m.teamPick.dataDir)
 	memberDeps := memberBackendDeps{
 		ctx: context.Background(), users: users, store: m.teamPick.store, sessions: m.teamPick.sessions,
+		owners: m.teamPick.owners,
 		tasks:  tasks,
 		events: m.memberEvents, base: m.memberBackendBase,
 		workspaceRoot: workspaceRoot,
@@ -646,7 +670,7 @@ func (m *chatTUI) rebindTeamBackend(p *teamPicker, member string) error {
 		// bind keeps the previous backend assembled and serving on failure.
 		return err
 	}
-	m.bindBackend(backend)
+	m.bindBackend(backend, memberOwner(p.model.Name(), member))
 	backend.ReplayPendingPrompts()
 	return nil
 }

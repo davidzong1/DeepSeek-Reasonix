@@ -484,14 +484,14 @@ func TestTodoPanelKeepsLastSuccessfulTodoWrite(t *testing.T) {
 
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "todo-1", Name: "todo_write", Args: initial}})
 	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-1", Name: "todo_write", Args: initial, Output: "Todos updated", TodoWritten: true, Todos: []event.Todo{{Content: "Sync main-v2", Status: "in_progress"}, {Content: "Push origin", Status: "pending"}}}})
-	if len(m.todos) != 2 || m.todos[0].Content != "Sync main-v2" || m.todos[0].Status != "in_progress" {
-		t.Fatalf("todos after successful result = %+v", m.todos)
+	if len(m.todo.todos) != 2 || m.todo.todos[0].Content != "Sync main-v2" || m.todo.todos[0].Status != "in_progress" {
+		t.Fatalf("todos after successful result = %+v", m.todo.todos)
 	}
 
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "todo-2", Name: "todo_write", Args: failed}})
 	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-2", Name: "todo_write", Args: failed, Err: "invalid status"}})
-	if len(m.todos) != 2 || m.todos[0].Content != "Sync main-v2" || m.todos[0].Status != "in_progress" {
-		t.Fatalf("failed todo_write must not replace the panel: got %+v", m.todos)
+	if len(m.todo.todos) != 2 || m.todo.todos[0].Content != "Sync main-v2" || m.todo.todos[0].Status != "in_progress" {
+		t.Fatalf("failed todo_write must not replace the panel: got %+v", m.todo.todos)
 	}
 }
 

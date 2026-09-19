@@ -39,6 +39,9 @@ func (m chatTUI) renderTeamPicker() string {
 	if p.reset.kind != leaderResetNone {
 		return p.renderLeaderReset(m.width)
 	}
+	if p.teamClear.kind != teamClearNone {
+		return p.renderTeamClear(m.width)
+	}
 	view := p.model
 	w := max(m.width, 10)
 	var b strings.Builder
@@ -379,7 +382,7 @@ func (p *teamPicker) renderTeamList(view *tui.Model, b *strings.Builder) {
 // wide enough, word-wrapped at the edge when it is not. u edits the team's
 // ordered agent pool; g rewinds the focused member to its pool default (a
 // custom member back to its own pool head), clearing its failover state.
-const rosterHelp = "↑/↓ navigate · a add member · d delete member · u agent pool · g reset pool · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · Esc back · " +
+const rosterHelp = "↑/↓ navigate · a add member · d delete member · u agent pool · g reset pool · 🌟 t Enter_session · p proxy · e edit · l assign leader · " + teamExitAllHint + " · c clear histories · Esc back · " +
 	teamExitHint + " · q quit"
 
 // teamEffectivePool returns the focused team's ordered effective pool entries

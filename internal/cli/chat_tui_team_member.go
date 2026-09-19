@@ -51,8 +51,15 @@ type memberPoolSelState struct {
 // the focused member, the field cursor, the open field's option list, and the
 // refusal message. The draft publishes field by field on s, so an untouched
 // row never writes.
+//
+// owner records which member the draft was seeded from. The draft outlives the
+// focus it was taken under — the roster reloads on a 1s poll, and a delete
+// moves the cursor — so a save that trusts the current focus can publish one
+// member's draft onto another. The owner is checked before every write and the
+// draft is discarded the moment it stops matching.
 type memberEditState struct {
 	kind   memberEditKind
+	owner  ownerKey
 	draft  team.MemberSlot
 	edit   int // field cursor into memberEditFields
 	list   optionList
@@ -105,7 +112,8 @@ func memberEditOwnsKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 
 // armMemberEdit seeds the editor from the focused member's persisted slot,
 // once. Every entry path (e, Enter, Space on the roster) calls it, so the
-// editor always opens on the document, never on a stale draft.
+// editor always opens on the document, never on a stale draft. The seeded
+// owner is the member the draft belongs to for as long as the editor lives.
 func (p *teamPicker) armMemberEdit() {
 	if p.memberEdit.kind != memberEditNone {
 		return
@@ -118,7 +126,11 @@ func (p *teamPicker) armMemberEdit() {
 	if !ok {
 		return
 	}
-	p.memberEdit = memberEditState{kind: memberEditFieldList, draft: slot}
+	p.memberEdit = memberEditState{
+		kind:  memberEditFieldList,
+		owner: memberOwner(p.model.Name(), member.ID),
+		draft: slot,
+	}
 }
 
 // moveMemberEditCursor shifts the field cursor, clamped.
@@ -412,22 +424,51 @@ func (p *teamPicker) cancelMemberPoolSel() {
 // TeamStore setter (one CAS each), then the view re-reads so the editor shows
 // persisted state (§8.3). A refusal lands on the field and keeps the editor
 // open; untouched fields never write.
+//
+// The save is all-or-nothing: every field is validated before the first one is
+// written, so a draft that fails on its last row cannot leave the earlier ones
+// published — the half-applied member that made the editor's own error message
+// describe a state the user never asked for.
 func (p *teamPicker) saveMemberEdit() {
 	me := &p.memberEdit
 	member, ok := p.model.Focused()
 	if !ok {
+		p.abandonMemberEdit("No member is focused — the draft was not saved")
+		return
+	}
+	// The draft belongs to the member it was armed from, and the focus can move
+	// while the editor is open (1s roster poll, delete, remote edit) — so
+	// publishing to whoever holds the cursor now is a write nobody asked for.
+	if member.ID != me.owner.Member || p.model.Name() != me.owner.Team {
+		p.abandonMemberEdit("Nothing saved: this draft belonged to member " + me.owner.Member +
+			", and the roster now shows " + member.ID + ".")
 		return
 	}
 	slot, ok := p.slotOf(member.ID)
 	if !ok {
+		p.abandonMemberEdit("Member " + member.ID + " no longer exists — the draft was discarded")
 		return
 	}
 	name := p.model.Name()
+	// The draft's changed rows, in publish order. Both passes below walk this
+	// list, so the field the editor blames is the field that was written.
+	changed := make([]int, 0, len(memberEditFields))
 	for i, f := range memberEditFields {
-		if memberFieldEqual(f, slot, me.draft) {
-			continue
+		if !memberFieldEqual(f, slot, me.draft) {
+			changed = append(changed, i)
 		}
-		if err := p.applyMemberField(name, member.ID, f, me.draft); err != nil {
+	}
+	// Every changed field is checked before the first is written: the store
+	// refuses field by field, so without this pass a draft failing on its last
+	// row would leave the earlier ones published half-applied.
+	for _, i := range changed {
+		if err := p.validateMemberField(name, member.ID, memberEditFields[i], me.draft); err != nil {
+			me.errMsg, me.edit = pickerErrMsg(err), i
+			return
+		}
+	}
+	for _, i := range changed {
+		if err := p.applyMemberField(name, member.ID, memberEditFields[i], me.draft); err != nil {
 			me.errMsg, me.edit = pickerErrMsg(err), i
 			return
 		}
@@ -441,6 +482,110 @@ func (p *teamPicker) saveMemberEdit() {
 	me.errMsg = ""
 	if fresh, ok := p.slotOf(member.ID); ok {
 		me.draft = fresh
+	}
+}
+
+// abandonMemberEdit discards a draft a refused save could not publish and puts
+// the overlay back on a screen it can render. The refusal goes to the page's
+// own banner, not the editor's row message: the editor renders the draft it is
+// holding, and the draft no longer belongs to the member the cursor is on.
+func (p *teamPicker) abandonMemberEdit(msg string) {
+	p.dropMemberEditDraft()
+	p.refusal = msg
+}
+
+// dropMemberEditDraft discards the member-property draft and steps the detail
+// screen back to the roster, which has no draft behind it to render. It is the
+// silent half of abandonMemberEdit, for callers that owe no explanation — the
+// window moving to another session, a member that stopped existing.
+func (p *teamPicker) dropMemberEditDraft() {
+	p.memberEdit = memberEditState{}
+	if p.model.Mode() == tui.ModeContext {
+		p.model.Handle(tui.EventBack)
+	}
+}
+
+// dropStaleMemberEdit discards the draft when it belongs to a session other
+// than owner. It is the bind-side check: a draft armed on the member the window
+// is leaving must not survive into the next one, where its save would publish
+// one member's values onto another.
+func (m *chatTUI) dropStaleMemberEdit(owner ownerKey) {
+	p := m.teamPick
+	if p == nil || p.memberEdit.kind == memberEditNone || p.memberEdit.owner == owner {
+		return
+	}
+	p.dropMemberEditDraft()
+}
+
+// validateMemberField checks one changed draft field against the rules its
+// setter applies, without writing anything: role length and control characters,
+// the closed status set, the pool's pin/empty/dangling-ref refusals, and an
+// agent reference that still names a live pool entry. The store stays the
+// authority on every write — this only moves its refusals ahead of the first
+// one, so a save cannot publish half a draft. Fields that are not changing are
+// never checked: their persisted value is the store's business, not the
+// editor's.
+func (p *teamPicker) validateMemberField(teamName, memberID, field string, draft team.MemberSlot) error {
+	switch field {
+	case "role":
+		return team.ValidateRole(string(draft.Role))
+	case "leader", "proxy":
+		// Any bool, and any *bool override, is admissible: neither setter has a
+		// value rule to refuse on.
+		return nil
+	case "status":
+		switch draft.Status {
+		case team.MemberStatusActive, team.MemberStatusDisabled, team.MemberStatusArchived:
+			return nil
+		}
+		return team.ErrInvalidStatus
+	}
+	// The remaining fields reference pool entries, so the check needs the
+	// registry. A store-less picker (no team data root) has nothing to write to
+	// anyway; the setter's own error is what the caller then sees.
+	if p.store == nil {
+		return nil
+	}
+	users, err := p.store.ListAgentUsers()
+	if err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(users))
+	for _, u := range users {
+		present[u.UserID] = true
+	}
+	switch field {
+	case "pool":
+		if !draft.IsCustomPool() {
+			return nil // inherit: the retained entries stay inert
+		}
+		// A pin and a custom pool are mutually exclusive on a slot; the store
+		// refuses the pair from either side, and so does the editor.
+		if draft.AgentUserRef != "" {
+			return team.ErrMemberPoolPin
+		}
+		if len(draft.AgentUserPool) == 0 {
+			return team.ErrMemberPoolEmpty
+		}
+		for _, id := range draft.AgentUserPool {
+			if !present[id] {
+				return fmt.Errorf("%w: %q", team.ErrAgentUserNotFound, id)
+			}
+		}
+		return nil
+	default: // agent
+		if draft.AgentUserRef == "" {
+			return nil // unbind is always admissible
+		}
+		// BindAgentUser refuses a pin on a member whose pool is custom: the
+		// custom pool binds its own head, so the two cannot coexist.
+		if draft.IsCustomPool() {
+			return team.ErrMemberPoolBind
+		}
+		if !present[draft.AgentUserRef] {
+			return fmt.Errorf("%w: %q", team.ErrAgentUserNotFound, draft.AgentUserRef)
+		}
+		return nil
 	}
 }
 

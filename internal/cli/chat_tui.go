@@ -127,11 +127,10 @@ type chatTUI struct {
 	// blocking the event loop.
 	balance string
 
-	// todos is copied only from a successful semantic todo result. The separate
-	// dismissal bit is a mounted-view preference and never changes host state.
-	// Both reset at the host's real turn_started boundary.
-	todos          []event.Todo
-	todosDismissed bool
+	// todo is the pinned task panel's mounted state, owned by the session that
+	// produced it (see todoView). event.Todo carries no owner of its own, so the
+	// ownership lives here and is re-checked at every write.
+	todo todoView
 	// todoArgs is the latest todo_write call's raw args; it drives the task list
 	// pinned just above the input (see renderTodoPanel). "" when there's no list.
 	// Persists across turns until the work completes or a new session starts.
@@ -2040,11 +2039,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		})
 	case "/compact":
 		m.echoLocalCommand(input)
-		// Compaction makes a (network) summarizer call; run it off the Update loop
-		// so the TUI doesn't freeze. The CompactionStarted/Done events render the
-		// card as they arrive; compactDoneMsg only handles the terminal error /
-		// snapshot once the pass returns. Any text after "/compact" is focus
-		// guidance steering what the summary keeps.
+		// Compaction makes a (network) summarizer call, so it runs off the Update
+		// loop and its card renders from CompactionStarted/Done; compactDoneMsg
+		// handles the terminal error/snapshot. Trailing text is focus guidance.
 		focus := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
 		return func() tea.Msg { return compactDoneMsg{err: m.ctrl.Compact(context.Background(), focus)} }
 	case "/context":
@@ -2088,8 +2085,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.runRenameCommand(input)
 	case "/todo":
 		m.echoLocalCommand(input)
-		// Dismiss only this mounted view; a later committed write brings it back.
-		m.todosDismissed = true
+		// Dismiss the bound session's list only — never a panel left behind by
+		// another owner; a later committed write brings it back.
+		m.todo.dismiss(m.sessionTodoOwner())
 		m.notice(i18n.M.SlashTodoCleared)
 	case "/verbose":
 		m.toggleVerboseReasoning(true)

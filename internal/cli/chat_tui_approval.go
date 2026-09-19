@@ -237,25 +237,28 @@ func approvalToolLabel(toolName string) string {
 const todoPanelMaxRows = 8
 
 // renderTodoPanel renders the committed current-turn task list above the input.
-// Completed lists remain inspectable until the next host turn boundary.
+// Completed lists remain inspectable until the next host turn boundary. The
+// panel renders the mounted owner's list — see todoView for why the owner is
+// part of the state rather than derived here.
 func (m chatTUI) renderTodoPanel() string {
-	if m.todosDismissed || len(m.todos) == 0 {
+	todos := m.todo.todos
+	if m.todo.dismissed || len(todos) == 0 {
 		return ""
 	}
 	done := 0
-	for _, t := range m.todos {
+	for _, t := range todos {
 		if t.Status == "completed" {
 			done++
 		}
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s\n", accent("To-dos"), dim(fmt.Sprintf("%d/%d", done, len(m.todos))))
-	start, end := todoPanelWindow(m.todos)
+	fmt.Fprintf(&b, "%s %s\n", accent("To-dos"), dim(fmt.Sprintf("%d/%d", done, len(todos))))
+	start, end := todoPanelWindow(todos)
 	if start > 0 {
 		b.WriteString(dim(fmt.Sprintf("  +%d above", start)) + "\n")
 	}
-	for _, t := range m.todos[start:end] {
+	for _, t := range todos[start:end] {
 		indent := "  "
 		switch t.Status {
 		case "completed":
@@ -266,8 +269,8 @@ func (m chatTUI) renderTodoPanel() string {
 			b.WriteString(indent + dim("○ "+t.Content) + "\n")
 		}
 	}
-	if end < len(m.todos) {
-		b.WriteString(dim(fmt.Sprintf("  +%d more", len(m.todos)-end)) + "\n")
+	if end < len(todos) {
+		b.WriteString(dim(fmt.Sprintf("  +%d more", len(todos)-end)) + "\n")
 	}
 	return todoPanelStyle.Width(max(m.width, 10)).Render(strings.TrimRight(b.String(), "\n"))
 }

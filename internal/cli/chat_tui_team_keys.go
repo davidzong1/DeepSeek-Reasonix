@@ -123,6 +123,9 @@ func teamPasteTarget(p *teamPicker) *string {
 	if p.reset.kind == leaderResetID {
 		return &p.reset.buf
 	}
+	if p.teamClear.kind == teamClearName {
+		return &p.teamClear.buf
+	}
 	if p.proxyEdit.kind == teamProxyField && teamProxyFields[p.proxyEdit.edit] == "address" {
 		return &p.proxyEdit.buf
 	}

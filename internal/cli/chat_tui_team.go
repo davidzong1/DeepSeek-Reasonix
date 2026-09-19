@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -125,6 +126,7 @@ type teamPicker struct {
 	refusal       string                 // transient operation refusal; the page stays up
 	store         *team.TeamStore        // storage seam; nil when no team data root opened
 	sessions      *team.TeamSessionStore // session/context seam; nil when no team data root opened
+	owners        *team.OwnerStore       // canonical owner storage; nil when the team data root is unknown
 	dataDir       string                 // team data dir backing store and board; "" when unknown
 	board         *teamInboxWire         // durable command chain (§5.1); nil when the board is unavailable
 	backends      *teamBackends          // member Agent backends; nil when the seam is unavailable
@@ -143,6 +145,7 @@ type teamPicker struct {
 	proxyEdit     teamProxyState         // team proxy settings editor; opens from the roster p
 	session       sessionState           // team session window; active replaces the roster
 	reset         leaderResetState       // k step-down confirmation; owns every key while active
+	teamClear     teamClearState         // c clear-histories confirmation; owns every key while active
 }
 
 // onTeamButtonClick opens the team overlay on the focused team's leader
@@ -165,7 +168,7 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			// The board is the task service's dependency, and the registry — with
 			// its task service — is assembled inside bindTeamBackends; opening it
 			// after that froze the service on a nil board (D1).
-			p := &teamPicker{model: tui.New(nil), store: roots.store, sessions: roots.sessions, dataDir: roots.dataDir, workspaceRoot: workspaceRoot}
+			p := &teamPicker{model: tui.New(nil), store: roots.store, sessions: roots.sessions, owners: roots.owners, dataDir: roots.dataDir, workspaceRoot: workspaceRoot}
 			if p.board = m.teamBackends.inbox(); p.board == nil {
 				p.board = openTeamInbox(roots.dataDir)
 			}
@@ -303,6 +306,7 @@ func (p *teamPicker) reload(focus string) error {
 	}
 	p.errMsg = ""
 	p.refusal = ""
+	p.invalidateMissingMemberState()
 	return nil
 }
 
@@ -389,10 +393,60 @@ func (p *teamPicker) deleteMember() error {
 	if !p.stopTeamBeforeClear(p.model.Name()) {
 		return nil
 	}
+	// The roster slot goes first: the owner directory is staged only once the
+	// member is really off the team, so a refused delete never takes a member's
+	// history away from a member that still exists.
 	if err := p.store.DeleteMember(p.model.Name(), member.ID); err != nil {
 		return err
 	}
+	if err := p.deleteMemberOwner(member.ID); err != nil {
+		return err
+	}
+	// reload re-checks the mounted draft against the roster it just read, so a
+	// draft armed on the member that stopped existing is discarded before the
+	// cursor settles on its neighbour.
 	return p.reload("")
+}
+
+// deleteMemberOwner stages the deleted member's canonical owner directory into
+// the owner trash bucket, completing the cascade the roster delete started. The
+// owner directory is the member's whole state — transcript and every derived
+// sidecar — so leaving it behind would leak a deleted member's history and let
+// a later member of the same id resume a conversation the operator removed.
+//
+// The staged copy is then swept: this is a delete, not a recoverable trash. A
+// failure at either step is returned, so the roster change is reported as a
+// partial cascade rather than silently losing the member's history or silently
+// leaving it behind. A host without an owner store has nothing to cascade.
+func (p *teamPicker) deleteMemberOwner(memberID string) error {
+	if p.owners == nil {
+		return nil
+	}
+	key := team.OwnerKey{TeamID: p.model.Name(), MemberID: memberID}
+	if _, err := p.owners.Delete(key); err != nil {
+		return fmt.Errorf("member %q removed, but its stored history was not: %w", memberID, err)
+	}
+	if err := p.owners.SweepOwnerTrash(key); err != nil {
+		return fmt.Errorf("member %q removed, but its staged history was not: %w", memberID, err)
+	}
+	return nil
+}
+
+// invalidateMissingMemberState re-checks the mounted member-property draft
+// against the roster the reload just read. A reload is the one place the TUI
+// learns a member disappeared — a delete here, a remote edit, the 1s roster
+// poll — and nothing else invalidates state derived from the roster, so a draft
+// belonging to a member that is no longer there would otherwise outlive it and
+// be published under whoever holds the cursor next. The To-do panel needs no
+// check here: it is keyed by the session owner, and a member that is gone can
+// no longer be the bound one.
+func (p *teamPicker) invalidateMissingMemberState() {
+	if p.memberEdit.kind == memberEditNone {
+		return
+	}
+	if _, ok := p.slotOf(p.memberEdit.owner.Member); !ok {
+		p.dropMemberEditDraft()
+	}
 }
 
 // stopTeamBeforeClear retires every assembled member backend of the team before
@@ -449,6 +503,9 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if p.reset.kind != leaderResetNone && handleLeaderResetKey(p, msg) {
 		return m, nil
 	}
+	if p.teamClear.kind != teamClearNone && handleTeamClearKey(p, msg) {
+		return m, nil
+	}
 	if p.proxyEdit.kind != teamProxyNone {
 		p.handleTeamProxyKey(msg)
 		return m, nil
@@ -486,9 +543,9 @@ func (m chatTUI) handleTeamPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if memberListKeyAllowed(view, p) {
 			cmd = m.enterTeamSession()
 		}
-	case "k":
+	case "k", "c":
 		if memberListKeyAllowed(view, p) {
-			p.startLeaderReset()
+			p.startLeaderConfirm(msg.String())
 		}
 	case teamExitAllKey:
 		if memberListKeyAllowed(view, p) {
@@ -526,7 +583,12 @@ func (m *chatTUI) exitAllTeamSessions() {
 	if p == nil {
 		return
 	}
-	p.suspendAutoSession()
+	if err := p.suspendAutoSession(); err != nil {
+		// The preference is the whole point of the key: a suspend that did not
+		// persist must be said out loud, not reported as "auto-session off".
+		p.refusal = "Auto-session not turned off: " + pickerErrMsg(err)
+		return
+	}
 	m.closeSession()
 	m.notice("team " + p.model.Name() + ": auto-session off — [ TEAM ] parks here until t")
 	m.forceGotoBottom = true

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"reasonix/internal/team"
 )
 
 // leaderResetKind is the k key's step-down confirmation stage (§6): warn →
@@ -36,6 +38,18 @@ type leaderResetState struct {
 	buf     string
 	errMsg  string
 	entered time.Time // stage entry; a stale stage cancels on the next key
+}
+
+// startLeaderConfirm arms the leader-gated destructive confirmation the roster
+// key names: k steps the leader down, c clears the team's histories. Both are
+// refused on a non-leader and neither navigates, so the key and the stage
+// cannot drift apart.
+func (p *teamPicker) startLeaderConfirm(key string) {
+	if key == "c" {
+		p.startTeamClear()
+		return
+	}
+	p.startLeaderReset()
 }
 
 // startLeaderReset arms the step-down confirmation on the focused member,
@@ -162,9 +176,20 @@ func (p *teamPicker) executeLeaderReset() {
 // A member's history is its own Reasonix session file (D5), so that file is what
 // step-down deletes; the legacy context tree is cleared too so a pre-D5 tree left
 // on disk does not survive a step-down that promised to remove it.
+//
+// Canonical owner storage is cleared as well, and first: since the owner
+// directory is where a member's transcript and every derived sidecar now live, a
+// step-down that only deleted the session-directory copies would leave the real
+// histories on disk while telling the user they were removed. Clearing by owner
+// key — rather than by session file — is what keeps another team untouched.
 func (p *teamPicker) clearTeamHistories(teamName string) error {
 	if p.sessions != nil {
 		if err := p.sessions.ClearTeamTrash(teamName); err != nil {
+			return err
+		}
+	}
+	if p.owners != nil {
+		if err := p.clearOwnerHistories(teamName); err != nil {
 			return err
 		}
 	}
@@ -178,6 +203,29 @@ func (p *teamPicker) clearTeamHistories(teamName string) error {
 	for _, b := range bindings {
 		path := filepath.Join(p.sessionDir, b.SessionFile)
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearOwnerHistories stages and sweeps every member's canonical owner directory
+// for the team. The member list comes from the owner store's own team directory,
+// not from the registry: a slot already removed from team.json still owns a
+// directory, and a step-down that promised to remove the team's histories must
+// not leave those behind. Every error is returned — a partial clear that reports
+// success is exactly the promise this function exists to keep.
+func (p *teamPicker) clearOwnerHistories(teamName string) error {
+	ids, err := p.owners.MemberIDs(teamName)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		key := team.OwnerKey{TeamID: teamName, MemberID: id}
+		if _, err := p.owners.Delete(key); err != nil {
+			return err
+		}
+		if err := p.owners.SweepOwnerTrash(key); err != nil {
 			return err
 		}
 	}
