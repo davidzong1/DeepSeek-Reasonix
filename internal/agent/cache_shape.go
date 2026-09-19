@@ -93,6 +93,11 @@ func CompareShape(prev, cur PrefixShape, usage *provider.Usage, contentReasons [
 		PrefixHash:          cur.PrefixHash,
 		PrefixChanged:       len(reasons) > 0,
 		PrefixChangeReasons: reasons,
+		// The stable prefix (system + tools) is what a provider cache keys on.
+		// prev.PrefixHash cannot report it: it also folds in the turn tail's
+		// digest, so a tail-only change moves it.
+		StablePrefixHash:    shortHash(map[string]string{"system": cur.SystemHash, "tools": cur.ToolsHash}),
+		StablePrefixChanged: prev.SystemHash != "" && prev.ToolsHash != "" && (prev.SystemHash != cur.SystemHash || prev.ToolsHash != cur.ToolsHash),
 		SystemHash:          cur.SystemHash,
 		ToolsHash:           cur.ToolsHash,
 		LogRewriteVersion:   cur.LogRewriteVersion,

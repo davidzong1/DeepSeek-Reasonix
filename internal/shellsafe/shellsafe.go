@@ -31,6 +31,14 @@ var readOnlyCommands = map[string]bool{
 	"man": true, "info": true, "help": true,
 	"true": true, "false": true, "test": true, "[": true,
 	"basename": true, "dirname": true, "realpath": true, "readlink": true,
+	// Inspection and digest helpers whose only output channel is stdout. Each
+	// one's write-capable form is denied in effect.go (xxd -r, base64 -o,
+	// tree -o); interpreters writing via program text (awk, jq, python) stay absent.
+	"nl": true, "od": true, "hexdump": true, "strings": true, "column": true,
+	"seq": true, "paste": true, "fold": true,
+	"xxd": true, "base64": true, "shasum": true, "cksum": true, "b2sum": true,
+	"md5sum": true, "sha1sum": true, "sha256sum": true, "sha512sum": true,
+	"tree": true,
 	// PowerShell inspection cmdlets. Keep this list intentionally narrow: only
 	// cmdlets whose verb is intrinsically observational belong here. The parser
 	// still rejects pipelines, substitutions, redirections, and command chains.

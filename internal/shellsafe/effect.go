@@ -222,6 +222,15 @@ func classifyStaticFields(fields []string) CommandEffect {
 			}
 		case "sed":
 			return classifySed(args)
+		case "xxd":
+			return classifyXxd(args)
+		case "base64", "tree":
+			// BSD/macOS base64 (-o) and tree (-o/--output) name an output file.
+			// The form is rejected everywhere: base64 -o is invalid on GNU, and
+			// where it is valid it writes.
+			if hasOutputArg(args) {
+				return knownWriter(base, WriteWorkspaceContent, "writes command output")
+			}
 		}
 		return effect
 	}
@@ -735,6 +744,12 @@ func hasEffectArg(args []string, candidates ...string) bool {
 	return slices.ContainsFunc(args, func(arg string) bool {
 		return slices.Contains(candidates, strings.SplitN(arg, "=", 2)[0])
 	})
+}
+
+// hasShortOption reports a short flag even when it is bundled with others
+// (-rs), which is how xxd and friends accept their options.
+func hasShortOption(args []string, flag byte) bool {
+	return slices.ContainsFunc(args, func(arg string) bool { return shortOptionContains(arg, flag) })
 }
 
 func hasArgPrefix(args []string, prefix string) bool {

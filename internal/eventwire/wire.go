@@ -436,6 +436,8 @@ type CacheDiagnostics struct {
 	PrefixHash          string                     `json:"prefixHash"`
 	PrefixChanged       bool                       `json:"prefixChanged"`
 	PrefixChangeReasons []string                   `json:"prefixChangeReasons,omitempty"`
+	StablePrefixHash    string                     `json:"stablePrefixHash,omitempty"`
+	StablePrefixChanged bool                       `json:"stablePrefixChanged,omitempty"`
 	SystemHash          string                     `json:"systemHash"`
 	ToolsHash           string                     `json:"toolsHash"`
 	LogRewriteVersion   int                        `json:"logRewriteVersion"`
@@ -510,6 +512,8 @@ func ToWireCacheDiagnostics(d *event.CacheDiagnostics) *CacheDiagnostics {
 		PrefixHash:          d.PrefixHash,
 		PrefixChanged:       d.PrefixChanged,
 		PrefixChangeReasons: append([]string(nil), d.PrefixChangeReasons...),
+		StablePrefixHash:    d.StablePrefixHash,
+		StablePrefixChanged: d.StablePrefixChanged,
 		SystemHash:          d.SystemHash,
 		ToolsHash:           d.ToolsHash,
 		LogRewriteVersion:   d.LogRewriteVersion,
