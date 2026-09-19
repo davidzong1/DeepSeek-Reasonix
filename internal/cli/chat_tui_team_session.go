@@ -95,6 +95,12 @@ const (
 // restore, and open.
 const poolSessionRefusal = "No agent pool configured for this team — press u on the roster to configure one before opening a session"
 
+// sessionSelectionRefusal is the unreadable-selection gate: the persisted
+// member window exists but cannot be read, so opening the fallback would show a
+// member the user did not choose and then persist that replacement. The file is
+// named in the hint because it is the only thing the user can act on.
+const sessionSelectionRefusal = "Team session preference is unreadable — fix or remove it, then reopen the team"
+
 // teamPoolConfigured reports whether the focused team has at least one
 // agent-user pool entry — its own entries or the legacy default reference.
 // That is the session gate's subject: entry requires the team-level
@@ -199,44 +205,56 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 // the roster's leader — the session gate is the leader property, mirroring the
 // t key — and falls back to the focused team's leader session otherwise. The
 // second result reports a deliberate leave: suspended selections park on the
-// management page, never a refusal. An absent, unreadable, or stale selection
-// is a fallback, never an error: the [TEAM] click opens the management page's
-// leader window as it always has.
+// management page, never a refusal. An absent or stale selection is a fallback,
+// never an error: the [TEAM] click opens the management page's leader window as
+// it always has.
+//
+// A selection that exists but cannot be read is not an absent one. It is refused
+// rather than fallen back from: the fallback would open a different member's
+// window over the operator's recorded choice, and the next deliberate switch
+// persists that replacement, destroying the only record of where they were. The
+// refusal leaves the file untouched for the operator to fix or remove.
 func (p *teamPicker) restoreSession() (string, bool) {
-	if p.sessions != nil {
-		if teamName := p.model.Name(); teamName != "" {
-			if sel, err := p.sessions.ReadSelection(teamName); err == nil && sel.Suspended {
-				return "", true
-			}
-		}
+	sel, selErr := p.readSelection()
+	if selErr != nil {
+		p.refusal = sessionSelectionRefusal
+		return "", false
+	}
+	if sel.Suspended {
+		return "", true
 	}
 	if p.firstLeader() == "" {
 		p.refusal = "Only the leader can start a team session"
 		return "", false
 	}
-	if p.sessions != nil {
-		if teamName := p.model.Name(); teamName != "" {
-			if sel, err := p.sessions.ReadSelection(teamName); err == nil {
-				if sel.Suspended {
-					return "", true
-				}
-				if slot, ok := p.slotOf(sel.MemberID); ok && slot.IsLeader() {
-					// The session will open on this member: the team's configured
-					// pool — never the member's own binding — is the gate.
-					if !p.teamPoolConfigured() {
-						p.refusal = poolSessionRefusal
-						return "", false
-					}
-					return p.openSession(sel.MemberID), false
-				}
-			}
+	if slot, ok := p.slotOf(sel.MemberID); ok && slot.IsLeader() {
+		// The session will open on this member: the team's configured pool —
+		// never the member's own binding — is the gate.
+		if !p.teamPoolConfigured() {
+			p.refusal = poolSessionRefusal
+			return "", false
 		}
+		return p.openSession(sel.MemberID), false
 	}
 	if !p.teamPoolConfigured() {
 		p.refusal = poolSessionRefusal
 		return "", false
 	}
 	return p.openSession(""), false
+}
+
+// readSelection reads the focused team's persisted session selection. No store,
+// no focused team, or no file yet is an empty selection and a nil error, so the
+// caller only has to distinguish "nothing recorded" from "recorded but broken".
+func (p *teamPicker) readSelection() (team.SessionSelection, error) {
+	if p.sessions == nil {
+		return team.SessionSelection{}, nil
+	}
+	teamName := p.model.Name()
+	if teamName == "" {
+		return team.SessionSelection{}, nil
+	}
+	return p.sessions.ReadSelection(teamName)
 }
 
 // openSession puts the overlay on the focused team's given member's window and
