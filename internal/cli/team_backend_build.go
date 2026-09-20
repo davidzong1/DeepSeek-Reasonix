@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 	"reasonix/internal/team"
+	"reasonix/internal/tool"
 )
 
 // memberProviderResolver serves exactly one member's pool entry as a catalog of
@@ -366,6 +368,30 @@ func memberWriteRoots(leader bool) []string {
 	return nil
 }
 
+// memberExtraTools is the per-role tool surface one member backend carries: the
+// task board, the deliverable half, and (for a leader) the member registry and
+// the escalation queue. The escalation constructor returns nil for anyone else,
+// so a member never holds the surface that clears its own cards.
+func memberExtraTools(deps memberBackendDeps, b team.MemberBinding, stderr io.Writer) []tool.Tool {
+	tasks := deps.tasks.forTeam(b.Team)
+	var out []tool.Tool
+	if b.Leader && deps.store != nil {
+		out = append(out, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)
+		out = append(out, newLeaderTaskTools(tasks, b.Team, b.MemberID)...)
+	} else {
+		out = append(out, newMemberTaskTools(tasks, b.Team, b.MemberID)...)
+	}
+	// The deliverable surface needs no store handle of its own: it resolves the
+	// fixed user state root, so both roles get their half whether or not this
+	// build was handed a registry.
+	if b.Leader {
+		out = append(out, newLeaderDeliverableTools(b.Team, b.MemberID, stderr)...)
+	} else {
+		out = append(out, newMemberDeliverableTools(b.Team, b.MemberID, stderr)...)
+	}
+	return append(out, newLeaderApprovalTools(deps.escalations, b.Team, b.MemberID, b.Leader)...)
+}
+
 // newMemberBackendBuilder returns the assembly function teamBackends binds
 // with: one member's pool entry becomes a full Agent backend — tools, memory,
 // skills, hooks and trajectory included — pointed at that member's own session
@@ -413,42 +439,20 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			// Invalid team_role declarations warn through the assembly's own
 			// diagnostic writer (nil keeps the historical silence).
 			teamRoleSkillPrompt(opts.TeamSkillsRoot, b.Leader, opts.Stderr)
-		tasks := deps.tasks.forTeam(b.Team)
-		if b.Leader && deps.store != nil {
-			opts.ExtraTools = append(opts.ExtraTools, newLeaderMemberTools(deps.store, deps.sessions, b.Team, b.MemberID, deps.release)...)
-			opts.ExtraTools = append(opts.ExtraTools, newLeaderTaskTools(tasks, b.Team, b.MemberID)...)
-		} else {
-			opts.ExtraTools = append(opts.ExtraTools, newMemberTaskTools(tasks, b.Team, b.MemberID)...)
-		}
-		// The deliverable surface needs no store handle of its own: it resolves
-		// the fixed user state root, so both roles get their half whether or not
-		// this build was handed a registry.
-		if b.Leader {
-			opts.ExtraTools = append(opts.ExtraTools, newLeaderDeliverableTools(b.Team, b.MemberID, opts.Stderr)...)
-		} else {
-			opts.ExtraTools = append(opts.ExtraTools, newMemberDeliverableTools(b.Team, b.MemberID, opts.Stderr)...)
-		}
-		// The escalation queue is the leader's to clear; the constructor returns
-		// nil for anyone else, so a member never holds the surface.
-		opts.ExtraTools = append(opts.ExtraTools, newLeaderApprovalTools(deps.escalations, b.Team, b.MemberID, b.Leader)...)
+		opts.ExtraTools = append(opts.ExtraTools, memberExtraTools(deps, b, opts.Stderr)...)
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err
 		}
-		roots, createRoot := memberSessionRoots(ctrl, deps.workspaceRoot)
-		// Canonical owner storage comes first when the host has a team data root:
-		// a history still in a session-directory candidate is adopted into the
-		// member's owner directory once, and every later launch reads it there.
-		if deps.owners != nil {
-			ownerDir, err := adoptMemberOwnerHistory(deps.ctx, ctrl, deps.owners, b, roots)
-			if err != nil {
-				ctrl.Close()
-				return nil, err
-			}
-			roots, createRoot = memberSessionRootsWithOwner(ctrl, deps.workspaceRoot, ownerDir)
-		}
-		path, fresh, err := bindMemberSession(ctrl, b.SessionFile, roots, createRoot)
+		path, fresh, follower, err := bindMemberOwnerSession(deps, ctrl, b)
 		if err != nil {
+			return nil, err
+		}
+		if follower != nil {
+			return follower, nil
+		}
+		// Publish the member's transcript identity for cross-window observation.
+		if err := recordMemberOwnerHistory(deps.ctx, deps.owners, b, ctrl, false); err != nil {
 			ctrl.Close()
 			return nil, err
 		}
@@ -468,6 +472,12 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// lease before the first submitted task (admission-6 gate).
 		wl, err := bindMemberSessionAuthority(ctrl, path, true)
 		if err != nil {
+			// The legacy axis contends here rather than at import: it has no path
+			// lease to import through, so another runtime's hold on the transcript
+			// surfaces when this one asks for write authority.
+			if isMemberWriterContention(err) {
+				return newMemberFollower(deps, ctrl, b, err)
+			}
 			ctrl.Close()
 			return nil, err
 		}
@@ -484,6 +494,44 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		}
 		return memberLeasedBackend{SessionAPI: ctrl, stop: wl}, nil
 	}
+}
+
+// bindMemberOwnerSession resolves the member's canonical session path and binds
+// it, returning a read-only follower instead of an error when another runtime
+// owns the writer or the bind landed on a stale import.
+func bindMemberOwnerSession(deps memberBackendDeps, ctrl *control.Controller, b team.MemberBinding) (string, bool, control.SessionAPI, error) {
+	roots, createRoot := memberSessionRoots(ctrl, deps.workspaceRoot)
+	// Canonical owner storage comes first when the host has a team data root:
+	// a history still in a session-directory candidate is adopted into the
+	// member's owner directory once, and every later launch reads it there.
+	if deps.owners != nil {
+		ownerDir, err := adoptMemberOwnerHistory(deps.ctx, ctrl, deps.owners, b, roots)
+		if err != nil {
+			ctrl.Close()
+			return "", false, nil, err
+		}
+		roots, createRoot = memberSessionRootsWithOwner(ctrl, deps.workspaceRoot, ownerDir)
+	}
+	path, fresh, err := bindMemberSession(ctrl, b.SessionFile, roots, createRoot)
+	if err != nil {
+		// Another runtime owns the writer: attach a read-only follower. Every
+		// other failure stays visible, so a broken provider is never shown as
+		// a read-only session.
+		if isMemberWriterContention(err) {
+			follower, ferr := newMemberFollower(deps, ctrl, b, err)
+			return "", false, follower, ferr
+		}
+		ctrl.Close()
+		return "", false, nil, err
+	}
+	// A clear republishes the owner stem while leaving the legacy transcript it
+	// was imported from unchanged, so a re-import deterministically reproduces
+	// the pre-rotation identity; the published stem wins over that import.
+	if staleMemberImport(deps.owners, b, ctrl, path) {
+		follower, ferr := newMemberFollower(deps, ctrl, b, errMemberStaleImport)
+		return "", false, follower, ferr
+	}
+	return path, fresh, nil, nil
 }
 
 // memberLeasedBackend wraps one member's controller with its session lease so

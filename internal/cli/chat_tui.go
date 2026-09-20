@@ -1524,7 +1524,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memberEventMsg:
 		return m, m.handleMemberEvent(msg)
 	case teamRosterRefreshMsg:
-		return m, m.refreshTeamRoster()
+		return m, m.refreshTeamRoster(msg)
 	case clipboardCopyMsg:
 		if msg.statusHint && msg.seq != m.copyNoticeSeq {
 			break

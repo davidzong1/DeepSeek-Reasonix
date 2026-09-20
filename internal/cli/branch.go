@@ -76,6 +76,7 @@ func (m *chatTUI) runBranchCommand(input string) {
 		}
 		m.followSessionLease()
 		m.replayActiveBranch(fmt.Sprintf("branched from turn %d", n))
+		m.publishBoundOwnerHistory()
 		return
 	} else {
 		if _, err := m.ctrl.Branch(name); err != nil {
@@ -84,6 +85,7 @@ func (m *chatTUI) runBranchCommand(input string) {
 		}
 		m.followSessionLease()
 	}
+	m.publishBoundOwnerHistory()
 	m.showBranchTree()
 }
 

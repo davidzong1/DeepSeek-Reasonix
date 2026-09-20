@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -37,6 +38,11 @@ type stubBackend struct {
 	closed   *int                  // nil when the test does not care about teardown
 	status   control.RuntimeStatus // injected busy state; zero = idle
 	replays  *int                  // nil when the test does not assert prompt replay
+	// stamp is the durable history identity this stub reports and reloads
+	// against. reloads counts accepted reloads; reloadErr drives the failure path.
+	stamp     string
+	reloads   *int
+	reloadErr error
 }
 
 func (s stubBackend) Label() string               { return s.label }
@@ -56,6 +62,25 @@ func (s stubBackend) DisabledSkills() []skill.Skill {
 }
 func (s stubBackend) Host() *plugin.Host  { return nil }
 func (s stubBackend) SessionPath() string { return "" }
+
+// HistoryStamp and ReloadHistoryIfChanged are the cross-window observation
+// port: a stub reports its configured stamp and records the reload, so the
+// tests can assert the sync path without a durable store.
+func (s stubBackend) HistoryStamp() string { return s.stamp }
+
+func (s stubBackend) ReloadHistoryIfChanged(_ context.Context, stamp string) (bool, error) {
+	if s.reloadErr != nil {
+		return false, s.reloadErr
+	}
+	if s.stamp == stamp {
+		return false, nil
+	}
+	s.stamp = stamp
+	if s.reloads != nil {
+		*s.reloads++
+	}
+	return true, nil
+}
 
 // SessionDir is read when the overlay reopens over an already-bound member, so a
 // stub standing in for that member's backend has to answer it.

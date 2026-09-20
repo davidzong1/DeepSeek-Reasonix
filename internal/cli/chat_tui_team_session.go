@@ -13,7 +13,13 @@ import (
 // teamRosterRefreshMsg invalidates the in-memory roster while the team
 // overlay remains open. Leader tools mutate team.json through their own store,
 // so the TUI needs a small polling loop to observe those cross-session writes.
-type teamRosterRefreshMsg struct{}
+//
+// sync carries the result of the tick's off-goroutine durable-history read back
+// through the same message: the read is scheduled by the tick, so its result
+// rides the tick instead of needing a second update branch (see syncBoundHistory).
+type teamRosterRefreshMsg struct {
+	sync *historySyncDone
+}
 
 const teamRosterRefreshInterval = time.Second
 
@@ -24,10 +30,27 @@ func teamRosterRefresh() tea.Cmd {
 // refreshTeamRoster re-reads the registry and keeps the active session's
 // member list aligned with disk. A removed current member falls back to the
 // first remaining leader; a new member becomes immediately switchable.
-func (m *chatTUI) refreshTeamRoster() tea.Cmd {
+//
+// The same 1s tick also polls the bound member's history identity, so a second
+// window that appended, cleared or branched the same canonical owner is noticed
+// without a re-enter or a rebind (see syncBoundHistory). The poll runs after the
+// roster has settled: a member removed remotely must be rebound before its
+// owner is read, or the window reads the fingerprint of a member it is about to
+// leave and reports its own rebind as a remote clear.
+func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 	if m == nil || m.teamPick == nil || m.teamPick.store == nil {
 		return nil
 	}
+	if msg.sync != nil {
+		m.handleHistorySyncDone(*msg.sync)
+	}
+	next := m.refreshTeamRosterView()
+	return batchCmds(m.syncBoundHistory(), next)
+}
+
+// refreshTeamRosterView is the roster half of the tick: reload the registry and
+// align the session's member list with it.
+func (m *chatTUI) refreshTeamRosterView() tea.Cmd {
 	p := m.teamPick
 	teamName := p.model.Name()
 	if err := p.reload(teamName); err != nil {
@@ -127,6 +150,22 @@ type sessionState struct {
 	unread   map[string]int           // non-current members' terminal events, per member
 	prompts  map[string]memberPrompt  // non-current members' pending approval/ask, per member
 	live     map[string][]event.Event // non-current members' in-flight turn, replayed on switch
+	// syncStamp is the durable history identity the window last rendered for
+	// the bound member. The 1s tick compares it to the member's current stamp,
+	// so a history another window changed is adopted without a rebind.
+	syncStamp string
+	// syncPending records that a history change was observed while the window
+	// was busy and could not be adopted yet. The next idle tick retries, so a
+	// change that arrives mid-turn is not silently dropped.
+	syncPending bool
+	// syncInFlight is the stamp of a durable-history read running off the UI
+	// goroutine: it suppresses a duplicate read and matches a late result, which
+	// is dropped when the window has moved on.
+	syncInFlight string
+	// syncErrKey is the last failure this window reported, so a failure that
+	// repeats on every tick or every turn is said once instead of burying the
+	// transcript.
+	syncErrKey string
 }
 
 // newSessionState arms one team session window. The per-member maps are created

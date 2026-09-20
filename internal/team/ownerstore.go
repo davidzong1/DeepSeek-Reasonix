@@ -82,6 +82,20 @@ type OwnerSource struct {
 	AdoptedAt string `json:"adopted_at"`
 }
 
+// OwnerHistory is one owner's canonical transcript identity together with a
+// monotonic generation that every history mutation bumps. Stem names the live
+// session the transcript currently executes as — a v3 SessionID after the
+// legacy import, else the legacy branch id — so a reader that must not open the
+// writer's store can still name what it is looking at. Generation is the
+// change signal: it is bumped by append, branch/replace and the identity
+// establishing bind, and an owner directory that is gone (clear/step-down) is
+// the empty state rather than a generation.
+type OwnerHistory struct {
+	Stem       string `json:"stem,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
 // OwnerMeta is one owner directory's metadata document. Revision is monotonic
 // and is the compare-and-swap basis for concurrent writers.
 type OwnerMeta struct {
@@ -89,6 +103,26 @@ type OwnerMeta struct {
 	Revision  uint64        `json:"revision"`
 	CreatedAt string        `json:"created_at"`
 	Sources   []OwnerSource `json:"sources,omitempty"`
+	History   OwnerHistory  `json:"history,omitempty"`
+}
+
+// OwnerFingerprint is one owner's read-only history identity: what a second
+// window polls to notice that another runtime changed the history. Present is
+// false for an owner directory that is gone — a cleared team, a stepped-down
+// leader — which readers render as the empty state, never as a generation.
+type OwnerFingerprint struct {
+	Present    bool
+	Stem       string
+	Generation uint64
+	// Corrupt marks a present owner whose metadata cannot be read as a
+	// document. Without it an unreadable document is indistinguishable from a
+	// legitimately unnamed owner, so a reader could not fail closed.
+	Corrupt bool
+}
+
+// Changed reports whether other describes a different history than f.
+func (f OwnerFingerprint) Changed(other OwnerFingerprint) bool {
+	return f != other
 }
 
 // OwnerPaths is one owner's resolved on-disk locations.
@@ -193,6 +227,68 @@ func (s *OwnerStore) Meta(key OwnerKey) (OwnerMeta, error) {
 		return OwnerMeta{}, fmt.Errorf("%w: %s", ErrOwnerNotFound, key)
 	}
 	return meta, err
+}
+
+// Fingerprint returns the owner's read-only history identity without taking
+// any lock: a missing directory is the empty state, and an unreadable or
+// corrupt metadata document is reported as present and corrupt so a reader can
+// fail closed instead of adopting an identity it cannot trust. It is the
+// polling surface a second window uses, so it must never block behind the
+// owner's metadata lock.
+//
+// The error result is reserved for a key or root the store itself cannot
+// resolve — states where the store cannot even name the owner directory. A
+// document that cannot be read is a fingerprint, not an error, because the
+// reader has to tell the two apart to decide whether to retry or to refuse.
+func (s *OwnerStore) Fingerprint(key OwnerKey) (OwnerFingerprint, error) {
+	paths, err := s.Paths(key)
+	if err != nil {
+		return OwnerFingerprint{}, err
+	}
+	meta, err := s.readMeta(paths)
+	if errors.Is(err, fs.ErrNotExist) {
+		return OwnerFingerprint{}, nil
+	}
+	if err != nil {
+		// The directory exists but its document cannot be read. Reporting it as
+		// present-but-unnamed would alias the legitimate unnamed owner, so the
+		// caller could never tell "nothing published yet" from "untrusted".
+		return OwnerFingerprint{Present: true, Corrupt: true}, nil
+	}
+	return OwnerFingerprint{Present: true, Stem: meta.History.Stem, Generation: meta.History.Generation}, nil
+}
+
+// BumpHistory records the owner's canonical transcript identity and advances
+// its generation. stem is the live session the transcript now executes as (a
+// v3 SessionID, else the legacy branch id); bump is false for a call that only
+// establishes the identity, so binding a member does not look like a change.
+// The write goes through UpdateMeta, so it takes the owner's metadata lock and
+// publishes a new revision — the CAS basis a concurrent writer sees. An absent
+// owner directory is created first: a member with no history yet still needs an
+// identity for a second window to compare against.
+//
+// An empty stem never erases a name already published. The legacy axis has no
+// live transcript to name the instant a rotation returns, so a caller
+// publishing right after a clear reports "" — and clearing the stem there would
+// leave the owner unnamed for every peer until the next save. The stale name
+// beats none; the generation still advances, so the change is not lost. A first
+// identity with an empty stem stays empty rather than inventing a name.
+func (s *OwnerStore) BumpHistory(ctx context.Context, key OwnerKey, stem string, bump bool) error {
+	if _, _, err := s.Init(ctx, key); err != nil {
+		return err
+	}
+	_, err := s.UpdateMeta(ctx, key, 0, func(meta *OwnerMeta) error {
+		next := OwnerHistory{Stem: meta.History.Stem, Generation: meta.History.Generation, UpdatedAt: s.stamp()}
+		if named := strings.TrimSpace(stem); named != "" {
+			next.Stem = named
+		}
+		if bump {
+			next.Generation++
+		}
+		meta.History = next
+		return nil
+	})
+	return err
 }
 
 // UpdateMeta applies mutate to the owner metadata under the owner's

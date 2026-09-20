@@ -450,3 +450,165 @@ func TestOwnerStoreLockFileIsAdvisoryAndPerOwner(t *testing.T) {
 		t.Fatalf("second lock after release err = %v", err)
 	}
 }
+
+// TestOwnerStoreBumpHistoryKeepsStemWhenEmpty pins the identity half of the
+// cross-window contract: an empty stem never erases a name already published,
+// while the generation still advances. The legacy axis has no transcript to
+// name the instant a clear returns (the fresh file is written on the next
+// save), so a publication there reports "" — dropping the old name would leave
+// the owner unnamed for every peer until that save, and losing the bump would
+// hide the clear entirely.
+func TestOwnerStoreBumpHistoryKeepsStemWhenEmpty(t *testing.T) {
+	s := newTestOwnerStore(t)
+	ctx := context.Background()
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+	read := func() OwnerFingerprint {
+		t.Helper()
+		got, err := s.Fingerprint(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	if err := s.BumpHistory(ctx, key, "s1", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s1", Generation: 1}) {
+		t.Fatalf("first bump = %+v, want stem s1 at generation 1", got)
+	}
+
+	// The empty publication: the name is kept, the change is not.
+	if err := s.BumpHistory(ctx, key, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s1", Generation: 2}) {
+		t.Fatalf("empty-stem bump = %+v, want stem s1 kept at generation 2", got)
+	}
+	// Whitespace is the same absence, not a name.
+	if err := s.BumpHistory(ctx, key, "  ", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s1", Generation: 3}) {
+		t.Fatalf("whitespace-stem bump = %+v, want stem s1 kept at generation 3", got)
+	}
+
+	// A real name still replaces the stale one.
+	if err := s.BumpHistory(ctx, key, "s2", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s2", Generation: 4}) {
+		t.Fatalf("named bump = %+v, want stem s2 at generation 4", got)
+	}
+
+	// Establishing the identity is not a change: the stem may be renamed by a
+	// later assembly, but the generation must not move.
+	if err := s.BumpHistory(ctx, key, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s2", Generation: 4}) {
+		t.Fatalf("unbumped empty publish = %+v, want stem s2 at generation 4", got)
+	}
+	if err := s.BumpHistory(ctx, key, "s3", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != (OwnerFingerprint{Present: true, Stem: "s3", Generation: 4}) {
+		t.Fatalf("unbumped named publish = %+v, want stem s3 at generation 4", got)
+	}
+}
+
+// TestOwnerStoreBumpHistoryFirstIdentityStaysUnnamed pins the other half: a
+// first identity with an empty stem is stored empty rather than invented, so a
+// peer reads "present but unnamed" instead of a name no session ever had. The
+// generation still advances, because the caller did report a change.
+func TestOwnerStoreBumpHistoryFirstIdentityStaysUnnamed(t *testing.T) {
+	s := newTestOwnerStore(t)
+	ctx := context.Background()
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+
+	if err := s.BumpHistory(ctx, key, "", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (OwnerFingerprint{Present: true}) {
+		t.Fatalf("a first empty identity = %+v, want present and unnamed at generation 0", got)
+	}
+
+	if err := s.BumpHistory(ctx, key, "", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (OwnerFingerprint{Present: true, Generation: 1}) {
+		t.Fatalf("an empty-stem bump on an unnamed owner = %+v, want generation 1 and still unnamed", got)
+	}
+	meta, err := s.Meta(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.History.UpdatedAt == "" {
+		t.Fatal("a publication must stamp UpdatedAt")
+	}
+}
+
+// TestOwnerStoreFingerprintDistinguishesCorruptFromUnnamed pins the fail-closed
+// contract of the polling surface: an owner whose metadata document cannot be
+// read is reported as present and corrupt, not as present and unnamed. The two
+// states are otherwise byte-identical to a reader — both are {Present: true} —
+// and a reader that cannot tell them apart adopts an identity it cannot trust,
+// rendering the unreadable owner as "unnamed at generation 0" while the real
+// change on disk is never seen.
+func TestOwnerStoreFingerprintDistinguishesCorruptFromUnnamed(t *testing.T) {
+	s := newTestOwnerStore(t)
+	ctx := context.Background()
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+
+	// A legitimate first identity with no name: present, unnamed, generation 0.
+	if err := s.BumpHistory(ctx, key, "", false); err != nil {
+		t.Fatal(err)
+	}
+	unnamed, err := s.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unnamed.Corrupt {
+		t.Fatalf("a legitimately unnamed owner must not read as corrupt: %+v", unnamed)
+	}
+
+	// The same directory with an unreadable document.
+	paths, err := s.Paths(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Meta, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := s.Fingerprint(key)
+	if err != nil {
+		t.Fatalf("an unreadable document must be reported through the fingerprint, not as an error: %v", err)
+	}
+	if !corrupt.Present || !corrupt.Corrupt {
+		t.Fatalf("a corrupt owner = %+v, want present and corrupt", corrupt)
+	}
+	if corrupt == unnamed {
+		t.Fatal("a corrupt owner must not be indistinguishable from an unnamed one")
+	}
+	if !corrupt.Changed(unnamed) {
+		t.Fatal("a reader comparing the two states must see a change")
+	}
+
+	// An absent owner directory is still the empty state, not corruption: a
+	// cleared team and a broken document call for different actions.
+	absent, err := s.Fingerprint(OwnerKey{TeamID: "team-a", MemberID: "nobody"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent != (OwnerFingerprint{}) {
+		t.Fatalf("an absent owner = %+v, want the zero fingerprint", absent)
+	}
+}

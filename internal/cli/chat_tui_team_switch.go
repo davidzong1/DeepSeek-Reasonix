@@ -59,6 +59,11 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 	if msg.ev.Kind == event.TurnDone && msg.ev.Err != nil {
 		m.failoverQuotaTurn(msg.member, msg.ev.Err)
 	}
+	// A settled turn is a committed history change, so that member's owner
+	// generation advances. Any member's turn counts, not just the bound one.
+	if msg.ev.Kind == event.TurnDone && msg.ev.Err == nil {
+		m.publishTurnOwnerHistory(msg.member)
+	}
 	return waitForMemberEvent(m.memberEvents)
 }
 

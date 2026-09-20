@@ -29,6 +29,9 @@ type controllerRuntimeState struct {
 	pending        *event.RuntimeStateSnapshot
 	draining       bool
 	jobUnsubscribe func()
+	// historySync is the cross-window history observation substate: the durable
+	// history identity this controller last adopted (see HistoryStamp).
+	historySync controllerHistorySync
 }
 
 func newRuntimeStateEpoch() string {

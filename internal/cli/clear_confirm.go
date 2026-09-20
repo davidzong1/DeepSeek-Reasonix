@@ -69,6 +69,10 @@ func (m *chatTUI) clearContext() tea.Cmd {
 	// session, and the ambient keeper still guards the chat's file (see
 	// followSessionLease).
 	m.followSessionLease()
+	// The rotation replaced the bound member's live session, so its canonical
+	// history identity is now a different one. Only after ClearSession returned:
+	// a failed clear left the session — and the identity — exactly as it was.
+	m.publishBoundOwnerHistory()
 	m.resetFreshContextView(true)
 	m.notice(i18n.M.SlashClearDone + scope)
 	return tea.ClearScreen

@@ -308,6 +308,18 @@ type Settings interface {
 	SystemPrompt() string
 }
 
+// HistorySync covers the read-only cross-window history observation a frontend
+// needs when a second window may be writing the same session. It is part of the
+// driving surface, so a frontend never silently lacks it.
+type HistorySync interface {
+	// HistoryStamp returns an opaque identity of the session's current durable
+	// history. Equal stamps mean nothing changed; "" means no readable history.
+	HistoryStamp() string
+	// ReloadHistoryIfChanged adopts the session's durable history when stamp is
+	// new, reporting whether it reloaded. It is a no-op while the runtime is busy.
+	ReloadHistoryIfChanged(ctx context.Context, stamp string) (bool, error)
+}
+
 // SessionAPI is the full driving port — the composition of every sub-port. A
 // rich frontend (the HTTP server, the desktop app, the TUI) depends on this;
 // leaner frontends (bot, acp) depend on just the sub-ports they use.
@@ -324,6 +336,7 @@ type SessionAPI interface {
 	Input
 	Settings
 	Inbox
+	HistorySync
 }
 
 // Compile-time proof that the concrete controller satisfies each sub-port and
@@ -343,5 +356,6 @@ var (
 	_ Input              = (*Controller)(nil)
 	_ Settings           = (*Controller)(nil)
 	_ Inbox              = (*Controller)(nil)
+	_ HistorySync        = (*Controller)(nil)
 	_ SessionAPI         = (*Controller)(nil)
 )

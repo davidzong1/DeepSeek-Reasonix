@@ -100,6 +100,32 @@ func memberSessionRootCandidates(ctrl *control.Controller, workspaceRoot string)
 	return out, create
 }
 
+// recordMemberOwnerHistory publishes one member's canonical history identity
+// into its owner metadata so a second window can tell that the history changed.
+// The stem is the backend's own opaque history stamp — the same value a peer
+// computes — and bump is false for the assembly-time call, which only
+// establishes the identity: binding a member must not read as a change. The
+// write is a locked metadata update, so it never races a concurrent owner
+// writer. A nil owner store is a host without canonical storage.
+func recordMemberOwnerHistory(ctx context.Context, owners *team.OwnerStore, b team.MemberBinding, ctrl memberHistoryStamper, bump bool) error {
+	if owners == nil || ctrl == nil {
+		return nil
+	}
+	key := team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}
+	if err := owners.BumpHistory(ctx, key, ctrl.HistoryStamp(), bump); err != nil {
+		return fmt.Errorf("member %q: record owner history: %w", b.MemberID, err)
+	}
+	return nil
+}
+
+// memberHistoryStamper is the narrow slice of a member backend the owner
+// history record needs: its opaque durable-history identity. Every member
+// backend exposes it through control.HistorySync, and it is the same value a
+// second window computes for the same owner, so the two cannot drift.
+type memberHistoryStamper interface {
+	HistoryStamp() string
+}
+
 // adoptMemberOwnerHistory migrates one member's existing history into canonical
 // owner storage and returns the owner directory to bind against: it resolves the
 // member's owner key, adopts the first legacy session unit the probe order would
