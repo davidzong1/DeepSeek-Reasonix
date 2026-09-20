@@ -697,12 +697,15 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   });
 
   const { openAutomationTopic, topicAccepted } = useAutomationNavigation({ noteIntent: noteNavigationIntent,
-    enqueue: useCommittedCommand((intent, seq) => enqueueNavigationWithIntent(intent, seq)) });  const { enqueueNavigation, enqueueNavigationWithIntent, openRemoteProject } = useDesktopNavigation({
+    enqueue: useCommittedCommand((intent, seq) => enqueueNavigationWithIntent(intent, seq)) });  const {
+    enqueueNavigation, enqueueNavigationWithIntent, openRemoteProject,
+  } = useDesktopNavigation({
     visible: { tabId: activeTabId ?? "", sessionKey: activeSessionIdentity },
     ports: { isNavigationIntentCurrent, activateTopic,
       ensureBlankSurface, openCanonicalSession, createIsolatedWorktree, openChannelSession, resumeSession,
       registeredNavigationIntent, switchRemoteTab, openRemoteProject: desktopBridge.openRemoteProjectTab,
-      listTabs: desktopBridge.listTabs, applyTabs: setTabMetas, seedTab: seedActiveTabMeta, listSessions, topicAccepted },
+      listTabs: desktopBridge.listTabs, applyTabs: setTabMetas, seedTab: seedActiveTabMeta, listSessions, topicAccepted,
+      prepareSession: desktopBridge.prepareSession, getSessionPreparation: desktopBridge.getSessionPreparation },
     setTabRevealSignal, setProjectRevision, setHistory: setHistView, t, showToast,
     noteIntent: noteNavigationIntent, beginSurface: beginNavigationSurface, settleSurface: settleNavigationSurface,
     showChat: enterConversation,

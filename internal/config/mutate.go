@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 )
 
 // userEditMu serializes in-process read-modify-write cycles. The public lock

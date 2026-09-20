@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/topicstate"
 )
 

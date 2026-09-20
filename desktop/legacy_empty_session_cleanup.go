@@ -257,6 +257,7 @@ func legacyCleanupStatus(state legacycleanup.State) LegacyEmptySessionCleanupSta
 }
 
 func (a *App) RetryLegacyEmptySessionCleanup() (LegacyEmptySessionCleanupStatus, error) {
+	a.registerLegacyCleanupUpgradeBatch()
 	status, err := a.GetLegacyEmptySessionCleanupStatus()
 	if err != nil {
 		return LegacyEmptySessionCleanupStatus{}, err
@@ -265,29 +266,6 @@ func (a *App) RetryLegacyEmptySessionCleanup() (LegacyEmptySessionCleanupStatus,
 		a.runLegacyEmptySessionCleanup(true)
 	})
 	return status, nil
-}
-
-func (a *App) retryLegacyEmptySessionCleanupAfterRuntimeRelease() {
-	if a == nil || a.desktopMigrationDone == nil {
-		return
-	}
-	select {
-	case <-a.desktopMigrationDone:
-	default:
-		return
-	}
-	a.mu.RLock()
-	tabsRestored := a.tabsRestored
-	a.mu.RUnlock()
-	if tabsRestored == nil {
-		return
-	}
-	select {
-	case <-tabsRestored:
-	default:
-		return
-	}
-	a.runLegacyEmptySessionCleanup(false)
 }
 
 func (a *App) runLegacyEmptySessionCleanup(includeUnknown bool) {
@@ -436,7 +414,7 @@ func (a *App) processLegacyCleanupSession(item legacycleanup.Candidate) {
 		}
 		return nil
 	}
-	_, err := a.archiveSessionRefsWithOperationConditional([]session.SessionRef{ref}, item.OperationID, verify)
+	err := a.archiveSessionRefsWithOperationConditional([]session.SessionRef{ref}, item.OperationID, verify)
 	if err != nil {
 		classification, reason := "unknown", "archive_failed"
 		if errors.Is(err, errTopicHasActiveWork) || errors.Is(err, errTopicArchiveBusy) {

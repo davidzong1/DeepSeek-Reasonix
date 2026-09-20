@@ -60,6 +60,12 @@ func replaySectionsForWithRenderers(
 		out = append(out, searchHistorySections(m, width, renderAssistant)...)
 		switch m.Role {
 		case provider.RoleUser:
+			// Host-generated wrappers (session-context snapshots, injected
+			// preamble) are provider-workset plumbing, not visible turns; the
+			// desktop transcript drops them and so does this replay.
+			if agent.IsHostGeneratedUserMessage(m) {
+				continue
+			}
 			// Steer messages are surfaced as a notice line, not a user bubble.
 			if text, handled := agent.ReplaySteerText(m.Content); handled {
 				if text != "" {
@@ -67,7 +73,7 @@ func replaySectionsForWithRenderers(
 				}
 				continue
 			}
-			content := control.StripComposePrefixes(m.Content)
+			content := control.StripComposePrefixes(agent.UserMessageText(m))
 			out = append(out, renderUserBubble(content, width, false)+"\n\n")
 		case provider.RoleAssistant:
 			if reasoning := strings.TrimSpace(m.ReasoningContent); reasoning != "" {

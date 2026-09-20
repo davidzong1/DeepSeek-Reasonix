@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -472,27 +471,6 @@ func cloneEnv(in map[string]string) map[string]string {
 	return out
 }
 
-// MatchesTool reports whether a hook applies to toolName. The match field is an
-// anchored regex; non-tool events always match. A malformed regex never fires
-// (safer than firing on everything).
-func MatchesTool(h ResolvedHook, toolName string) bool {
-	if !UsesToolMatcher(h.Event) {
-		return true
-	}
-	m := h.Match
-	if m == "" || m == "*" {
-		return true
-	}
-	re, err := regexp.Compile("^(?:" + m + ")$")
-	if err != nil {
-		return false
-	}
-	if h.PayloadFormat != "claude" {
-		return re.MatchString(toolName)
-	}
-	return slices.ContainsFunc(claudeMatchNames(toolName), re.MatchString)
-}
-
 // claudeAgentSpawningTools are every Reasonix tool that spawns a subagent and
 // so corresponds to Claude's single "Agent" tool: the general task delegator
 // (task/read_only_task/parallel_tasks) and the dedicated named wrappers
@@ -530,6 +508,7 @@ var claudeToolNames = buildClaudeToolNames()
 func buildClaudeToolNames() map[string]string {
 	out := map[string]string{
 		"bash":            "Bash",
+		"pwsh":            "Bash",
 		"read_file":       "Read",
 		"write_file":      "Write",
 		"edit_file":       "Edit",
@@ -543,8 +522,10 @@ func buildClaudeToolNames() map[string]string {
 		"todo_write":      "TodoWrite",
 		"notebook_edit":   "NotebookEdit",
 		"bash_output":     "TaskOutput",
+		"job_output":      "TaskOutput",
 		"wait":            "TaskOutput",
 		"kill_shell":      "TaskStop",
+		"job_kill":        "TaskStop",
 	}
 	for _, name := range claudeAgentSpawningTools {
 		out[name] = "Agent"
@@ -567,8 +548,10 @@ func buildClaudeToolMatchAliases() map[string][]string {
 		out[name] = []string{"Agent", "Task"}
 	}
 	out["bash_output"] = []string{"TaskOutput", "BashOutput"}
+	out["job_output"] = []string{"TaskOutput", "BashOutput"}
 	out["wait"] = []string{"TaskOutput", "BashOutput"}
 	out["kill_shell"] = []string{"TaskStop", "KillShell"}
+	out["job_kill"] = []string{"TaskStop", "KillShell"}
 	return out
 }
 
@@ -616,7 +599,9 @@ var claudeToolInputKeyRenames = map[string]map[string]string{
 	"run_skill":       {"name": "skill", "arguments": "args"},
 	"read_only_skill": {"name": "skill", "arguments": "args"},
 	"bash_output":     {"job_id": "task_id"},
+	"job_output":      {"job_id": "task_id"},
 	"kill_shell":      {"job_id": "task_id"},
+	"job_kill":        {"job_id": "task_id"},
 	// The dedicated subagent wrappers take their task text as "task";
 	// Claude's Agent tool calls the same thing "prompt".
 	"explore":         {"task": "prompt"},

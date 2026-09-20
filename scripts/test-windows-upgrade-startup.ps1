@@ -12,10 +12,10 @@ function Invoke-UpgradeFixture([string]$builder, [string[]]$arguments) {
   if ($LASTEXITCODE -ne 0) { throw "Upgrade fixture failed with exit code $LASTEXITCODE" }
 }
 
-function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence) {
+function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence, [bool]$prepareHistorical) {
   & (Join-Path $PSScriptRoot 'test-windows-startup-recovery.ps1') `
     -InstallRoot $installRoot -ExpectedVersion $version -DataHome $fixtureHome `
-    -ExpectedVisibleText $text -EvidenceDirectory $evidence
+    -ExpectedVisibleText $text -EvidenceDirectory $evidence -PrepareHistoricalSession:$prepareHistorical
   if (-not $?) { throw 'Upgraded startup verification failed.' }
 }
 
@@ -47,7 +47,7 @@ function Invoke-WindowsUpgradeAcceptance {
   $fixture = Get-Content -LiteralPath $fixtureReport -Raw | ConvertFrom-Json
   if ([string]::IsNullOrWhiteSpace($fixture.visibleText)) { throw 'Fixture assistant body marker is missing.' }
   foreach ($phase in @('first', 'restart')) {
-    Invoke-UpgradeStartup $installRoot $ExpectedVersion $fixtureHome $fixture.visibleText (Join-Path $evidence $phase)
+    Invoke-UpgradeStartup $installRoot $ExpectedVersion $fixtureHome $fixture.visibleText (Join-Path $evidence $phase) ($phase -eq 'first')
     Invoke-UpgradeFixture $fixtureBuilder @('--mode', 'verify', '--home', $fixtureHome, '--report', $fixtureReport, '--phase', $phase)
   }
   @{

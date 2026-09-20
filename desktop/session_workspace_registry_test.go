@@ -2,10 +2,18 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"reasonix/desktop/internal/workspacestate"
+	"reasonix/internal/agent"
+	"reasonix/internal/config"
+	"reasonix/internal/control"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
 	"reasonix/internal/session"
 )
 
@@ -17,6 +25,77 @@ func (c registrySessionCreator) BindFreshSession(ctx context.Context, sessionID 
 		return session.SessionRef{}, err
 	}
 	return runtime.Ref(), nil
+}
+
+func TestGlobalWorkspaceEquivalentRootAllowsCreateAndRestart(t *testing.T) {
+	aliases := []string{"cleaned"}
+	if runtime.GOOS == "windows" {
+		aliases = append(aliases, "case", "separators")
+	}
+	for _, alias := range aliases {
+		t.Run(alias, func(t *testing.T) {
+			isolateDesktopUserDirs(t)
+			root := globalWorkspaceRoot()
+			savedRoot := root + string(os.PathSeparator) + "."
+			switch alias {
+			case "case":
+				savedRoot = strings.ToUpper(root)
+			case "separators":
+				savedRoot = strings.ReplaceAll(root, `\`, "/")
+			}
+			var ref session.SessionRef
+			for attempt := range 2 {
+				app := NewApp()
+				app.ctx = t.Context()
+				t.Cleanup(app.closeSessionServices)
+				if attempt == 0 {
+					if err := app.workspaceRegistry().EnsureWorkspace(t.Context(), workspacestate.Workspace{
+						ID: workspacestate.GlobalWorkspaceID, Root: savedRoot, Title: "My Global", Visible: true,
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctrl := control.New(control.Options{
+					Executor:       agent.New(nil, nil, agent.NewSession("test"), agent.Options{}, event.Discard),
+					SessionService: app.desktopSessionService(""), ExclusiveSession: true,
+				})
+				t.Cleanup(ctrl.Close)
+				got, workspaceID, err := app.bindTabCanonicalSession(t.Context(), ctrl, &config.Config{}, "global", "", ref.SessionID, "", "", false)
+				if err != nil || workspaceID != workspacestate.GlobalWorkspaceID {
+					t.Fatalf("create/reopen attempt %d: workspace=%q, err=%v", attempt, workspaceID, err)
+				}
+				if attempt == 0 {
+					ref = got
+					live, ok := app.desktopSessionService("").Runtime(ref)
+					if !ok {
+						t.Fatal("created session has no runtime")
+					}
+					appendSessionTestMessage(t, live, "user-message", provider.Message{ID: "user-message", Role: provider.RoleUser, Content: "preserved Global history"})
+				} else {
+					if got != ref {
+						t.Fatalf("restart replaced session: got=%v want=%v", got, ref)
+					}
+					page, err := app.ReadSessionHistory(ref, "", 10)
+					if err != nil || len(page.Messages) == 0 || page.Messages[len(page.Messages)-1].Content != "preserved Global history" {
+						t.Fatalf("reopened history=%+v err=%v", page, err)
+					}
+					if _, err := app.canonicalSessionWorkspace(t.Context(), ref); err != nil {
+						t.Fatalf("navigation membership: %v", err)
+					}
+				}
+				state, err := app.workspaceRegistry().Load(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				workspace := state.Workspaces[workspaceID]
+				if workspace.Root != savedRoot || workspace.Title != "My Global" || len(workspace.SessionIDs) != 1 || workspace.SessionIDs[0] != ref.SessionID || len(state.PendingCreates) != 0 {
+					t.Fatalf("unexpected persisted workspace: %+v, pending=%+v", workspace, state.PendingCreates)
+				}
+				ctrl.Close()
+				app.closeSessionServices()
+			}
+		})
+	}
 }
 
 func (c registrySessionCreator) BindFreshSessionWithOptions(ctx context.Context, options session.CreateOptions) (session.SessionRef, error) {

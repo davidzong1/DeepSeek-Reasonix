@@ -6,6 +6,7 @@ param(
   [string]$ArtifactPath = '',
   [string]$DataHome = '',
   [string]$ExpectedVisibleText = '',
+  [switch]$PrepareHistoricalSession,
   [string]$EvidenceDirectory = (Join-Path $env:TEMP ('reasonix-recovery-' + [guid]::NewGuid().ToString('N')))
 )
 $ErrorActionPreference = 'Stop'
@@ -66,12 +67,14 @@ function Assert-VisibleContentAndCapture($process, [string]$text, [string]$outpu
   Add-Type -AssemblyName System.Drawing
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
   $found = $false
+  $prepared = -not $PrepareHistoricalSession
   $root = $null
   while ([DateTime]::UtcNow -lt $deadline -and -not $found) {
     $process.Refresh()
     if ($process.MainWindowHandle -ne 0) {
       $root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
-      $found = Test-VisibleUpgradeHistory $root $text
+      if (-not $prepared) { $prepared = Invoke-PendingHistoricalSession $root }
+      $found = $prepared -and (Test-VisibleUpgradeHistory $root $text)
     }
     if (-not $found) { Start-Sleep -Milliseconds 250 }
   }

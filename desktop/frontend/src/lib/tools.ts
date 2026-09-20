@@ -7,6 +7,7 @@
 import { diffLines } from "./diff";
 import { t } from "./i18n";
 import { extToLang } from "./lang";
+import { isShellToolName } from "./shellToolIdentity";
 import type { DictKey } from "../locales/en";
 
 export interface ToolDiff {
@@ -57,6 +58,7 @@ export function summarizeFileDiff(fileDiff?: ToolFileDiff): string {
 // command for bash, the pattern for search, the path for file tools, the
 // description for a sub-task — so the collapsed row reads at a glance.
 export function subjectOf(name: string, args: string): string {
+  if (isShellToolName(name)) name = "bash";
   const a = parse(args);
   switch (name) {
     case "bash":
@@ -176,6 +178,7 @@ function multiEditAppliedSummary(output: string): string {
 // secondary line) — counts from the args for writers, from the output for
 // readers. "" means there's nothing worth a summary line.
 export function summarize(name: string, args: string, output?: string, error?: string): string {
+  if (isShellToolName(name)) name = "bash";
   if (error) return "";
   const a = parse(args);
   switch (name) {

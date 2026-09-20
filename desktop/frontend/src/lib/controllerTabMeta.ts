@@ -15,6 +15,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     ready: tab.ready,
     runtime: tab.runtime,
     startupErr: tab.startupErr,
+    historicalSource: tab.historicalSource,
     eventChannel: existing?.eventChannel ?? "agent:event",
     cwd,
     workspaceRoot: tab.workspaceRoot || existing?.workspaceRoot || cwd,

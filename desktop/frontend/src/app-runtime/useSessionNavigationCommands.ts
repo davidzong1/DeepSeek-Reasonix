@@ -2,6 +2,7 @@ import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { asArray } from "../lib/array";
 import { resolveTaskMonitorSession } from "../lib/taskMonitorNavigation";
 import { taskSessionIDFromPath, type SidebarImConnection } from "./sidebarImProjection";
+import { draftLandingTargetForTab } from "./draftLandingTarget";
 import type { useDesktopNavigation } from "./useDesktopNavigation";
 import type { WorkspaceNavigationPorts } from "./navigationOwner";
 import type { ControlResult, SessionMeta, TabMeta } from "../lib/types";
@@ -51,12 +52,7 @@ export type SessionNavigationCommandsInput = {
 export function useSessionNavigationCommands(input: SessionNavigationCommandsInput) {
   const { activeTab, showToast, navigation, ports } = input;
 
-  const blankSessionTarget = useCommittedCommand(() => {
-    if (input.draft.target) return input.draft.target;
-    const workspaceRoot = activeTab?.workspaceRoot || "";
-    const scope = activeTab?.scope === "project" && workspaceRoot ? "project" : "global";
-    return { scope, workspaceRoot };
-  });
+  const blankSessionTarget = useCommittedCommand(() => input.draft.target ?? draftLandingTargetForTab(activeTab));
 
   const openBlankSession = useCommittedCommand((scope: string, workspaceRoot: string): Promise<void> => {
     const targetRoot = scope === "project" ? workspaceRoot : "";

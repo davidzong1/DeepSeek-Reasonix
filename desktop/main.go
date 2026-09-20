@@ -13,8 +13,8 @@ import (
 	"os"
 	"strings"
 
-	"reasonix/internal/sandbox"
 	"reasonix/internal/skill/skillwatch"
+	"reasonix/internal/winaclresidue"
 
 	// Blank imports wire compile-time built-ins into their registries, exactly as
 	// cmd/reasonix does — boot.Build resolves providers/tools from these registries.
@@ -49,17 +49,7 @@ func macSelfUpdateAllowed() bool {
 	}
 }
 
-func runWindowsSandboxHelperIfRequested(argv []string) (int, bool) {
-	if len(argv) > 1 && argv[1] == sandbox.WindowsHelperCommand {
-		return sandbox.RunWindowsSandboxHelper(argv[2:], os.Stdin, os.Stdout, os.Stderr), true
-	}
-	return 0, false
-}
-
 func main() {
-	if code, ok := runWindowsSandboxHelperIfRequested(os.Args); ok {
-		os.Exit(code)
-	}
 	// Contract generation is a build-time operation. Dispatch it before crash
 	// capture so packaging cannot create files in the operator's Reasonix home.
 	if dir, ok := emitContractDir(os.Args[1:]); ok {
@@ -71,7 +61,9 @@ func main() {
 	if skillwatch.MaybeRunHelper() {
 		return
 	}
-	sandbox.RegisterHelperDispatch()
+	// Older Windows builds could leave sandbox ACL residue behind after a
+	// crash; sweep it in the background so startup never waits on icacls.
+	go winaclresidue.SweepStaleMarkers()
 	// The detached macOS self-update child must run before any shell starts.
 	if handled, exitCode := maybeRunMacUpdateHandoff(os.Args[1:]); handled {
 		os.Exit(exitCode)

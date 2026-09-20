@@ -179,3 +179,43 @@ func TestReadableCredentialsDoNotWaitForSandboxLock(t *testing.T) {
 		t.Fatal("readable credentials waited for an unrelated sandbox lock")
 	}
 }
+
+// A deny with no sandbox record cannot be attributed to Reasonix, so the
+// provenance-checked repair refuses; an explicit save must still succeed by
+// resetting the ACL without reading it and keeping the stored values.
+func TestCredentialSaveResetsDenyWithoutSandboxRecord(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMP", tmp)
+	t.Setenv("TEMP", tmp)
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	t.Setenv("ACL_RESET_INTEGRATION_KEY", "")
+	path := UserCredentialsPath()
+	if err := os.WriteFile(path, []byte("EXISTING_KEY=old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustee := "*" + user.User.Sid.String()
+	if output, err := exec.Command("icacls", path, "/deny", trustee+":(RX)").CombinedOutput(); err != nil {
+		t.Fatalf("install deny ACL: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() { _ = exec.Command("icacls", path, "/remove:d", trustee, "/C").Run() })
+	if _, err := os.ReadFile(path); err == nil {
+		t.Fatal("deny ACL did not block credential reads")
+	}
+	if _, err := SetCredential("ACL_RESET_INTEGRATION_KEY", "new"); err != nil {
+		t.Fatalf("SetCredential with an unattributed deny: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read reset credential file: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "EXISTING_KEY=old") || !strings.Contains(got, "ACL_RESET_INTEGRATION_KEY=new") {
+		t.Fatalf("credential contents after reset = %q", got)
+	}
+	if quarantined, _ := filepath.Glob(path + ".locked-*"); len(quarantined) != 0 {
+		t.Fatalf("reset path must not quarantine the store: %v", quarantined)
+	}
+}

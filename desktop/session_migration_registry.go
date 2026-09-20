@@ -9,7 +9,7 @@ import (
 
 	"reasonix/desktop/internal/legacycleanup"
 	"reasonix/desktop/internal/workspacestate"
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/session"
 )
 
@@ -123,7 +123,7 @@ func lockDesktopMigrationLedger() (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	return filelock.Acquire(context.Background(), path+".lock")
+	return filelock.TryAcquire(path + ".lock")
 }
 
 // Registry fingerprints distinguish a metadata-only stat change from a new

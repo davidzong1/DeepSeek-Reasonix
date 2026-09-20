@@ -11,6 +11,7 @@ type tabRuntimeSnapshot struct {
 	ready                         bool
 	readOnly                      bool
 	startupErr                    string
+	historicalSource              *SessionSourceRef
 	scope                         string
 	workspaceRoot                 string
 	sessionPath                   string
@@ -42,7 +43,8 @@ func snapshotTabRuntimeLocked(tab *WorkspaceTab) tabRuntimeSnapshot {
 	return tabRuntimeSnapshot{
 		ctrl: tab.Ctrl, sink: tab.sink, label: tab.Label, ready: tab.Ready,
 		readOnly: tab.ReadOnly, startupErr: tab.StartupErr, scope: tab.Scope,
-		workspaceRoot: tab.WorkspaceRoot, sessionPath: tab.SessionPath, sessionID: tab.SessionID,
+		historicalSource: tab.HistoricalSource,
+		workspaceRoot:    tab.WorkspaceRoot, sessionPath: tab.SessionPath, sessionID: tab.SessionID,
 		sessionGeneration: tab.SessionGeneration, topicID: tab.TopicID, topicTitle: tab.TopicTitle,
 		sharedHostKey: tab.SharedHostKey, model: tab.model, effort: cloneStringPtr(tab.effort),
 		tokenMode: currentTabTokenMode(tab), qualityFloor: tab.qualityFloor, mode: tab.mode,

@@ -1,14 +1,12 @@
 package main
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -113,8 +111,8 @@ func testBootLegacyAdoption(t *testing.T, dag bool) {
 			if err := os.WriteFile(path, append(original, []byte("{\"role\":\"user\",\"content\":\"changed\"}\n")...), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := app.bindTabCanonicalSession(t.Context(), ctrl, &config.Config{}, "global", "", "", lookup, "", false); !errors.Is(err, workspacestate.ErrMutationConflict) {
-				t.Fatalf("changed history must fail closed: %v", err)
+			if got, _, err := app.bindTabCanonicalSession(t.Context(), ctrl, &config.Config{}, "global", "", "", lookup, "", false); err != nil || got != expected {
+				t.Fatalf("retained source changes must not replace the adopted conversation: %v %v", got, err)
 			}
 			if ref, _ := ctrl.SessionRef(); ref != expected {
 				t.Fatalf("failed bind replaced original: %v", ref)

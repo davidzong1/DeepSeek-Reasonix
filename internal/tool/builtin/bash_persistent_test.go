@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,14 @@ import (
 	"reasonix/internal/persistentshell"
 	"reasonix/internal/sandbox"
 )
+
+func TestPowerShellNeverUsesPersistentSession(t *testing.T) {
+	b := bash{persistent: persistentshell.New()}
+	sh := sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"}
+	if b.shouldUsePersistent(context.Background(), bashParams{}, sh) {
+		t.Fatal("ordinary PowerShell calls must use one-shot processes")
+	}
+}
 
 func persistentBash(t *testing.T, workDir string) bash {
 	t.Helper()

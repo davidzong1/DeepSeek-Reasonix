@@ -32,10 +32,24 @@ func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Dura
 		shell = sandbox.ResolveShell("", "", nil)
 	}
 	b := bash{sb: spec, shell: shell, guard: guard}
+	if shell.Kind == sandbox.ShellPowerShell {
+		b.name = "pwsh"
+	}
 	if len(timeout) > 0 {
 		b.timeout = timeout[0]
 	}
 	return b
+}
+
+// AliasBash returns the same confined shell executor under a compatibility
+// name. The alias shares every policy and sandbox binding with the primary tool.
+func AliasBash(tl tool.Tool, name string) (tool.Tool, bool) {
+	b, ok := tl.(bash)
+	if !ok || strings.TrimSpace(name) == "" {
+		return nil, false
+	}
+	b.name = strings.TrimSpace(name)
+	return b, true
 }
 
 // BindSessionTemp attaches a session-private temporary directory manager to a
@@ -84,9 +98,6 @@ func RebindBashWriteRoots(tl tool.Tool, roots []string) (tool.Tool, bool) {
 	// Sub-agent claims are strict capability boundaries. Do not add the normal
 	// build-cache and temporary-directory allowances outside the claimed roots.
 	spec.MinimalWrites = true
-	// Do not inherit a wider AppContainer write lane from the parent workspace
-	// confinement — the claim roots are the only allowed write surface.
-	spec.AppContainerWriteRoots = append([]string(nil), rs...)
 	b.sb = spec
 	// rootSet is preserved so later session grants still apply inside the claim.
 	// sessionTemp is preserved: sub-agent write-root rebinding must not drop

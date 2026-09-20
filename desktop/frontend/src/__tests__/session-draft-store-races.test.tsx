@@ -27,6 +27,7 @@ dom.window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
 
 const settings = {
   model: "fixture/model",
+  modelSource: "default",
   effort: "high",
   mode: "normal",
   collaborationMode: "normal",
@@ -58,6 +59,9 @@ const submissions: SessionDraftSubmissionRequest[] = [];
 let saveCount = 0;
 let loseNextSaveAcknowledgement = false;
 let submissionPolls = 0;
+let operationCount = 0;
+let saveDefaultModel: string | undefined;
+const contextResponses: Array<Promise<SessionDraftView>> = [];
 
 const stub = installDesktopHostStub({
   ListSessionDraftSummaries: async () => [],
@@ -65,7 +69,7 @@ const stub = installDesktopHostStub({
     if (root.endsWith("/c")) return openC.promise;
     return structuredClone(root.endsWith("/a") ? drafts.get("draft-a") : drafts.get("draft-b"));
   },
-  GetDraftContext: async (id: string) => ({ draft: structuredClone(drafts.get(id)!), commands: [], servers: [] }),
+  GetDraftContext: async (id: string) => ({ draft: await (contextResponses.shift() ?? Promise.resolve(structuredClone(drafts.get(id)!))), commands: [], servers: [] }),
   GetSessionDraft: async (id: string) => structuredClone(drafts.get(id)!),
   SetSessionDraftRestoreTarget: async () => {},
   DismissSessionDraft: async () => {},
@@ -84,6 +88,7 @@ const stub = installDesktopHostStub({
       return { draft: structuredClone(current), conflict: true, outcome: "conflict" };
     }
     const next = { ...current, revision: current.revision + 1, contentJson: request.contentJson, settings: structuredClone(request.settings) };
+    if (next.settings.modelSource === "default" && saveDefaultModel) next.settings.model = saveDefaultModel;
     drafts.set(request.draftId, next);
     if (loseNextSaveAcknowledgement) {
       loseNextSaveAcknowledgement = false;
@@ -93,8 +98,9 @@ const stub = installDesktopHostStub({
   },
   BeginDraftSubmission: async (request: SessionDraftSubmissionRequest) => {
     submissions.push(structuredClone(request));
+    operationCount++;
     return {
-      operationId: "operation-goal",
+      operationId: `operation-${operationCount}`,
       draftId: request.draftId,
       phase: "starting",
       submissionId: "submission-goal",
@@ -105,7 +111,7 @@ const stub = installDesktopHostStub({
   GetDraftSubmission: async () => {
     submissionPolls++;
     return {
-      operationId: "operation-goal",
+      operationId: `operation-${operationCount}`,
       draftId: "draft-a",
       phase: "accepted",
       submissionId: "submission-goal",
@@ -198,6 +204,71 @@ try {
   assert.equal(owner.surface, null, "a pending draft open cannot reinstall after formal navigation dismisses it");
 
   await act(async () => { await owner.open("project", "/workspace/a"); });
+  const inherited = drafts.get("draft-a")!;
+  drafts.set("draft-a", {
+    ...inherited,
+    settings: { ...inherited.settings, model: "fixture/default-next", modelSource: "default" },
+  });
+  await act(async () => {
+    window.dispatchEvent(new dom.window.Event("reasonix:model-catalog-changed"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.equal(owner.surface?.settings.model, "fixture/default-next",
+    "an unpinned draft follows the current settings default when the model catalog changes");
+
+  const olderRefresh = deferred<SessionDraftView>();
+  const newerRefresh = deferred<SessionDraftView>();
+  // Only A inherits a default in this scenario, so each event issues one read.
+  await act(async () => { await owner.open("project", "/workspace/b"); });
+  act(() => owner.updateSettings({ model: "fixture/pinned-b", modelSource: "explicit" }));
+  await act(async () => { await owner.flush(); await owner.open("project", "/workspace/a"); });
+  contextResponses.push(olderRefresh.promise, newerRefresh.promise);
+  act(() => {
+    window.dispatchEvent(new dom.window.Event("reasonix:model-catalog-changed"));
+    window.dispatchEvent(new dom.window.Event("reasonix:model-catalog-changed"));
+  });
+  const refreshed = structuredClone(drafts.get("draft-a")!);
+  await act(async () => {
+    newerRefresh.resolve({ ...refreshed, settings: { ...refreshed.settings, model: "fixture/newest" } });
+  });
+  await act(async () => {
+    olderRefresh.resolve({ ...refreshed, settings: { ...refreshed.settings, model: "fixture/older" } });
+  });
+  assert.equal(owner.surface?.settings.model, "fixture/newest", "a late catalog response cannot replace the latest default");
+
+  const delayedRefresh = deferred<SessionDraftView>();
+  contextResponses.push(delayedRefresh.promise);
+  act(() => window.dispatchEvent(new dom.window.Event("reasonix:model-catalog-changed")));
+  const reopened = { ...refreshed, settings: { ...refreshed.settings, model: "fixture/reopened" } };
+  drafts.set("draft-a", reopened);
+  await act(async () => { await owner.open("project", "/workspace/a"); });
+  await act(async () => { delayedRefresh.resolve(refreshed); });
+  assert.equal(owner.surface?.settings.model, "fixture/reopened", "a refresh predating reopen cannot overwrite its newer context");
+
+  saveDefaultModel = "fixture/changed-during-save";
+  loseNextSaveAcknowledgement = true;
+  act(() => owner.updateContent(content("default changed while saving")));
+  await act(async () => { await owner.flush(); });
+  assert.equal(owner.surface?.saveState, "saved", "live-default resolution must not create a false lost-acknowledgement conflict");
+  assert.equal(owner.surface?.settings.model, saveDefaultModel, "save reconciliation publishes the latest effective model");
+
+  // A default may change after capture but before the required save completes.
+  act(() => owner.updateContent(content("inherited first turn")));
+  saveDefaultModel = "fixture/changed-before-send";
+  await act(async () => { await owner.submit("inherited first turn"); });
+  assert.equal(submissions.length, 1, "an inherited mirror change cannot block first submission");
+  assert.equal(submissions[0]?.settings.modelSource, "default");
+  submissions.length = 0;
+  submissionPolls = 0;
+  saveDefaultModel = undefined;
+  await act(async () => { await owner.open("project", "/workspace/a"); });
+  act(() => owner.updateSettings({ model: "fixture/pinned", modelSource: "explicit" }));
+  await act(async () => {
+    window.dispatchEvent(new dom.window.Event("reasonix:model-catalog-changed"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.equal(owner.surface?.settings.model, "fixture/pinned",
+    "an explicit draft model remains pinned across later catalog refreshes");
   act(() => {
     owner.updateSettings({ collaborationMode: "goal", goal: "" });
     owner.updateContent(content("goal text"));
@@ -207,7 +278,9 @@ try {
   assert.equal(submissions[0]?.draftId, "draft-a");
   assert.equal(submissions[0]?.goal, "goal text", "initial Goal has a non-empty objective");
   assert.equal(submissions[0]?.input, "/goal task bytes", "ordinary initial Goal preserves the established provider-visible prefix");
-  assert.equal(submissions[0]?.settings.model, "fixture/model", "the operation carries its frozen model settings");
+  assert.equal(submissions[0]?.snapshotVersion, 5, "the operation uses the live-default-aware snapshot contract");
+  assert.equal(submissions[0]?.settings.model, "fixture/pinned", "the operation carries its frozen model settings");
+  assert.equal(submissions[0]?.settings.modelSource, "explicit", "the operation preserves explicit model provenance");
   assert.equal(submissionPolls, 1, "a recoverable operation phase keeps polling the original OperationID");
 
   await act(async () => { root.unmount(); });

@@ -31,5 +31,5 @@ func (c *Controller) runRefTurnResult(input, display string) admissionResult {
 // runGuardedResult reports what runGuarded did. The silent-dropping wrappers
 // hide it; task-driving hosts need the distinction.
 func (c *Controller) runGuardedResult(body func(ctx context.Context) error) admissionResult {
-	return c.admitGuardedTurn(body, false, true, nil, nil)
+	return c.admitGuardedTurn(body, false, true, nil, nil, turnAdmission{})
 }

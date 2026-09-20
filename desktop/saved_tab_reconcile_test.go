@@ -225,7 +225,7 @@ func TestReconcileSavedTabsDropsArchivedPresentationButKeepsSession(t *testing.T
 	app := newSavedTabReconcileTestApp(t)
 	root := t.TempDir()
 	ref, workspaceID := createLegacyCleanupSession(t, app, root, "archived-session", true)
-	if _, err := app.archiveSessionRefsWithOperation([]session.SessionRef{ref}, "archive-test"); err != nil {
+	if err := app.archiveSessionRefsWithOperation([]session.SessionRef{ref}, "archive-test"); err != nil {
 		t.Fatal(err)
 	}
 	file := desktopTabsFile{Tabs: []desktopTabEntry{savedProjectTab("archived", ref.SessionID, "", root, workspaceID)}, ActiveTab: "archived"}

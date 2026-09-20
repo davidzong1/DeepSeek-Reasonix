@@ -279,7 +279,7 @@ func (l *Ledger) HasReadEvidenceForPath(path string) bool {
 				}
 			}
 		}
-		if r.ToolName == "bash" && r.OutputBytes > 0 && commandShowsContentForPath(r.Command, needle) {
+		if isShellToolName(r.ToolName) && r.OutputBytes > 0 && commandShowsContentForPath(r.Command, needle) {
 			return true
 		}
 	}

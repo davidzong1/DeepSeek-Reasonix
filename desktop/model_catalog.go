@@ -58,11 +58,11 @@ func (a *App) ModelsForTab(tabID string) []ModelInfo {
 }
 
 func (a *App) ModelsForDraft(draftID string) []ModelInfo {
-	record, err := a.draftStore().Get(a.bootContext(), draftID)
+	record, op, err := a.draftStore().State(a.bootContext(), draftID)
 	if err != nil {
 		return []ModelInfo{}
 	}
-	view, err := draftView(record)
+	view, err := a.draftViewForOperation(record, op)
 	if err != nil {
 		return []ModelInfo{}
 	}

@@ -37,7 +37,7 @@ func NewFleetTool(taskTool *TaskTool) *FleetTool {
 func (*FleetTool) Name() string { return tool.HostFleet }
 
 func (*FleetTool) Description() string {
-	return "Dispatch 2–64 sub-agent tasks as a small dependency graph and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only, and may declare depends_on to run after other items (research → implement → review). Tasks with no dependency between them run in parallel and must declare non-overlapping write_paths; ordered tasks may share paths. Omitted write_paths claim the whole workspace, so two or more concurrent writers without paths fail preflight before any task starts. A failed task's dependents are skipped; independent branches keep going unless fail_fast is set. Background mode returns a fleet job id collectable with wait."
+	return "Dispatch 2–64 sub-agent tasks as a small dependency graph and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only, and may declare depends_on to run after other items (research → implement → review). Tasks with no dependency between them run in parallel and must declare non-overlapping write_paths; ordered tasks may share paths. Omitted write_paths claim the whole workspace, so two or more concurrent writers without paths fail preflight before any task starts. A failed task's dependents are skipped; independent branches keep going unless fail_fast is set. Background mode returns a fleet job id collectable with job_output."
 }
 
 func (*FleetTool) Schema() json.RawMessage {
@@ -68,7 +68,7 @@ func (*FleetTool) Schema() json.RawMessage {
     }
   },
   "fail_fast":{"type":"boolean","description":"Stop starting new tasks after the first failure. Tasks already running are left to finish so partial writes are not abandoned mid-flight. Omitted (the default) means independent branches keep going; a failed task's dependents are skipped either way."},
-  "run_in_background":{"type":"boolean","description":"Run the whole fleet asynchronously and return a job id collectable with wait. Items queue for concurrency/write slots inside the job."}
+  "run_in_background":{"type":"boolean","description":"Run the whole fleet asynchronously and return a job id collectable with job_output. Items queue for concurrency/write slots inside the job."}
 },
 "required":["tasks"]
 }`)
@@ -277,7 +277,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 		// still closes the merger after the synchronous call returns.
 		lifecycleHandoff = true
 		mergerCloseHandoff = true
-		return fmt.Sprintf("Started background fleet %q (%s). Collect results with wait; you will be notified when it finishes.", job.ID, label), nil
+		return fmt.Sprintf("Started background fleet %q (%s). Collect results with job_output; you will be notified when it finishes.", job.ID, label), nil
 	}
 
 	lifecycleHandoff = true

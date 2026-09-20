@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/evidence"
+	"reasonix/internal/tool"
 )
 
 // PlanGuard hard-blocks writes while Plan mode is active, including YOLO.
@@ -68,7 +69,7 @@ func (ConstraintGuard) AfterTool(ResultContext) []evidence.Receipt { return nil 
 
 func bashCommand(ctx CallContext) string {
 	name := strings.ToLower(strings.TrimSpace(ctx.ToolName))
-	if name != "bash" && name != "shell" {
+	if !tool.IsShellToolName(name) {
 		return ""
 	}
 	var payload struct {
@@ -117,7 +118,7 @@ type OpaqueWriterGuard struct{}
 
 func (OpaqueWriterGuard) BeforeTool(ctx CallContext) GuardDecision {
 	name := strings.ToLower(strings.TrimSpace(ctx.ToolName))
-	if !ctx.Profile.OpaqueWriter() || name == "bash" || name == "shell" {
+	if !ctx.Profile.OpaqueWriter() || tool.IsShellToolName(name) {
 		return GuardDecision{Action: GuardAbstain}
 	}
 	if ctx.Interactive {

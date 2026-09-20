@@ -1,8 +1,8 @@
 // Package jobs is the session-scoped background-job registry behind the agent's
 // background tools (bash run_in_background, task run_in_background) and the
-// bash_output / kill_shell / wait tools. A Manager owns a context whose lifetime
+// job_output / job_kill tools (plus replay-only legacy aliases). A Manager owns a context whose lifetime
 // is the session, NOT a single turn — so a job started in one turn keeps running
-// across turns and is cancelled only when the controller closes (or kill_shell is
+// across turns and is cancelled only when the controller closes (or job_kill is
 // called). Tools reach the Manager through the call context (WithManager /
 // FromContext), the same injection pattern the `ask` tool uses for the asker.
 //
@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/nilutil"
+	"reasonix/internal/tool"
 )
 
 var renamePath = os.Rename
@@ -88,9 +89,6 @@ type TeardownResult struct {
 	TimedOut []TeardownJob
 }
 
-// HasTimedOut reports whether teardown returned before every job had unwound.
-func (r TeardownResult) HasTimedOut() bool { return len(r.TimedOut) > 0 }
-
 type teardownTarget struct {
 	info TeardownJob
 	done <-chan struct{}
@@ -119,7 +117,7 @@ func (h SessionTeardown) DoneChannels() []<-chan struct{} {
 // take the same lock.
 type Job struct {
 	ID        string
-	Kind      string // "bash" | "task"
+	Kind      string // "bash" | "pwsh" | "task"
 	Label     string
 	SessionID string
 
@@ -142,6 +140,7 @@ type Job struct {
 
 	evidence          evidence.ChildEvidenceSummary
 	evidenceCommitted bool
+	execution         *tool.ShellExecution
 }
 
 // Manager is the session's background-job table. It is safe for concurrent use.
@@ -675,13 +674,13 @@ func (m *Manager) recordStalled(parentSession, id, kind, label string) {
 		return
 	}
 	quietFor := m.stalledWarning.Round(time.Second)
-	text := fmt.Sprintf("%s is still running after %s with no visible output — a quiet long-running job can look like this and is not necessarily stuck. If it should have finished, inspect it with wait or bash_output, or stop it with kill_shell. Tune or disable this check with tools.background_jobs.stalled_warning_seconds in your config (0 disables).", tag, quietFor)
+	text := fmt.Sprintf("%s is still running after %s with no visible output — a quiet long-running job can look like this and is not necessarily stuck. If it should have finished, inspect it with job_output, or stop it with job_kill. Tune or disable this check with tools.background_jobs.stalled_warning_seconds in your config (0 disables).", tag, quietFor)
 	m.completed = append(m.completed, completion{sessionID: parentSession, text: text})
 	active := m.active
 	shouldEmit := active == "" || parentSession == "" || active == parentSession
 	notice := event.Event{Kind: event.Notice, Level: event.LevelWarn,
 		Text:   fmt.Sprintf("background %s still running after %s with no visible output: %s", kind, quietFor, id),
-		Detail: "A quiet long-running job can look like this, so this is a heads-up, not an error. If it should have finished, inspect with wait or bash_output, or stop it with kill_shell. Set tools.background_jobs.stalled_warning_seconds to 0 in your config to disable this notice."}
+		Detail: "A quiet long-running job can look like this, so this is a heads-up, not an error. If it should have finished, inspect with job_output, or stop it with job_kill. Set tools.background_jobs.stalled_warning_seconds to 0 in your config to disable this notice."}
 	m.mu.Unlock()
 	if shouldEmit {
 		m.sink.Emit(notice)
@@ -1056,7 +1055,7 @@ func (m *Manager) DrainCompletedNoteForSession(parentSession string) string {
 		return ""
 	}
 	return "Background job updates since your last message: " + strings.Join(c, "; ") +
-		". Read their output with bash_output or wait if you still need it."
+		". Read their output with job_output if you still need it."
 }
 
 // SetActiveSession controls which session receives lifecycle notices for jobs

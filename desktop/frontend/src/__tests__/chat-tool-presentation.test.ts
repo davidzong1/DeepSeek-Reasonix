@@ -2,12 +2,28 @@ import assert from "node:assert/strict";
 import { classifyTool, shellDisplayName, type ToolItem } from "../lib/chatToolPresentation";
 import { deriveTurnFiles, fileIdentity } from "../lib/turnFiles";
 import { fileResourceCapabilities, type FileResourceRef } from "../lib/fileResource";
+import { subjectOf, summarize } from "../lib/tools";
+import { historyMessagesToItems } from "../lib/historyItems";
 
 const tool = (overrides: Partial<ToolItem>): ToolItem => ({
   kind: "tool", id: "call", name: "unknown", args: "{}", readOnly: true, status: "done", ...overrides,
 });
 
 assert.equal(classifyTool(tool({ name: "bash", isShell: true, execution: { shell: "pwsh" } })), "shell");
+for (const name of ["pwsh", "PWSH", "PowerShell", "powershell", "bash", "BASH", "shell"]) {
+  const args = JSON.stringify({ command: "Write-Output example" });
+  assert.equal(classifyTool(tool({ name })), "shell", `live ${name} has a terminal renderer before metadata arrives`);
+  assert.equal(subjectOf(name, args), "Write-Output example");
+  assert.equal(summarize(name, args, "one\ntwo\n"), summarize("bash", args, "one\ntwo\n"));
+  const history = historyMessagesToItems([
+    { role: "assistant", content: "", toolCalls: [{ id: "call", name, arguments: args }] },
+    { role: "tool", content: "example", toolName: name, toolCallId: "call" },
+  ], "test");
+  const call = history.items.find(item => item.kind === "tool");
+  assert.ok(call?.kind === "tool" && call.isShell, `restored ${name} remains a shell`);
+}
+assert.equal(shellDisplayName(tool({ name: "pwsh" })), "PowerShell");
+assert.equal(classifyTool(tool({ name: "mcp_pwsh" })), "tool");
 assert.equal(shellDisplayName(tool({ name: "bash", isShell: true, execution: { shell: "pwsh" } })), "PowerShell");
 assert.equal(shellDisplayName(tool({ name: "bash", isShell: true, execution: { shell: "zsh" } })), "Zsh");
 assert.equal(shellDisplayName(tool({ name: "bash", isShell: true })), "Terminal");

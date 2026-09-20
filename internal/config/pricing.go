@@ -387,8 +387,9 @@ func ResetOfficialProviderPricingOnUpgrade(path string) (bool, error) {
 }
 
 func shouldMarkWindowsBashSandboxDefaultUpgrade(fromVersion int) bool {
-	// The native backend is available again. Preserve old explicit values, and
-	// stop migrating Windows enforcement to the retired unconfined default.
+	// Windows resolves every [sandbox].bash value to off at load time (see
+	// BashModeForGOOS), so no persisted rewrite is needed; explicit values stay
+	// readable and doctor reports them as ignored.
 	return false
 }
 

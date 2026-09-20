@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,17 +16,16 @@ import (
 	"reasonix/internal/tool"
 )
 
-// Golden baseline for the current cache-stable provider contract. The hard
-// product contract is: absent a deliberate migration, the stable system prompt,
-// provider-visible tool schemas, provider request serialization, and cache
-// prefix hash remain byte-identical. Dynamic workspace, environment, memory,
-// and skill catalog data are exercised separately through session-context tests.
+// Golden baseline for the cache-stable provider contract. Without a deliberate
+// migration, the system prompt, tool schemas, provider request, and prefix hash
+// remain byte-identical. Session-context tests cover dynamic data separately.
 //
 // The stable-prefix/session-context migration intentionally updates the system
 // and prefix goldens once while leaving tool_schemas.json byte-identical. Future
 // reviewed provider-visible changes must regenerate with:
 //
 //	REASONIX_UPDATE_GOLDEN=1 go test ./internal/boot -run TestGoldenBaseline -count=1
+//	REASONIX_GOLDEN_SHELL=powershell REASONIX_UPDATE_GOLDEN=1 go test ./internal/boot -run TestGoldenBaseline -count=1
 //
 // and call the cache impact out in the commit message.
 //
@@ -77,9 +77,20 @@ base_url = "https://example.invalid"
 model = "x"
 api_key_env = "REASONIX_TEST_KEY_UNSET"
 `
-	if runtime.GOOS == "windows" {
+	forcePowerShell := runtime.GOOS == "windows" || os.Getenv("REASONIX_GOLDEN_SHELL") == "powershell"
+	if forcePowerShell {
 		// Pin 5.1 independently of whether PowerShell 7 is installed.
 		fixture = strings.Replace(fixture, `prefer = "bash"`, `prefer = "powershell"`, 1)
+		if runtime.GOOS != "windows" {
+			// A configured PowerShell path is enough to compose the Windows tool
+			// contract; Build does not execute it. This lets POSIX CI guard the
+			// Windows provider snapshot without Wine.
+			fake := filepath.Join(dir, "powershell")
+			if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatalf("write fake PowerShell: %v", err)
+			}
+			fixture = strings.Replace(fixture, `prefer = "powershell"`, "prefer = \"powershell\"\npath = "+strconv.Quote(fake), 1)
+		}
 	}
 	writeFile(t, dir, "reasonix.toml", fixture)
 
@@ -203,7 +214,7 @@ func TestGoldenBaselineNoExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve golden dir: %v", err)
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || os.Getenv("REASONIX_GOLDEN_SHELL") == "powershell" {
 		goldenDir = filepath.Join(goldenDir, "windows-powershell")
 	}
 
@@ -258,6 +269,44 @@ func TestGoldenBaselineNoExtensions(t *testing.T) {
 				"If this drift is deliberate, regenerate with REASONIX_UPDATE_GOLDEN=1 and document the cache impact.",
 				name, len(got), len(want), firstDivergence(string(got), string(want)))
 		}
+	}
+}
+
+func TestWindowsProviderSurfaceUsesPwshAndFormalJobsOnly(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Setenv("REASONIX_GOLDEN_SHELL", "powershell")
+	}
+	baseline := captureGoldenBaseline(t)
+	var entries []tool.ContractEntry
+	if err := json.Unmarshal(baseline.ToolSchemas, &entries); err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]tool.ContractEntry, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	for _, want := range []string{"pwsh", "job_output", "job_kill"} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("Windows provider surface missing %q: %v", want, byName)
+		}
+	}
+	for _, hidden := range []string{"bash", "Bash", "PowerShell", "powershell", "bash_output", "wait", "kill_shell"} {
+		if _, ok := byName[hidden]; ok {
+			t.Fatalf("compatibility alias %q leaked into Windows provider schema", hidden)
+		}
+	}
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(byName["pwsh"].Schema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(schema.Required, "command") || !slices.Contains(schema.Required, "description") {
+		t.Fatalf("pwsh required fields = %v", schema.Required)
+	}
+	if _, ok := schema.Properties["preserve_background_processes"]; ok {
+		t.Fatal("pwsh schema exposed preserve_background_processes")
 	}
 }
 

@@ -11,8 +11,8 @@ const smokeRoots = internalRoots(
   // persistentshell drives a real ConPTY and a PowerShell wrapper that no other
   // platform exercises, so Windows is the only lane that can prove it.
   "persistentshell", "proc",
-  "lsp", "projectiondb", "remote", "repair", "sandbox", "sessioncatalog", "sqliteuri", "sysproxy",
-  "topicstate", "winsandbox", "workspacelease",
+  "lsp", "pathidentity", "projectiondb", "remote", "repair", "sandbox", "sessioncatalog", "sqliteuri", "sysproxy",
+  "topicstate", "winaclresidue", "workspacelease",
 ).concat("reasonix/cmd");
 
 export function selectPackages(packages, group) {

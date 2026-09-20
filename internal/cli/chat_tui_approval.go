@@ -209,7 +209,7 @@ func approvalToolDetails(toolName string) (name, detail string) {
 
 func approvalToolLabel(toolName string) string {
 	switch toolName {
-	case "bash":
+	case "bash", "pwsh", "powershell", "shell":
 		return i18n.M.ApprovalToolLabelBash
 	case "edit_file":
 		return i18n.M.ApprovalToolLabelEditFile

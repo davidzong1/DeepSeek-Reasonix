@@ -41,19 +41,9 @@ or sandbox enforcement are weakened by this change.
 不兼容的 MSYS 子进程，所以业务命令中的此类失败仍按执行失败处理，不能声称整条命令
 没有产生修改。本次改动不放宽令牌、文件权限或沙箱限制。
 
-Windows acceptance must run, not merely cross-compile:
+The restricted-token runner has since been removed: Windows commands start
+directly as the current OS user, so the MSYS/Cygwin token incompatibility no
+longer applies and the boundary above is historical context only.
 
-Windows 验收必须实际运行，交叉编译不能替代：
-
-```
-go test ./internal/shellrun -run TestWindowsNativeShellPreflightRetainsWriteBoundary -v
-go test ./internal/winsandbox -run 'TestWindows(SandboxAllowsWorkspaceWriteAndDeniesOutside|WriteRestrictedReadOnlyAllowsReadsAndDeniesWrites|RestrictedRuntimeCompatibility)' -v
-```
-
-An MSYS compatibility repair additionally needs real Git Bash/grep child-process
-tests in both read-only and workspace-write modes, with denied outside writes,
-before changing the restricted-token implementation. This remains unqualified
-until a Windows host is available.
-
-修改受限令牌实现前，还需要在真实 Windows 上验证 Git Bash/grep 子进程，覆盖只读与
-工作区可写两种模式，并证明工作区外写入仍被拒绝。目前仍缺少这项 Windows 实测证据。
+受限令牌 runner 此后已被移除：Windows 命令直接以当前系统账户启动，MSYS/Cygwin
+与令牌的兼容性问题不再存在，上述边界仅作为历史背景保留。

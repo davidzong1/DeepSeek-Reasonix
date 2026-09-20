@@ -171,6 +171,7 @@ type App struct {
 	tabOrder    []string
 	activeTabID string
 	readyHook   func()
+	attachmentTargetState
 	// tabSelectionMu serializes cross-registry activation. A remote selection
 	// must not overtake the local-session snapshot that makes switching safe.
 	tabSelectionMu sync.Mutex
@@ -512,7 +513,6 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.shuttingDown.Store(false)
 	a.initializeDesktopSessionRoot()
-	a.registerLegacyCleanupUpgradeBatch()
 	// Only the process that claimed the pre-shell diagnostics lock consumes
 	// lifecycle evidence.
 	initializeLifecycleDiagnostics(a)
@@ -734,15 +734,7 @@ func (a *App) restoreOrBuildTabs() {
 	// Load i18n from the first available config.
 	// Prefer DesktopLanguage (desktop UI setting) over Language (CLI setting),
 	// so the user's language choice in desktop settings takes effect.
-	startupCfg, cfgErr := config.Load()
-	if cfgErr == nil {
-		cfg := startupCfg
-		lang := cfg.DesktopLanguage()
-		if lang == "" {
-			lang = cfg.Language
-		}
-		a.setDesktopLocale(i18n.DetectLanguage(lang))
-	}
+	a.loadStartupLocale()
 	f, _, restoreCurrent := a.reconcileTabsBeforeRestore(ctx, f, tabsVersion)
 	if !restoreCurrent {
 		return
@@ -784,7 +776,7 @@ func (a *App) restoreOrBuildTabs() {
 			// goal-state onto the fresh path; reading it here stops a restart
 			// from re-seeding the cleared goal into the rotated session. A
 			// session without a sidecar keeps the persisted goal (legacy).
-			tab.goal = runningTabSessionGoal(strings.TrimSpace(entry.SessionPath), strings.TrimSpace(entry.Goal))
+			restoreRuntime := prepareRestoredTabIdentity(tab, entry)
 			tab.toolApprovalMode = normalizeToolApprovalMode(entry.ToolApprovalMode)
 			if tab.toolApprovalMode == control.ToolApprovalAsk && tabModeHasAutoApproveTools(entry.Mode) {
 				tab.toolApprovalMode = control.ToolApprovalYolo
@@ -794,37 +786,38 @@ func (a *App) restoreOrBuildTabs() {
 			tab.PendingCreateOperationID = strings.TrimSpace(entry.CreateOperationID)
 			tab.persistenceExtra = cloneDesktopJSONFields(entry.extra)
 			tab.ReadOnly = entry.ReadOnly
-			restoreTabPinnedContext(tab, entry.PinnedFiles)
 			tab.Takeover.Spectator = entry.TakeoverSpectator
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
 			a.publishRestoredTab(tab, releaseAdmission)
-			toBuild = append(toBuild, tab)
-		}
-		a.mu.Lock()
-		if _, ok := a.tabs[f.ActiveTab]; ok {
-			a.activeTabID = f.ActiveTab
-		} else {
-			ordered := a.orderedTabIDsLocked()
-			if len(ordered) > 0 {
-				a.activeTabID = ordered[0]
+			if restoreRuntime {
+				toBuild = append(toBuild, tab)
 			}
 		}
-		a.saveTabsLocked()
-		a.mu.Unlock()
-		for _, tab := range toBuild {
-			a.startTabControllerBuild(tab)
-		}
+		a.finishRestoredLocalTabs(f, toBuild)
 		return
 	}
 	if len(f.RemoteTabs) > 0 {
-		// A remote-only single-surface layout is restored above as disconnected
-		// shells. It is not a first launch and must not grow a fallback Global tab.
+		// Remote-only layout: the remote shell is the visible surface, but local
+		// commands still need a workspace tab to target.
+		a.restoreDormantWorkspaceTab(ctx)
 		return
 	}
 
 	// First launch intentionally has no runtime. The renderer opens a persisted
 	// Global draft after this restore gate closes; the first execution creates
 	// the canonical Session and Controller.
+}
+
+func (a *App) loadStartupLocale() {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	lang := cfg.DesktopLanguage()
+	if lang == "" {
+		lang = cfg.Language
+	}
+	a.setDesktopLocale(i18n.DetectLanguage(lang))
 }
 
 func (a *App) createTabEntry(scope, workspaceRoot, topicID string) *WorkspaceTab {
@@ -1113,26 +1106,27 @@ func (a *App) submitInitialGoalToLocalTab(
 	if goal == "" {
 		return []string{}, fmt.Errorf("goal is required")
 	}
-	if err := syncTabGoalToController(ctrl, goal); err != nil {
-		return []string{}, fmt.Errorf("activate goal: %w", err)
-	}
-	a.mu.Lock()
-	if a.tabs[tab.ID] != tab {
+	var drained []string
+	setup := func() error {
+		if err := syncTabGoalToController(ctrl, goal); err != nil {
+			return fmt.Errorf("activate goal: %w", err)
+		}
+		a.mu.Lock()
+		if a.tabs[tab.ID] != tab {
+			a.mu.Unlock()
+			return a.workspaceNotReadyErr(nil)
+		}
+		tab.toolApprovalMode = toolApprovalMode
+		tab.goal = goal
+		tab.mode = tabModeFromAxes(false, toolApprovalMode == control.ToolApprovalYolo)
+		a.saveTabsLocked()
 		a.mu.Unlock()
-		return []string{}, a.workspaceNotReadyErr(nil)
-	}
-	tab.toolApprovalMode = toolApprovalMode
-	tab.goal = goal
-	tab.mode = tabModeFromAxes(false, toolApprovalMode == control.ToolApprovalYolo)
-	a.saveTabsLocked()
-	a.mu.Unlock()
 
-	ctrl.SetPlanMode(false)
-	drained := applyTabToolApprovalModeToController(ctrl, toolApprovalMode)
-	if err := a.ensureTabTopicIndexedForUserTurn(tab); err != nil {
-		return []string{}, err
+		ctrl.SetPlanMode(false)
+		drained = applyTabToolApprovalModeToController(ctrl, toolApprovalMode)
+		return a.ensureTabTopicIndexedForUserTurn(tab)
 	}
-	if err := submitIdentified(ctrl, req, func() {
+	if err := submitIdentifiedWithSetup(ctrl, req, setup, func() {
 		if len(invocations) > 0 {
 			ctrl.SubmitInvocationDisplay(display, input, controlInvocationRequests(invocations))
 		} else {
@@ -3128,71 +3122,22 @@ func (a *App) closeRemovedSessionRuntime(item removedSessionRuntime, closed map[
 	item.ctrl.Close()
 }
 
+// openFallbackRuntime re-activates the topic that still owns content after one
+// of its sessions was removed. When no topic remains, the surface stays empty
+// and the frontend lands on the workspace draft: a replacement blank session
+// would be registered as a real sidebar row that can be archived again, so the
+// workspace could never become empty.
 func (a *App) openFallbackRuntime(target fallbackRuntimeTarget) error {
-	scope := target.scope
-	root := target.workspaceRoot
 	topicID := strings.TrimSpace(target.topicID)
-	if scope == "global" {
+	if topicID == "" {
+		return nil
+	}
+	root := target.workspaceRoot
+	if target.scope == "global" {
 		root = ""
 	}
-	if topicID == "" {
-		return a.openTransientBlankRuntime(scope, root)
-	}
-	_, err := a.ActivateTopic(scope, root, topicID, "")
+	_, err := a.ActivateTopic(target.scope, root, topicID, "")
 	return err
-}
-
-func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
-	scope = strings.TrimSpace(scope)
-	if scope != "project" {
-		scope = "global"
-	}
-	actualRoot := ""
-	if scope == "project" {
-		workspaceRoot = normalizeProjectRoot(workspaceRoot)
-		if workspaceRoot == "" {
-			return fmt.Errorf("workspaceRoot is required")
-		}
-		actualRoot = workspaceRoot
-	} else {
-		actualRoot = globalWorkspaceRoot()
-		if err := os.MkdirAll(actualRoot, 0o755); err != nil {
-			return fmt.Errorf("create global workspace: %w", err)
-		}
-	}
-	releaseAdmission, err := a.beginProjectRuntimeAdmission(scope, actualRoot)
-	if err != nil {
-		return err
-	}
-	defer releaseAdmission()
-	if scope == "project" {
-		saveWorkspace(workspaceRoot)
-		a.registerProjectRoot(workspaceRoot)
-	}
-
-	model, toolApprovalMode := desktopNewSessionDefaults(scope, actualRoot)
-	tab := &WorkspaceTab{
-		Scope:            scope,
-		WorkspaceRoot:    actualRoot,
-		TopicTitle:       defaultTopicTitle,
-		topicTitleSource: topicTitleSourceAuto,
-		model:            model,
-		qualityFloor:     "",
-		mode:             tabModeFromAxes(false, toolApprovalMode == control.ToolApprovalYolo),
-		toolApprovalMode: toolApprovalMode,
-		disabledMCP:      map[string]ServerView{},
-	}
-	a.mu.Lock()
-	tab.ID = a.newUniqueTabIDLocked()
-	tab.sink = &tabEventSink{tabID: tab.ID, app: a}
-	a.tabs[tab.ID] = tab
-	a.tabOrder = append(a.tabOrder, tab.ID)
-	a.activeTabID = tab.ID
-	a.saveTabsLocked()
-	a.mu.Unlock()
-
-	a.startTabControllerBuild(tab)
-	return nil
 }
 
 func (a *App) beginDestroySessionJobs(dir, sessionPath string) []control.SessionDestroyHandle {
@@ -3424,6 +3369,7 @@ func (a *App) onSessionTitleChanged(dir, sessionPath, _ string) error {
 	if err := syncSessionTitleFromBranchMeta(dir, validated); err != nil {
 		return err
 	}
+	a.projectLegacySessionTitleToTabs(validated)
 	a.requestSessionCatalogPath("", "", validated)
 	a.invalidatePromptHistoryCache()
 	a.emitProjectTreeChangedForSessionDirs(dir)
@@ -4834,7 +4780,11 @@ func (a *App) RemoveWorkspace(dir string) error {
 				return fmt.Errorf("save current session before removing workspace: %w", err)
 			}
 		}
-		if err := a.workspaceRegistry().SetWorkspaceVisible(a.bootContext(), desktopWorkspaceID("project", dir), false); err != nil && !errors.Is(err, workspacestate.ErrWorkspaceNotFound) {
+		workspaceID, err := a.resolveDesktopWorkspaceID(a.bootContext(), "project", dir)
+		if err != nil {
+			return err
+		}
+		if err := a.workspaceRegistry().SetWorkspaceVisible(a.bootContext(), workspaceID, false); err != nil && !errors.Is(err, workspacestate.ErrWorkspaceNotFound) {
 			return err
 		}
 
@@ -5524,6 +5474,7 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 		}
 	}
 	hm.ServerSearch = historyServerSearch(m.ServerSearch)
+	hm.Attachments = historyDisplayAttachments(m.ImageInputs)
 	if (m.Role == provider.RoleAssistant || m.LocalOnly) && len(m.ToolCalls) > 0 {
 		hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {
@@ -5726,6 +5677,9 @@ func cloneHistoryMessages(in []HistoryMessage) []HistoryMessage {
 		if len(in[i].ToolCalls) > 0 {
 			out[i].ToolCalls = append([]HistoryToolCall(nil), in[i].ToolCalls...)
 		}
+		if len(in[i].Attachments) > 0 {
+			out[i].Attachments = append([]transcript.Attachment(nil), in[i].Attachments...)
+		}
 	}
 	return out
 }
@@ -5797,9 +5751,10 @@ func clipHistoryToolPreview(s string) string {
 func historyToolSubject(name, args string) string {
 	a := parseHistoryToolArgs(args)
 	var subject string
+	if historyShellToolName(name) {
+		return clipSingleLine(historyArgString(a, "command"), 240)
+	}
 	switch name {
-	case "bash":
-		subject = historyArgString(a, "command")
 	case "grep", "glob":
 		subject = firstNonEmpty(historyArgString(a, "pattern"), historyArgString(a, "path"))
 	case "web_fetch":
@@ -5829,6 +5784,12 @@ func historyToolSubject(name, args string) string {
 func historyToolSummary(name, args, output string) string {
 	if historyToolResultFailed(output) {
 		return ""
+	}
+	if historyShellToolName(name) {
+		if strings.TrimSpace(output) == "" {
+			return "no output"
+		}
+		return fmt.Sprintf("%d lines", historyLineCount(output))
 	}
 	a := parseHistoryToolArgs(args)
 	switch name {
@@ -5867,13 +5828,17 @@ func historyToolSummary(name, args, output string) string {
 		return fmt.Sprintf("%d entries", historyNonEmptyLineCount(output))
 	case "web_fetch":
 		return clipSingleLine(strings.SplitN(output, "\n", 2)[0], 80)
-	case "bash":
-		if strings.TrimSpace(output) == "" {
-			return "no output"
-		}
-		return fmt.Sprintf("%d lines", historyLineCount(output))
 	default:
 		return ""
+	}
+}
+
+func historyShellToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "pwsh", "powershell", "shell":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -10607,54 +10572,6 @@ func (a *App) currentProviderEntryForTab(tabID string) (*config.ProviderEntry, e
 	return entry, nil
 }
 
-func (a *App) withActiveWorkspace(fn func() (string, error)) (string, error) {
-	var result string
-	err := a.withActiveWorkspaceDo(func() error {
-		var err error
-		result, err = fn()
-		return err
-	})
-	return result, err
-}
-
-func (a *App) withActiveWorkspaceDo(fn func() error) error {
-	root := a.activeWorkspaceRoot()
-	if root != "" && root != "." {
-		prev, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		if err := os.Chdir(root); err != nil {
-			return err
-		}
-		defer func() { _ = os.Chdir(prev) }()
-	}
-	return fn()
-}
-
-// SavePastedImage stores a browser clipboard image data URL under the active
-// tab's workspace .reasonix/attachments and returns the relative @-reference path.
-func (a *App) SavePastedImage(dataURL string) (string, error) {
-	return a.withActiveWorkspace(func() (string, error) {
-		return control.SaveImageDataURL(dataURL)
-	})
-}
-
-// SaveClipboardImage reads the native OS clipboard image under the active tab's
-// workspace .reasonix/attachments and returns the relative @-reference path.
-func (a *App) SaveClipboardImage() (string, error) {
-	return a.withActiveWorkspace(control.SaveClipboardImage)
-}
-
-// SavePastedFile stores a dropped non-image file (the browser exposes its bytes
-// as a data URL but not a real path) under the active tab's workspace
-// .reasonix/attachments and returns the relative @-reference path.
-func (a *App) SavePastedFile(name, dataURL string) (string, error) {
-	return a.withActiveWorkspace(func() (string, error) {
-		return control.SaveAttachmentDataURL(name, dataURL)
-	})
-}
-
 // PickExportFile opens the native save dialog and returns the selected path. It
 // returns "" when the user cancels.
 func (a *App) PickExportFile(defaultFilename, mimeType string) (string, error) {
@@ -10931,106 +10848,6 @@ func exportFileFilters(mimeType, ext string) []nativeFileFilter {
 		return []nativeFileFilter{{DisplayName: strings.ToUpper(strings.TrimPrefix(ext, ".")) + " files (*" + ext + ")", Pattern: "*" + ext}}
 	}
 	return []nativeFileFilter{{DisplayName: "All files (*.*)", Pattern: "*.*"}}
-}
-
-// AttachmentDataURL returns a safe data URL for a stored image attachment.
-func (a *App) AttachmentDataURL(path string) (string, error) {
-	return a.withActiveWorkspace(func() (string, error) {
-		return control.ImageDataURL(path)
-	})
-}
-
-// DroppedItem is one OS-dropped file resolved into a composer context entry: an
-// in-tree file becomes a workspace @reference (read in place, no copy), while an
-// outside directory becomes a session-scoped workspace @reference; an image or
-// out-of-tree file is copied into .reasonix/attachments.
-type DroppedItem struct {
-	Kind        string `json:"kind"` // "workspace" | "attachment"
-	Path        string `json:"path"`
-	IsDir       bool   `json:"isDir,omitempty"`
-	DisplayPath string `json:"displayPath,omitempty"`
-	PreviewURL  string `json:"previewUrl,omitempty"`
-}
-
-// AttachDropped turns an absolute path from the native file-drop bridge into a
-// composer context entry. Images are stored as attachments so the chip shows a
-// thumbnail; in-workspace files are referenced relatively (no copy); directories
-// outside the workspace are registered as current-session folder references;
-// files outside the workspace are copied into .reasonix/attachments.
-func (a *App) AttachDropped(path string) (DroppedItem, error) {
-	var item DroppedItem
-	err := a.withActiveWorkspaceDo(func() error {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if isImageExt(path) {
-			if rel, err := control.SaveImageFile(path); err == nil {
-				preview, _ := control.ImageDataURL(rel)
-				item = DroppedItem{Kind: "attachment", Path: rel, PreviewURL: preview}
-				return nil
-			}
-		}
-		if rel, ok := workspaceRelativeIn(path, a.activeWorkspaceRoot()); ok {
-			item = DroppedItem{Kind: "workspace", Path: rel, IsDir: info.IsDir()}
-			return nil
-		}
-		if info.IsDir() {
-			tab, ctrl := a.tabAndCtrlByID("")
-			if err := a.ensureTabControllerWorkspace(tab); err != nil {
-				return err
-			}
-			if tab != nil {
-				ctrl = a.controllerForTab(tab)
-			}
-			if ctrl == nil {
-				return fmt.Errorf("workspace is not ready")
-			}
-			token, displayPath, err := ctrl.RegisterExternalFolderRef(path)
-			if err != nil {
-				return err
-			}
-			item = DroppedItem{Kind: "workspace", Path: token, IsDir: true, DisplayPath: displayPath}
-			return nil
-		}
-		rel, err := control.SaveAttachmentFile(path)
-		if err != nil {
-			return err
-		}
-		item = DroppedItem{Kind: "attachment", Path: rel}
-		return nil
-	})
-	if err != nil {
-		return DroppedItem{}, err
-	}
-	return item, nil
-}
-
-func isImageExt(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
-		return true
-	}
-	return false
-}
-
-func workspaceRelativeIn(path, workspaceRoot string) (string, bool) {
-	root := workspaceRoot
-	if !filepath.IsAbs(root) {
-		abs, err := filepath.Abs(root)
-		if err != nil {
-			return "", false
-		}
-		root = abs
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return "", false
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", false
-	}
-	return filepath.ToSlash(rel), true
 }
 
 // memory panel (frontend ⇄ controller)

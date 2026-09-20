@@ -25,12 +25,20 @@ type desktopSessionTitleProvider struct {
 	started chan struct{}
 	chunks  chan provider.Chunk
 	request provider.Request
+	// budget is what was left of the model round trip's deadline when the
+	// request reached the provider, and streamedAt when that happened.
+	budget     time.Duration
+	streamedAt time.Time
 }
 
 func (p *desktopSessionTitleProvider) Name() string { return "desktop-session-title" }
 
-func (p *desktopSessionTitleProvider) Stream(_ context.Context, request provider.Request) (<-chan provider.Chunk, error) {
+func (p *desktopSessionTitleProvider) Stream(ctx context.Context, request provider.Request) (<-chan provider.Chunk, error) {
 	p.request = request
+	p.streamedAt = time.Now()
+	if deadline, ok := ctx.Deadline(); ok {
+		p.budget = time.Until(deadline)
+	}
 	if p.started != nil {
 		close(p.started)
 	}
@@ -82,6 +90,42 @@ func TestAIRenameCanonicalSessionUsesDurableHistoryInsteadOfEmptyLegacyFile(t *t
 				}
 			}
 		})
+	}
+}
+
+// The model round trip owns the AI-title budget: control bounds that call at
+// sessionTitleTimeout, measured from the call. A second host-level deadline
+// over the whole operation would spend part of it on durable preparation —
+// the snapshot, the flush and the history projection TitleMessages builds —
+// so a long conversation on a slow host hands the model a short budget and
+// eventually loses an already generated title to a deadline that belongs to
+// the provider, reported as the opaque operation_failed.
+func TestAISessionTitleBudgetBelongsToTheModelRoundTrip(t *testing.T) {
+	// control.sessionTitleTimeout. The host must hand over all of it.
+	const modelRoundTripBudget = 30 * time.Second
+	app, _, runtime, prov, _ := newCanonicalTitleFixture(t)
+	appendSessionTestMessage(t, runtime, "user", provider.Message{
+		ID: "user", Role: provider.RoleUser, Origin: provider.MessageOriginUser,
+		Content: "wrapped model input", RawContent: "帮我制作扫雷游戏",
+	})
+	// Enough durable history that its first projection build is measurable.
+	for i := range 60 {
+		id := fmt.Sprintf("tool-%d", i)
+		appendSessionTestMessage(t, runtime, id, provider.Message{ID: id, Role: provider.RoleTool, Content: "tool output"})
+	}
+
+	started := time.Now()
+	title, err := app.AIRenameSession("topic-canonical")
+	if err != nil || title != "制作扫雷游戏" {
+		t.Fatalf("AIRenameSession = %q, %v", title, err)
+	}
+
+	if prov.streamedAt.IsZero() {
+		t.Fatal("the model was never asked for a title")
+	}
+	if prov.budget < modelRoundTripBudget-time.Second {
+		t.Fatalf("durable preparation of %v left the model only %v of its %v budget",
+			prov.streamedAt.Sub(started), prov.budget, modelRoundTripBudget)
 	}
 }
 

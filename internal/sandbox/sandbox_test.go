@@ -52,14 +52,22 @@ func TestUnavailableMessageIsActionable(t *testing.T) {
 		"Full access",
 	}
 	if runtime.GOOS == "windows" {
-		// Windows ships no OS-level Bash backend and the effective mode is
+		// Windows ships no OS-level shell sandbox and the effective mode is
 		// fixed to off, so the remediation states that fact instead of
 		// pointing at a config edit the platform would ignore.
-		want = []string{"refusing to run unconfined", "Full access"}
+		want = []string{"refusing to run unconfined", "no OS-level shell sandbox", "Full access"}
 	}
 	for _, w := range want {
 		if !strings.Contains(msg, w) {
 			t.Fatalf("UnavailableMessage() = %q, want %q", msg, w)
+		}
+	}
+}
+
+func TestOSSandboxSupportedPerPlatform(t *testing.T) {
+	for goos, want := range map[string]bool{"darwin": true, "linux": true, "windows": false, "freebsd": true} {
+		if got := osSandboxSupportedForGOOS(goos); got != want {
+			t.Fatalf("osSandboxSupportedForGOOS(%q) = %v, want %v", goos, got, want)
 		}
 	}
 }
@@ -295,12 +303,7 @@ func TestCommandNonDarwin(t *testing.T) {
 	}
 	spec := Spec{Mode: "enforce", WriteRoots: []string{"/tmp"}}
 	cmd, wrapped := Command(spec, Shell{Kind: ShellBash, Path: "sh"}, "echo hi")
-	if runtime.GOOS == "windows" {
-		if wrapped || len(cmd) != 0 {
-			t.Fatalf("restricted Windows Bash must be rejected before launch: %v wrapped=%v", cmd, wrapped)
-		}
-		return
-	}
+	// Windows has no backend, so it always takes the unwrapped branch below.
 	if Available() {
 		if !wrapped || cmd[0] == "sh" {
 			t.Fatalf("non-darwin enforce with available sandbox should wrap: %v wrapped=%v", cmd, wrapped)

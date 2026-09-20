@@ -6,11 +6,65 @@ import (
 	"strings"
 
 	"reasonix/desktop/internal/workspacestate"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/session"
 )
 
 var errSessionWorkspaceConflict = errors.New("session workspace identity is inconsistent; the session files were left unchanged")
+
+// canonicalTabBinding is what a controller build publishes to its tab once
+// the durable session is bound: identity, workspace, and the projected name.
+type canonicalTabBinding struct {
+	ref         session.SessionRef
+	workspaceID string
+	title       string
+	titleSource string
+}
+
+// canonicalSeedTitle keeps a manual topic name chosen before any session
+// existed. It lives only in the legacy topic map, so the first canonical bind
+// seeds it into the presentation row where every reader of the session sees it.
+func canonicalSeedTitle(title, source string) string {
+	if source != topicTitleSourceManual || isDefaultTopicTitle(title) {
+		return ""
+	}
+	return strings.TrimSpace(title)
+}
+
+// bindTabCanonicalSessionTopic binds the session, publishes its topic
+// identity, and resolves the tab name from the session log. A restored or
+// reopened tab starts from the legacy topic map, which a canonical rename
+// never writes; only the log can name the session it is now bound to.
+func (a *App) bindTabCanonicalSessionTopic(
+	ctx context.Context,
+	identity control.IdentityLifecycle,
+	cfg *config.Config,
+	scope, workspaceRoot, sessionID, legacyPath, model string,
+	modelFallback bool,
+	topicID, seedTitle string,
+) (canonicalTabBinding, error) {
+	ref, workspaceID, err := a.bindTabCanonicalSession(ctx, identity, cfg, scope, workspaceRoot, sessionID, legacyPath, model, modelFallback)
+	if err != nil {
+		return canonicalTabBinding{}, err
+	}
+	if err := a.workspaceRegistry().EnsureSessionTopic(ctx, ref.SessionID, topicID, seedTitle); err != nil {
+		return canonicalTabBinding{}, err
+	}
+	bound := canonicalTabBinding{ref: ref, workspaceID: workspaceID}
+	if state, loadErr := a.workspaceRegistry().Load(ctx); loadErr == nil {
+		bound.title, bound.titleSource = a.canonicalTabTitle(ctx, state, ref)
+	}
+	return bound, nil
+}
+
+// applyLocked publishes the binding to the tab. The caller holds App.mu.
+func (b canonicalTabBinding) applyLocked(tab *WorkspaceTab) {
+	tab.SessionID, tab.SessionPath, tab.SessionWorkspace.ID = b.ref.SessionID, "", b.workspaceID
+	if b.title != "" {
+		tab.TopicTitle, tab.topicTitleSource = b.title, b.titleSource
+	}
+}
 
 func controllerSessionDirectoryMatches(desiredDir, ctrlDir, path string) bool {
 	if desiredDir == "" || sameDesktopPath(ctrlDir, desiredDir) {
@@ -52,7 +106,14 @@ func (a *App) canonicalSessionWorkspace(ctx context.Context, ref session.Session
 			owner = workspace
 		}
 	}
-	if owner.ID == "" || info.Origin == "" || strings.TrimSpace(info.CWD) == "" || !sameDesktopPath(info.CWD, owner.Root) {
+	if owner.ID == "" || info.Origin == "" || strings.TrimSpace(info.CWD) == "" {
+		return owner, errSessionWorkspaceConflict
+	}
+	same, identityErr := sameDesktopPathStrict(info.CWD, owner.Root)
+	if identityErr != nil {
+		return owner, identityErr
+	}
+	if !same {
 		return owner, errSessionWorkspaceConflict
 	}
 	return owner, nil
@@ -69,10 +130,11 @@ func canonicalWorkspaceChanged(snap tabRuntimeSnapshot, workspace workspacestate
 	return snap.scope != canonicalWorkspaceScope(workspace) || !sameDesktopPath(desktopWorkspaceRoot(snap.scope, snap.workspaceRoot), workspace.Root)
 }
 
-// The caller holds App.mu and publishes the session/controller in this same
-// critical section. Project-derived tab state cannot survive a project move.
-func applyCanonicalWorkspaceLocked(tab *WorkspaceTab, workspace workspacestate.Workspace) {
-	if canonicalWorkspaceChanged(snapshotTabRuntimeLocked(tab), workspace) {
+// The caller resolves workspaceChanged before taking App.mu, then publishes
+// the session/controller in the same critical section. Path identity resolution
+// may touch the filesystem and must never run while App.mu is held.
+func applyCanonicalWorkspaceLocked(tab *WorkspaceTab, workspace workspacestate.Workspace, workspaceChanged bool) {
+	if workspaceChanged {
 		tab.TopicID, tab.TopicTitle, tab.topicTitleSource = "", "", ""
 		tab.setPinnedFilesState(nil, nil)
 	}
@@ -94,27 +156,19 @@ func (a *App) commitCanonicalSessionBinding(tab *WorkspaceTab, ctrl control.Sess
 	if err != nil {
 		return err
 	}
-	topicID, topicTitle := canonicalSessionTopicIdentity(state, ref.SessionID)
-	// Presentation supplies migration defaults; the session log owns titles
-	// after a manual or AI rename, including an explicitly cleared title.
-	if info, err := a.desktopSessionService("").Query().Stat(a.bootContext(), ref); err == nil && info.MetadataStatus == session.MetadataReady && (info.TitleSequence > 0 || info.Title != "") {
-		topicTitle = info.Title
-	}
+	topicID, _ := canonicalSessionTopicIdentity(state, ref.SessionID)
+	// The tab name is re-derived from the session log on every bind so the
+	// topicbar can never trail a rename committed while the tab was away.
+	topicTitle, topicSource := a.canonicalTabTitle(a.bootContext(), state, ref)
+	workspaceChanged := canonicalWorkspaceChanged(a.tabRuntimeSnapshot(tab), workspace)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if tab.removed || a.tabs[tab.ID] != tab || tab.Ctrl != ctrl || (navigation != 0 && a.desktopSessions.navigationSeq.Load() != navigation) {
 		return errSessionNavigationSuperseded
 	}
-	applyCanonicalWorkspaceLocked(tab, workspace)
-	tab.SessionID, tab.SessionPath = ref.SessionID, ""
-	tab.TopicID, tab.TopicTitle = topicID, topicTitle
-	tab.topicTitleSource = ""
-	if topicTitle != "" {
-		tab.topicTitleSource = topicTitleSourceManual
-		if isDefaultTopicTitle(topicTitle) {
-			tab.topicTitleSource = topicTitleSourceAuto
-		}
-	}
+	applyCanonicalWorkspaceLocked(tab, workspace, workspaceChanged)
+	setTabSessionIdentity(tab, sessionRoute(ref.SessionID))
+	tab.TopicID, tab.TopicTitle, tab.topicTitleSource = topicID, topicTitle, topicSource
 	a.bindSessionRuntimeKeyLocked(tab, tab.currentSessionIdentity())
 	a.saveTabsLocked()
 	return nil
@@ -136,13 +190,14 @@ func (a *App) reconcileCanonicalTabWorkspace(ctx context.Context, tab *Workspace
 	if err != nil {
 		return err
 	}
+	workspaceChanged := canonicalWorkspaceChanged(a.tabRuntimeSnapshot(tab), workspace)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.tabBuildSupersededLocked(tab, generation) || tab.SessionID != id || tab.Ctrl != nil {
 		return errSessionNavigationSuperseded
 	}
-	applyCanonicalWorkspaceLocked(tab, workspace)
-	tab.SessionPath = ""
+	applyCanonicalWorkspaceLocked(tab, workspace, workspaceChanged)
+	setTabSessionIdentity(tab, sessionRoute(id))
 	a.saveTabsLocked()
 	return nil
 }

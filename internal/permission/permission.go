@@ -696,7 +696,7 @@ func NewGate(p Policy, a Approver) *Gate { return &Gate{Policy: p, Approver: a} 
 // interface expects. A denied or refused call returns allow=false with a short
 // reason the agent feeds back to the model.
 func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
-	if toolName == "bash" && !readOnly {
+	if canonicalRuleTool(toolName) == "bash" && !readOnly {
 		if BashCommandIsReadOnly(args) {
 			readOnly = true
 		}
@@ -784,7 +784,7 @@ func rememberRule(toolName, subject string) string {
 // bare tool name. Deny rules still take precedence on every call.
 func RememberRuleForScope(toolName, subject string) string {
 	subject = strings.TrimSpace(subject)
-	if subject != "" && toolName == "bash" {
+	if subject != "" && canonicalRuleTool(toolName) == "bash" {
 		if pattern := BashCommandPrefix(subject); pattern != "" {
 			return "Bash(" + pattern + ")"
 		}
@@ -808,7 +808,7 @@ func SessionGrantKey(toolName, subject string) string {
 // share a single Edit grant; all other tools return the bare tool name.
 func SessionGrantRuleForScope(toolName, subject string) string {
 	subject = strings.TrimSpace(subject)
-	if toolName == "bash" && subject != "" {
+	if canonicalRuleTool(toolName) == "bash" && subject != "" {
 		if pattern := BashCommandPrefix(subject); pattern != "" {
 			return "Bash(" + pattern + ")"
 		}
@@ -866,7 +866,7 @@ func IsFileMutationTool(toolName string) bool {
 }
 
 func ruleToolMatches(ruleTool, toolName string) bool {
-	ruleTool = canonicalRuleTool(ruleTool)
+	ruleTool, toolName = canonicalRuleTool(ruleTool), canonicalRuleTool(toolName)
 	return ruleTool == toolName || (ruleTool == "file_mutation" && IsFileMutationTool(toolName))
 }
 
@@ -879,7 +879,7 @@ func ruleToolCompatible(existingTool, candidateTool string) bool {
 
 func canonicalRuleTool(toolName string) string {
 	switch strings.TrimSpace(toolName) {
-	case "Bash", "bash":
+	case "Bash", "bash", "PowerShell", "powershell", "Pwsh", "pwsh":
 		return "bash"
 	case "Edit", "edit", "file_mutation":
 		return "file_mutation"

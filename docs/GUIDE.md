@@ -731,9 +731,9 @@ sandbox is active, and reach the network only when `[sandbox] network` is set.
 Reasonix always removes saved provider and bot credential variables from tool
 subprocess environments. On macOS and Linux it also automatically adds the
 global credential `.env` to the runtime read-deny boundary. Windows does not:
-its restricted token constrains writes but not reads, and denying the current
-user would also deny the host settings process. Project `.env` files keep their
-existing workspace-scoped behavior.
+it has no OS-level shell sandbox, and denying the current user would also deny
+the host settings process. Project `.env` files keep their existing
+workspace-scoped behavior.
 
 **Session-private temporary directory.** Within one logical chat session, Bash
 commands share a private temporary directory so consecutive calls can exchange
@@ -763,22 +763,26 @@ $tmpFile = Join-Path $env:TEMP "result.json"
 | --- | --- | --- |
 | Linux + bubblewrap | Virtual `/tmp` (bound to the private dir) | Shared for the session (not a fresh empty tmpfs each call) |
 | macOS Seatbelt | Host path of the private dir (allowed by policy) | Host macOS temporary directory; scripts should use `$TMPDIR` |
-| Windows (partial sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
+| Windows (no OS sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
 
 Independent sandboxes such as MCP servers keep their own isolation and do not
 inherit the chat session's temporary directory. An approved sandbox-escape
 command still receives the private temp environment variables, but on Linux its
 literal `/tmp` is no longer mapped by bubblewrap.
 
-**Windows note:** Restricted presets run shell and writer processes with a
-Harness-style `WRITE_RESTRICTED` token. This is a partial boundary: it constrains
-writes to the workspace, approved directories, and private session temp, but it
-does not isolate ordinary reads. Dedicated file tools still enforce
-`workspace_root`, `allow_write`, and `forbid_read`; explicitly configured
-`forbid_read` roots use the Windows protected-read path. Saved credential
-variables are removed from child environments, but local tools run as the user
-and can deliberately read other user-readable files. Full-access commands use
-the normal host path.
+**Windows note:** Windows has no OS-level shell sandbox. The restricted-token
+backend is retired from enforcement because denying the current user's own SID
+locked hosts out of their credential store and the token broke common
+toolchains. Permission presets still apply as Reasonix tool-layer
+boundaries: Read only refuses file writes and asks before every shell command,
+and Workspace write keeps file tools inside `workspace_root` and `allow_write`
+and asks before writing elsewhere. Shell commands in every preset run as the
+current OS user without confinement, so `[sandbox] network` and shell-level
+`forbid_read` are not enforced there; dedicated file tools still honor
+`forbid_read`. Saved credential variables are removed from child environments,
+but local tools run as the user and can deliberately read other user-readable
+files. `[sandbox] bash = "enforce"` resolves to `off` on Windows and
+`reasonix doctor` reports the ignored value.
 
 When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend

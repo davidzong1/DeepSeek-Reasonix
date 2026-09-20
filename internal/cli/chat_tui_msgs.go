@@ -69,14 +69,15 @@ type compactDoneMsg struct{ err error }
 // quit. It is injected from the signal handler so shutdown does not snapshot a
 // stale controller captured before an in-TUI rebuild.
 type tuiShutdownMsg struct {
-	completion *tuiShutdownCompletion
+	completion    *tuiShutdownCompletion
+	userInitiated bool
 }
 
 // shutdownNow is the tea.Cmd every in-TUI quit gesture returns instead of
 // tea.Quit. Routing through tuiShutdownMsg gives all exits the same
 // finalization (Snapshot + lease follow); quitting directly would drop
 // whatever the controller holds beyond the last snapshot (#5879).
-func shutdownNow() tea.Msg { return tuiShutdownMsg{} }
+func shutdownNow() tea.Msg { return tuiShutdownMsg{userInitiated: true} }
 
 // elapsedTickMsg fires once a second while a turn runs, driving the "thinking
 // Ns" counter in the status line. generation rejects a prior turn's timer.
@@ -230,7 +231,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
-	history := ctrl.History()
+	history := chatUIDisplayHistory(ctrl)
 	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
 	return chatTUI{
 		ctrl:                 ctrl,

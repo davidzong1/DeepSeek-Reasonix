@@ -107,6 +107,9 @@ type remoteTab struct {
 	// rejected request cannot restore metadata over a newer user selection.
 	selectionRevision uint64
 	pendingSelection  *remoteTabPendingOpenSelection
+	// ownership fences the handback of this session's writer; see
+	// remoteTabOwnershipState in remote_tab_reclaim.go.
+	ownership remoteTabOwnershipState
 }
 
 type remoteTabRuntimeState struct {
@@ -295,7 +298,14 @@ func (a *App) commitRemoteTabOpenRegistration(registration *remoteTabOpenRegistr
 		if existing.session.newSession {
 			commitRemoteTabAttachRoute(existing, "", true)
 		} else if route := remoteSessionIdentityRoute(existing.session.path, existing.session.sessionID); route != "" {
+			// A ready tab commits the route ahead of its async /resume; gate
+			// commands until that resume settles. Re-selecting the confirmed
+			// current session is not a switch and must not enter the gate.
+			switching := existing.state == "ready" && existing.routing.currentPath != route
 			commitRemoteTabAttachRoute(existing, route, false)
+			if switching {
+				existing.routing.rehydratingPath = route
+			}
 		}
 		if existing.state == "ready" {
 			registration.selection.identityCommitted = true
@@ -469,13 +479,19 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 				}
 			}
 		}
-		title := strings.TrimSpace(entry.TopicTitle)
-		if title == "" {
-			title = remoteWorkspaceName(ws)
-		}
 		sessionName := strings.TrimSpace(entry.SessionName)
 		sessionPath := strings.TrimSpace(entry.SessionPath)
 		sessionID := strings.TrimSpace(entry.SessionID)
+		title := strings.TrimSpace(entry.TopicTitle)
+		// Older builds persisted the canonical session ID as the tab title, and
+		// a legacy row's name is its basename, which the sidebar shows as the
+		// title too. Both are opaque, so drop them once an ID is present.
+		if sessionID != "" && (title == sessionID || title == sessionName) {
+			title = ""
+		}
+		if title == "" {
+			title = remoteWorkspaceName(ws)
+		}
 		route := remoteSessionIdentityRoute(sessionPath, sessionID)
 		restored := &remoteTab{
 			id: id, ref: RemoteTabRef{HostID: hostID, Workspace: ws},
@@ -594,7 +610,11 @@ func remoteTabTopicID(tab *remoteTab) string {
 	if tab == nil {
 		return ""
 	}
-	return tab.ref.HostID + "\x00" + tab.ref.Workspace + "\x00" + tab.session.name
+	identity := tab.session.name
+	if sessionID := strings.TrimSpace(tab.session.sessionID); sessionID != "" {
+		identity = sessionID
+	}
+	return tab.ref.HostID + "\x00" + tab.ref.Workspace + "\x00" + identity
 }
 
 func (a *App) remoteTabMetaSnapshot(tabID string) (TabMeta, bool) {

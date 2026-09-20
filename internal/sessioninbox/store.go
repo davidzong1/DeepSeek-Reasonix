@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/store"
 )
 

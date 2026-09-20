@@ -158,16 +158,21 @@ func TestSettingsSandboxViewShellContract(t *testing.T) {
 			t.Fatalf("available capability %q without a path", cap.ID)
 		}
 	}
-	if runtime.GOOS != "windows" && sb.ShellInstallAction != nil {
-		t.Fatalf("install action on %s = %+v, want nil", runtime.GOOS, sb.ShellInstallAction)
+	if sb.ShellInstallAction != nil {
+		t.Fatalf("install action on %s = %+v, want nil in current settings views", runtime.GOOS, sb.ShellInstallAction)
 	}
 	switch runtime.GOOS {
 	case "windows":
+		for _, cap := range sb.ShellCapabilities {
+			if cap.ID == sandbox.ShellCapabilityGitBash || cap.ID == sandbox.ShellCapabilityBash {
+				t.Fatalf("Windows settings advertised a Bash runtime: %+v", sb.ShellCapabilities)
+			}
+		}
 		if sb.ShellRepairGuidance != nil {
-			t.Fatalf("repair guidance on Windows = %+v, want install action only", sb.ShellRepairGuidance)
+			t.Fatalf("repair guidance on Windows = %+v, want native PowerShell discovery only", sb.ShellRepairGuidance)
 		}
 		if sb.GitRepairGuidance != nil {
-			t.Fatalf("Git repair guidance on Windows = %+v, want Git for Windows action only", sb.GitRepairGuidance)
+			t.Fatalf("Git repair guidance on Windows = %+v, want independent dependency status only", sb.GitRepairGuidance)
 		}
 	case "darwin":
 		if sb.ShellRepairGuidance != nil {

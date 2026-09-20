@@ -12,7 +12,6 @@ import (
 type turnLoopState struct {
 	mu                      sync.Mutex
 	dispatchClasses         map[string]tool.CallClass
-	resultFingerprints      map[string]string
 	acceptedDecisions       map[string]acceptedDecision
 	previousErrorCategories map[string]struct{}
 }
@@ -28,19 +27,6 @@ func (s *turnLoopState) dispatchClass(id string) (tool.CallClass, bool) {
 	defer s.mu.Unlock()
 	class, ok := s.dispatchClasses[id]
 	return class, ok
-}
-
-func (s *turnLoopState) rememberFingerprint(fp, callID string) (prev string, seen bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.resultFingerprints == nil {
-		s.resultFingerprints = map[string]string{}
-	}
-	prev, seen = s.resultFingerprints[fp]
-	if !seen {
-		s.resultFingerprints[fp] = callID
-	}
-	return prev, seen
 }
 
 func (s *turnLoopState) rememberDecision(id, question, answer string) {

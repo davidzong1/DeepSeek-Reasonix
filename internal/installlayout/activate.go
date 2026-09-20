@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 )
 
 const activationLockName = ".reasonix-activate.lock"

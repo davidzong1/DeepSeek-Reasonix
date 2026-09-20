@@ -65,6 +65,9 @@ func (m *cliTakeoverManager) returnMirrorTransaction(expectedPath string, allowR
 	m.mu.Lock()
 	started, stop, done := m.started, m.stop, m.done
 	m.binding = nil
+	if allowReclaim {
+		m.yielded = current
+	}
 	m.queue.Reset()
 	m.revision++
 	m.failures = 0

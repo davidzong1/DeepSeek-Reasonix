@@ -543,9 +543,9 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 			}
 		}
 		// Non-previewable writers: record a coverage gap (do not guess paths).
-		switch toolName {
-		case "bash":
-			obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: toolName, Detail: "bash side effects are not path-tracked"})
+		switch {
+		case tool.IsShellToolName(toolName):
+			obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: toolName, Detail: "shell side effects are not path-tracked"})
 		default:
 			// MCP or other writers without Previewer.
 			if !plan.readOnly {

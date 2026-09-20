@@ -158,7 +158,11 @@ func (a *App) UpdateSessionOrganization(workspace SessionOrganizationWorkspace, 
 		if e != nil {
 			return "", e
 		}
-		if desktopWorkspaceID(target.Scope, target.WorkspaceRoot) != id {
+		targetWorkspaceID, e := a.resolveDesktopWorkspaceID(a.bootContext(), target.Scope, target.WorkspaceRoot)
+		if e != nil {
+			return "", e
+		}
+		if targetWorkspaceID != id {
 			return "", newSessionOperationError("target_changed", "The session moved to another workspace.")
 		}
 		resolved = append(resolved, target)

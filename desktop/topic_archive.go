@@ -68,20 +68,9 @@ func (a *App) trashTopic(topicID string) (retErr error) {
 	} else if fallback.needs {
 		changedDirs = append(changedDirs, desktopSessionDir(globalWorkspaceRoot()))
 	}
-	// Remove abandoned transient blanks before fallback construction registers
-	// the project; otherwise reconciliation can promote a default-titled blank
-	// into the topic registry and make it ineligible for cleanup.
-	trace.phase = "discard_existing_blanks"
-	a.discardUnusedTransientBlankSessions(changedDirs, "")
-	if fallback.needs {
-		trace.phase = "open_fallback"
-		fallback.topicID = ""
-		if err := a.openFallbackRuntime(fallback); err != nil {
-			// Runtime construction errors can include provider configuration
-			// details, so keep this recovery diagnostic value-free.
-			slog.Warn("desktop: open fallback after topic archive failed")
-		}
-	}
+	// The last visible topic leaves no replacement runtime (the frontend lands
+	// on the workspace draft). Abandoned transient blanks still go, or
+	// reconciliation could promote a default-titled blank into the registry.
 	keepPath := ""
 	a.mu.RLock()
 	if tab := a.tabs[a.activeTabID]; tab != nil {

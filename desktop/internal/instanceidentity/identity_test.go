@@ -56,3 +56,14 @@ func TestUpdateEnvironmentFreezesHome(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateEnvironmentPreservesAccessSpelling(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "MixedCaseHome")
+	env := UpdateEnvironment(nil, home)
+	if len(env) != 2 || env[0] != "REASONIX_HOME="+home {
+		t.Fatalf("environment = %v", env)
+	}
+	if got := strings.TrimPrefix(env[1], UpdateEnvironmentKey+"="); got != ForHome(home) {
+		t.Fatalf("instance id = %q, want %q", got, ForHome(home))
+	}
+}

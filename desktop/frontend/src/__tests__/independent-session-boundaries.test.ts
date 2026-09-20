@@ -77,6 +77,7 @@ test("full App chrome passes a canonical tab without sessionPath as an exact sid
     projectTree: {
       activeTab: { id: "tab-b", scope: "project", workspaceRoot: root, topicId,
         session: { hostId: "local", sessionId: "b" }, sessionId: "b" } as Input["projectTree"]["activeTab"],
+      activeRemote: undefined,
       imTopicSources: {}, refreshSignal: 0, searchExpanded: false, searchFocusSignal: 0,
       showShortcutBadges: false, shortcutPlatform: undefined, onVisibleTopicsChange: () => {},
       draftSummaries: [], onOpenDraft: undefined,

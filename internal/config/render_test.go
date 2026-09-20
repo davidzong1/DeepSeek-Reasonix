@@ -1284,20 +1284,20 @@ func TestRenderTOMLDefaultStepsOmitted(t *testing.T) {
 	}
 }
 
-func TestRenderTOMLWindowsSandboxDefaultsToEnforce(t *testing.T) {
+func TestRenderTOMLWindowsSandboxDefaultAndExplicitEnforceDisabled(t *testing.T) {
 	isolateUserConfigHome(t)
 	setRuntimeGOOS(t, "windows")
 
 	defaultRendered := RenderTOMLForScope(Default(), RenderScopeUser)
-	if !strings.Contains(defaultRendered, `bash    = "enforce"`) {
-		t.Fatalf("Windows default user config should render bash enforce:\n%s", defaultRendered)
+	if !strings.Contains(defaultRendered, `bash    = "off"`) {
+		t.Fatalf("Windows default user config should render bash off:\n%s", defaultRendered)
 	}
 
 	cfg := Default()
 	cfg.Sandbox.Bash = "enforce"
 	delta := RenderTOMLProjectDelta(cfg)
 	if strings.Contains(delta, `[sandbox]`) || strings.Contains(delta, `bash = `) {
-		t.Fatalf("Windows explicit default enforce should remain omitted from project delta:\n%s", delta)
+		t.Fatalf("Windows explicit enforce should not render as an effective project delta:\n%s", delta)
 	}
 }
 

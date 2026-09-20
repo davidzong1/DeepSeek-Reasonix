@@ -51,11 +51,18 @@ fails with `-32002 not_ready`.
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // new for every service process
+  "instance": {"identityVersion":2,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
   "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}
 }}
 ```
+
+`instance` is optional for cross-version compatibility. New services publish a
+versioned digest from the shared filesystem identity resolver plus the legacy
+instance ID. The shell consumes these opaque values for diagnostics and never
+uses the digest as a filesystem path. Older shells ignore the object and newer
+shells accept its omission.
 
 `window` is the initial main-window geometry Go derives from the saved state
 and platform rules. Optional `position: {x, y}` carries the saved origin (zero
@@ -92,8 +99,8 @@ the shell discards anything tagged with an old one.
 `runId` identifies this service run. `incidentId` links service and shell
 lifecycle evidence for the same failure chain. Both are random diagnostic
 identifiers; they do not contain a PID, local path, or user content. When
-diagnostics are disabled, `diagnosticsEnabled` is false and both identifiers
-may be omitted.
+diagnostics are disabled (including a `dev` service build), `diagnosticsEnabled`
+is false and both identifiers are empty strings; the keys are always present.
 
 ## Lifecycle requests (shell → service)
 

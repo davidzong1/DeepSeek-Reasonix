@@ -128,6 +128,22 @@ const preflightExecution: WireShellExecution = {
 
 console.log("\ntool card shell execution");
 
+// Canonical pwsh calls become terminal cards before execution metadata arrives.
+{
+  const livePwsh: ToolItem = {
+    kind: "tool", id: "pwsh-live", name: "pwsh",
+    args: `{"command":"Write-Output ready","description":"Display readiness"}`,
+    readOnly: false, status: "running",
+  };
+  const view = await renderCard(livePwsh);
+  try {
+    eq(document.querySelector(".tool__name")?.textContent, "PowerShell 7+", "pwsh dispatch renders PowerShell terminal identity");
+    ok((document.body.textContent ?? "").includes("Write-Output ready"), "pwsh dispatch renders command summary");
+  } finally {
+    await view.cleanup();
+  }
+}
+
 // ── Path 1: live tool_result event ──
 {
   let s = reducer(initialState, { type: "event", e: { kind: "turn_started" } });

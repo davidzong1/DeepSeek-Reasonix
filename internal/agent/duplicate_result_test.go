@@ -8,25 +8,12 @@ import (
 	"reasonix/internal/tool"
 )
 
-func TestDedupeProviderVisibleResultOmitsExactRepeats(t *testing.T) {
+func TestProviderVisibleResultKeepsExactRepeats(t *testing.T) {
 	a := &Agent{}
-	first := a.dedupeProviderVisibleResult("c1", "hello world", "hello world")
-	if first != "hello world" {
-		t.Fatalf("first = %q", first)
-	}
-	second := a.dedupeProviderVisibleResult("c2", "hello world", "hello world")
-	if !strings.Contains(second, "duplicate tool result") || !strings.Contains(second, "c1") {
-		t.Fatalf("second = %q", second)
-	}
-}
-
-func TestDedupeUsesRawResultBeforeLossySummary(t *testing.T) {
-	a := &Agent{}
-	visible := "same bounded failure summary"
-	first := a.dedupeProviderVisibleResult("c1", "prefix hidden-one suffix", visible)
-	second := a.dedupeProviderVisibleResult("c2", "prefix hidden-two suffix", visible)
-	if first != visible || second != visible {
-		t.Fatalf("distinct raw results were deduped: first=%q second=%q", first, second)
+	first, _, _ := a.boundProviderVisibleResult("hello world", "read_file", "c1")
+	second, _, _ := a.boundProviderVisibleResult("hello world", "read_file", "c2")
+	if first != "hello world" || second != "hello world" {
+		t.Fatalf("repeated results were rewritten: first=%q second=%q", first, second)
 	}
 }
 
@@ -40,7 +27,7 @@ func TestTodoWriteResultsAreNeverPresentationDeduplicated(t *testing.T) {
 	}
 }
 
-func TestResolvedSkipOutcomeDedupesRepeatedLocalDiscovery(t *testing.T) {
+func TestResolvedSkipOutcomeKeepsRepeatedLocalDiscovery(t *testing.T) {
 	a := &Agent{}
 	result := `{"id":"mcp-tool:server/read","input_schema":{"type":"object"}}`
 	plan := func(id string) *toolCallPlan {
@@ -52,11 +39,11 @@ func TestResolvedSkipOutcomeDedupesRepeatedLocalDiscovery(t *testing.T) {
 		t.Fatalf("first output = %q", first.output)
 	}
 	second := a.resolvedSkipOutcome(plan("c2"), resolved)
-	if !strings.Contains(second.output, "duplicate tool result omitted") || !strings.Contains(second.output, "c1") {
+	if second.output != result {
 		t.Fatalf("second output = %q", second.output)
 	}
-	if second.rawOutput != result {
-		t.Fatalf("raw output = %q, want complete local result", second.rawOutput)
+	if second.rawOutput != "" {
+		t.Fatalf("untransformed complete output should not need a duplicate local copy: %q", second.rawOutput)
 	}
 }
 

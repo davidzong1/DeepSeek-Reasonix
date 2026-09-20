@@ -332,6 +332,8 @@ type chatTUI struct {
 	// resumePick is the interactive "/resume" session picker overlay. Non-nil
 	// while the user browses saved sessions with ↑/↓ and confirms with Enter.
 	resumePick *resumePicker
+	// reclaimState groups the flags a remote take-back sets and clears together.
+	reclaimState
 	// pendingTakeoverPath remembers the last /resume target refused because a
 	// resident serve on this machine holds its lease; "/takeover" force-takes
 	// that session back.
@@ -1308,6 +1310,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == "exit" || line == "quit" || line == ":q" {
 				return m, shutdownNow
 			}
+			if m.reclaimBlocksInput(line) {
+				return m, finalize(m, cmds)
+			}
 			// /queue and /steer are local even when idle (never model-prompted).
 			if handled, msg := m.handleQueueSlash(line); handled {
 				m.notice(msg)
@@ -1441,7 +1446,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tuiShutdownMsg:
-		return m.shutdownAndQuit(msg.completion)
+		return m.shutdownAndQuit(msg)
+
+	case tuiSessionReclaimedMsg:
+		return m.completeSessionReclaim()
 
 	case turnModelSettingsMsg:
 		return m, m.handleTurnModelSettings(msg)
@@ -2014,8 +2022,8 @@ func (m chatTUI) View() tea.View {
 // output to scrollback; MCP prompt / custom commands resolve to a model turn.
 func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	typedCmd := strings.TrimSpace(strings.SplitN(input, " ", 2)[0])
-	if m.takeover != nil && m.takeover.Reclaiming() && typedCmd != "/quit" && typedCmd != "/exit" {
-		m.notice("the remote side is taking this session back; new input is disabled")
+	if notice := m.slashInputBlockedNotice(typedCmd); notice != "" {
+		m.notice(notice)
 		return nil
 	}
 
@@ -2227,48 +2235,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, typedCmd)))
 	default:
-		if control.IsBuiltinDocsSlash(typedCmd, m.commands, m.skills) {
-			query := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
-			if query != "" {
-				return m.startControllerTurn(input, input, func(ctrl control.SessionAPI) { ctrl.SubmitDisplay(input, input) })
-			}
-			m.echoLocalCommand(input)
-			text, err := control.DocsCommandOverviewFor(typedCmd)
-			if err != nil {
-				m.notice("docs: " + err.Error())
-			} else {
-				m.commitLine(text)
-			}
-			return nil
-		}
-		// A custom command wins over a skill of the same name; both resolve to a turn.
-		if sent, ok := m.ctrl.CustomCommand(input); ok {
-			return m.startTurn(sent, input, input)
-		}
-		if _, ok := m.ctrl.RunSkill(input); ok {
-			fields := strings.Fields(input)
-			name := strings.TrimPrefix(fields[0], "/")
-			for _, sk := range m.ctrl.Skills() {
-				if sk.Name == name && sk.RunAs == skill.RunSubagent && len(fields) == 1 {
-					m.echoLocalCommand(input)
-					m.notice("usage: /" + name + " <task>")
-					return nil
-				}
-			}
-			return m.startControllerTurn(input, input, func(ctrl control.SessionAPI) { ctrl.SubmitDisplay(input, input) })
-		}
-		// An extension action (/<plugin>:<action>) resolves last, before the
-		// unknown-command fallback; the invocation is a sidecar round-trip, so it
-		// runs off the event loop and its result lands as a notice.
-		if action, ok := matchExtensionAction(m.ctrl, typedCmd); ok {
-			m.echoLocalCommand(input)
-			return m.runExtensionAction(action.Slash, parseExtensionActionArgs(strings.Fields(input)[1:]))
-		}
-		// Unknown slash input is prose more often than a typo — send it as a
-		// regular message (matching the controller's behavior for the other
-		// surfaces), with a notice so real typos stay visible (#5756).
-		m.notice(fmt.Sprintf("%s: %s — %s", i18n.M.SlashUnknown, cmd, i18n.M.SlashUnknownSentAsMessage))
-		return m.startTurn(input, input, input)
+		return m.runUnrecognizedSlash(input, typedCmd, cmd)
 	}
 	return nil
 }

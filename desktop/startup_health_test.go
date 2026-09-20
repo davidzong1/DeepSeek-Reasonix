@@ -178,6 +178,9 @@ func TestShutdownWaitsForRuntimeLifecycleMutation(t *testing.T) {
 		t.Fatal("shutdown bypassed an in-flight runtime lifecycle mutation")
 	default:
 	}
+	if status := app.shutdownStatus(""); status.Phase != "waiting_runtime_admission" {
+		t.Fatalf("blocked shutdown phase = %q, want waiting_runtime_admission", status.Phase)
+	}
 
 	app.runtimeAdmissionMu.Unlock()
 	admissionHeld = false
@@ -228,6 +231,47 @@ func TestShutdownDoesNotWaitForCancelledControllerBuild(t *testing.T) {
 	case <-buildDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled controller build did not finish")
+	}
+}
+
+func TestShutdownCancelsBlockedSessionOpen(t *testing.T) {
+	app, _, target, _, _ := canonicalWorkspaceOpenFixture(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	app.sessionOpenBuildHook = func(ctx context.Context) {
+		close(started)
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+	}
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := app.OpenSession(target.Ref())
+		openDone <- err
+	}()
+	<-started
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		_, err := app.requestShutdown(context.Background(), shutdownRequest{RequestID: "cancel-session-open", Reason: shutdownReasonUserQuit})
+		shutdownDone <- err
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			close(release)
+			t.Fatalf("shutdown after cancelling session open: %v", err)
+		}
+	case <-time.After(750 * time.Millisecond):
+		close(release)
+		<-shutdownDone
+		t.Fatal("shutdown waited for a session open that did not observe cancellation")
+	}
+	if err := <-openDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled session open = %v, want context canceled", err)
 	}
 }
 

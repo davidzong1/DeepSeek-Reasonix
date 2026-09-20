@@ -2,19 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useRuntimeSession } from "./useRuntimeState";
 import { createLegacyRemotePolicyNoticeTracker } from "./legacyRemotePolicyNotice";
 import { app, onRemoteTabEvent, onRemoteTabState } from "./bridge";
+import { onRemoteTabUpdated } from "./remoteTabEvents";
+import { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "./remoteTelemetry";
+import { remoteStatusTakenOver, remoteStatusToAction } from "./remoteStatus";
+import { isRemoteTakeoverError } from "./remoteErrors";
 import { useRemoteForkTurn } from "./remoteForkTurn";
 import { useT } from "./i18n";
 import type { CancelOutcome } from "./inboxCancel";
+import type { HistoryMessage } from "./types";
 import { createTurnSubmissionId, initialState, reducer, type ControllerLiveStore, type HistoryLoadOutcome, type HistoryLoadTrigger, type State } from "./useController";
 import { isUnknownSubmissionError } from "./localSubmissionState";
 import { TranscriptSessionFollower } from "./transcriptSessionFollower";
 import { getTranscriptStore } from "./transcriptStore";
+import { historyReplaceAction } from "./sessionTranscriptMode";
 import { isAuthoritativeRemoteStatus, remoteCheckpoints, remoteComposerState, remoteGoalRuntime, remoteGoalView } from "./remoteStatus";
 import type { CollaborationMode, CommandInfo, EffortInfo, GoalLifecycleView, GoalRuntime, GoalStatus, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
 import type { RemoteAskAnswer } from "./remoteTypes";
 import type { ForkTargetView } from "./forkTargets";
 
-const loadRemoteSurface = () => import("../components/RemoteSessionSurface");
 
 // The remote session reuses the local transcript pipeline end to end: serve
 // frames share the agent event wire form, so they run through the same
@@ -147,13 +152,33 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const hydratedRef = useRef(false);
   const hydratingRef = useRef(false);
   const bufferedEventsRef = useRef<WireEvent[]>([]);
+  // The pre-activation history prime and the follower are never both allowed
+  // to write the resident store. "retired" is terminal for the mounted
+  // identity: it is set the moment the follower publishes its first cut (or
+  // the legacy fallback installs), after which every prime attempt is a no-op.
+  const primeRef = useRef<"idle" | "loading" | "primed" | "retired">("idle");
   const hydrateRef = useRef<{ tabId: string; run: (force?: boolean) => Promise<void> } | null>(null);
   const refreshStatusRef = useRef<{ tabId: string; run: () => Promise<void> } | null>(null);
   const reconcileHistoryRef = useRef<(() => Promise<void>) | null>(null);
   const activityRevisionRef = useRef(0);
   const eventTurnIdRef = useRef<string | undefined>(undefined);
   const runtimeAtActivityRef = useRef(runtimeState.state);
-  const pendingTurnRef = useRef<{ previousTurnId?: string } | null>(null);
+  // True while the serve reports a local runtime on the host owns this
+  // session; a spectator surface idles with no other status polling, so this
+  // flag also drives a slow reconcile loop below. The ref mirrors the last
+  // observation so the owner-return transition can be detected at the source.
+  const [spectator, setSpectator] = useState(false);
+  const spectatorRef = useRef(false);
+  const noteOwnership = useCallback((takenOver: boolean) => {
+    const wasSpectator = spectatorRef.current;
+    spectatorRef.current = takenOver;
+    setSpectator(takenOver);
+    // Ownership returning is the only path back to the live transcript: the
+    // legacy fallback installed a protocol-1 view whose submit() refuses to
+    // send, and neither the state channel nor the status poll re-attaches the
+    // follower on its own.
+    if (wasSpectator && !takenOver) void hydrateRef.current?.run().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     for (const listener of liveListenersRef.current) listener();
@@ -181,7 +206,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setGoalRuntime(remoteGoalRuntime(status));
     setGoalView(remoteGoalView(status));
     setEffortInfo(next.effort);
-  }, []);
+    noteOwnership(remoteStatusTakenOver(status));
+  }, [noteOwnership]);
 
   useEffect(() => {
     if (!tabId) return;
@@ -196,7 +222,6 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     setError("");
     setPromptError("");
     // The store owns mounted content across reconnects and tab switches.
-    pendingTurnRef.current = null;
     eventTurnIdRef.current = undefined;
     setModelLabel("");
     setCommands([]);
@@ -207,6 +232,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     hydratedRef.current = false;
     hydratingRef.current = false;
     bufferedEventsRef.current = [];
+    primeRef.current = "idle";
+    spectatorRef.current = false;
+    setSpectator(false);
     setHydrated(false);
     let cancelled = false;
     let generation = 0;
@@ -214,24 +242,66 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const dispatch = (action: import("./useController").Action) => {
       if (!cancelled) setTranscript(current => reducer(current, action));
     };
+    // History-first: the persisted canonical window is readable before the
+    // serve activates the runtime, so publish a one-shot durable baseline as
+    // soon as the tab's identity resolves. This is deliberately not a second
+    // live transcript owner — once the runtime is ready, hydrate()'s follower
+    // installs the authoritative protocol-v2 cut and owns everything after it.
+    // Mirrors the local primeReadableHistoryForTab contract.
+    const transcriptHasContent = () => {
+      const mounted = transcriptRef.current;
+      return mounted.items.length > 0 || Boolean(mounted.live?.text || mounted.live?.reasoning);
+    };
+    const primeEarlyHistory = async () => {
+      if (primeRef.current !== "idle") return;
+      // Only a blank transcript may be primed, and the check has to run before
+      // loadLatest: that call bumps the resident session generation (retiring
+      // the follower's in-flight reads) and replaces records before it reads
+      // `current`, so a transcript that already has content must never reach
+      // it. history_replace has no revision guard either — a stale or empty
+      // window landing after the follower's cut would wipe the conversation.
+      if (transcriptHasContent()) { primeRef.current = "retired"; return; }
+      primeRef.current = "loading";
+      // The prime is scoped to this mounted identity and to store ownership,
+      // not to a hydrate generation: hydrate() bumps the generation the moment
+      // it starts, and a follower that then fails or stalls must not have
+      // discarded the only baseline the tab could show.
+      const current = () => !cancelled && primeRef.current === "loading";
+      try {
+        const projection = await getTranscriptStore().loadLatest(tabId, sessionPath ?? "", { current });
+        if (!projection || !current()) return;
+        if (transcriptHasContent()) { primeRef.current = "retired"; return; }
+        primeRef.current = "primed";
+        setTranscript(current => reducer(current, historyReplaceAction(projection)));
+      } catch {
+        // Before the attach handshake lands (or on a legacy serve) the window
+        // read is unavailable. A miss stays non-fatal: the next attach
+        // publication retries, and the ready-time hydration takes over.
+      } finally {
+        if (primeRef.current === "loading") primeRef.current = "idle";
+      }
+    };
     const refreshStatus = async () => {
       const ticket = generation;
       const status = await app.RemoteTabStatus(tabId);
       if (cancelled || ticket !== generation) return;
       applyRemoteStatus(status);
-      const { hydrateRemoteTelemetry } = await loadRemoteSurface();
-      if (!cancelled && ticket === generation) setTranscript(current => hydrateRemoteTelemetry(current, status));
+      setTranscript(current => hydrateRemoteTelemetry(current, status));
     };
     const hydrate = async () => {
       const ticket = ++generation;
       follower?.stop();
       follower = new TranscriptSessionFollower(tabId, sessionPath ?? "", true, action => {
-        if (!cancelled && ticket === generation) dispatch(action);
+        if (cancelled || ticket !== generation) return;
+        // The follower's install cut makes it the store owner (connection
+        // status frames precede it and own nothing); an early history prime
+        // still in flight must not land after that cut.
+        if (action.type === "transcript_v2_snapshot") primeRef.current = "retired";
+        dispatch(action);
       });
       setHydrated(false);
       try {
         await follower.start();
-        const { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } = await loadRemoteSurface();
         const loaded = await loadRemoteStatusSnapshot(tabId, mountedState === "ready" ? 3 : 60,
           () => cancelled || ticket !== generation, isAuthoritativeRemoteStatus, true);
         if (!loaded || cancelled || ticket !== generation) return;
@@ -247,7 +317,41 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         setSurfaceGeneration(value => value + 1);
         void forkTargetsRefreshRef.current?.();
       } catch (error) {
-        if (!cancelled && ticket === generation) setError(String(error));
+        if (cancelled || ticket !== generation) return;
+        // The transcript protocol requires the live runtime that owns the
+        // session. Only a session taken over by a local runtime on the serve
+        // host (the Follow request answers 409, or status reports the
+        // take-over) may fall back to the identity/legacy history view; every
+        // other failure keeps its error and waits for the next ready
+        // publication or an explicit retry.
+        const takenOver = isRemoteTakeoverError(error) || await app.RemoteTabStatus(tabId).then(remoteStatusTakenOver, () => false);
+        if (cancelled || ticket !== generation) return;
+        if (!takenOver) { setError(String(error)); return; }
+        try {
+          const legacyLoaded = await loadRemoteStatusSnapshot(tabId, mountedState === "ready" ? 3 : 60,
+            () => cancelled || ticket !== generation, isAuthoritativeRemoteStatus, false);
+          if (!legacyLoaded || cancelled || ticket !== generation) return;
+          const [snapshot, status] = legacyLoaded;
+          const messages = Array.isArray(snapshot.history) ? snapshot.history as HistoryMessage[] : [];
+          const checkpoints = remoteCheckpoints(snapshot.checkpoints);
+          primeRef.current = "retired";
+          applyRemoteStatus(status);
+          setCommands(Array.isArray(snapshot.commands) ? snapshot.commands as CommandInfo[] : []);
+          setTranscript(current => {
+            let next = reducer(current, { type: "history", messages, remote: true });
+            next = reducer(next, { type: "checkpoints", checkpoints });
+            next = reducer(next, remoteStatusToAction(status, Date.now(), next.running));
+            return hydrateRemoteTelemetry(next, status);
+          });
+          hydratedRef.current = true;
+          setState("ready");
+          setHydrated(true);
+          setError("");
+          setSurfaceGeneration(value => value + 1);
+          void forkTargetsRefreshRef.current?.();
+        } catch (fallbackError) {
+          if (!cancelled && ticket === generation) setError(String(fallbackError));
+        }
       }
     };
     const offContent = getTranscriptStore().subscribe(tabId, change => dispatch({ type: "history_items_patch", patches: change.patches, expected: change.expected }));
@@ -296,6 +400,16 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         dispatch({ type: "transcript_connection", status: "disconnected" });
       }
     });
+    // Ownership flips arrive as tab meta updates (an explicit reclaim clears
+    // the pin there before any status poll runs); mirror them into the
+    // spectator flag that drives the reconcile loop below.
+    const offMeta = onRemoteTabUpdated(meta => {
+      if (cancelled || meta?.id !== tabId) return;
+      noteOwnership(Boolean(meta.takenOver));
+      // The attach publication is the reliable "identity live, activation
+      // still in flight" signal — retry the early history read there.
+      void primeEarlyHistory();
+    });
     // The legacy event channel carries ancillary invalidations only.
     const offEvent = onRemoteTabEvent(tabId, raw => {
       const event = raw as WireEvent;
@@ -305,6 +419,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       }
     });
     if (revivedFromShell) void app.SetActiveTab(tabId).catch(() => undefined);
+    void primeEarlyHistory();
     void hydrate();
     return () => {
       submitBindingRef.current = {};
@@ -313,6 +428,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       follower?.stop();
       offContent();
       offState();
+      offMeta();
       offEvent();
       olderRef.current = undefined;
       newerRef.current = undefined;
@@ -320,7 +436,20 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       refreshStatusRef.current = null;
       reconcileHistoryRef.current = null;
     };
-  }, [applyRemoteStatus, tabId, sessionPath, setTranscript]);
+  }, [applyRemoteStatus, noteOwnership, tabId, sessionPath, setTranscript]);
+
+  // A spectator surface idles with no status traffic: the running watchdog
+  // only reconciles turns, and the read-only composer blocks the sends that
+  // would otherwise refresh status. A stale ownership observation could pin
+  // the takeover banner forever, so poll at a slow cadence until the serve
+  // reports the session free again.
+  useEffect(() => {
+    if (!tabId || state !== "ready" || !spectator) return;
+    const timer = window.setInterval(() => {
+      void refreshStatusRef.current?.run().catch(() => undefined);
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [tabId, state, spectator]);
 
   const submit = useCallback(async (text: string, displayText = text) => {
     if (!tabId) return;
@@ -337,7 +466,6 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const submissionId = createTurnSubmissionId(tabId, before.sessionGen, before.seq, before.meta?.runtime?.epoch);
     activityRevisionRef.current += 1;
     runtimeAtActivityRef.current = runtimeState.state;
-    pendingTurnRef.current = { previousTurnId: runtimeState.state?.turnId };
     setTranscript((s) => reducer(s, { type: "user", text: displayText.trim(), seq: s.seq, submissionId }));
     try {
       if (app.SubmitRemoteTabWithSubmission) await app.SubmitRemoteTabWithSubmission(tabId, trimmed, submissionId);

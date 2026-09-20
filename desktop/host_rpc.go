@@ -297,7 +297,7 @@ func hostIdentity() hostrpc.Identity {
 		Version: version,
 		Channel: channel,
 		Commit:  buildCommit(),
-		Home:    instanceidentity.CanonicalHome(config.ReasonixHomeDir()),
+		Home:    instanceidentity.AccessHome(config.ReasonixHomeDir()),
 	}
 }
 

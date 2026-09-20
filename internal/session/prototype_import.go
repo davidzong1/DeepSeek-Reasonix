@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 type frozenPreview struct {

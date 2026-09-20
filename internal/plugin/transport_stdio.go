@@ -162,7 +162,6 @@ func prepareMCPPrivateStateForOS(s Spec, processSandbox sandbox.Spec, env []stri
 		env = setEnvValue(env, key, value)
 	}
 	processSandbox.WriteRoots = append(processSandbox.WriteRoots, root, privateRoot)
-	processSandbox.AppContainerWriteRoots = append(processSandbox.AppContainerWriteRoots, root, privateRoot)
 	return processSandbox, env, nil
 }
 

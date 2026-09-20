@@ -12,7 +12,11 @@ import { app } from "../lib/bridge";
 import type { StructuredInvocationSubmit } from "../lib/invocationDisplay";
 import type { CommandInfo, CollaborationMode, ToolApprovalMode } from "../lib/types";
 import type { PersistentComposerDraft } from "../components/Composer";
+import { applyInheritedModel, canonicalJSON, draftSubmissionLocksEditing, sameDraftSettings, useInheritedDraftModels } from "./draftModelInheritance";
+import { cloneDraftContent, cloneDraftSettings } from "./draftValues";
 import { buildInitialGoalSubmission } from "./sessionSubmissionOwner";
+
+export { draftSubmissionLocksEditing } from "./draftModelInheritance";
 
 declare global {
   interface Window {
@@ -55,15 +59,6 @@ function contentJSON(content: PersistentComposerDraft): string {
     ...content,
     attachments: content.attachments.map(({ previewUrl: _previewUrl, ...attachment }) => attachment),
   });
-}
-
-function sameSettings(left: SessionDraftSettings, right: SessionDraftSettings): boolean {
-  return canonicalJSON(left) === canonicalJSON(right);
-}
-
-function canonicalJSON(value: unknown): string {
-  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
-    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 }
 
 export type DraftSaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
@@ -127,6 +122,7 @@ type DraftEntry = {
   discarding?: boolean;
   deferredContent?: PersistentComposerDraft;
   lastAccess: number;
+  modelReadVersion: number;
 };
 
 type DraftSurfaceOptions = {
@@ -142,10 +138,6 @@ function saveState(entry: DraftEntry): DraftSaveState {
   if (entry.saving) return "saving";
   if (entry.savedEditVersion < entry.editVersion) return "dirty";
   return "saved";
-}
-
-export function draftSubmissionLocksEditing(operation?: SessionDraftSubmissionView): boolean {
-  return Boolean(operation && !["cancelled", "terminal_failed"].includes(operation.phase));
 }
 
 function projectEntry(entry: DraftEntry): SessionDraftSurface {
@@ -167,14 +159,6 @@ function projectEntry(entry: DraftEntry): SessionDraftSurface {
     conflict: entry.conflict,
     operation: entry.operation,
   };
-}
-
-function cloneContent(content: PersistentComposerDraft): PersistentComposerDraft {
-  return structuredClone(content);
-}
-
-function cloneSettings(settings: SessionDraftSettings): SessionDraftSettings {
-  return structuredClone(settings);
 }
 
 function captureMatches(value: unknown, draftId: string, generation: number): value is DraftSubmissionCapture {
@@ -250,6 +234,8 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
 
   useEffect(() => { void refreshSummaries(); }, [refreshSummaries]);
 
+  useInheritedDraftModels(entriesRef, disposed, publish);
+
   const queueRestoreTarget = useCallback((draftId: string, intent: number) => {
     const next = restoreChain.current.catch(() => undefined).then(async () => {
       if (!intentCurrent(intent)) return;
@@ -260,6 +246,8 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
   }, [intentCurrent]);
 
   const installDraft = useCallback(async (draft: SessionDraftView, sequence: number, intent: number) => {
+    const loadingEntry = entriesRef.current.get(draft.id);
+    const modelReadVersion = loadingEntry ? ++loadingEntry.modelReadVersion : 0;
     const context = await app.GetDraftContext(draft.id);
     if (sequence !== openSequence.current || !intentCurrent(intent)) return;
     const existing = entriesRef.current.get(draft.id);
@@ -267,13 +255,19 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     if (existing && existing.lifecycle === "active") {
       existing.commands = (context.commands ?? []) as CommandInfo[];
       existing.servers = context.servers ?? [];
-      existing.models = context.models ?? [];
+      const latestModelRead = existing === loadingEntry && existing.modelReadVersion === modelReadVersion;
+      if (latestModelRead) existing.models = context.models ?? [];
       existing.visibleIntent = intent;
       existing.lastAccess = Date.now();
       if (existing.savedEditVersion === existing.editVersion && !existing.saving && !existing.conflict && !existing.error) {
+        const model = !latestModelRead && !draftSubmissionLocksEditing(context.operation)
+          && existing.settings.modelSource === "default" && context.draft.settings.modelSource === "default"
+          ? existing.settings.model : context.draft.settings.model;
         existing.draft = context.draft;
         existing.content = parseContent(context.draft.contentJson);
-        existing.settings = context.draft.settings;
+        existing.settings = { ...context.draft.settings, model };
+      } else {
+        applyInheritedModel(existing, context.draft.settings, modelReadVersion);
       }
       entry = existing;
     } else {
@@ -293,6 +287,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
         pendingTasks: new Map(),
         preparingSubmission: false,
         lastAccess: Date.now(),
+        modelReadVersion: 0,
       };
       entriesRef.current.set(draft.id, entry);
     }
@@ -303,7 +298,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
         handle: { draftId: draft.id, generation: entry.generation }, preparationId: "",
         draftId: draft.id, generation: entry.generation, workspaceId: draft.workspaceId,
         editVersion: entry.editVersion, navigationIntent: intent,
-        content: cloneContent(entry.content), settings: cloneSettings(entry.settings),
+        content: cloneDraftContent(entry.content), settings: cloneDraftSettings(entry.settings),
       };
       entry.operationCapture ??= capture;
       void observeOperation.current(context.operation, entry.operationCapture).catch(() => undefined);
@@ -318,7 +313,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const previewGeneration = entry.generation;
     void Promise.all(entry.content.attachments.map(async (attachment) => {
       try {
-        const previewUrl = await app.AttachmentDataURLForTarget({ kind: "draft", draftId: draft.id }, attachment.path);
+		const previewUrl = await app.AttachmentDataURLForComposerTarget({ kind: "draft", draftId: draft.id }, attachment.path);
         const current = entriesRef.current.get(draft.id);
         if (!current || current.lifecycle !== "active" || current.generation !== previewGeneration) return;
         current.content = {
@@ -345,8 +340,9 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
       while (entry.lifecycle === "active" && entry.generation === generation && !entry.conflict && entry.savedEditVersion < entry.editVersion) {
         const capturedVersion = entry.editVersion;
         const capturedRevision = entry.draft.revision;
-        const capturedContent = cloneContent(entry.content);
-        const capturedSettings = cloneSettings(entry.settings);
+        const capturedContent = cloneDraftContent(entry.content);
+        const capturedSettings = cloneDraftSettings(entry.settings);
+        const modelReadVersion = ++entry.modelReadVersion;
         const capturedJSON = contentJSON(capturedContent);
         entry.saving = true;
         entry.error = undefined;
@@ -374,6 +370,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
             return null;
           }
           entry.draft = result.draft;
+          applyInheritedModel(entry, result.draft.settings, modelReadVersion);
           entry.savedEditVersion = Math.max(entry.savedEditVersion, capturedVersion);
           entry.conflict = undefined;
           entry.error = undefined;
@@ -387,8 +384,9 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
               entry.generation++;
               return null;
             }
-            if (confirmed.contentJson === capturedJSON && sameSettings(confirmed.settings, capturedSettings)) {
+            if (confirmed.contentJson === capturedJSON && sameDraftSettings(confirmed.settings, capturedSettings)) {
               entry.draft = confirmed;
+              applyInheritedModel(entry, confirmed.settings, modelReadVersion);
               entry.savedEditVersion = Math.max(entry.savedEditVersion, capturedVersion);
               entry.error = undefined;
               continue;
@@ -442,12 +440,12 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const entry = entriesRef.current.get(draftId);
     if (!entry || entry.lifecycle !== "active" || entry.generation !== generation) return;
     if (entry.preparingSubmission || draftSubmissionLocksEditing(entry.operation)) return;
-    if (entry.discarding) { entry.deferredContent = cloneContent(content); return; }
+    if (entry.discarding) { entry.deferredContent = cloneDraftContent(content); return; }
     // A task registered before the exit barrier may still publish its captured
     // attachment/reference. Ordinary edits remain frozen while quitting.
     if (acceptingExit.current && entry.pendingTasks.size === 0) return;
     if (contentJSON(content) === contentJSON(entry.content)) return;
-    entry.content = cloneContent(content);
+    entry.content = cloneDraftContent(content);
     entry.editVersion++;
     entry.error = undefined;
     entry.lastAccess = Date.now();
@@ -461,7 +459,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     if (!entry || entry.lifecycle !== "active" || entry.generation !== generation) return;
     if (entry.preparingSubmission || entry.discarding || draftSubmissionLocksEditing(entry.operation)) return;
     const next = { ...entry.settings, ...patch };
-    if (sameSettings(next, entry.settings)) return;
+    if (sameDraftSettings(next, entry.settings)) return;
     entry.settings = next;
     entry.editVersion++;
     entry.error = undefined;
@@ -474,7 +472,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const entry = entriesRef.current.get(draftId);
     if (!entry || entry.generation !== generation) return;
     const base = entry.deferredContent ?? entry.content;
-    updateContentFor(draftId, generation, typeof patch === "function" ? patch(cloneContent(base)) : { ...base, ...patch });
+    updateContentFor(draftId, generation, typeof patch === "function" ? patch(cloneDraftContent(base)) : { ...base, ...patch });
   }, [updateContentFor]);
 
   const isCurrentHandle = useCallback((draftId: string, generation: number) => {
@@ -641,8 +639,8 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
       generation,
       editVersion: entry.editVersion,
       navigationIntent: entry.visibleIntent,
-      content: cloneContent(entry.content),
-      settings: cloneSettings(entry.settings),
+      content: cloneDraftContent(entry.content),
+      settings: cloneDraftSettings(entry.settings),
     });
     const commandName = /^\/([^\s]+)/.exec(entry.content.text.trim())?.[1] ?? "";
     if (["model", "effort", "theme"].includes(commandName) || entry.commands.some((command) => command.name === commandName && command.draftBehavior && command.draftBehavior !== "submit")) return capture;
@@ -674,7 +672,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const entry = entriesRef.current.get(capture.draftId);
     if (entry?.preparation?.preparationId !== capture.preparationId) return;
     const saved = await flushDraft(capture.draftId, capture.editVersion);
-    if (!saved || canonicalJSON(parseContent(saved.contentJson)) !== canonicalJSON(parseContent(contentJSON(capture.content))) || !sameSettings(saved.settings, capture.settings)) throw new Error("Save the captured draft before submitting.");
+    if (!saved || canonicalJSON(parseContent(saved.contentJson)) !== canonicalJSON(parseContent(contentJSON(capture.content))) || !sameDraftSettings(saved.settings, capture.settings)) throw new Error("Save the captured draft before submitting.");
   }, [flushDraft]);
 
   const waitForSubmission = useCallback(async (initial: SessionDraftSubmissionView, capture: DraftSubmissionCapture) => {
@@ -756,7 +754,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
       if (["model", "effort", "theme"].includes(commandName) || (command?.draftBehavior && command.draftBehavior !== "submit")) releasePreparation(capture);
       if (command?.draftBehavior === "unavailable") throw new Error("This command needs an existing session.");
       const model = /^\/model\s+(\S+)$/.exec(trimmedDisplay);
-      if (model) { updateSettingsFor(draftId, generation, { model: model[1] }); return; }
+      if (model) { updateSettingsFor(draftId, generation, { model: model[1], modelSource: "explicit" }); return; }
       const effort = /^\/effort\s+(\S+)$/.exec(trimmedDisplay);
       if (effort) { updateSettingsFor(draftId, generation, { effort: effort[1] }); return; }
       const theme = /^\/theme\s+(\S+)$/.exec(trimmedDisplay);
@@ -779,7 +777,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
       publish(draftId);
       const saved = await flushDraft(draftId, capture.editVersion);
       if (!saved || saved.id !== draftId) throw new Error("Resolve the draft save conflict before sending.");
-      if (contentJSON(parseContent(saved.contentJson)) !== contentJSON(capture.content) || !sameSettings(saved.settings, capture.settings)) throw new Error("The draft changed after submission was captured. Review it before sending.");
+      if (contentJSON(parseContent(saved.contentJson)) !== contentJSON(capture.content) || !sameDraftSettings(saved.settings, capture.settings)) throw new Error("The draft changed after submission was captured. Review it before sending.");
       const shell = trimmedDisplay.startsWith("!");
       let requestDisplay = structured?.display ?? display;
       let requestInput = shell ? trimmedDisplay.slice(1).trim() : structured?.input ?? input;
@@ -799,7 +797,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
         toolApprovalMode = initial.initialGoal?.toolApprovalMode ?? toolApprovalMode;
       }
       const request = {
-        snapshotVersion: 4,
+        snapshotVersion: 5,
         requestId: capture.preparationId,
         sourceDigest: saved.snapshotDigest ?? "",
         draftId,
@@ -817,7 +815,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
       let operation: SessionDraftSubmissionView;
       try { operation = await app.BeginDraftSubmission(request); }
       catch (error) {
-        if (String(error).includes("draft submission not admitted:")) throw error;
+        if (String(error).includes("draft submission not admitted:") || String(error).includes("reasonix_error:")) throw error;
         // A transport error does not prove that Begin failed. Keep the source
         // frozen while read-only reconciliation is unavailable.
         for (;;) {
@@ -837,7 +835,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
             // the exact request ID, whose backend lock serializes the decision.
             try { operation = await app.BeginDraftSubmission(request); }
             catch (retryError) {
-              if (String(retryError).includes("draft submission not admitted:")) throw retryError;
+              if (String(retryError).includes("draft submission not admitted:") || String(retryError).includes("reasonix_error:")) throw retryError;
               source.error = "Verifying whether the submission was received. Reconnecting…";
               publish(draftId);
               await new Promise(resolve => window.setTimeout(resolve, 2000));
@@ -891,7 +889,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const id = visibleDraftIdRef.current;
     const entry = id ? entriesRef.current.get(id) : undefined;
     if (!id || !entry?.operation) return;
-    const capture = { handle: { draftId: id, generation: entry.generation }, preparationId: "", draftId: id, generation: entry.generation, workspaceId: entry.draft.workspaceId, editVersion: entry.editVersion, navigationIntent: entry.visibleIntent, content: cloneContent(entry.content), settings: cloneSettings(entry.settings) };
+    const capture = { handle: { draftId: id, generation: entry.generation }, preparationId: "", draftId: id, generation: entry.generation, workspaceId: entry.draft.workspaceId, editVersion: entry.editVersion, navigationIntent: entry.visibleIntent, content: cloneDraftContent(entry.content), settings: cloneDraftSettings(entry.settings) };
     try {
       const next = await app.ResumeDraftSubmission(entry.operation.operationId, entry.operation.revision);
       entry.operationCapture = capture;

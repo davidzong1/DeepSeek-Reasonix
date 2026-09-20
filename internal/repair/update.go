@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 const updateTransactionVersion = 1

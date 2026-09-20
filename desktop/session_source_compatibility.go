@@ -21,7 +21,11 @@ import (
 )
 
 func desktopSourceKey(path, head string) string {
-	sum := sha256.Sum256([]byte(sessionRuntimeKey(path) + "\x00" + head))
+	// Migration sources include both transcript files and canonical prototype
+	// directories. Keep their persisted key independent from the runtime
+	// session locator, which intentionally accepts transcript paths only.
+	pathKey := agent.CanonicalSessionPath(cleanDesktopPath(path))
+	sum := sha256.Sum256([]byte(pathKey + "\x00" + head))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -109,7 +113,7 @@ func (a *App) recordDesktopSource(ctx context.Context, path, format, fingerprint
 		}
 		presentation.Title = meta.TopicTitle
 	}
-	presentation = historicalTopicPresentation(workspaceID, presentation)
+	presentation = a.historicalTopicPresentation(ctx, workspaceID, presentation)
 	return a.workspaceRegistry().RecordSource(ctx, workspacestate.SourceMapping{
 		SourceKey: desktopSourceKey(path, ""), Path: path, Format: format, Fingerprint: fingerprint,
 		SessionID: targetID, WorkspaceID: workspaceID,
@@ -147,7 +151,7 @@ func (a *App) commitDesktopImport(ctx context.Context, source desktopMigrationSo
 		}
 		presentation.Title = meta.TopicTitle
 	}
-	presentation = historicalTopicPresentation(workspaceID, presentation)
+	presentation = a.historicalTopicPresentation(ctx, workspaceID, presentation)
 	opID, err := a.prepareDesktopImport(ctx, source, path, fingerprint, targetID, workspaceID)
 	if err != nil {
 		return err
@@ -161,16 +165,25 @@ func (a *App) commitDesktopImport(ctx context.Context, source desktopMigrationSo
 	return a.workspaceRegistry().CommitOperation(ctx, opID)
 }
 
-func historicalTopicPresentation(workspaceID string, presentation workspacestate.Presentation) workspacestate.Presentation {
-	return historicalTopicPresentationFrom(loadProjectsFile(), workspaceID, presentation)
+func (a *App) historicalTopicPresentation(ctx context.Context, workspaceID string, presentation workspacestate.Presentation) workspacestate.Presentation {
+	projects := loadProjectsFile()
+	if workspaceID == workspacestate.GlobalWorkspaceID {
+		return historicalTopicPresentationFrom(projects, workspaceID, "", presentation)
+	}
+	workspaceRoot := ""
+	if state, err := a.workspaceRegistry().Load(ctx); err == nil {
+		workspaceRoot = state.Workspaces[workspaceID].Root
+	}
+	return historicalTopicPresentationFrom(projects, workspaceID, workspaceRoot, presentation)
 }
 
-func historicalTopicPresentationFrom(projects desktopProjectFile, workspaceID string, presentation workspacestate.Presentation) workspacestate.Presentation {
+func historicalTopicPresentationFrom(projects desktopProjectFile, workspaceID, workspaceRoot string, presentation workspacestate.Presentation) workspacestate.Presentation {
 	topics, pinned := projects.GlobalTopics, projects.GlobalPinnedTopics
 	if workspaceID != workspacestate.GlobalWorkspaceID {
 		topics, pinned = nil, nil
 		for _, project := range projects.Projects {
-			if desktopWorkspaceID("project", project.Root) == workspaceID {
+			if (workspaceRoot != "" && sameProjectRoot(project.Root, workspaceRoot)) ||
+				(workspaceRoot == "" && desktopWorkspaceID("project", project.Root) == workspaceID) {
 				topics, pinned = project.Topics, project.PinnedTopics
 				break
 			}
@@ -302,18 +315,8 @@ func (a *App) legacyCanonicalRef(ctx context.Context, path string) (session.Sess
 		if state.SessionStates[mapping.SessionID].Lifecycle == workspacestate.Deleted {
 			return session.SessionRef{}, true, session.ErrSessionNotFound
 		}
-		if fingerprint, readErr := desktopSourceFingerprint(path); readErr == nil {
-			if mapping.Fingerprint != fingerprint {
-				workspace := state.Workspaces[mapping.WorkspaceID]
-				scope := "project"
-				if mapping.WorkspaceID == workspacestate.GlobalWorkspaceID {
-					scope = "global"
-				}
-				return session.SessionRef{}, false, errors.Join(workspacestate.ErrMutationConflict, a.sourceRecovery(ctx, path, mapping.Format, "source_conflict", scope, workspace.Root))
-			}
-		} else if !os.IsNotExist(readErr) {
-			return session.SessionRef{}, false, readErr
-		}
+		// Adoption is durable. Opening the new conversation must not hash or
+		// depend on the retained source, which another CLI may still be using.
 		return session.SessionRef{HostID: localDesktopHostID, SessionID: mapping.SessionID}, true, nil
 	}
 	a.mu.RLock()

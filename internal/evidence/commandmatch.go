@@ -110,7 +110,7 @@ func (l *Ledger) HasSuccessfulCommand(command string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.receipts {
-		if r.Success && r.ToolName == "bash" && CommandMatches(command, r.Command) {
+		if r.Success && isShellToolName(r.ToolName) && CommandMatches(command, r.Command) {
 			return true
 		}
 	}
@@ -127,7 +127,7 @@ func (l *Ledger) HasFailedCommand(command string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.receipts {
-		if !r.Success && r.ToolName == "bash" && CommandMatches(command, r.Command) {
+		if !r.Success && isShellToolName(r.ToolName) && CommandMatches(command, r.Command) {
 			return true
 		}
 	}
@@ -145,7 +145,7 @@ func (l *Ledger) SuccessfulCommands(limit int) []string {
 	var out []string
 	for i := len(l.receipts) - 1; i >= 0 && len(out) < limit; i-- {
 		r := l.receipts[i]
-		if r.Success && r.ToolName == "bash" && r.Command != "" {
+		if r.Success && isShellToolName(r.ToolName) && r.Command != "" {
 			out = append(out, r.Command)
 		}
 	}
@@ -194,7 +194,7 @@ func (l *Ledger) HasSuccessfulCommandAfter(command string, after int) bool {
 	defer l.mu.Unlock()
 	for i := start; i < len(l.receipts); i++ {
 		r := l.receipts[i]
-		if r.Success && r.ToolName == "bash" && CommandMatches(command, r.Command) {
+		if r.Success && isShellToolName(r.ToolName) && CommandMatches(command, r.Command) {
 			return true
 		}
 	}

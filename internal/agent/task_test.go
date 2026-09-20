@@ -820,7 +820,7 @@ func TestTaskToolBackgroundCapRefusesFanOut(t *testing.T) {
 	}
 
 	if _, err := task.Execute(ctx, []byte(`{"prompt":"one more","run_in_background":true}`)); err == nil ||
-		!strings.Contains(err.Error(), "limit") || !strings.Contains(err.Error(), "wait") {
+		!strings.Contains(err.Error(), "limit") || !strings.Contains(err.Error(), "job_output") {
 		t.Fatalf("Execute over cap = %v, want background task limit refusal", err)
 	}
 

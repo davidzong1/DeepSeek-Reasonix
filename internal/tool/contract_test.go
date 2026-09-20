@@ -66,6 +66,8 @@ var acceptsDefaultSnip = map[string]bool{
 	"delete_symbol": true,
 	"edit_file":     true,
 	"get_goal":      true,
+	"job_kill":      true,
+	"job_output":    true,
 	"kill_shell":    true,
 	"move_file":     true,
 	"multi_edit":    true,

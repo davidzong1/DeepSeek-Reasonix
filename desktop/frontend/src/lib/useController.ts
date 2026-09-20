@@ -1,3 +1,4 @@
+import { isShellToolName } from "./shellToolIdentity";
 // useController is the frontend's state machine over the agent event stream. It keeps
 // per-tab output, tool state, and approvals while the user switches tabs; components
 // render the active tab's state.
@@ -726,6 +727,8 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.runtime?.issue?.holderHost === b.runtime?.issue?.holderHost &&
     a.runtime?.issue?.acquiredAt === b.runtime?.issue?.acquiredAt &&
     a.startupErr === b.startupErr &&
+    a.historicalSource?.path === b.historicalSource?.path &&
+    a.historicalSource?.headId === b.historicalSource?.headId &&
     a.eventChannel === b.eventChannel &&
     a.cwd === b.cwd &&
     a.workspaceRoot === b.workspaceRoot &&
@@ -1507,14 +1510,14 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
           const args = t.args ? t.args : it.args;
           const fileDiff = fileDiffFromWire(t);
           const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined, isShell: it.isShell || t.name === "bash" || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
+          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined, isShell: it.isShell || isShellToolName(t.name) || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
         }
         if (t.parentId) touchSubagentParent(next, t.parentId);
         return { ...settled, items: next };
       }
       const args = t.args ?? "";
       const fileDiff = fileDiffFromWire(t);
-      const created: ToolItem = { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", startedAt: Date.now(), summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: t.name === "bash" || id.startsWith("shell-"), execution: t.execution, parentId: t.parentId, profile: t.profile, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined };
+      const created: ToolItem = { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName, capabilityId: t.capabilityId, status: "running", startedAt: Date.now(), summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: isShellToolName(t.name) || id.startsWith("shell-"), execution: t.execution, parentId: t.parentId, profile: t.profile, subagentProgress: SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined };
       const items = [...settled.items, created];
       // A sub-agent call nested under a task card refreshes that card's
       // recent activity and switches its phase to "tool".
@@ -1574,7 +1577,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
             truncated: t.truncated,
             durationMs: t.durationMs,
             summary,
-            isShell: existing.isShell || existing.name === "bash" || t.name === "bash",
+            isShell: existing.isShell || isShellToolName(existing.name) || isShellToolName(t.name),
             execution: t.execution ?? existing.execution,
             presentedFiles: t.presentedFiles ?? existing.presentedFiles,
             subagentOutcome: t.subagentRef || t.subagentStatus
@@ -3588,7 +3591,7 @@ export function useController() {
       throw new Error(runtime?.issue?.message || currentState.meta.startupErr || t("composer.workspaceStarting"));
     }
     const seq = currentState.seq;
-    const submissionId = createTurnSubmissionId(tabId, currentState.sessionGen, seq, runtimeEpochByTabRef.current.get(tabId) ?? runtime?.epoch);
+    const submissionId = structured?.attachmentSubmissionId ?? createTurnSubmissionId(tabId, currentState.sessionGen, seq, runtimeEpochByTabRef.current.get(tabId) ?? runtime?.epoch);
     const submissionCurrent = () => submissionBindingCurrent(statesRef.current.get(tabId), currentState);
     const promptEpoch = currentState.promptEpoch;
     const { display, submit } = normalizeTurnSubmit(displayText, submitText);
@@ -3598,45 +3601,20 @@ export function useController() {
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq, submissionId });
     invalidateCache();
     try {
-      const submitPromise = initialGoal
-        ? app.SubmitInitialGoalToTabWithID(
-            tabId,
-            initialGoal.goal,
-            structured?.display.trim() || display,
-            structured?.input.trim() || submit,
-            structured?.invocations ?? [],
-            initialGoal.collaborationMode,
-            initialGoal.toolApprovalMode,
-            submissionId,
-          )
-        : structured
-        ? app.SubmitInvocationsToTabWithID(tabId, structured.display.trim(), structured.input.trim(), structured.invocations, submissionId)
-        : original
-        ? app.SubmitEditedDisplayToTabWithID(tabId, display, submit, original, submissionId)
-        : display !== submit
-        ? app.SubmitDisplayToTabWithID(tabId, display, submit, submissionId)
-        : typeof app.StartTurnForTab === "function"
-        ? app.StartTurnForTab(tabId, submit, submissionId)
-        : app.SubmitToTabWithID(tabId, submit, submissionId);
-      if (initialGoal) {
-        const drained = await submitPromise;
-        if (!submissionCurrent()) return;
+      const [outcome, detail] = await import("./turnSubmit").then(module => module.submitTurn(app, tabId, submissionId, display, submit, original, structured, initialGoal));
+      if (!submissionCurrent()) return;
+      if (outcome === 1) {
         dispatchTo(tabId, { type: "send_confirmed", submissionId });
-        const ids = Array.isArray(drained) ? drained : [];
+        const ids = detail as string[];
         if (ids.length) dispatchTo(tabId, { type: "approval_drained", ids, epoch: promptEpoch });
         return;
       }
-      void submitPromise.then(
-        (receipt) => {
-          if (!submissionCurrent()) return;
-          if (receipt && typeof receipt === "object" && "disposition" in receipt && receipt.disposition === "management_handled") return void dispatchTo(tabId, { type: "management_confirmed", submissionId });
-          if (receipt && typeof receipt === "object" && "turnId" in receipt && typeof receipt.turnId === "string") {
-            dispatchTo(tabId, { type: "turn_admitted", turnId: receipt.turnId, submissionId });
-          }
-          dispatchTo(tabId, { type: "send_confirmed", submissionId });
-        },
-        (error) => { if (submissionCurrent()) rejectTurnSubmission(tabId, submissionId, error); },
-      );
+      if (outcome === 2) {
+        dispatchTo(tabId, { type: "management_confirmed", submissionId });
+        return;
+      }
+      if (outcome === 3) dispatchTo(tabId, { type: "turn_admitted", turnId: detail as string, submissionId });
+      dispatchTo(tabId, { type: "send_confirmed", submissionId });
     } catch (error) {
       if (submissionCurrent()) rejectTurnSubmission(tabId, submissionId, error);
       throw error;
@@ -3758,8 +3736,9 @@ export function useController() {
       if (result.warning) dispatchTo(tabId, { type: "local_notice", level: "warn", text: result.warning });
       return result;
     } catch (error) {
-      dispatchTo(tabId, { type: "local_notice", level: "warn", text: formatInboxCancelError(error, getLocale()) });
-      return { discardedItemIds: [] };
+      const message = formatInboxCancelError(error, getLocale());
+      dispatchTo(tabId, { type: "local_notice", level: "warn", text: message });
+      return { discardedItemIds: [], error: message };
     } finally {
       scheduleCancelReconcile(tabId, 0);
     }
@@ -3793,39 +3772,48 @@ export function useController() {
     const promptState = statesRef.current.get(target.tabId);
     const epoch = promptState?.promptEpoch ?? 0;
     dispatchTo(target.tabId, { type: "clearApproval", target });
-    resolvePromptForSession(target, {
+    return resolvePromptForSession(target, {
       allow,
       session,
       persist,
       generation: target.requestGeneration,
       permissionRevision: target.permissionRevision,
-    }).catch((error) => handlePromptFailure(dispatchTo, target, epoch, error));
+    }).catch((error) => {
+      handlePromptFailure(dispatchTo, target, epoch, error);
+      throw error;
+    });
   }, [dispatchTo]);
 
   const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
-    if (activeTabId) approveForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "approval", id), allow, session, persist);
+    if (activeTabId) return approveForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "approval", id), allow, session, persist);
   }, [activeTabId, approveForTab]);
 
   const resolvePlanDecisionForTab = useCallback((target: InteractionTarget, action: "start_execution" | "revise_plan" | "exit_plan") => {
     if (!target.tabId) return;
     const epoch = statesRef.current.get(target.tabId)?.promptEpoch ?? 0;
     dispatchTo(target.tabId, { type: "clearApproval", target });
-    resolvePromptForSession(target, { action }).catch((error) => handlePromptFailure(dispatchTo, target, epoch, error));
+    return resolvePromptForSession(target, { action }).catch((error) => {
+      handlePromptFailure(dispatchTo, target, epoch, error);
+      throw error;
+    });
   }, [dispatchTo]);
 
   const resolvePlanDecision = useCallback((id: string, action: "start_execution" | "revise_plan" | "exit_plan") => {
-    if (activeTabId) resolvePlanDecisionForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "plan", id), action);
+    if (activeTabId) return resolvePlanDecisionForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "plan", id), action);
   }, [activeTabId, resolvePlanDecisionForTab]);
 
   const resolveRecoveryForTab = useCallback((target: InteractionTarget, action: "continue" | "continue_task" | "revise" | "stop", feedback = "") => {
     if (!target.tabId) return;
     const epoch = statesRef.current.get(target.tabId)?.promptEpoch ?? 0;
     dispatchTo(target.tabId, { type: "clearApproval", target });
-    resolvePromptForSession(target, { action, feedback }).catch((error) => handlePromptFailure(dispatchTo, target, epoch, error));
+    return resolvePromptForSession(target, { action, feedback }).catch((error) => {
+      handlePromptFailure(dispatchTo, target, epoch, error);
+      throw error;
+    });
   }, [dispatchTo]);
 
   const resolveRecovery = useCallback((id: string, action: "continue" | "continue_task" | "revise" | "stop", feedback = "") => {
-    if (activeTabId) resolveRecoveryForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "recovery", id), action, feedback);
+    if (activeTabId) return resolveRecoveryForTab(interactionTargetFromState(activeTabId, statesRef.current.get(activeTabId), "recovery", id), action, feedback);
   }, [activeTabId, resolveRecoveryForTab]);
 
   const answerQuestionForTab = useCallback((target: InteractionTarget, answers: QuestionAnswer[]): Promise<void> => {

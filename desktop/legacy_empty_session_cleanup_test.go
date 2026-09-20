@@ -192,7 +192,9 @@ func TestLegacyCleanupTreatsRestoredTabWithoutRuntimeAsBusy(t *testing.T) {
 	close(app.tabsRestored)
 	app.mu.Unlock()
 	close(app.desktopMigrationDone)
-	app.retryLegacyEmptySessionCleanupAfterRuntimeRelease()
+	// Releasing a view no longer authorizes automatic historical cleanup.
+	// Only the explicit maintenance operation may archive this candidate.
+	app.runLegacyEmptySessionCleanup(false)
 	if got := cleanupCandidate(t, app, "session:"+ref.SessionID); got.Phase != "archived" {
 		t.Fatalf("candidate after runtime release = %+v", got)
 	}

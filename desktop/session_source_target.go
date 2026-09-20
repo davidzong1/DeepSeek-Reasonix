@@ -32,27 +32,22 @@ func (a *App) resolveSessionMutationTarget(selector SessionSelector) (SessionTar
 	if err != nil || target.Source == nil {
 		return target, err
 	}
-	_, _, err = a.ensureSessionOrganization(target.Scope, target.WorkspaceRoot)
+	view, err := a.PrepareSession(SessionSelector{Source: target.Source, TopicID: target.TopicID})
 	if err != nil {
 		return SessionTarget{}, err
 	}
-	workspace, err := a.ensureDesktopWorkspace(a.bootContext(), target.Scope, target.WorkspaceRoot)
+	c := &a.historicalImports
+	c.mu.Lock()
+	call := c.operations[view.OperationID]
+	c.mu.Unlock()
+	if call == nil {
+		return SessionTarget{}, newSessionOperationError("target_changed", "The source preparation task is unavailable.")
+	}
+	result, err := waitHistoricalImport(call)
 	if err != nil {
 		return SessionTarget{}, err
 	}
-	err = a.migrateLegacySession(a.bootContext(), target.SessionPath, desktopMigrationSource{scope: target.Scope, workspaceRoot: target.WorkspaceRoot, headID: target.Source.HeadID}, workspace)
-	if err != nil {
-		return SessionTarget{}, err
-	}
-	state, err := a.workspaceRegistry().Load(a.bootContext())
-	if err != nil {
-		return SessionTarget{}, err
-	}
-	mapping, ok := state.SourceMappings[target.Source.SourceKey]
-	if !ok {
-		return SessionTarget{}, newSessionOperationError("target_changed", "The source adoption has not completed.")
-	}
-	return a.resolveCanonicalSessionTarget(session.SessionRef{HostID: localDesktopHostID, SessionID: mapping.SessionID}, target.TopicID)
+	return a.resolveCanonicalSessionTarget(result.Session, target.TopicID)
 }
 
 func parseSessionSourceRoute(route string) (*SessionSourceRef, error) {
@@ -71,19 +66,14 @@ func parseSessionSourceRoute(route string) (*SessionSourceRef, error) {
 	return &source, nil
 }
 
-func sessionSourceRoute(source *SessionSourceRef) string {
-	encoded, _ := json.Marshal(source)
-	return "session-source:" + url.PathEscape(string(encoded))
-}
-
 // Session title projection is addressed by the same durable ID as its write.
 // A topic may gain another branch while an asynchronous title is generated.
-func (a *App) updateCanonicalSessionTitle(ref session.SessionRef, title string) {
+func (a *App) updateCanonicalSessionTitle(ref session.SessionRef, title, source string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, tab := range a.runtimeTabsLocked() {
 		if tab != nil && tab.SessionID == ref.SessionID {
-			tab.TopicTitle, tab.topicTitleSource = title, topicTitleSourceManual
+			tab.TopicTitle, tab.topicTitleSource = title, source
 		}
 	}
 	a.saveTabsLocked()

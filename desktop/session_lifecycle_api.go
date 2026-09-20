@@ -275,13 +275,10 @@ func (a *App) archiveLifecycleCommand(req SessionLifecycleRequest, key string) e
 				refs = append(refs, *target.Ref)
 			}
 			release := a.lockRuntimeMutation("archive lifecycle command")
-			fallback, e := a.archiveSessionRefsWithOperation(refs, child)
+			e := a.archiveSessionRefsWithOperation(refs, child)
 			release()
 			if e != nil {
 				return e
-			}
-			if e == nil && fallback.needs {
-				_ = a.openFallbackRuntime(fallback)
 			}
 		}
 	}

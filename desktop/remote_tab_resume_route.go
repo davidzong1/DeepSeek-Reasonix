@@ -86,6 +86,17 @@ func (a *App) rollbackRemoteTabProvisionalResume(tabID string, tab *remoteTab, c
 	return true
 }
 
+// closeRemoteTabProvisionalRouteLocked ends the provisional route epoch when
+// its pump generation is retired. Every commit and rollback path fences on
+// that generation, so the buffered frames can never be drained and the gate
+// would otherwise refuse commands until the next identity change. The route
+// itself stays: the reattach reconciles it against Serve's foreground. Caller
+// holds remoteTabMu.
+func closeRemoteTabProvisionalRouteLocked(tab *remoteTab) {
+	tab.routing.rehydratingPath = ""
+	tab.routing.rehydratingFrames = nil
+}
+
 func restoreRemoteTabProvisionalRouteLocked(current *remoteTab, route remoteTabProvisionalResume) {
 	current.routing.currentPath = route.previousPath
 	current.routing.pathRevision++
@@ -234,7 +245,10 @@ func (a *App) publishRemoteTabResumeReadyLocked(tabID string, tab *remoteTab, cl
 		for _, frame := range frames {
 			kind, path, _, _ := probeRemoteTabFrame(string(frame))
 			if path != "" && path != route.targetPath {
-				return
+				// The buffer fence only admits the target route; a foreign frame
+				// here is defensive debris. Dropping it keeps the drain alive —
+				// aborting would strand the epoch and buffer live frames forever.
+				continue
 			}
 			if !a.publishRemoteTabFrameForRouteLocked(tabID, tab, tab, client, gen, route.targetPath, true, kind, frame) {
 				return

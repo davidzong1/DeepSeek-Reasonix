@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/sqliteuri"
 
 	moderncsqlite "modernc.org/sqlite"

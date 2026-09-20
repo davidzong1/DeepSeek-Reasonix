@@ -76,7 +76,11 @@ func (a *App) unifiedProjectTopics(req ProjectTopicPageRequest) (ProjectTopicPag
 	if err != nil {
 		return legacy, err
 	}
-	nodes := a.canonicalTopicNodes(all, state, workspace, infos, legacy.Items)
+	sources := append(legacy.Items, a.historicalCanonicalTopics(scope, root, state)...)
+	if saved, err := readHistoricalSidecar(); err == nil {
+		applyHistoricalPresentations(sources, saved)
+	}
+	nodes := a.canonicalTopicNodes(all, state, workspace, infos, sources)
 	filtered := filterWorkspaceSessionNodes(req, org, state, workspaceID, nodes)
 	sort.SliceStable(filtered, func(i, j int) bool {
 		return projectTopicLess(filtered[i], filtered[j], req.SortMode, org.ManualOrderEnabled)
@@ -165,19 +169,19 @@ func (a *App) updateCanonicalTopicPresentation(topicID string, title *string, pi
 	}
 	if title != nil {
 		for _, id := range ids {
-			if err := a.desktopSessionService("").SetTitle(a.bootContext(), session.SessionRef{HostID: localDesktopHostID, SessionID: id}, *title); err != nil {
+			ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
+			if err := a.desktopSessionService("").SetTitle(a.bootContext(), ref, *title); err != nil {
 				return true, err
 			}
+			a.publishCanonicalSessionTitle(ref, *title)
 		}
 	}
-	if err := a.workspaceRegistry().UpdatePresentation(a.bootContext(), ids, title, pinned); err != nil {
-		return true, err
+	if pinned != nil {
+		if err := a.workspaceRegistry().UpdatePresentation(a.bootContext(), ids, nil, pinned); err != nil {
+			return true, err
+		}
+		a.emitProjectTreeMetadataChanged()
 	}
-	if title != nil {
-		a.updateOpenTopicTitle(topicID, *title, topicTitleSourceManual)
-		a.saveTabsFromRemote()
-	}
-	a.emitProjectTreeMetadataChanged()
 	return true, nil
 }
 
@@ -197,7 +201,7 @@ func (a *App) mergeCanonicalWorkspaceShells(projects []ProjectNode) []ProjectNod
 		if project.Kind == "global_folder" {
 			scope = "global"
 		}
-		id := desktopWorkspaceID(scope, project.Root)
+		id := desktopWorkspaceOwnerID(state, scope, project.Root)
 		if workspace, ok := state.Workspaces[id]; ok && !workspace.Visible {
 			continue
 		}
@@ -228,11 +232,17 @@ func (a *App) mergeCanonicalWorkspaceShells(projects []ProjectNode) []ProjectNod
 		if project.Kind == "global_folder" {
 			scope, root = "global", ""
 		}
-		workspace := state.Workspaces[desktopWorkspaceID(scope, root)]
+		req := ProjectTopicPageRequest{Scope: scope, WorkspaceRoot: root, Limit: 200}
+		workspace := state.Workspaces[desktopWorkspaceOwnerID(state, scope, root)]
 		if len(workspace.SessionIDs) == 0 {
+			pins, err := a.historicalPinnedShells(req, state)
+			if err != nil {
+				project.Health = "metadata_failed"
+			} else {
+				project.Children = pins
+			}
 			continue
 		}
-		req := ProjectTopicPageRequest{Scope: scope, WorkspaceRoot: root, Limit: 200}
 		pins := []ProjectNode{}
 		for {
 			page, err := a.unifiedProjectTopics(req)
@@ -275,6 +285,7 @@ func (a *App) unadoptedLegacyTopics(req ProjectTopicPageRequest, adopted, adopte
 		}
 		for _, node := range expanded {
 			if node.Source != nil {
+				node.PreparationStatus = a.historicalPreparationStatus(node.Source.SourceKey)
 				if !adopted[projectNodeSessionKey(node)] {
 					legacy.Items = append(legacy.Items, node)
 				}
@@ -328,16 +339,7 @@ func (a *App) canonicalTopicNodes(req ProjectTopicPageRequest, state workspacest
 		}
 		ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
 		presentation := state.Presentation[id]
-		label := row.Title
-		if label == "" {
-			label = row.Preview
-		}
-		if label == "" {
-			label = presentation.Title
-		}
-		if label == "" {
-			label = defaultTopicTitle
-		}
+		label := a.localizedTopicTitle(sessionDisplayTitle(info, presentation))
 		kind := "topic"
 		if req.Scope != "project" {
 			kind = "global_topic"

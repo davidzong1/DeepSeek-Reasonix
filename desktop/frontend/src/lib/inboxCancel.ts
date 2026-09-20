@@ -7,6 +7,8 @@ export type InboxCancelReceipt = {
 
 export type CancelOutcome = InboxCancelReceipt & {
   restoredText?: string;
+  /** Local failure receipt; decision cards must not treat it as accepted Stop. */
+  error?: string;
 };
 
 type InboxCancelBridge = {

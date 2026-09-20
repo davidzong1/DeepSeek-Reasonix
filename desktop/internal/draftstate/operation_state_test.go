@@ -64,6 +64,31 @@ func TestRequestIdentitySurvivesConversionAndRejectsChangedSnapshot(t *testing.T
 	}
 }
 
+func TestSnapshotDigestTreatsInheritedModelAsLiveCompatibilityMirror(t *testing.T) {
+	inheritedA, err := SnapshotDigest(`{}`, `{"model":"fixture/a","modelSource":"default"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inheritedB, err := SnapshotDigest(`{}`, `{"model":"fixture/b","modelSource":"default"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inheritedA != inheritedB {
+		t.Fatalf("inherited model mirror changed digest: %s != %s", inheritedA, inheritedB)
+	}
+	explicitA, err := SnapshotDigest(`{}`, `{"model":"fixture/a","modelSource":"explicit"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitB, err := SnapshotDigest(`{}`, `{"model":"fixture/b","modelSource":"explicit"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicitA == explicitB {
+		t.Fatal("explicit model was omitted from the draft digest")
+	}
+}
+
 func TestOperationResumeCASAndWorkerExclusion(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

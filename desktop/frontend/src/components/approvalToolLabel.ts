@@ -1,6 +1,9 @@
 import type { Translator } from "../lib/i18n";
+import { isShellToolName, isPowerShellToolName } from "../lib/shellToolIdentity";
 
 export function approvalToolLabel(tool: string, t: Translator): string {
+  if (isPowerShellToolName(tool)) return "PowerShell";
+  if (isShellToolName(tool)) return t("approval.toolLabelBash");
   switch (tool) {
     case "bash": return t("approval.toolLabelBash");
     case "edit_file": return t("approval.toolLabelEditFile");

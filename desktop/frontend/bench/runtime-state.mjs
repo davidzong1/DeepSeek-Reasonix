@@ -89,10 +89,20 @@ try {
   check(calls.length === 1 && queries.length === 1 && calls[0].at(-1) === queries[0].at(-1), "retry only queries the original durable idempotency key");
   await publish("idle", { backgroundJobs: 2 });
   await page.locator(".composer-run-strip").filter({ hasText: /2/ }).waitFor();
+  await page.locator(".runtime-activity-indicator:not(.runtime-activity-indicator--static)").first().waitFor();
   check(await page.locator(".runtime-activity-indicator:not(.runtime-activity-indicator--static)").count() > 0, "background jobs keep project activity visible");
   await publish("idle");
   await page.locator(".composer-run-strip").waitFor({ state: "hidden" });
-  check(await page.locator(".runtime-activity-indicator").count() === 0, "last job completion clears project activity");
+  // The invariant is that no activity indicator stays visible once the last
+  // job completes. Sidebar surfaces settle asynchronously, so wait for the
+  // settled state and name whatever stayed lit if it never arrives.
+  const lingering = await page.evaluate(async () => {
+    const visible = () => [...document.querySelectorAll(".runtime-activity-indicator")].filter(el => el.getClientRects().length > 0);
+    const deadline = Date.now() + 15000;
+    while (visible().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    return visible().map(el => `${el.closest("[class]")?.className ?? "?"}: ${el.getAttribute("aria-label") ?? el.className}`);
+  });
+  check(lingering.length === 0, `last job completion clears project activity (lingering: ${lingering.join(" | ") || "none"})`);
   await page.locator('.project-tree__folder-main:has(svg.lucide-cloud)').click();
   await page.locator('.project-tree__topic-main:has-text("Remote demo session")').click();
   await page.locator(".remote-surface--ready").waitFor();

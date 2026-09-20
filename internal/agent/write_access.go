@@ -215,7 +215,7 @@ func permissionSubject(plan *toolCallPlan) string {
 	if plan == nil {
 		return ""
 	}
-	if plan.evidenceName == "bash" {
+	if tool.IsShellToolName(plan.evidenceName) {
 		return strings.TrimSpace(bashCommandFromArgs(plan.permArgs))
 	}
 	return strings.TrimSpace(string(plan.permArgs))

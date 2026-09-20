@@ -20,6 +20,19 @@ For the current file-observation, scheduling, and interruption behavior, see
 "v1" and "v2" are **codebase generations**, not semver: the v1 line never reached
 1.0, so the Go rewrite takes the `1.x` major.
 
+## Windows shell and background jobs
+
+New Windows sessions expose `pwsh` instead of `bash`. Foreground calls are
+one-shot PowerShell processes; servers and watchers use
+`run_in_background=true`, then `job_output` and `job_kill`. The old `bash`,
+`PowerShell`, `bash_output`, `wait`, and `kill_shell` names remain hidden
+compatibility routes for saved sessions, permission rules, and hooks. Existing
+JSONL files do not need migration. PowerShell 7 is preferred, with Windows
+PowerShell 5.1 fallback; portable commands use `;` and `if ($?) {}` rather than
+`&&` or `||`. The first provider request after upgrading has a new tool-schema
+prefix and therefore one expected prompt-cache miss; the schema then remains
+fixed for the rest of the session.
+
 ## Installing 1.0
 
 `npm` stays the primary channel — the package wraps the prebuilt Go binary (the

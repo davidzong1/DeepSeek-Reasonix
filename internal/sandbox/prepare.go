@@ -50,10 +50,7 @@ func PrepareArgs(spec Spec, args []string, sessionTemp string) Prepared {
 }
 
 // PrepareShellArgs is the interactive-shell counterpart of PrepareShell.
-// Windows shells always use the restricted-token lane, including read-only
-// shells (ReadOnly still forbids writes). Generic read helpers use AppContainer.
 func PrepareShellArgs(spec Spec, args []string, sessionTemp string) Prepared {
-	spec.DirectWrites = true
 	return PrepareArgs(spec, args, sessionTemp)
 }
 

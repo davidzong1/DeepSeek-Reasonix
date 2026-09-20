@@ -71,7 +71,8 @@ func (a *App) metaForTab(tabID string) Meta {
 		meta := Meta{
 			Label: snap.label, Ready: runtimeView.Phase == sessionRuntimeReady && snap.ctrl != nil,
 			Runtime: runtimeView, StartupErr: snap.startupErr, EventChannel: eventChannel,
-			SessionPath: sessionPath, SessionID: sessionID, Session: sessionRef,
+			HistoricalSource: snap.historicalSource,
+			SessionPath:      sessionPath, SessionID: sessionID, Session: sessionRef,
 			SessionRevision: sessionRevision, SessionDigest: sessionDigest,
 			SessionGeneration: snap.sessionGeneration, RuntimeStateSnapshot: runtimeStateSnapshot,
 			Cwd: cwd, WorkspaceRoot: cwd, WorkspaceName: tabWorkspaceNameForScope(snap.scope, cwd), WorkspacePath: cwd,

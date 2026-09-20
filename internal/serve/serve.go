@@ -1,8 +1,3 @@
-// Package serve exposes a control.Controller over HTTP: the typed event stream
-// as Server-Sent Events, and the commands as small JSON POST endpoints. It is a
-// second frontend alongside the chat TUI — proof that the controller is
-// transport-agnostic, and the basis for a browser/desktop client. A server has
-// one foreground session and may finish switched-away sessions in background.
 package serve
 
 import (
@@ -26,7 +21,6 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
-	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
@@ -34,7 +28,6 @@ import (
 	"reasonix/internal/session"
 	"reasonix/internal/sessiontitle"
 	"reasonix/internal/stats"
-	"reasonix/internal/store"
 )
 
 //go:embed index.html
@@ -48,13 +41,9 @@ var logoWordmarkSVG []byte
 type Server struct {
 	runtimeProjection serveRuntimeProjection
 	mu                sync.RWMutex // guards ctrl, which rebuild paths swap at runtime
-	// bindMu serializes every entry point that changes the active session path
-	// or controller generation — /resume, /new, /fork, switchModel, and extension
-	// reload — and fences the identity read of /fork-targets and /fork-session.
-	// Without it two interleaved rebinds can leave the controller writing one
-	// session while the lease keeper guards another (the exact split this feature
-	// exists to prevent). It also keeps switchModel's Snapshot/Build/Close off
-	// s.mu, as the narrower switchMu did before it was widened.
+	// bindMu serializes every rebind of the active session or controller
+	// generation and fences identity reads, so no interleaving leaves the
+	// controller writing one session while the lease keeper guards another.
 	bindMu sync.Mutex
 	ctrl   control.SessionAPI
 	bc     *Broadcaster
@@ -267,26 +256,11 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 	// Keep the carried conversation in its existing file so the switch doesn't
 	// orphan a duplicate (#2807).
 	newPath := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	// The freshly built controller's own leading system message carries the
-	// target profile's contract; AdoptHistory below replaces the whole
-	// history with carried, so splice that message in first or the model
-	// keeps seeing the outgoing profile's contract after every switch.
-	if fresh := newCtrl.History(); len(fresh) > 0 && fresh[0].Role == provider.RoleSystem {
-		if len(carried) > 0 && carried[0].Role == provider.RoleSystem {
-			carried[0] = fresh[0]
-		} else {
-			carried = append([]provider.Message{fresh[0]}, carried...)
-		}
-	}
-	newCtrl.AdoptHistory(carried, newPath)
+	newCtrl.AdoptHistory(carryProfileSystemMessage(newCtrl, carried), newPath)
 	tag.PrimePath(newCtrl.SessionPath())
 	newCtrl.SetOnSessionRecovered(s.sessionRecoveryHandler(newCtrl, s.leases))
-	// A rebuild must not force the user to re-approve tools already granted
-	// this session, or re-trust Plan-mode read-only commands already trusted
-	// this session.
 	if prev, ok := cur.(*control.Controller); ok {
-		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-		if err := newCtrl.InheritLifecycleFrom(prev); err != nil {
+		if err := inheritSessionAxes(prev, newCtrl); err != nil {
 			s.closeTaggedController(newCtrl)
 			return fmt.Errorf("switch model: active Goal continuation must finish before rebuilding: %w", err)
 		}
@@ -312,7 +286,11 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 		}
 	}
 	activePath := newCtrl.SessionPath()
-	tag.PrimePath(activePath)
+	activeSessionID := ""
+	if ref, ok := newCtrl.SessionRef(); ok {
+		activeSessionID = ref.SessionID
+	}
+	tag.PrimeIdentity(activePath, activeSessionID)
 	if err := s.rebindSessionLeaseFor(activePath, newCtrl); err != nil {
 		s.closeTaggedController(newCtrl)
 		if errors.Is(err, agent.ErrSessionLeaseHeld) {
@@ -348,6 +326,36 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 		s.forgetSessionTag(oldCtrl)
 	}
 	return nil
+}
+
+// carryProfileSystemMessage splices the freshly built controller's own leading
+// system message into the carried history. AdoptHistory replaces the whole
+// history with what it is given, so without this the model keeps seeing the
+// outgoing profile's contract after every switch.
+func carryProfileSystemMessage(newCtrl *control.Controller, carried []provider.Message) []provider.Message {
+	fresh := newCtrl.History()
+	if len(fresh) == 0 || fresh[0].Role != provider.RoleSystem {
+		return carried
+	}
+	if len(carried) > 0 && carried[0].Role == provider.RoleSystem {
+		carried[0] = fresh[0]
+		return carried
+	}
+	return append([]provider.Message{fresh[0]}, carried...)
+}
+
+// inheritSessionAxes carries every session axis across a rebuild. A rebuild
+// must not force the user to re-approve tools or re-trust Plan-mode commands,
+// and the remote composer reads these modes immediately afterwards: defaults
+// there make the mode controls appear to work while the next submit differs.
+func inheritSessionAxes(prev, newCtrl *control.Controller) error {
+	newCtrl.SetToolApprovalMode(prev.ToolApprovalMode())
+	newCtrl.SetPlanMode(prev.PlanMode())
+	if goal := prev.Goal(); goal != "" && newCtrl.Goal() == "" {
+		newCtrl.SetGoal(goal)
+	}
+	newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
+	return newCtrl.InheritLifecycleFrom(prev)
 }
 
 // reloadExtensions fail-atomically rebuilds the active controller generation
@@ -707,6 +715,47 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 // if the client sends If-None-Match with the current ETag, the server returns
 // 304 Not Modified with no body, saving bandwidth on reconnects.
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+	if raw := strings.TrimSpace(r.URL.Query().Get("session")); strings.HasPrefix(raw, remoteSessionIDQueryPrefix) {
+		// Canonical identity routes have no legacy transcript path to resolve.
+		// Select the exact foreground or detached controller so compatibility
+		// clients cannot silently render the wrong session after a resume.
+		s.bindMu.Lock()
+		ctrl := s.resolveReadControllerLocked(raw)
+		s.bindMu.Unlock()
+		if ctrl == nil {
+			// The identity is not bound here — typically handed off to a local
+			// writer. The durable event log is the shared source of truth, so
+			// serve the committed message tail cold instead of failing.
+			if msgs, ok := s.identityColdHistory(raw); ok {
+				writeJSONCached(w, r, historyMessages(msgs))
+				return
+			}
+			http.Error(w, "transcript session is not bound to this runtime", http.StatusConflict)
+			return
+		}
+		if path := agent.CanonicalSessionPath(ctrl.SessionPath()); path != "" && s.sessionMirrored(path) {
+			if msgs, ok := s.mirroredHistory(path); ok {
+				writeJSONCached(w, r, historyMessages(msgs))
+				return
+			}
+		}
+		msgs := ctrl.History()
+		if historyIdentityReadHookForTest != nil {
+			historyIdentityReadHookForTest()
+		}
+		// The read ran outside bindMu; the same re-resolution transcriptBoundRead
+		// performs keeps a rotation or handoff that landed mid-read from being
+		// answered with the outgoing controller's transcript under the new route.
+		s.bindMu.Lock()
+		current := s.resolveReadControllerLocked(raw) == ctrl
+		s.bindMu.Unlock()
+		if !current {
+			http.Error(w, "transcript runtime changed during read", http.StatusConflict)
+			return
+		}
+		writeJSONCached(w, r, historyMessages(msgs))
+		return
+	}
 	// A read-only surface can select a specific session a local runtime owns
 	// (spectator attach): serve the local writer's transcript from the file.
 	if raw := r.URL.Query().Get("session"); raw != "" {
@@ -1039,12 +1088,27 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		Path      string `json:"path"`
 		HostID    string `json:"hostId"`
 		SessionID string `json:"sessionId"`
+		Name      string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(body.SessionID) != "" {
+	body.Path = strings.TrimSpace(body.Path)
+	body.HostID = strings.TrimSpace(body.HostID)
+	body.SessionID = strings.TrimSpace(body.SessionID)
+	body.Name = strings.TrimSpace(body.Name)
+	if body.SessionID == "" && body.Path == "" && body.Name != "" {
+		// Canonical /sessions rows intentionally expose identity in sessionId and
+		// leave the legacy path empty. Accept the name as a compatibility
+		// fallback for older clients that know the row but omit sessionId.
+		if identity, ok := s.ctl().(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+			body.SessionID = body.Name
+		} else if filepath.Base(body.Name) == body.Name && !strings.ContainsAny(body.Name, `/\\`) {
+			body.Path = filepath.Join(s.ctl().SessionDir(), body.Name+".jsonl")
+		}
+	}
+	if body.SessionID != "" {
 		s.resumeIdentitySession(w, r, body.HostID, body.SessionID)
 		return
 	}
@@ -1057,15 +1121,9 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), resolveSessionPathStatus(err))
 		return
 	}
-	// A mirrored session belongs to a local runtime; switching the foreground
-	// onto it would render Serve's frozen in-memory copy and silently strand
-	// the writer. Instead of refusing the attach, mount the client as a
-	// read-only spectator: Serve does NOT take ownership, the remote tab
-	// renders the file-backed /history?session view, /status?session reports
-	// takenOver, and reclaim returns the session through POST /reclaim. This
-	// keeps every client version (no special attach branch) working.
-	// Covers both mirrored sessions (adopted/handed off) and sessions merely
-	// held by another local process (e.g. a .9 desktop tab without adopt).
+	// A session another local runtime owns — mirrored, or merely lease-held —
+	// must not become the foreground. Mount the caller as a read-only
+	// spectator instead, so Serve never takes ownership or strands the writer.
 	if s.sessionMirrored(realPath) || leaseHeldByForeignRuntime(realPath) {
 		w.Header().Set(sessionPathHeader, agent.CanonicalSessionPath(realPath))
 		w.WriteHeader(http.StatusNoContent)
@@ -1100,6 +1158,16 @@ func (s *Server) resumeIdentitySession(w http.ResponseWriter, r *http.Request, h
 	}
 	ref, err := ctrl.OpenSession(r.Context(), session.SessionRef{HostID: hostID, SessionID: strings.TrimSpace(sessionID)})
 	if err != nil {
+		// A local runtime owns the writer: mount the caller as a read-only
+		// spectator instead of failing the attach — the same contract the
+		// legacy path offers for handed-off transcripts. The taken-over header
+		// lets clients distinguish this from an ordinary attach.
+		if errors.Is(err, session.ErrWriterOwned) {
+			w.Header().Set(sessionIDHeader, strings.TrimSpace(sessionID))
+			w.Header().Set(sessionTakenOverHeader, "writer")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		http.Error(w, "open session: "+err.Error(), http.StatusConflict)
 		return
 	}
@@ -1288,138 +1356,6 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"current": current, "label": label, "default": cfg.DefaultModel, "models": out})
 }
 
-// status returns a combined status snapshot. The desktop's runtime-only path
-// skips provider balance IO while retaining all reconciliation fields.
-func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	// A spectator watching a session a local runtime owns selects it
-	// explicitly; report the file-backed read-only view instead of the
-	// foreground controller's.
-	if raw := r.URL.Query().Get("session"); raw != "" {
-		if path, err := s.resolveSessionPath(raw); err == nil {
-			held := s.sessionMirrored(path) || leaseHeldByForeignRuntime(path)
-			if !held {
-				if view, ok := s.ownedRuntimeStatusView(path); ok {
-					writeJSON(w, view)
-					return
-				}
-			}
-			writeJSON(w, s.statusViewForPath(path, held))
-			if s.sessionMirrored(path) {
-				s.maybeAutoReclaimMirrored(path)
-			}
-			return
-		}
-	}
-	// Session rotations publish the controller path and executor Session while
-	// holding bindMu. Read the combined snapshot in that same binding epoch so
-	// callers can never pair a newly published path with the outgoing history.
-	s.bindMu.Lock()
-	runtimeOnly := r.URL.Query().Get("runtime") == "1" || r.URL.Query().Get("lite") == "1"
-	ctrl := s.ctl()
-	used, window := ctrl.ContextSnapshot()
-	hit, miss := ctrl.SessionCache()
-	state, rs := runtimeStateAndStatus(ctrl)
-	sess := map[string]any{
-		"runtimeState":     state,
-		"label":            ctrl.Label(),
-		"running":          rs.Running,
-		"plan":             ctrl.PlanMode(),
-		"autoApproveTools": ctrl.AutoApproveTools(),
-		"bypass":           ctrl.AutoApproveTools(),
-		"toolApprovalMode": ctrl.ToolApprovalMode(),
-		"goal":             ctrl.Goal(),
-		"goalStatus":       ctrl.GoalStatus(),
-		"qualityFloor":     ctrl.QualityFloor(),
-		"cwd":              ctrl.SessionDir(),
-		"used":             used,
-		"window":           window,
-		"cacheHit":         hit,
-		"cacheMiss":        miss,
-	}
-	if reader, ok := ctrl.(control.RuntimeStateReader); ok {
-		sess["goalView"] = reader.RuntimeStateSnapshot().Goal
-	}
-	if ctrl.Goal() != "" {
-		sess["goalRuntime"] = ctrl.GoalRuntime()
-	}
-	sessionPath := strings.TrimSpace(ctrl.SessionPath())
-	if identity, ok := ctrl.(control.IdentityLifecycle); ok {
-		if ref, bound := identity.SessionRef(); bound {
-			sess["hostId"] = ref.HostID
-			sess["sessionId"] = ref.SessionID
-		}
-	}
-	if sessionPath != "" && store.IsSessionTranscriptName(filepath.Base(sessionPath)) {
-		sess["sessionName"] = strings.TrimSuffix(filepath.Base(sessionPath), ".jsonl")
-		sess["sessionPath"] = agent.CanonicalSessionPath(sessionPath)
-	}
-	if cfg, err := config.Load(); err == nil {
-		if entry, ok := cfg.ResolveModel(currentModelRef(ctrl)); ok {
-			capability := config.EffortCapabilityForEntry(entry)
-			levels := capability.Levels
-			if levels == nil {
-				levels = []string{}
-			}
-			sess["effort"] = map[string]any{
-				"supported": capability.Supported,
-				"current":   config.EffortDisplay(entry),
-				"default":   capability.Default,
-				"levels":    levels,
-			}
-		}
-	}
-	// Runtime reconciliation fields for desktop running-state watchdogs: the
-	// remote tab surface polls /status and maps these onto the same
-	// reconciliation the local tabs get from ListTabs.
-	sess["pendingPrompt"] = rs.PendingPrompt
-	sess["backgroundJobs"] = rs.BackgroundJobs
-	sess["cancelRequested"] = rs.CancelRequested
-	sess["cancellable"] = rs.Cancellable
-	if canonical := agent.CanonicalSessionPath(sessionPath); canonical != "" && s.sessionMirrored(canonical) {
-		// A local runtime owns the session: nothing here can run, and the
-		// remote surface must render read-only. This field is the
-		// authoritative ownership signal — notices can be dropped by a slow
-		// subscriber, the status poll cannot.
-		sess["running"] = false
-		sess["pendingPrompt"] = false
-		sess["takenOver"] = true
-		if m, ok := s.mirroredEntry(canonical); ok {
-			sess["reclaimRequested"] = m.reclaimRequested
-		}
-		s.bindMu.Unlock()
-		s.maybeAutoReclaimMirrored(canonical)
-		writeJSON(w, sess)
-		return
-	}
-	if u := ctrl.LastUsage(); u != nil {
-		sess["lastUsage"] = u
-	}
-	sess["sessionCostQuote"] = s.bc.SessionCostQuoteFor(agent.CanonicalSessionPath(sessionPath))
-	if j := ctrl.Jobs(); len(j) > 0 {
-		sess["jobs"] = j
-	}
-	// Balance can perform provider IO and does not participate in session
-	// identity. Release the binding epoch before that optional slow request.
-	s.bindMu.Unlock()
-	if !runtimeOnly {
-		if b, err := ctrl.Balance(r.Context()); err == nil && b != nil {
-			if cfg, loadErr := config.Load(); loadErr == nil && cfg.DisplayCurrencyPref() == "" {
-				// Runtime-only hint: a single wallet currency may select an existing
-				// valuation, but is never persisted as configuration or history.
-				s.bc.SetDisplayCurrency(b.PrimaryCurrency())
-			}
-			sess["balance"] = map[string]any{
-				"display":   b.Display(),
-				"available": b.Available,
-				"infos":     b.Infos,
-			}
-		} else if err != nil {
-			slog.Warn("serve: balance fetch failed", "err", err)
-		}
-	}
-	writeJSON(w, sess)
-}
-
 const titlePrompt = `Generate a very short title (3-7 words max) for this conversation based on the user's message. Use the same language as the user's message. The title should be clear enough that the user recognizes the session in a list. Reply with ONLY the title, no quotes, no punctuation at the end.
 
 Good examples:
@@ -1484,135 +1420,9 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 	return strings.TrimSpace(title)
 }
 
-var deleteSessionBeforeOwnershipLockHookForTest func()
-
-// deleteSession removes a saved session by the session name returned from /sessions.
-func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		http.Error(w, "name required", http.StatusBadRequest)
-		return
-	}
-	// Validate the untrusted name before constructing any transcript or sidecar
-	// path. IsLocal also rejects Windows drive-relative and reserved names;
-	// the separator check keeps this endpoint restricted to one basename.
-	if !filepath.IsLocal(name) || name == "." || strings.ContainsAny(name, `/\`) {
-		http.Error(w, "invalid session name", http.StatusBadRequest)
-		return
-	}
-	// Serialize active/detached ownership checks with session promotion. A
-	// detached controller is removed from the background registry while it is
-	// being promoted; without bindMu a concurrent delete can pass both checks
-	// in that transfer window and remove the live controller's transcript.
-	if deleteSessionBeforeOwnershipLockHookForTest != nil {
-		deleteSessionBeforeOwnershipLockHookForTest()
-	}
-	s.bindMu.Lock()
-	defer s.bindMu.Unlock()
-	dir := s.ctl().SessionDir()
-	if dir == "" {
-		http.Error(w, "sessions disabled", http.StatusBadRequest)
-		return
-	}
-	target := filepath.Join(dir, name+".jsonl")
-	abs, err := filepath.Abs(target)
-	if err != nil {
-		http.Error(w, "invalid session path", http.StatusBadRequest)
-		return
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		http.Error(w, "invalid session dir", http.StatusBadRequest)
-		return
-	}
-	rel, err := filepath.Rel(absDir, abs)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		http.Error(w, "path outside session dir", http.StatusForbidden)
-		return
-	}
-	if filepath.Clean(abs) == filepath.Clean(s.ctl().SessionPath()) {
-		http.Error(w, "cannot delete active session", http.StatusConflict)
-		return
-	}
-	if s.detachedBusy(filepath.Clean(abs)) {
-		http.Error(w, "session is running in the background; switch to it and stop the turn first", http.StatusConflict)
-		return
-	}
-	if s.sessionMirrored(abs) {
-		// A local runtime is writing this transcript; deleting it here would
-		// pull the file out from under the writer.
-		http.Error(w, "session is taken over by a local Reasonix window", http.StatusConflict)
-		return
-	}
-	destroy := s.ctl().BeginDestroySession(abs)
-	if result := finishSessionDestroy(destroy); result.HasTimedOut() {
-		if err := agent.MarkCleanupPending(abs, "delete"); err != nil {
-			go delayedSessionDelete(absDir, abs, destroy)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		go delayedSessionDelete(absDir, abs, destroy)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := removeSessionFiles(absDir, abs); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func finishSessionDestroy(destroy control.SessionDestroyHandle) jobs.TeardownResult {
-	if destroy.Wait != nil {
-		result := destroy.Wait()
-		if destroy.Finish != nil && !result.HasTimedOut() {
-			destroy.Finish()
-		}
-		return result
-	}
-	if destroy.Finish != nil {
-		destroy.Finish()
-	}
-	return jobs.TeardownResult{}
-}
-
-func delayedSessionDelete(absDir, abs string, destroy control.SessionDestroyHandle) {
-	if destroy.WaitAll != nil {
-		destroy.WaitAll()
-	}
-	if err := removeSessionFiles(absDir, abs); err != nil {
-		slog.Warn("serve: delayed session delete failed", "path", abs, "err", err)
-	}
-	if destroy.Finish != nil {
-		destroy.Finish()
-	}
-}
-
-func removeSessionFiles(absDir, abs string) error {
-	remove := append([]string{abs}, store.SessionSidecarFiles(abs)...)
-	for _, p := range remove {
-		if p == "" {
-			continue
-		}
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if err := agent.DeleteSubagentsByParent(absDir, agent.BranchID(abs)); err != nil {
-		return err
-	}
-	if err := jobs.RemoveArtifacts(abs); err != nil {
-		return err
-	}
-	return agent.ClearCleanupPending(abs)
-}
+// historyIdentityReadHookForTest runs between an identity history read and its
+// re-resolution so tests can rotate the foreground in that window.
+var historyIdentityReadHookForTest func()
 
 // sessionTitle returns a title for a session: the cached flash-generated title
 // when its first user message is unchanged, otherwise a freshly generated one

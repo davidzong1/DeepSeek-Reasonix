@@ -1,15 +1,14 @@
 // Run: tsx src/__tests__/shell-support-install.test.tsx
 //
-// Sandbox settings shell support contract: Windows is detect-and-guide with an
-// official manual download link, while macOS/Linux expose copy-only native
-// package-manager guidance. No platform launches an installer from Settings.
+// Sandbox settings shell support contract: Windows exposes native PowerShell
+// runtimes only, while macOS/Linux expose Bash with copy-only native repair
+// guidance. Diagnostics stay available without crowding the primary settings.
 
 import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SettingsPanel } from "../components/SettingsPanel";
-import { gitForWindowsDownloadURL } from "../components/SettingsShellSupport";
 import { LocaleProvider } from "../lib/i18n";
 import type { AppBindings } from "../lib/bridge";
 import type { SettingsView } from "../lib/types";
@@ -39,17 +38,22 @@ function eq(actual: unknown, expected: unknown, label: string) {
   }
 }
 
-console.log("\nshell support guidance");
+async function shellOptionValues(rootEl: HTMLElement): Promise<string[]> {
+  const trigger = rootEl.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
+  await act(async () => {
+    trigger?.click();
+    await flushPromises();
+  });
+  const values = Array.from(document.querySelectorAll<HTMLElement>('[role="option"][data-value]'))
+    .map((option) => option.dataset.value ?? "");
+  await act(async () => {
+    trigger?.click();
+    await flushPromises();
+  });
+  return values;
+}
 
-const officialGitForWindowsURL = "https://git-scm.com/download/win";
-eq(gitForWindowsDownloadURL(officialGitForWindowsURL), officialGitForWindowsURL,
-  "accepts the exact official Git for Windows download URL");
-eq(gitForWindowsDownloadURL("https://evil.example/?next=https://git-scm.com/download/win"), officialGitForWindowsURL,
-  "rejects an official-looking URL embedded in an attacker-controlled query");
-eq(gitForWindowsDownloadURL("https://git-scm.com.evil.example/download/win"), officialGitForWindowsURL,
-  "rejects an attacker-controlled hostname with the official hostname as a prefix");
-eq(gitForWindowsDownloadURL("http://git-scm.com/download/win"), officialGitForWindowsURL,
-  "rejects a non-HTTPS download URL");
+console.log("\nshell support guidance");
 
 const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
   pretendToBeVisual: true,
@@ -79,6 +83,16 @@ globalThis.sessionStorage = dom.window.sessionStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 window.scrollTo = () => {};
+window.matchMedia = (() => ({
+  matches: false,
+  media: "",
+  onchange: null,
+  addListener: () => {},
+  removeListener: () => {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  dispatchEvent: () => false,
+})) as typeof window.matchMedia;
 window.open = ((url?: string | URL) => {
   openedURLs.push(String(url));
   return null;
@@ -87,30 +101,31 @@ localStorage.clear();
 
 function windowsSettings(overrides: {
   shell?: string;
-  gitBashAvailable?: boolean;
   reloadRequired?: boolean;
   manualUrl?: string;
 }): SettingsView {
   const settings = baseSettings("standard");
-  const gitBashAvailable = overrides.gitBashAvailable ?? false;
   settings.sandbox = {
     ...settings.sandbox,
     shell: overrides.shell ?? "auto",
     effectiveShell: "powershell",
-    resolvedShell: overrides.reloadRequired ? "git-bash" : "powershell",
+    resolvedShell: overrides.reloadRequired ? "pwsh" : "powershell",
     shellReloadRequired: overrides.reloadRequired ?? false,
     shellCapabilities: [
-      { id: "git-bash", variant: "git-for-windows", available: gitBashAvailable, ...(gitBashAvailable ? { path: "C:\\Program Files\\Git\\bin\\bash.exe", source: "standard-path" } : { reason: "not-installed" }) },
+      // Legacy data may still be replayed from an older backend. The current UI
+      // must filter it rather than presenting Bash as a Windows Agent runtime.
+      { id: "git-bash", variant: "git-for-windows", available: true, path: "C:\\Program Files\\Git\\bin\\bash.exe", source: "standard-path" },
       { id: "powershell", available: true, path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", source: "standard-path" },
-      { id: "pwsh", available: false, reason: "not-installed" },
+      { id: "pwsh", available: true, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", source: "standard-path" },
     ],
+    gitCapability: { id: "git", available: true, path: "C:\\Program Files\\Git\\cmd\\git.exe", source: "standard-path" },
     shellInstallAction: { id: "git-for-windows", mode: "manual", available: false, manualUrl: overrides.manualUrl ?? "https://git-scm.com/download/win" },
   };
   return settings;
 }
 
-// Scenario 1: Windows always exposes only the official manual link, even when
-// the binding exists. Re-detection remains an explicit user action.
+// Scenario 1: Windows presents only the two native PowerShell runtimes. Legacy
+// Bash capabilities and install actions never leak into the settings surface.
 {
   const rootEl = document.createElement("div");
   document.body.appendChild(rootEl);
@@ -119,14 +134,15 @@ function windowsSettings(overrides: {
   let cancelCalls = 0;
   let reloadCalls = 0;
   let settingsCalls = 0;
+  const shellPreferenceCalls: string[] = [];
   const desktopStub = installDesktopHostStub(({
     main: {
       App: {
         Settings: async () => {
           settingsCalls += 1;
-          return windowsSettings({ manualUrl: "https://evil.example/?next=https://git-scm.com/download/win" });
+          return windowsSettings({ shell: "bash", reloadRequired: true, manualUrl: "https://evil.example/?next=https://git-scm.com/download/win" });
         },
-        SetShellPreference: async () => {},
+        SetShellPreference: async (value: string) => { shellPreferenceCalls.push(value); },
         InstallShellSupport: async () => {
           installCalls += 1;
           return { status: "manual_required", manualUrl: "https://git-scm.com/download/win" };
@@ -144,29 +160,35 @@ function windowsSettings(overrides: {
     );
     await flushPromises();
   });
-  await waitFor("Windows manual card", () => rootEl.textContent?.includes("does not run the Git for Windows installer automatically") === true);
-  ok(!Array.from(rootEl.querySelectorAll("button")).some((button) => button.textContent?.includes("Install Git for Windows")),
-    "Windows renders no automatic install button");
-  const manualLinkButton = rootEl.querySelector<HTMLButtonElement>(".shell-support__card .shell-support__actions button");
-  ok(Boolean(manualLinkButton), "Windows offers the official Git for Windows download link");
+  await waitFor("Windows PowerShell runtime", () => rootEl.textContent?.includes("PowerShell runtime") === true);
+  const optionValues = await shellOptionValues(rootEl);
+  eq(optionValues, ["auto", "pwsh", "powershell"], "Windows selector contains only native PowerShell runtimes");
+  const shellTrigger = rootEl.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
   await act(async () => {
-    manualLinkButton!.click();
+    shellTrigger?.click();
+    await flushPromises();
+    document.querySelector<HTMLElement>('[role="option"][data-value="auto"]')?.click();
     await flushPromises();
   });
-  eq(openedURLs.at(-1), officialGitForWindowsURL,
-    "Windows manual repair opens only the allowlisted official download URL");
+  eq(shellPreferenceCalls, ["auto"], "selecting the visible auto option migrates a retained legacy Bash preference");
+  ok(rootEl.textContent?.includes("Git Bash") !== true, "Windows hides replayed Git Bash capability data");
+  ok(rootEl.textContent?.includes("Git for Windows") !== true, "Windows hides legacy Git for Windows repair actions");
+  ok(rootEl.textContent?.includes("C:\\Windows\\System32\\WindowsPowerShell") === true,
+    "current Windows runtime includes its resolved executable path");
+  ok(rootEl.textContent?.includes("Runtime details") === true, "diagnostics are grouped under runtime details");
+  eq(openedURLs.length, 0, "rendering Windows settings opens no external installer page");
   eq(installCalls, 0, "rendering Windows repair never calls InstallShellSupport");
   eq(cancelCalls, 0, "manual-only Windows repair never calls CancelShellInstall");
 
-  const repairReloadButton = Array.from(rootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Re-detect and reload session"));
-  ok(Boolean(repairReloadButton), "Windows manual repair offers explicit re-detection");
+  const repairReloadButton = Array.from(rootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Reload current session"));
+  ok(Boolean(repairReloadButton), "Windows shows reload only when the resolved runtime changed");
   await act(async () => {
     repairReloadButton!.click();
     await flushPromises();
   });
-  eq(reloadCalls, 1, "Windows re-detection reloads only after the user requests it");
-  eq(settingsCalls, 2, "Windows re-detection refreshes the Settings snapshot once");
-  eq(installCalls, 0, "re-detection still never calls the install binding");
+  eq(reloadCalls, 1, "Windows reloads only after the user requests it");
+  eq(settingsCalls, 3, "preference migration and reload each refresh the Settings snapshot once");
+  eq(installCalls, 0, "reload never calls the legacy install binding");
   await act(async () => { root.unmount(); });
 }
 
@@ -209,6 +231,8 @@ function windowsSettings(overrides: {
     await flushPromises();
   });
   await waitFor("Linux detection", () => rootEl.textContent?.includes("Bash") === true);
+  eq(await shellOptionValues(rootEl), ["auto", "bash"],
+    "Linux selector contains no PowerShell runtimes");
   ok(!Array.from(rootEl.querySelectorAll("button")).some((button) => button.textContent?.includes("Install Git for Windows")),
     "Linux never renders a Windows install entry");
   ok(rootEl.textContent?.includes("zsh") === true && rootEl.textContent?.includes("POSIX sh") === true,
@@ -274,12 +298,16 @@ function windowsSettings(overrides: {
     await flushPromises();
   });
   await waitFor("macOS shell inventory", () => rootEl.textContent?.includes("POSIX sh") === true);
+  eq(await shellOptionValues(rootEl), ["auto", "bash"],
+    "macOS selector contains no PowerShell runtimes");
   ok(rootEl.textContent?.includes("zsh") === true && rootEl.textContent?.includes("POSIX sh") === true,
     "macOS detection reports native zsh and POSIX sh");
   ok(!rootEl.textContent?.includes("brew install bash") && !rootEl.textContent?.includes("Bash is not detected"),
     "macOS native zsh fallback does not request a Bash install");
   ok(rootEl.textContent?.includes("Git") === true && rootEl.textContent?.includes("brew install git") === true,
     "macOS missing Git shows an independent Homebrew Git repair command");
+  ok(rootEl.textContent?.includes("Shell after reload") !== true,
+    "unchanged runtime does not render a duplicate after-reload row");
   const gitCopyButton = Array.from(rootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy command"));
   await act(async () => {
     gitCopyButton!.click();

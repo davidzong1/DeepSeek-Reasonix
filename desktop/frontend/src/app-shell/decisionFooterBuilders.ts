@@ -16,6 +16,7 @@ import type { useComposerGoalCommands } from "../app-runtime/useComposerGoalComm
 import type { useRemoteComposerRuntimeActions } from "../lib/useRemoteComposerIntegration";
 import type { useControllerProfileCommands } from "../lib/useControllerProfileCommands";
 import { draftSubmissionLocksEditing, type useSessionDraftSurface } from "../app-runtime/useSessionDraftSurface";
+import { draftSurfaceNeedsAttention } from "./draftPresentation";
 import type {
   ApprovalProps,
   AskProps,
@@ -100,7 +101,7 @@ export type DecisionFooterSurfaceInput = {
   extension: ExtensionSurfaceApi;
   tabs: TabBarApi;
   clear: ClearCommands;
-  onStop: () => void;
+  onStop: ApprovalProps["onStop"];
   cancelWorkspaceConflict: RuntimeDecisionProps["onCancel"];
   onOpenLink: McpProps["onOpenLink"];
   onRevisionActiveChange: ApprovalProps["onRevisionActiveChange"];
@@ -252,6 +253,7 @@ export type ComposerSurfaceInput = {
     controllerReady: boolean;
     showContextWindowRing: boolean;
     submitDisabledReason?: string;
+    draftHint?: string;
   };
   base: ComposerBase;
   tab: { readOnly?: boolean; sessionPath?: string; workspaceRoot?: string; authentication?: ComposerProps["authentication"]; modelSettingsPending?: boolean; remote?: { hostId: string; workspace: string } } | undefined;
@@ -334,7 +336,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       // selection configures a new empty session. Once the transcript has
       // content, the session keeps its established workspace and the composer
       // returns to the compact follow-up layout.
-      workspaceContext: view.hero ? input.workspaceContext : undefined,
+      workspaceContext: view.hero || input.draft?.surface ? input.workspaceContext : undefined,
       fileRefRefreshKey: input.fileRefRefreshKey,
       guidanceConsumedKey: input.guidance?.key,
       guidanceConsumedItemId: input.guidance?.itemId,
@@ -348,11 +350,13 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
   if (!draft || !input.draft) return surface;
   const draftController = input.draft;
   const operationActive = draft.preparingSubmission || draftSubmissionLocksEditing(draft.operation);
+  const needsAttention = draftSurfaceNeedsAttention(draft);
   return {
     hidden: false,
     inert: false,
-    hero: true,
+    hero: !needsAttention,
     headline: input.view.headline,
+    hint: needsAttention ? undefined : input.view.draftHint,
     props: {
       ...surface.props,
       running: operationActive && draft.operation?.phase !== "accepted",
@@ -387,7 +391,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       onEditGoal: (goal) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { goal, collaborationMode: goal ? "goal" : "normal" }),
       onPauseGoal: () => {},
       onResumeGoal: () => {},
-      onSwitchModel: (model) => { draftController.updateSettingsFor(draft.draft.id, draft.generation, { model }); return true; },
+      onSwitchModel: (model) => { draftController.updateSettingsFor(draft.draft.id, draft.generation, { model, modelSource: "explicit" }); return true; },
       onSetEffort: (effort) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { effort }),
       effort: {
         supported: true,
@@ -411,6 +415,13 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
         ...surface.props.workspaceContext,
         scope: draft.draft.scope === "project" ? "project" : "global",
         workspaceRoot: draft.draft.workspaceRoot,
+        workspaceName: draft.draft.scope === "project"
+          ? draft.draft.workspaceRoot?.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
+          : undefined,
+        // Drafts have no formal tab. Git RPCs require that tab's identity and
+        // must never target the session that happened to be open beforehand.
+        tabId: undefined,
+        gitBranch: undefined,
         scopeKey: `draft:${draft.draft.workspaceId}`,
         remote: false,
       } : undefined,

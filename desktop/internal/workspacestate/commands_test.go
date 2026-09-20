@@ -36,7 +36,7 @@ func TestPurgeCommandAdmissionDoesNotRelaxOtherCommands(t *testing.T) {
 func TestCommandChildRejectsInterveningLifecycle(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "registry.json"))
 	ctx := t.Context()
-	if err := s.EnsureWorkspace(ctx, Workspace{ID: "global", Root: "/global", Visible: true}); err != nil {
+	if err := s.EnsureWorkspace(ctx, Workspace{ID: "global", Root: t.TempDir(), Visible: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AttachSession(ctx, "", "global", "session", ""); err != nil {
@@ -76,7 +76,7 @@ func TestCommandChildRejectsInterveningLifecycle(t *testing.T) {
 func TestHistoricalArchiveCommitPreservesUnknownTime(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "registry.json"))
 	ctx := t.Context()
-	if err := s.EnsureWorkspace(ctx, Workspace{ID: "global", Root: "/global", Visible: true}); err != nil {
+	if err := s.EnsureWorkspace(ctx, Workspace{ID: "global", Root: t.TempDir(), Visible: true}); err != nil {
 		t.Fatal(err)
 	}
 	op := Operation{ID: "legacy-trash", Kind: "archive-import", Lifecycle: Archived, WorkspaceID: "global", SessionIDs: []string{"old"}}

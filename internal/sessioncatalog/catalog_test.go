@@ -287,8 +287,37 @@ func TestSchemaMigrationLedgerRecordsEveryVersion(t *testing.T) {
 		}
 		versions = append(versions, version)
 	}
-	if fmt.Sprint(versions) != "[1 2 3 4 5 6 7 8 9 10 11 12]" {
+	if fmt.Sprint(versions) != "[1 2 3 4 5 6 7 8 9 10 11 12 13]" {
 		t.Fatalf("schema migration ledger = %v", versions)
+	}
+}
+
+func TestSchemaV13RebuildsFilesystemIdentityProjection(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "catalog.sqlite")
+	legacy, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
+		Path: path, Migrations: sessionMigrations()[:12], Now: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.DB.ExecContext(ctx, `INSERT INTO catalog_directories(path,path_key,scope) VALUES('/old','/old','global')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close(context.Background())
+	var directories int
+	if err := catalog.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_directories`).Scan(&directories); err != nil {
+		t.Fatal(err)
+	}
+	if directories != 0 {
+		t.Fatalf("stale identity rows survived v13 migration: %d", directories)
 	}
 }
 
@@ -309,11 +338,12 @@ func TestSchemaV11MigratesLegacyUnknownRowsIntoPersistentScheduler(t *testing.T)
 		t.Fatal(err)
 	}
 
-	catalog, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	migrated, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, Migrations: sessionMigrations()[:11], Now: time.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	t.Cleanup(func() { _ = migrated.DB.Close() })
+	catalog := &Catalog{db: migrated.DB}
 	var state string
 	var attempts, retryAt, engine int
 	if err := catalog.db.QueryRowContext(ctx, `SELECT repair_state,repair_attempts,repair_retry_at,repair_engine_version

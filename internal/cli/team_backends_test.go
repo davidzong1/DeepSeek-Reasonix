@@ -493,7 +493,7 @@ func TestMemberBackendBuildsWithGatewayEffort(t *testing.T) {
 			"wan": {UserID: "wan-gpt-5.6", Provider: "openai", Model: "gpt-5.6-sol[1m]",
 				BaseURL: "https://api.wanapis.com/v1", APIKey: "sk-x", Effort: "high"},
 		}},
-		events:        make(chan memberEvent, 1),
+		events:        make(chan memberEvent, memberEventBuffer),
 		workspaceRoot: workspace,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
@@ -558,7 +558,7 @@ func TestMemberBackendCarriesItsRolePosture(t *testing.T) {
 					"u": {UserID: "u", Provider: "openai", Model: "gpt-5.6",
 						BaseURL: "https://example.invalid/v1", APIKey: "k"},
 				}},
-				events:        make(chan memberEvent, 1),
+				events:        make(chan memberEvent, memberEventBuffer),
 				workspaceRoot: t.TempDir(),
 				base: func() boot.Options {
 					return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
@@ -695,7 +695,7 @@ func TestMemberBackendBuilderRefusesBadBindings(t *testing.T) {
 		"bad":  {UserID: "bad", Provider: "nope", Model: "m"},
 	}}
 	build := newMemberBackendBuilder(memberBackendDeps{
-		ctx: t.Context(), users: pool, events: make(chan memberEvent, 1),
+		ctx: t.Context(), users: pool, events: make(chan memberEvent, memberEventBuffer),
 		base: func() boot.Options { return boot.Options{} },
 	})
 
@@ -714,7 +714,7 @@ func TestMemberBackendBuilderRefusesBadBindings(t *testing.T) {
 
 	boom := errors.New("pool unreadable")
 	failing := newMemberBackendBuilder(memberBackendDeps{
-		ctx: t.Context(), users: fakePool{err: boom}, events: make(chan memberEvent, 1),
+		ctx: t.Context(), users: fakePool{err: boom}, events: make(chan memberEvent, memberEventBuffer),
 		base: func() boot.Options { return boot.Options{} },
 	})
 	if _, err := failing(team.MemberBinding{Team: "t", MemberID: "m", AgentUserRef: "good"}); !errors.Is(err, boom) {

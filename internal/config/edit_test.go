@@ -2574,7 +2574,7 @@ func TestSaveToExistingProjectRemovesPluginDeltaWithOnlyForeignSources(t *testin
 	}
 }
 
-func TestSaveToExistingProjectPreservesWindowsBashEnforce(t *testing.T) {
+func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforce(t *testing.T) {
 	setRuntimeGOOS(t, "windows")
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	if err := os.WriteFile(projectPath, []byte("[sandbox]\nbash = \"enforce\"\n"), 0o644); err != nil {
@@ -2590,8 +2590,8 @@ func TestSaveToExistingProjectPreservesWindowsBashEnforce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
-	if !strings.Contains(string(body), `[sandbox]`) || !strings.Contains(string(body), `bash = "enforce"`) {
-		t.Fatalf("Windows native sandbox setting should be preserved:\n%s", body)
+	if strings.Contains(string(body), `[sandbox]`) || strings.Contains(string(body), `bash = "enforce"`) {
+		t.Fatalf("ineffective Windows project bash enforce should be removed:\n%s", body)
 	}
 	if _, err := toml.Decode(string(body), &Config{}); err != nil {
 		t.Fatalf("saved project config does not parse: %v", err)
@@ -2622,7 +2622,7 @@ func TestSaveToExistingProjectCanDisableWindowsBashEnforce(t *testing.T) {
 	}
 }
 
-func TestSaveToExistingProjectPreservesWindowsBashEnforceAndNetwork(t *testing.T) {
+func TestSaveToExistingProjectRemovesOnlyIneffectiveWindowsBashEnforce(t *testing.T) {
 	setRuntimeGOOS(t, "windows")
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	if err := os.WriteFile(projectPath, []byte("[sandbox]\nbash = \"enforce\"\nnetwork = true\n"), 0o644); err != nil {
@@ -2638,8 +2638,8 @@ func TestSaveToExistingProjectPreservesWindowsBashEnforceAndNetwork(t *testing.T
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
-	if !strings.Contains(string(body), `bash = "enforce"`) {
-		t.Fatalf("Windows native sandbox setting should be preserved:\n%s", body)
+	if strings.Contains(string(body), `bash = "enforce"`) {
+		t.Fatalf("ineffective Windows project bash enforce should be removed:\n%s", body)
 	}
 	if !strings.Contains(string(body), `[sandbox]`) || !strings.Contains(string(body), `network = true`) {
 		t.Fatalf("other sandbox fields should be preserved:\n%s", body)

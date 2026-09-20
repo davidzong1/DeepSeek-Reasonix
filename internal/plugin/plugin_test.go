@@ -143,8 +143,7 @@ func TestMCPRuntimeSpecMatchesExactHostIdentity(t *testing.T) {
 		LauncherLocator: "pkg@1.0.0", LauncherResolvedVersion: "1.0.0", LauncherDigest: "digest-a",
 		ProcessMode: MCPProcessConfined,
 		Sandbox: sandbox.Spec{
-			Mode: "enforce", WriteRoots: []string{"/write"}, ReadRoots: []string{"/read"},
-			AppContainerWriteRoots: []string{"/state"}, ForbidReadRoots: []string{"/secret"},
+			Mode: "enforce", WriteRoots: []string{"/write"}, ForbidReadRoots: []string{"/secret"},
 			Network: true, MinimalWrites: true, Shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: "/bin/bash"},
 		},
 		StateDir: "/state", StripRawPrefix: "db_", LowPriority: true,

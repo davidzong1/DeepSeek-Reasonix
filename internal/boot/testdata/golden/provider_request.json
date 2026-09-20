@@ -128,7 +128,7 @@
             "type": "boolean"
           },
           "run_in_background": {
-            "description": "Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don't need to block on.",
+            "description": "Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read it with job_output or stop it with job_kill.",
             "type": "boolean"
           },
           "sandbox_permissions": {
@@ -138,30 +138,15 @@
               "danger-full-access"
             ],
             "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Optional foreground timeout in milliseconds, capped by the configured shell timeout",
+            "minimum": 1,
+            "type": "integer"
           }
         },
         "required": [
           "command"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "name": "bash_output",
-      "description": "Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns the output produced since the last bash_output call for that job, plus its status (running/done/failed/killed). Does not block.",
-      "parameters": {
-        "properties": {
-          "filter": {
-            "description": "Optional regular expression; only matching lines of the new output are returned.",
-            "type": "string"
-          },
-          "job_id": {
-            "description": "The background job id (e.g. \"bash-1\") returned when it was started.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "job_id"
         ],
         "type": "object"
       }
@@ -264,13 +249,47 @@
       }
     },
     {
-      "name": "kill_shell",
-      "description": "Terminate a running background job (bash or task) started with run_in_background. A no-op if the job has already finished or the id is unknown.",
+      "name": "job_kill",
+      "description": "Request cancellation of a running background job by job id. Returns immediately; the process tree settles as killed once shutdown completes.",
       "parameters": {
         "properties": {
           "job_id": {
-            "description": "The background job id to terminate (e.g. \"bash-1\").",
+            "description": "Job id returned by the tool that started the background work.",
             "type": "string"
+          },
+          "reason": {
+            "description": "Optional short reason for stopping the job.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "job_output",
+      "description": "Read output from a background job. Reads are non-blocking unless wait=true; every response includes the current status. Do not busy-poll a running job.",
+      "parameters": {
+        "properties": {
+          "filter": {
+            "description": "Optional regular expression; only matching lines of new output are returned.",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Maximum wait in milliseconds. Defaults to 30000 and is capped at 600000.",
+            "maximum": 600000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "wait": {
+            "description": "Wait until the job finishes or timeout_ms elapses. A timeout leaves the job running.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -476,27 +495,6 @@
         "required": [
           "path"
         ],
-        "type": "object"
-      }
-    },
-    {
-      "name": "wait",
-      "description": "Block until background jobs finish, then return each job's status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job.",
-      "parameters": {
-        "properties": {
-          "job_ids": {
-            "description": "Background job ids to wait for. Omit to wait for every currently-running job.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "timeout_seconds": {
-            "description": "Optional maximum seconds to block before returning current progress. Omit to wait until the jobs finish.",
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
         "type": "object"
       }
     },

@@ -9,6 +9,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/permission"
+	"reasonix/internal/tool"
 )
 
 type approvalChoice struct {
@@ -74,7 +75,7 @@ func approvalChoiceLabels(a *event.Approval) []string {
 	if a.Kind == event.ApprovalKindWriteAccess || a.WriteAccess != nil {
 		choices = i18n.M.WriteAccessApprovalChoices
 	}
-	if !fresh && a.Tool == "bash" && permission.BashCommandPrefix(a.Subject) != "" {
+	if !fresh && tool.IsShellToolName(a.Tool) && permission.BashCommandPrefix(a.Subject) != "" {
 		rule := permission.RememberRuleForScope(a.Tool, a.Subject)
 		choices = fmt.Sprintf(i18n.M.BashPrefixChoices, rule)
 	}

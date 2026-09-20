@@ -4,6 +4,23 @@ function Get-UpgradeUIDescendants($element) {
   return $element.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
 }
 
+function Invoke-UpgradeUIButton($element) {
+  $pattern = $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
+  $pattern.Invoke()
+}
+
+function Invoke-PendingHistoricalSession($root) {
+  foreach ($element in (Get-UpgradeUIDescendants $root)) {
+    $current = $element.Current
+    if ($current.AutomationId -eq 'reasonix-prepare-restored-session' -and -not $current.IsOffscreen -and
+        $current.BoundingRectangle.Width -gt 0 -and $current.BoundingRectangle.Height -gt 0) {
+      Invoke-UpgradeUIButton $element
+      return $true
+    }
+  }
+  return $false
+}
+
 function Test-VisibleUpgradeHistory($root, [string]$text) {
   if ([string]::IsNullOrWhiteSpace($text)) { return $false }
   $descendants = @(Get-UpgradeUIDescendants $root)
@@ -13,6 +30,7 @@ function Test-VisibleUpgradeHistory($root, [string]$text) {
     # Old content alone cannot prove recovery: reject a still-loading/failed
     # recovery surface and the obsolete chat notice that originally hid this bug.
     if (([string]$current.AutomationId).StartsWith('reasonix-session-recovery-') -or
+        $current.AutomationId -eq 'reasonix-prepare-restored-session' -or
         ([string]$current.Name).Contains('Failed to load conversation history.') -or
         ([string]$current.Name).Contains('加载会话历史失败。') -or
         ([string]$current.Name).Contains('載入會話歷史失敗。')) { return $false }

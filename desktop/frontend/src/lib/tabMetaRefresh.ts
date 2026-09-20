@@ -7,7 +7,7 @@ export function activeLeaseBlockedTab(tabMetas: TabMeta[], activeTabId: string |
 }
 
 export function seedActiveTabMetaList(current: TabMeta[], tab: TabMeta): TabMeta[] {
-  const seeded = { ...tab, active: true };
+  const seeded = { ...tab, historicalSource: tab.historicalSource, active: true };
   let found = false;
   const next = current.map((existing) => {
     if (existing.id === tab.id) {

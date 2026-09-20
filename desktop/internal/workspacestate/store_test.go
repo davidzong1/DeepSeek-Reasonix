@@ -11,7 +11,7 @@ import (
 func TestStorePersistsSessionOrderAndRecoverableArchive(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "workspace-state-v1.json"))
 	ctx := t.Context()
-	if err := store.EnsureWorkspace(ctx, Workspace{ID: "project-a", Root: "/project/a", Title: "A", Visible: true}); err != nil {
+	if err := store.EnsureWorkspace(ctx, Workspace{ID: "project-a", Root: t.TempDir(), Title: "A", Visible: true}); err != nil {
 		t.Fatalf("EnsureWorkspace: %v", err)
 	}
 	if err := store.BeginCreate(ctx, PendingCreate{OperationID: "op-1", WorkspaceID: "project-a", SessionID: "session-1"}); err != nil {

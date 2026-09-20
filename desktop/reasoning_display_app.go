@@ -44,7 +44,6 @@ func (a *App) defaultSettingsView() SettingsView {
 			ResolvedShell:       sandboxEffectiveShellView(sandbox.ResolveShell("", "", nil)),
 			ShellCapabilities:   sandboxCapabilityViews("", ""),
 			GitCapability:       gitCapabilityView("", ""),
-			ShellInstallAction:  shellInstallActionViewForGOOS(runtime.GOOS),
 			ShellRepairGuidance: shellRepairGuidanceForGOOS(runtime.GOOS),
 			GitRepairGuidance:   gitRepairGuidanceForGOOS(runtime.GOOS)},
 		Agent: AgentView{

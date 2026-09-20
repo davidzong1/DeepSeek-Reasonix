@@ -96,6 +96,7 @@ func TestCanonicalLegacyResumeUsesTargetWorkspace(t *testing.T) {
 	for _, page := range []bool{false, true} {
 		t.Run(map[bool]string{false: "messages", true: "page"}[page], func(t *testing.T) {
 			app, tab, target, root, _ := canonicalWorkspaceOpenFixture(t)
+			tab.HistoricalSource = &SessionSourceRef{Path: "/fixture/old.jsonl"}
 			var err error
 			if page {
 				_, err = app.ResumeSessionPageForTab(tab.ID, sessionRoute(target.Ref().SessionID), 32)
@@ -107,6 +108,9 @@ func TestCanonicalLegacyResumeUsesTargetWorkspace(t *testing.T) {
 			}
 			if !sameDesktopPath(tab.WorkspaceRoot, root) {
 				t.Fatal("compatibility entry kept source workspace")
+			}
+			if tab.HistoricalSource != nil {
+				t.Fatal("compatibility entry retained the preparation action")
 			}
 		})
 	}

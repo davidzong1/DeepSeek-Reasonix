@@ -17,11 +17,11 @@ import (
 // Migration may add members to an existing workspace, but it does not own the
 // user's title or visibility. Avoid rewriting presentation for each new source.
 func (a *App) ensureDesktopMigrationWorkspace(ctx context.Context, source desktopMigrationSource) (string, error) {
-	id := desktopWorkspaceID(source.scope, source.workspaceRoot)
 	state, err := a.workspaceRegistry().Load(ctx)
 	if err != nil {
 		return "", err
 	}
+	id := desktopWorkspaceOwnerID(state, source.scope, source.workspaceRoot)
 	if _, exists := state.Workspaces[id]; exists {
 		return id, nil
 	}

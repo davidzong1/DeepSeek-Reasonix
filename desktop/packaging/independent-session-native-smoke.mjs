@@ -46,7 +46,10 @@ assert.ok(existsSync(join(desktop, "frontend/dist/index.html")), "build the rend
 const vite = await preview({ root: join(desktop, "frontend"), logLevel: "error", preview: { host: "127.0.0.1", port: 0 } });
 let application, page;
 const invoke = (method, args = []) => page.evaluate(({ method, args }) => window.reasonixDesktop.invoke(method, args), { method, args });
-const active = async () => (await invoke("ListTabs")).find(tab => tab.active);
+const active = async () => {
+  const tabs = await invoke("ListTabs");
+  return tabs.find(tab => tab.active) ?? (tabs.length === 1 ? tabs[0] : undefined);
+};
 async function capturePhase(phase) {
   const snapshot = { tabs: await invoke("ListTabs"), workspace: await invoke("GetWorkspaceSnapshot") };
   writeFileSync(join(evidence, `phase-${phase}.json`), JSON.stringify(snapshot, null, 2));
@@ -90,6 +93,7 @@ async function send(text, response) {
   await composer.fill(text);
   await page.locator(".composer__btn--send").click();
   await page.waitForFunction(text => document.querySelector(".chat-transcript")?.textContent?.includes(text), response);
+  await waitForSmokeCondition(async () => Boolean((await active())?.session?.sessionId));
   await settle();
 }
 async function select(title, ref) {
@@ -108,12 +112,15 @@ try {
   await launch();
   const initialBlank = await capturePhase("initial");
   const version = await invoke("Version");
-  await invoke("EnsureBlankSurface", ["global", ""]);
-  const reusedBlank = await capturePhase("blank");
-  const initialID = initialBlank.tabs.find(tab => tab.active)?.sessionId || initialBlank.workspace.pendingCreates[0]?.sessionId;
-  if (initialID) assert.equal(reusedBlank.tabs.find(tab => tab.active)?.sessionId, initialID, "reuse completes the original pending blank identity");
-  assert.equal(reusedBlank.workspace.pendingCreates.length, 0, "reusing blank startup leaves no abandoned pending create");
-  record("blank startup reuses its original canonical identity without abandoned recovery rows");
+  await page.locator(".sidebar__quick-action").click();
+  await page.locator(".session-draft-surface").waitFor({ state: "visible" });
+  const createdBlank = await capturePhase("created-blank");
+  assert.equal(initialBlank.tabs.length, 0, "fresh home starts without a durable session");
+  assert.equal(createdBlank.tabs.length, 0, "blank draft does not create a canonical session before first send");
+  assert.equal(createdBlank.workspace.pendingCreates.length, 0, "blank draft leaves no abandoned pending create");
+  assert.equal(createdBlank.workspace.workspaces.flatMap(workspace => workspace.sessionIds).length, 0,
+    "blank draft leaves no abandoned recovery row");
+  record("blank startup stays a durable draft without abandoned canonical or pending rows");
   await send("PARENT_RETAINED", "ANSWER_PARENT_RETAINED");
   await capturePhase("sent");
   const parent = (await active()).session;

@@ -66,7 +66,7 @@ func SessionLeaseHeld(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
 	}
-	if _, ok := sessionLeaseOwners.Load(canonicalSessionSavePath(path)); ok {
+	if _, ok := sessionLeaseOwners.Load(CanonicalSessionPath(path)); ok {
 		return true
 	}
 	return SessionLeaseHeldByOtherRuntime(path)

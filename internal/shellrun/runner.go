@@ -1,5 +1,5 @@
 // Package shellrun provides a shared foreground shell runner used by the model
-// bash tool and the user !command path. It classifies exits, collects a bounded
+// shell tool and the user !command path. It classifies exits, collects a bounded
 // output tail, and keeps combined stdout/stderr model-visible output intact.
 package shellrun
 
@@ -18,7 +18,7 @@ import (
 	"reasonix/internal/tool"
 )
 
-// DefaultWaitDelay mirrors the bash tool's child-process wait grace.
+// DefaultWaitDelay mirrors the shell tool's child-process wait grace.
 const DefaultWaitDelay = 5 * time.Second
 
 const (
@@ -42,9 +42,7 @@ var errForegroundTimeout = errors.New("shell foreground timeout")
 // Request describes one foreground shell launch. Argv must already include the
 // interpreter and any sandbox wrapping; Command is only for diagnostics.
 type Request struct {
-	Argv []string
-	// ProbeArgv is an optional same-policy Windows shell preflight.
-	ProbeArgv         []string
+	Argv              []string
 	Dir               string
 	Env               []string
 	Timeout           time.Duration
@@ -82,9 +80,6 @@ type Result struct {
 // lock-safe collector, and classifies timeout / cancel / launch / execution
 // failures. Combined output is always returned so callers can feed the model.
 func RunForeground(ctx context.Context, req Request) Result {
-	if failure := CheckShellLaunch(ctx, req); failure != nil {
-		return *failure
-	}
 	if len(req.Argv) == 0 {
 		return Result{
 			State:        tool.ShellStateFailed,

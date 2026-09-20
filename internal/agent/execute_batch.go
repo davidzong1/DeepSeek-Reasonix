@@ -118,6 +118,7 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		s.results[i] = s.outcomes[i].output
 	}
 	committed := make([]bool, len(calls))
+	committedMessages := make([]provider.Message, len(calls))
 	finalize := func(i int) {
 		if committed[i] {
 			return
@@ -130,6 +131,7 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		a.commitBatchCallResolution(ctx, calls[i])
 		a.finishToolRecovery(calls[i], outcomes[i])
 		committedMessage := a.buildBatchToolResult(ctx, calls[i], outcomes[i])
+		committedMessages[i] = committedMessage
 		if err := a.emitBatchToolResult(ctx, calls[i], outcomes[i], committedMessage, durations[i], startedAt[i], ranParallel[i], batchStart); err != nil {
 			batchErrOnce.Do(func() { batchErr = fmt.Errorf("persist tool result %s: %w", calls[i].ID, err) })
 		} else {
@@ -210,6 +212,13 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 	for i := range calls {
 		finalize(i)
 	}
+	return completeBatchExecution(ctx, calls, results, outcomes, committedMessages, committed, batchErr)
+}
+
+func completeBatchExecution(ctx context.Context, calls []provider.ToolCall, results []string, outcomes []toolOutcome, committedMessages []provider.Message, committed []bool, batchErr error) batchExecution {
+	if err := validateBatchToolResultCorrespondence(calls, committedMessages, committed); err != nil && batchErr == nil {
+		batchErr = err
+	}
 	images := make([][]string, len(calls))
 	executions := make([]*tool.ShellExecution, len(calls))
 	for i := range outcomes {
@@ -226,6 +235,25 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		executions: executions,
 		err:        batchErr,
 	}
+}
+
+// validateBatchToolResultCorrespondence is the provider boundary invariant:
+// every executed call yields exactly one result at the same index and with the
+// same call id. Equal result bodies are intentionally irrelevant.
+func validateBatchToolResultCorrespondence(calls []provider.ToolCall, results []provider.Message, committed []bool) error {
+	if len(results) != len(calls) || len(committed) != len(calls) {
+		return fmt.Errorf("tool result correspondence: %d calls, %d results, %d commit markers", len(calls), len(results), len(committed))
+	}
+	for i := range calls {
+		if !committed[i] {
+			return fmt.Errorf("tool result correspondence: call %q at index %d has no result", calls[i].ID, i)
+		}
+		result := results[i]
+		if result.Role != provider.RoleTool || result.ToolCallID != calls[i].ID {
+			return fmt.Errorf("tool result correspondence: call %q at index %d got role=%q call_id=%q", calls[i].ID, i, result.Role, result.ToolCallID)
+		}
+	}
+	return nil
 }
 
 func (a *Agent) commitBatchCallResolution(ctx context.Context, call provider.ToolCall) {
@@ -280,7 +308,7 @@ func partitionToolCalls(r *tool.Registry, calls []provider.ToolCall) []toolCallB
 
 func parallelisableCall(r *tool.Registry, call provider.ToolCall) bool {
 	switch call.Name {
-	case "todo_write", "get_goal", "create_goal", "update_goal", "wait", "bash_output", "compress":
+	case "todo_write", "get_goal", "create_goal", "update_goal", "job_output", "wait", "bash_output", "compress":
 		return false
 	}
 	target, _, ambiguous := r.ResolveCall(call.Name)

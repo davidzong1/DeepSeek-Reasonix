@@ -149,11 +149,14 @@ func TestMigrationV12AddsHeadProjectionAndForcesRescan(t *testing.T) {
 	if err := handle.DB.Close(); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := Open(ctx, Options{Path: path, DisableRepair: true})
+	migrated, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
+		Path: path, MemoryName: "session-catalog-v12-test", Migrations: sessionMigrations()[:12], RequireDisk: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = catalog.Close(context.Background()) })
+	t.Cleanup(func() { _ = migrated.DB.Close() })
+	catalog := &Catalog{db: migrated.DB, pathIdentity: PathIdentityKey}
 	var directories, sessions, logFormat int
 	if err := catalog.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_directories`).Scan(&directories); err != nil {
 		t.Fatal(err)

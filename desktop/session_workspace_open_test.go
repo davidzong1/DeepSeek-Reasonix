@@ -179,6 +179,7 @@ func TestCanonicalOpenRecoversFailedSurface(t *testing.T) {
 
 func TestCanonicalOpenCommitsTargetWorkspace(t *testing.T) {
 	app, tab, target, rootB, workspaceB := canonicalWorkspaceOpenFixture(t)
+	tab.HistoricalSource = &SessionSourceRef{Path: "/fixture/old.jsonl"}
 	if err := app.workspaceRegistry().EnsureSessionTopic(t.Context(), target.Ref().SessionID, "topic-B", "Target topic"); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +191,9 @@ func TestCanonicalOpenCommitsTargetWorkspace(t *testing.T) {
 	}
 	if tab.TopicID != "topic-B" || tab.TopicTitle != "Target topic" {
 		t.Fatalf("wrong destination topic; got id=%q title=%q", tab.TopicID, tab.TopicTitle)
+	}
+	if tab.HistoricalSource != nil {
+		t.Fatal("canonical activation retained the preparation action")
 	}
 	persisted := loadTabsFile()
 	if len(persisted.Tabs) != 1 || persisted.Tabs[0].SessionID != "session-B" || persisted.Tabs[0].TopicID != "topic-B" || !sameDesktopPath(persisted.Tabs[0].WorkspaceRoot, rootB) {

@@ -18,6 +18,17 @@ Reasonix 1.0 是一次从零开始的 **Go 重写**。它使用全新的代码�
 
 “v1”和“v2”表示代码库代际，而不是 semver 主版本：v1 从未发布 1.0，因此 Go 重写版使用 `1.x` 版本号。
 
+## Windows shell 与后台任务
+
+Windows 新会话向 provider 暴露 `pwsh`，不再暴露 `bash`。前台调用使用一次性
+PowerShell 进程；服务器和 watcher 使用 `run_in_background=true`，随后通过
+`job_output` 和 `job_kill` 管理。旧 `bash`、`PowerShell`、`bash_output`、`wait`
+和 `kill_shell` 名称仍作为隐藏兼容入口，供历史会话、权限规则和 hooks 使用；
+已有 JSONL 无需迁移。系统优先 PowerShell 7，找不到时回退 Windows PowerShell
+5.1；兼容命令使用 `;` 和 `if ($?) {}`，不使用 `&&` 或 `||`。升级后的第一次
+provider 请求会因为工具 schema 前缀变化产生一次预期内的提示缓存未命中；此后同一
+会话的 schema 保持固定。
+
 ## 安装 1.0
 
 `npm` 仍是主要安装渠道。npm 包会下载预编译的 Go 二进制文件，方式与 esbuild/biome 类似；二进制本身是独立的 Go 可执行文件，npm 不是运行时依赖。

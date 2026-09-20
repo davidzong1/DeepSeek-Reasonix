@@ -135,6 +135,65 @@ export function settleLocalSubmissions<T extends LocalSubmissionFields>(
   };
 }
 
+export type RebasedUserRecord = { submissionId?: string; text: string; submitText?: string };
+type EchoLike = { kind: string; id: string; text?: string; submitText?: string };
+
+function submittedText(entry: { text: string; submitText?: string }): string {
+  return entry.submitText ?? entry.text;
+}
+
+/** User echoes that were already on screen when this submission was created. */
+function preexistingEchoes(previousItems: readonly EchoLike[], local: LocalSubmission): EchoLike[] {
+  if (!local.anchorItemId) return local.placement === "start" ? [] : [...previousItems];
+  const anchor = previousItems.findIndex(item => item.id === local.anchorItemId);
+  return anchor < 0 ? [...previousItems] : previousItems.slice(0, anchor + 1);
+}
+
+/**
+ * A snapshot rebase (runtime rebuild, serve restart, model switch) may carry
+ * user records without the message ids settleLocalSubmissions keys on, so an
+ * echo the server already journaled would otherwise survive as a duplicate
+ * turn stuck at "processing". Retire only echoes the rebased projection
+ * provably owns: one whose submission id a durable record repeats, or — with
+ * no turn in flight — the oldest echo whose text the newest durable user
+ * record repeats. The text match is bounded by the echoes' own anchor: a
+ * record that already existed when the echo was created can never absorb it,
+ * so a lost re-send of an identical message stays visible. An active runtime
+ * never absorbs by text because the trailing record may be an older sibling
+ * of the in-flight submission.
+ */
+export function settleRebasedSubmissions<T extends LocalSubmissionFields>(
+  state: T,
+  previousItems: readonly EchoLike[],
+  durable: readonly RebasedUserRecord[],
+  idle: boolean,
+): T {
+  const pending = orderedLocalSubmissions(state).filter(local => local.status !== "failed");
+  if (pending.length === 0) return state;
+  const consumed = new Set<string>();
+  const durableSubmissionIds = new Set(durable.map(record => record.submissionId).filter(Boolean));
+  for (const local of pending) if (durableSubmissionIds.has(local.submissionId)) consumed.add(local.submissionId);
+  const latest = durable[durable.length - 1];
+  if (idle && latest) {
+    const text = submittedText(latest);
+    const durableCopies = durable.filter(record => submittedText(record) === text).length;
+    const echo = pending.find(local => !consumed.has(local.submissionId) && submittedText(local) === text);
+    if (echo) {
+      const priorCopies = preexistingEchoes(previousItems, echo)
+        .filter(item => item.kind === "user" && item.text !== undefined && submittedText({ text: item.text, submitText: item.submitText }) === text).length;
+      if (durableCopies > priorCopies) consumed.add(echo.submissionId);
+    }
+  }
+  if (consumed.size === 0) return state;
+  const localSubmissions = { ...state.localSubmissions };
+  for (const submissionId of consumed) delete localSubmissions[submissionId];
+  return {
+    ...state,
+    localSubmissions,
+    localSubmissionOrder: state.localSubmissionOrder.filter(submissionId => !consumed.has(submissionId)),
+  };
+}
+
 export function checkpointLocalSubmission<T extends LocalSubmissionFields>(
   state: T,
   submissionId: string | undefined,

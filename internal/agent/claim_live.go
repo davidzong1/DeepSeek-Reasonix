@@ -49,8 +49,9 @@ func fileReservation(root string, paths []string) WritePathSet {
 }
 
 func mergeRealized(existing []string, add WritePathSet) []string {
-	seen := make(map[string]bool, len(existing)+len(add.Paths))
-	out := make([]string, 0, len(existing)+len(add.Paths))
+	capacity := max(len(existing), len(add.Paths))
+	seen := make(map[string]bool, capacity)
+	out := make([]string, 0, capacity)
 	for _, p := range existing {
 		key := foldPathKey(p)
 		if seen[key] {

@@ -1,6 +1,6 @@
 import { defaultSidebarWidth, SIDEBAR_MAX_WIDTH } from "../store/layout";
 import type { Translator } from "../lib/i18n";
-import type { Meta, TabMeta } from "../lib/types";
+import type { Meta, RemoteTabRefView, TabMeta } from "../lib/types";
 import type { SidebarImTopicSource } from "../app-runtime/sidebarImProjection";
 import type { useSessionBannerCommands } from "../app-runtime/useSessionBannerCommands";
 import type { useProjectTopicCommands } from "../app-runtime/useProjectTopicCommands";
@@ -26,6 +26,9 @@ export function buildSidebarRegionProps(input: {
   geometry: ReturnType<typeof useShellGeometry>;
   projectTree: {
     activeTab: TabMeta | undefined;
+    /** Owned by useActiveRemoteRef: this assembly must not rebuild it, because
+     *  the project tree keys its tree walks on the object's identity. */
+    activeRemote: RemoteTabRefView | undefined;
     activeScope?: string;
     activeWorkspaceRoot?: string;
     imTopicSources: Record<string, SidebarImTopicSource>;
@@ -70,7 +73,8 @@ export function buildSidebarRegionProps(input: {
       activeScope: input.projectTree.activeScope ?? input.projectTree.activeTab?.scope,
       activeWorkspaceRoot: input.projectTree.activeWorkspaceRoot ?? input.projectTree.activeTab?.workspaceRoot,
       activeTopicId: input.projectTree.activeTab?.topicId, activeSessionPath: sessionIdentityRoute(input.projectTree.activeTab),
-      activeRemote: input.projectTree.activeTab?.remote, imTopicSources: input.projectTree.imTopicSources, onOpenTopic: commands.onOpenTopic,
+      activeRemote: input.projectTree.activeRemote,
+      imTopicSources: input.projectTree.imTopicSources, onOpenTopic: commands.onOpenTopic,
       onCreateTopic: topics.onCreateTopic, onCreateIsolatedWorktree: topics.onCreateIsolatedWorktree,
       onTopicsChanged: topics.refreshProjectsAndTabs, onRenameTopic: topics.renameTopic, refreshSignal: input.projectTree.refreshSignal,
       onAddProject: topics.onAddProject,

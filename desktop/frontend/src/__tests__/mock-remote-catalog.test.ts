@@ -24,6 +24,17 @@ try {
   assert.equal(status.toolApprovalMode, "workspace-write");
   assert.equal(status.goal, "");
   assert.deepEqual((await app.RemoteTabSnapshot(remote.id)).status, status, "snapshot and status share the authoritative composer profile");
+  // A canonical row carries only its immutable session id: opening it must
+  // bind that identity on the tab (the Serve publishes TabMeta.sessionId from
+  // opts.SessionID) instead of falling back to a synthesized basename route.
+  const canonical = await app.OpenRemoteProjectTab("demo", "~/app", { sessionId: "canonical-session-1" });
+  assert.equal(canonical.id, remote.id, "a canonical session reuses its workspace surface");
+  assert.equal(canonical.sessionId, "canonical-session-1", "opening by session id binds the canonical identity");
+  assert.ok(!canonical.sessionPath?.includes("intro"), "a canonical open does not inherit the previous legacy route");
+  const legacy = await app.OpenRemoteProjectTab("demo", "~/app", { sessionName: "intro" });
+  assert.equal(legacy.sessionPath, "~/app/sessions/intro.jsonl", "legacy rows keep their basename route");
+  assert.ok((await app.RemoteProjectSessions("demo", "~/app")).find(row => row.name === "intro")?.current,
+    "the opened legacy session becomes the current row");
   await app.SetActiveTab(local.id);
   assert.deepEqual((await app.ListTabs()).filter(tab => tab.active).map(tab => tab.id), [local.id]);
   await app.CloseRemoteTab(remote.id);

@@ -40,8 +40,9 @@ try {
       if ($script:failPhase -eq $phase) { throw 'Injected verification failure' }
     }
   }
-  function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence) {
+  function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence, [bool]$prepareHistorical) {
     Assert-True ($text -eq 'assistant-only marker') 'Startup must require the assistant marker.'
+    Assert-True ($prepareHistorical -eq ((Split-Path $evidence -Leaf) -eq 'first')) 'Only the first launch explicitly prepares old content; canonical restart restores automatically.'
     $script:calls.Add('startup-' + (Split-Path $evidence -Leaf))
   }
   $evidence = Join-Path $testRoot 'success'
@@ -78,6 +79,15 @@ try {
     }
   }
   $marker = 'assistant-only marker'
+  $script:clicked = 0
+  function Invoke-UpgradeUIButton($element) { $script:clicked++ }
+  $pending = New-UIElement 'Import and open' 'reasonix-prepare-restored-session'
+  $pendingRoot = New-UIElement '' '' $false @($pending)
+  $pending.Current.IsOffscreen = $true
+  Assert-True (-not (Invoke-PendingHistoricalSession $pendingRoot)) 'Hidden preparation actions must not be clicked.'
+  $pending.Current.IsOffscreen = $false
+  Assert-True (Invoke-PendingHistoricalSession $pendingRoot) 'Explicit preparation must invoke the actual pending-session action.'
+  Assert-True ($script:clicked -eq 1) 'Invoke only the visible action.'
   $body = New-UIElement $marker
   $transcript = New-UIElement '' 'reasonix-chat-transcript-upgrade-tab' $false @($body)
   $sidebar = New-UIElement $marker 'sidebar-topic'
@@ -85,6 +95,9 @@ try {
   Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'A matching sidebar title must not pass.'
   $root.Children = @($sidebar, $transcript)
   Assert-True (Test-VisibleUpgradeHistory $root $marker) 'Visible transcript assistant body should pass.'
+  $root.Children = @($sidebar, $transcript, $pending)
+  Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Prepared content must not retain the import action.'
+  $root.Children = @($sidebar, $transcript)
   $failure = New-UIElement 'Failed to load conversation history. Previous content was kept when available — retry to try again.'
   $transcript.Children = @($body, $failure)
   Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Visible history with an obsolete failure notice must not pass.'
