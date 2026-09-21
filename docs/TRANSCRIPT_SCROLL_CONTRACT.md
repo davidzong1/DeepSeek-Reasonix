@@ -74,9 +74,10 @@ History is a bounded window, not an ever-growing list.
   cursor the server cannot read is that same typed answer rather than a
   transport error. A client re-anchors at most once and keeps its current page
   with a retry affordance after a second failure.
-- The turn rail describes loaded turns only, as specified in
-  [Transcript v2](TRANSCRIPT_V2.md). Its marks track the resident window; it does
-  not enumerate unloaded history.
+- The turn rail describes the complete durable conversation through paged
+  metadata (`history-outline-v1`), independently of the resident body window.
+  Summary eviction never removes navigation positions. Mounted live turns enrich
+  the metadata by message identity; pending submissions remain visible.
 - Jumps to unloaded history (for example, a canonical search hit) resolve through
   the history index and request the page around the target. They never walk
   pages from the newest position.

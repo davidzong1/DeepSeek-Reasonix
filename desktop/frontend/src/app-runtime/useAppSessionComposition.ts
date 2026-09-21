@@ -162,7 +162,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   const {
     recoverDeliveryToTab, approveForTab, isPromptCurrentForTab, resolvePlanDecisionForTab, resolveRecoveryForTab,
     answerQuestionForTab, answerMCPInteractionForTab, dismissExtensionForm, drainExtensionNotifications,
-    clearSession, newSession, loadOlderHistory, loadNewerHistory, rewindForTab, rewindForTabDetailed, undoRewindForTab, forkTurnForTab,
+    clearSession, newSession, loadOlderHistory, loadNewerHistory, navigateToTurn, rewindForTab, rewindForTabDetailed, undoRewindForTab, forkTurnForTab,
     listSessions, openChannelSession, resumeSession,
   } = runtime.sessionActions;
   const {
@@ -654,7 +654,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   const {
     transcriptHydrating, emptyHero,
     visibleTranscriptItems, visibleTranscriptTabId, visibleTranscriptGeometryKey,
-    handleLoadOlderHistory, handleLoadNewerHistory, handleSurfacePaintReady, latestGuidanceConsumed, handleTranscriptPrompt,
+    handleLoadOlderHistory, handleLoadNewerHistory, handleNavigateToTurn, handleSurfacePaintReady, latestGuidanceConsumed, handleTranscriptPrompt,
   } = useTranscriptSurfaceProjection({
     hydrating: state.hydrating,
     hydrateHistoryLoaded: state.hydrateHistoryLoaded,
@@ -680,7 +680,8 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     commitSingleSurface: commitSingleSurfaceNavigation,
     ports: {
       loadOlderHistory: (tabId, targetTurn, trigger) => loadOlderHistory(tabId, targetTurn, trigger),
-      loadNewerHistory: (tabId, latest) => loadNewerHistory(tabId, latest),
+      loadNewerHistory: (tabId, latest, current) => loadNewerHistory(tabId, latest, current),
+      navigateToTurn,
       commitThenSend: (tabId, text, submitText) => commitThenSend(tabId, text, submitText),
     },
   });
@@ -743,7 +744,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     transcript: {
       transcriptHydrating, emptyHero, availability,
       visibleTranscriptItems, visibleTranscriptTabId, visibleTranscriptGeometryKey,
-      handleLoadOlderHistory, handleLoadNewerHistory, handleSurfacePaintReady, latestGuidanceConsumed, handleTranscriptPrompt,
+      handleLoadOlderHistory, handleLoadNewerHistory, handleNavigateToTurn, handleSurfacePaintReady, latestGuidanceConsumed, handleTranscriptPrompt,
     },
     automation: { openAutomationTopic },
     desktopNavigation: { enqueueNavigation, enqueueNavigationWithIntent, openRemoteProject },

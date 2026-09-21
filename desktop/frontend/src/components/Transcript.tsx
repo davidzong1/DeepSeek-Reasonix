@@ -12,8 +12,10 @@ import { ChatScrollController } from "../lib/chatScrollController";
 import { ChatContentLoader } from "../lib/chatContentLoader";
 import { ChatMountedOrder } from "../lib/chatMountedOrder";
 import { ChatTurnJump } from "../lib/chatTurnJump";
-import { findLoadedTurn, indexLoadedTurns, type LoadedTurnIndex } from "../lib/chatTurnRail";
-import { getTranscriptOutlineStore } from "../lib/transcriptOutlineStore";
+import type { NavigateToTurn } from "../lib/historyTurnNavigation";
+import { desktopHost } from "../lib/desktopHost";
+import { findLoadedTurn, indexLoadedTurns } from "../lib/chatTurnRail";
+import { signalOutline } from "../lib/transcriptOutlineSignals";
 import { addBreadcrumb } from "../lib/breadcrumbs";
 import { useT } from "../lib/i18n";
 import { InvocationMetadataContext } from "./Message";
@@ -27,6 +29,7 @@ const ChatTurnNavigator = lazy(() => import("./ChatTurnNavigator"));
 export { NoticeCard } from "./TranscriptCards";
 
 export type TranscriptProps = {
+  onNavigateToTurn?: NavigateToTurn;
   items: Item[];
   localSubmissions?: readonly LocalSubmission[];
   localSubmissionSendRevision?: number;
@@ -60,7 +63,7 @@ export type TranscriptProps = {
   onLoadOlderHistory?: (targetTurn?: number, trigger?: HistoryLoadTrigger) => HistoryLoadOutcome | boolean | Promise<HistoryLoadOutcome | boolean>;
   loadingNewerHistory?: boolean;
   newerHistoryError?: string;
-  onLoadNewerHistory?: (latest?: boolean) => HistoryLoadOutcome | boolean | Promise<HistoryLoadOutcome | boolean>;
+  onLoadNewerHistory?: (latest?: boolean, current?: () => boolean) => HistoryLoadOutcome | boolean | Promise<HistoryLoadOutcome | boolean>;
   turnStartAt?: number;
   invocationMetadata?: InvocationMetadataMap;
   surfaceCommitToken?: string;
@@ -155,10 +158,9 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
   }, [activeDetails]);
   const [pagingError, setPagingError] = useState(false);
   const [selectionBlocked, setSelectionBlocked] = useState(false);
-  // Manual paging and navigation jumps share one queue. A page already in
-  // flight is awaited rather than submitted twice, so a jump that collides
-  // with the button continues from that page instead of failing.
+  // Deduplicate paging buttons; target navigation uses the store request fence.
   const pagingPromise = useRef<Promise<HistoryLoadOutcome> | null>(null);
+  const navigationIntent = useRef(0);
   const selectionInsideTranscript = () => {
     const selection = window.getSelection?.();
     return Boolean(selection && !selection.isCollapsed && scroller.current &&
@@ -170,9 +172,9 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
     document.addEventListener("selectionchange", clear);
     return () => document.removeEventListener("selectionchange", clear);
   }, []);
-  const loadPage = (direction: "older" | "newer" | "latest", trigger: HistoryLoadTrigger = "viewport-user"): Promise<HistoryLoadOutcome> => {
-    if (pagingPromise.current) return pagingPromise.current;
-    const load = direction === "older" ? () => onLoadOlderHistory?.(undefined, trigger) : () => onLoadNewerHistory?.(direction === "latest");
+  const loadPage = (direction: "older" | "newer" | "latest", trigger: HistoryLoadTrigger = "viewport-user", current?: () => boolean): Promise<HistoryLoadOutcome> => {
+    if (pagingPromise.current && direction !== "latest") return pagingPromise.current;
+    const load = direction === "older" ? () => onLoadOlderHistory?.(undefined, trigger) : () => onLoadNewerHistory?.(direction === "latest", current);
     if (direction === "older" ? !onLoadOlderHistory : !onLoadNewerHistory) return Promise.resolve("empty");
     if (selectionInsideTranscript()) { setSelectionBlocked(true); return Promise.resolve("empty"); }
     const generation = lifetime.current;
@@ -198,48 +200,54 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
   const loadOlder = (trigger: HistoryLoadTrigger = "viewport-user") => loadPage("older", trigger);
   // The jump outlives a single render, so it reads the live paging state
   // through refs rather than through the closure it was built with.
-  const loadOlderRef = useRef(loadOlder); loadOlderRef.current = loadOlder;
-  const hasOlderRef = useRef(false); hasOlderRef.current = hasOlderHistory && Boolean(onLoadOlderHistory);
+  const navigateRef = useRef(props.onNavigateToTurn); navigateRef.current = props.onNavigateToTurn;
+  const selectionRef = useRef(selectionInsideTranscript); selectionRef.current = selectionInsideTranscript;
   const lifetimeRef = useRef(lifetime.current); lifetimeRef.current = lifetime.current;
   // Rebuild the mounted identity index only when the mount advances, then
   // resolve each target from it in constant time: scanning the mounted order
   // per outline entry is quadratic on long conversations.
-  const turnIndex = useRef<{ order: readonly string[]; index: LoadedTurnIndex }>(undefined);
   const jump = useMemo(() => new ChatTurnJump({
     mounts, scroll,
-    loadOlder: () => loadOlderRef.current("question-jump"),
-    hasOlder: () => hasOlderRef.current,
+    navigate: async (target, current) => {
+      if (selectionRef.current()) { setSelectionBlocked(true); return "cancelled"; }
+      if (!current()) return "cancelled";
+      return navigateRef.current?.(target, () => current() && !selectionRef.current()) ?? "unavailable";
+    },
     resolveKey: (entry) => {
       const order = mounts.getSnapshot();
-      if (turnIndex.current?.order !== order) {
-        turnIndex.current = {
-          order,
-          index: indexLoadedTurns(order, (key) => {
+      const index = indexLoadedTurns(order, (key) => {
             const node = source.getNodeSnapshot(key);
             return node?.kind === "user" ? { id: node.item.id, messageId: node.item.messageId } : undefined;
-          }),
-        };
-      }
-      return findLoadedTurn(turnIndex.current.index, entry);
+      });
+      return findLoadedTurn(index, { id: `m:${entry.messageId}`, messageId: entry.messageId, turn: 0, order: 0, prompt: "" });
     },
-    // The rail describes one snapshot. A replacement invalidates the locators
-    // this jump was resolved against, so it must not keep paging the new body.
-    currentSnapshotId: () => (tabId ? getTranscriptOutlineStore().getView(tabId).snapshotId : ""),
-    // Only a reader-initiated retry reaches this, and it is what lets a target
-    // resolve against a fresh cut instead of the recycled one.
-    refreshSnapshot: async (entry) => {
-      if (!tabId) return undefined;
-      const store = getTranscriptOutlineStore();
-      await store.refresh(tabId);
-      return store.resolve(tabId, entry);
-    },
+    // Refresh a stale cut once while retaining the original message identity.
+    refresh: async () => { if (tabId) await (await import("../lib/transcriptOutlineStore")).getTranscriptOutlineStore().refresh(tabId); },
     isCurrent: () => lifetimeRef.current === lifetime.current,
   }), [mounts, scroll, source, tabId]);
   const jumpState = useSyncExternalStore(jump.subscribe, jump.getSnapshot, jump.getSnapshot);
+  const returnToLatest = async () => {
+    jump.cancel();
+    const intent = ++navigationIntent.current;
+    if (!hasNewerHistory) { scroll.toBottom(); return; }
+    const generation = lifetime.current;
+    let reading = false;
+    const release = scroll.subscribeReaderIntent(() => { reading = true; });
+    const current = () => !reading && intent === navigationIntent.current && generation === lifetime.current && !selectionRef.current();
+    try {
+      const result = await loadPage("latest", "retry", current);
+      if (result === "loaded" && current()) scroll.toBottom();
+    } finally { release(); }
+  };
   useEffect(() => () => jump.dispose(), [jump]);
+  useEffect(() => desktopHost().native.onServiceState(state => {
+    if (state.phase === "stopping" || state.phase === "exited") {
+      navigationIntent.current++;
+      jump.cancel(); if (tabId) signalOutline(tabId, "suspend");
+    } else if (state.phase === "ready" && tabId) signalOutline(tabId);
+  }), [jump, tabId]);
   useEffect(() => {
     if (jumpState.status !== "failed") return;
-    setPagingError(true);
     addBreadcrumb("chat.jump", `turn jump failed: ${jumpState.reason ?? "unknown"}`);
   }, [jumpState.status, jumpState.reason]);
   return <InvocationMetadataContext.Provider value={props.invocationMetadata ?? {}}>
@@ -249,15 +257,24 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
         <SessionLoadingIndicator active={hydrating && props.showLoadingFeedback !== false} identity={sessionKey} />
         <div className="chat-surface" inert={Boolean(activeDetails)}>
           <Suspense fallback={null}><ChatTurnNavigator source={source} scroll={scroll} mounts={mounts}
-            tabId={tabId} knownTurns={props.totalTurns ?? 0}
+            tabId={tabId} hostId={props.hostId} knownTurns={props.totalTurns ?? 0}
             busyTurn={jumpState.status === "loading" ? jumpState.turn : null}
             failedTurn={jumpState.status === "failed" ? jumpState.turn : null}
             failedReason={jumpState.reason}
             // Every click takes the one transaction entry point, so a newer
             // selection always supersedes a pending jump instead of racing it.
             onNavigate={(target) => {
+              navigationIntent.current++;
               if (target.anchor.kind === "loaded") jump.jumpTo(target.anchor.key);
-              else void jump.jump(target.entry);
+              else void jump.jump({ turn: target.turn, resolve: async () => {
+                if (!tabId) return undefined;
+                const store = (await import("../lib/transcriptOutlineStore")).getTranscriptOutlineStore();
+                const entry = target.anchor.kind === "unloaded" && target.anchor.messageId
+                  ? { messageId: target.anchor.messageId } : await store.entry(tabId, target.ordinal);
+                if (!entry) return undefined;
+                const view = store.getView(tabId);
+                return { messageId: entry.messageId, generation: view.generation, snapshotSequence: view.snapshotSequence };
+              } });
             }}
             onRetryJump={() => { void jump.retry(); }}
             onCancelJump={() => jump.cancel()} /></Suspense>
@@ -276,12 +293,12 @@ function ChatSession(props: TranscriptProps & { sessionKey: string }) {
               <ChatRunning source={source} />
               {hasNewerHistory && <div className="chat-history-newer">
                 <button className="btn" disabled={loadingNewerHistory} onClick={() => void loadPage("newer")}>{t(loadingNewerHistory ? "chat.loading" : "chat.loadNewer")}</button>
-                <button className="btn" disabled={loadingNewerHistory} onClick={() => void loadPage("latest")}>{t("chat.toLatest")}</button>
+                <button className="btn" disabled={loadingNewerHistory} onClick={() => void returnToLatest()}>{t("chat.toLatest")}</button>
               </div>}
               {newerHistoryError && <button className="btn" onClick={() => void loadPage("newer")}>{t("chat.loadFailed")}</button>}
             </div>
           </div>
-          <button className="btn chat-to-bottom" hidden={position.following} aria-label={t("chat.toLatest")} onClick={scroll.toBottom}><ArrowDown size={18} /></button>
+          <button className="btn chat-to-bottom" hidden={position.following} aria-label={t("chat.toLatest")} onClick={() => void returnToLatest()}><ArrowDown size={18} /></button>
         </div>
         {activeDetails && <ChatDetails key={activeDetails} source={source} nodeKey={activeDetails} loader={loader} onClose={closeDetails} onNavigate={setDetails} />}
       </section>

@@ -22,23 +22,26 @@ import { LocaleProvider } from "../src/lib/i18n";
 import { ToastProvider } from "../src/lib/toast";
 import type { ProjectNode, SessionMeta } from "../src/lib/types";
 import "../src/styles.css";
+import { rememberProjectTreeWindowLimit, projectTreeListKey } from "../src/lib/projectTreeWindow";
 
 localStorage.setItem("reasonix-lang", "en");
 const root = "/fixture/independent";
 const topicId = "same-topic";
 const paginationScenario = new URLSearchParams(location.search).has("pagination");
+const largeWindow = Number(new URLSearchParams(location.search).get("window") || 0);
 let paginationInvalidated = false;
 const pageRequests: { cursor: string; revision: number; rejected?: boolean }[] = [];
 let revision = 1;
 let stale = false;
 let archived = false;
-const rows: ProjectNode[] = (paginationScenario ? ["a", "b", "c", "d", "e", "f", "g"] : ["a", "b"]).map((id, index) => ({
+const rows: ProjectNode[] = (largeWindow ? Array.from({ length: largeWindow }, (_, i) => String(i)) : paginationScenario ? ["a", "b", "c", "d", "e", "f", "g"] : ["a", "b"]).map((id, index) => ({
   key: `session-${id}`, kind: "topic", label: `Session ${id.toUpperCase()}`, root, topicId,
   session: { hostId: "local", sessionId: id }, sessionPath: `session-id:${id}`,
   lifecycleGeneration: 1, resultSequence: index === 0 ? 100 : 10,
   turns: 1, turnsState: "ready", createdAt: 100, lastActivityAt: 100, children: [],
 }));
 const folder: ProjectNode = { key: "project-fixture", kind: "project", label: "Independent sessions", root, children: [] };
+if (largeWindow) rememberProjectTreeWindowLimit(projectTreeListKey(folder.key), largeWindow);
 const catalogStatus = () => ({ state: "ready", mode: "memory", revision, indexed: 2, total: 2, repairPending: 0, sourceCount: 2, unindexedTargetCount: 0, canRebuild: false });
 const listRows = () => structuredClone(rows.filter(row => !archived || stale || row.session?.sessionId !== "b"));
 const sessions = (): SessionMeta[] => rows.filter(row => !archived || row.session?.sessionId !== "b").map(row => ({
@@ -60,6 +63,13 @@ const host = installDesktopHostStub({ ...fallback,
   Platform: async () => "linux",
   GetProjectTreeSnapshot: async () => ({ revision, projects: [folder], catalog: catalogStatus(), indexed: 2, total: 2, indexingDone: true }),
   ListProjectTopics: async (request: { groupId?: string; cursor?: string; limit?: number }) => {
+    if (largeWindow) {
+      const entry = { cursor: request.cursor || "", revision, rejected: false }; pageRequests.push(entry);
+      if (request.cursor === "old:200") { paginationInvalidated = true; entry.rejected = true; throw new Error("session_operation:stale_cursor:expired"); }
+      const start = Number(request.cursor?.split(":")[1] || 0), end = Math.min(rows.length, start + (request.limit || 5));
+      const id = paginationInvalidated ? "new" : "old";
+      return { revision, snapshotId: id, items: structuredClone(rows.slice(start, end)).map((row, i) => ({ ...row, sortOrder: start+i })), nextCursor: end < rows.length ? `${id}:${end}` : "", complete: true, readyDirectories: 1, pendingDirectories: 0, failedDirectories: 0 };
+    }
     if (paginationScenario) {
       const entry = { cursor: request.cursor || "", revision, rejected: false };
       pageRequests.push(entry);
@@ -132,7 +142,7 @@ const host = installDesktopHostStub({ ...fallback,
 (window as any).__independentEvidence = { calls, rows, organizationCalls, organization, runtimeCalls, pageRequests };
 
 function Fixture() {
-  const [selected, setSelected] = useState("a");
+  const [selected, setSelected] = useState(largeWindow ? "0" : "a");
   const [refresh, setRefresh] = useState(0);
   const [mount, setMount] = useState(0);
   const [variant, setVariant] = useState<"workbench" | "creation">("workbench");
@@ -140,12 +150,12 @@ function Fixture() {
   const [showApproval, setShowApproval] = useState(false);
   const [activityStep, setActivityStep] = useState(0);
   const target = { tabId: `tab-${selected}`, sessionKey: selected };
-  const resources = ["a", "b"].map(id => ({ tabId: `tab-${id}`, sessionKey: id }));
+  const resources = (largeWindow ? ["0"] : ["a", "b"]).map(id => ({ tabId: `tab-${id}`, sessionKey: id }));
   const operations = useSessionOperations({ visible: target, resources });
-  const promptCommands = useSessionPromptCommands({ target, approval: { id: `approval-${selected}`, tool: "bash" }, remote: false, goal: "", toolApprovalMode: "read-only", operations,
+  const promptCommands = useSessionPromptCommands({ target, session: { hostId: "local", sessionId: selected }, sessionGeneration: 1, approval: { id: `approval-${selected}`, tool: "bash" }, remote: false, goal: "", toolApprovalMode: "read-only", operations,
     reportError: error => { throw error; }, ports: {
-      isPromptCurrentForTab: (tab, _kind, id) => id === `approval-${tab.replace("tab-", "")}`,
-      approveForTab: (tab, id, allow, session, persist) => { void resolvePromptForTab(app, tab, id, "approval", { allow, session, persist }, `turn-${tab}`, `epoch-${tab}`); setShowApproval(false); },
+      isPromptCurrentForTab: target => target.promptId === `approval-${target.tabId.replace("tab-", "")}`,
+      approveForTab: async (target, allow, session, persist) => { await resolvePromptForTab(app, target.tabId, target.promptId, "approval", { allow, session, persist }, `turn-${target.tabId}`, `epoch-${target.tabId}`); setShowApproval(false); },
       resolvePlanForTab: () => {}, resolveRecoveryForTab: () => {}, answerQuestionForTab: async () => {}, answerMCPForTab: () => {},
       setCollaborationModeForTab: async () => {}, clearGoalForTab: async () => {}, setRemoteComposerProfile: async () => [],
       patchComposerProfile: () => {}, notePlanMode: () => {}, drainRemoteApprovals: () => {}, rememberRevision: () => {},

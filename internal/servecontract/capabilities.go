@@ -3,6 +3,9 @@
 // drift through independently maintained string literals.
 package servecontract
 
+// HistoryOutlineV1 exposes paged durable turn summaries independently of the live tail.
+const HistoryOutlineV1 = "history-outline-v1"
+
 const GoalLifecycleV2 = "goal-lifecycle-v2"
 
 const TranscriptV2 = "transcript-v2"
@@ -21,3 +24,6 @@ const SessionForkTargetsV1 = "session-fork-targets-v1"
 
 // SessionExportV1 provides identity-bound complete display snapshots.
 const SessionExportV1 = "session-export-v1"
+
+// InboxMutationsV1 provides session-fenced full-body edits and anchored moves.
+const InboxMutationsV1 = "inbox-mutations-v1"

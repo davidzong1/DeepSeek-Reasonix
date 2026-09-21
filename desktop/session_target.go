@@ -33,6 +33,7 @@ const (
 // SessionOperationError is stable at the host boundary: the code is intended
 // for frontend localization while the message remains safe for older clients.
 type SessionOperationError struct {
+	ReadReason  string `json:"readReason,omitempty"`
 	Code        string
 	Message     string
 	TargetKey   string
@@ -60,6 +61,9 @@ func (e *SessionOperationError) RPCErrorData() map[string]any {
 		return nil
 	}
 	data := map[string]any{"sessionCode": e.Code, "retryable": e.Retryable}
+	if e.ReadReason != "" {
+		data["readReason"] = e.ReadReason
+	}
 	if e.TargetKey != "" {
 		data["targetKey"] = e.TargetKey
 	}

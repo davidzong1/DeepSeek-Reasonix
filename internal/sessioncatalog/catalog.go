@@ -182,7 +182,7 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 
 func (c *Catalog) loadStatus(ctx context.Context) error {
 	var revision uint64
-	if err := c.db.QueryRowContext(ctx, `SELECT revision FROM catalog_state WHERE id=1`).Scan(&revision); err != nil {
+	if err := c.readDB(ctx).QueryRowContext(ctx, `SELECT revision FROM catalog_state WHERE id=1`).Scan(&revision); err != nil {
 		return err
 	}
 	c.revision.Store(revision)
@@ -209,7 +209,7 @@ func (c *Catalog) refreshCounts(ctx context.Context) {
 	var indexed, pending, total, physical, logical, groups, branches, diverged, cleanup int64
 	var active, deferred, blocked int64
 	var nextRepair sql.NullInt64
-	err := c.db.QueryRowContext(ctx, `SELECT
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT
 		COUNT(*),
 		COALESCE(SUM(CASE WHEN turns_state='unknown' THEN 1 ELSE 0 END),0),
 		(SELECT COALESCE(SUM(total),0) FROM catalog_directories),
@@ -229,7 +229,7 @@ func (c *Catalog) refreshCounts(ctx context.Context) {
 		return
 	}
 	errorKinds := map[string]int64{}
-	if rows, queryErr := c.db.QueryContext(ctx, `SELECT repair_error_kind,COUNT(*) FROM catalog_sessions
+	if rows, queryErr := c.readDB(ctx).QueryContext(ctx, `SELECT repair_error_kind,COUNT(*) FROM catalog_sessions
 		WHERE turns_state='unknown' AND repair_error_kind<>'' GROUP BY repair_error_kind`); queryErr == nil {
 		for rows.Next() {
 			var kind string
@@ -548,7 +548,12 @@ func mapKeys(values map[string]struct{}) []string {
 func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, rootKey string) ([]SessionRecord, error) {
 	out := []SessionRecord{}
 	var cursor *sessionPageCursor
-	for len(out) < MaxLimit {
+	maxRows := MaxLimit
+	if view, _ := ctx.Value(readViewKey{}).(*readView); view != nil && view.owner == c {
+		maxRows = 2147483647
+	}
+	var capturedBytes int
+	for len(out) < maxRows {
 		where := `scope=? AND workspace_root_key=? AND topic_id=?`
 		args := []any{key.Scope, rootKey, key.TopicID}
 		if cursor != nil {
@@ -556,7 +561,7 @@ func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, 
 			args = append(args, cursor.Activity, cursor.Activity, cursor.Path)
 		}
 		args = append(args, MaxLimit)
-		rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
+		rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
             WHERE `+where+` ORDER BY last_activity_at DESC,path ASC LIMIT ?`, args...)
 		if err != nil {
 			return nil, err
@@ -575,7 +580,19 @@ func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, 
 				continue
 			}
 			out = append(out, record)
-			if len(out) == MaxLimit {
+			if maxRows != MaxLimit {
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				capturedBytes += len(encoded) + 64
+				if capturedBytes > 64<<20 {
+					_ = rows.Close()
+					return nil, fmt.Errorf("read snapshot resource limit: topic exceeds 64 MiB")
+				}
+			}
+			if len(out) == maxRows {
 				break
 			}
 		}
@@ -584,7 +601,7 @@ func (c *Catalog) listTopicSessionsByRootKey(ctx context.Context, key TopicKey, 
 		if rowsErr != nil {
 			return nil, rowsErr
 		}
-		if len(out) == MaxLimit || rawCount < MaxLimit || rawCount == 0 {
+		if len(out) == maxRows || rawCount < MaxLimit || rawCount == 0 {
 			break
 		}
 		cursor = &sessionPageCursor{Activity: lastScanned.LastActivityAt, Path: lastScanned.Path}
@@ -597,7 +614,7 @@ func (c *Catalog) GetTopic(ctx context.Context, key TopicKey) (TopicRecord, bool
 	key.TopicID = strings.TrimSpace(key.TopicID)
 	rootKey := c.workspaceRootKey(key.Scope, key.WorkspaceRoot)
 	item := TopicRecord{Sessions: []SessionRecord{}}
-	err := c.db.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id,title,title_source,pinned,
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id,title,title_source,pinned,
 		CASE WHEN metadata_present=1 THEN sort_order ELSE -1 END,
 		turns,turns_state,created_at,last_activity_at,recovery_state,recovery_branch_count,
 		recovery_unresolved_count,recovery_cleanup_eligible_count,health

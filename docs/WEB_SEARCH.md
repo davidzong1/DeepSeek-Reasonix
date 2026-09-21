@@ -117,6 +117,11 @@ Anthropic/Responses presets and standard request URL overrides, which are
 cleared so the derived endpoint and its independent search still apply. Model
 selection, key references, headers, extra body, effort, prices and search
 settings survive.
+Config version 11 separately appends `deepseek-flash` once to existing official
+model lists while keeping each selected/default model. If the user later removes
+it, startup does not add it again. New official catalogs list only
+`deepseek-flash` and `deepseek-v4-pro`; saved references to retired Flash IDs
+still resolve.
 Third-party gateways, nonstandard paths and URLs containing queries are excluded.
 Later manual protocol edits remain authoritative. Project configs and session
 files are not rewritten. Version 7 and 8 files receive a scalar-only edit preserving comments and unknown data;

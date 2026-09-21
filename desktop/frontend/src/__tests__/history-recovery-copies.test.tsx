@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { registerHooks } from "node:module";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { SessionMeta } from "../lib/types";
+import type { HistoryMessage, SessionMeta } from "../lib/types";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -168,6 +168,32 @@ console.log("\nhistory recovery data visibility");
     if (confirm) await click(confirm);
   }
   eq(emptied, [["/t/normal.jsonl"]], "empty trash excludes protected system recovery data");
+  await act(async () => root.unmount());
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { HistoryPanel } = await import("../components/HistoryPanel");
+  const { LocaleProvider } = await import("../lib/i18n");
+  const pending: { path: string; resolve: (messages: HistoryMessage[]) => void }[] = [];
+  const onPreview = (path: string) => new Promise<HistoryMessage[]>(resolve => pending.push({ path, resolve }));
+  const root = createRoot(document.getElementById("root")!);
+  const render = async (name: string) => {
+    await act(async () => root.render(<LocaleProvider><HistoryPanel
+      sessions={[session({ path: `/${name}/session.jsonl`, workspaceRoot: `/${name}`, current: true, title: name })]}
+      running={false} onPreview={onPreview} onResume={() => {}} onDelete={() => {}} onRename={() => {}} onClose={() => {}}
+    /></LocaleProvider>));
+  };
+  await render("A"); await render("B"); await render("A");
+  eq(pending.map(read => read.path), ["/A/session.jsonl", "/B/session.jsonl", "/A/session.jsonl"], "A-B-A opens a new preview for each identity");
+  await act(async () => pending[2]?.resolve([{ role: "user", content: "fresh-preview-A" } as HistoryMessage]));
+  await act(async () => {
+    pending[0]?.resolve([{ role: "user", content: "obsolete-preview-A" } as HistoryMessage]);
+    pending[1]?.resolve([{ role: "user", content: "obsolete-preview-B" } as HistoryMessage]);
+  });
+  ok(!document.body.textContent?.includes("obsolete-preview"), "late previews cannot replace the current project's details");
+  ok(document.body.textContent?.includes("fresh-preview-A") === true, "latest A preview remains displayed");
   await act(async () => root.unmount());
   dom.window.close();
 }

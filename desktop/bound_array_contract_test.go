@@ -27,7 +27,7 @@ func TestBoundArrayPayloadsAreNonNilBeforeStartup(t *testing.T) {
 		{"ListDirForTab", app.ListDirForTab("missing", "")},
 		{"SearchFileRefsForTab", app.SearchFileRefsForTab("missing", "file")},
 		{"ListTabs", app.ListTabs()},
-		{"ListProjectTree", app.ListProjectTree()},
+		{"ListProjectTree", mustListProjectTree(t, app)},
 		{"AvailableSubagentTools", app.AvailableSubagentTools()},
 		{"MCPServers", app.MCPServers()},
 		{"Plugins", app.Plugins()},

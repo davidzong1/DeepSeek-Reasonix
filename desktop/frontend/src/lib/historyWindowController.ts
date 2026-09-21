@@ -48,6 +48,7 @@ type LoadInput = {
   state: HistoryWindowState;
   requestSeq: number;
   isCurrent: (requestSeq: number) => boolean;
+  readerCurrent?: () => boolean;
   currentState: () => HistoryWindowState | undefined;
   dispatch: (action: HistoryWindowAction) => void;
 };
@@ -84,7 +85,7 @@ export async function loadHistoryWindow(input: LoadInput): Promise<HistoryWindow
   const expectedDigest = state.transcriptProtocol === 2 ? state.historyDigest : state.meta?.sessionDigest ?? state.historyDigest;
   const request = {
     ...historyPageRequestBudget(state.historyStartTurn, state.historyTotalTurns, input.targetTurn),
-    current: () => input.isCurrent(input.requestSeq) && hydrateIdentityCurrent(sessionIdentity, input.currentState()?.meta),
+    current: () => input.isCurrent(input.requestSeq) && (input.readerCurrent?.() ?? true) && hydrateIdentityCurrent(sessionIdentity, input.currentState()?.meta),
   };
   input.dispatch({ type: direction === "older" ? "history_older_start" : "history_newer_start" });
   const startedAt = Date.now();
@@ -137,6 +138,10 @@ export async function loadHistoryWindow(input: LoadInput): Promise<HistoryWindow
     }
     const result = await store.loadLatest(tabId, sessionPath, { ...request, preferResident: false });
     if (!input.isCurrent(input.requestSeq)) return "empty";
+    if (input.readerCurrent?.() === false) {
+      input.dispatch({ type: "history_newer_error", error: "" });
+      return "empty";
+    }
     const current = input.currentState();
     if (!current) return "empty";
     const currentRevision = current.meta?.sessionRevision ?? current.historyRevision;

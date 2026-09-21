@@ -48,29 +48,44 @@ loss is independent of task completion, and no watchdog completes or reruns turn
 
 History retains three adjacent pages of 32 messages by default. Reading older
 pages isolates live output; paging forward or locating a message makes evicted
-history reachable again. The turn rail describes loaded turns only; canonical
-search/locate remains available for the complete history. Final identity, elapsed
+history reachable again. The turn rail describes the complete conversation through paged durable
+metadata; selecting an unloaded turn directly locates its bounded body window. Final identity, elapsed
 time and distinct sampling/tool counts come from the backend turn. Imports that
 lack count records do not invent counts.
 
 默认保留相邻三页，每页 32 条。阅读旧页时隔离实时输出；向前翻页或定位消息可重新
-访问已淘汰历史。回合导航栏仅展示已加载回合，完整历史仍可搜索定位。最终消息身份、
+访问已淘汰历史。回合导航栏通过持久化分页摘要展示完整会话，选择未加载轮次时直接定位有界正文窗口。最终消息身份、
 耗时及去重采样／工具次数来自后端回合；缺少计数记录的导入数据不虚构次数。
 
 ## Compatibility and change notes / 兼容与变更说明
 
-PR #10385 intentionally supersedes the complete turn-outline navigation and
-cumulative history retention previously described in the architecture document.
-The [#10276 acceptance record](TRANSCRIPT_OUTLINE_NAVIGATION.md) is historical;
-current behavior is defined above and in the
-[scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md). Bounded body
-residency alone does not require a loaded-only rail; this is the current v2
-product choice.
+### Durable turn directory / 持久化轮次目录
 
-PR #10385 明确替代旧架构文档中的完整轮次大纲导航与累积保留历史约定。
-[#10276 验收记录](TRANSCRIPT_OUTLINE_NAVIGATION.zh-CN.md)属于历史记录；当前行为以
-上文及[滚动与历史契约](TRANSCRIPT_SCROLL_CONTRACT.zh-CN.md)为准。有界正文驻留
-本身并不要求导航仅展示已加载轮次；这是当前 v2 的产品选择。
+`SessionHistoryOutlineForTab` and `RemoteSessionHistoryOutlineForTab` expose
+`GET /session-history/outline` for peers advertising `history-outline-v1`.
+Requests use `startTurn` (one-based), `limit` (128 by default, maximum 1000),
+and optional `generation` / `snapshotSequence`. Responses include `status`,
+`generation`, `snapshotSequence`, `coverageSequence`, `totalTurns`, `entries`,
+`nextTurn`, and `done`. Each entry contains `messageId`, `turn`, `position`,
+`prompt`, and optional `answer`. Subsequent pages pin the first response's cut.
+Previews come from locator metadata; no bodies, reasoning, or tool results are
+read. Empty entries encode as `[]`. Network errors remain retryable errors;
+an absent capability explicitly returns `unsupported`.
+
+本地与远程目录接口使用上述相同字段；后续分页固定首次响应的切面。摘要只读索引，
+不读取正文、推理或工具结果。客户端每页 128 轮、每会话最多六页，全局摘要预算为
+8 MiB；回收缓存不缩短导航长度。点击未加载标记以 `messageId` 请求 `anchor=message`、
+`direction=newer`、`limit=32` 的正文窗口，等待节点挂载后由唯一滚动控制器定位。
+读者接管、更新的点击及会话替换均使旧事务失效。切面过期最多按原消息身份重试一次，
+不把相同轮次号解释为另一条消息。
+
+Complete navigation now uses the optional `history-outline-v1` API. It restores the full rail removed in #10385 without reverting Follow v2 or bounded body residency. Directory pages share canonical history generation/sequence semantics, and cross-window jumps use stable message identities. Older v2 peers retain loaded-turn navigation with an upgrade hint. The #10276 acceptance record describes an older implementation, not the current paging mechanism.
+
+完整导航现通过可选 `history-outline-v1` 接口恢复，保留 Follow v2 与有界正文。目录页沿用权威历史的 generation／sequence 语义，跨窗口跳转使用稳定消息身份。旧 v2 对端保留已加载轮次导航并提示升级。#10276 验收记录描述旧实现，不定义当前分页机制。
+
+The two additive query indexes do not advance the derived schema version: prior readers reject newer migration versions even when only indexes changed. Index creation is transactional and idempotent; existing readers and logs remain compatible.
+
+两个附加查询索引不提升派生 schema 版本：旧读取器会拒绝更高 migration 版本，即使仅增加索引。建索引使用幂等事务，既有读取器和日志格式保持兼容。
 
 | Boundary / 边界 | Behavior / 行为 |
 | --- | --- |

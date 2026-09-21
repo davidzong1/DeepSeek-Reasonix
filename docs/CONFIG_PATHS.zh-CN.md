@@ -80,8 +80,8 @@ Reasonix 会在该沙箱运行留下的标记能证明拒绝项来自 Reasonix �
 示例：
 
 ```toml
-config_version = 1
-default_model = "deepseek/deepseek-v4-flash"
+config_version = 11
+default_model = "deepseek/deepseek-flash"
 language = "zh"
 credentials_store = "auto"   # 旧兼容字段；provider key 保存在 .env
 
@@ -95,10 +95,10 @@ provider_access = ["deepseek"]
 
 [[providers]]
 name        = "deepseek"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-models      = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
-default     = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+models      = ["deepseek-flash", "deepseek-v4-pro"]
+default     = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 

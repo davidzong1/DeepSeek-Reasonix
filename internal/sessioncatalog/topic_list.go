@@ -7,7 +7,7 @@ import (
 )
 
 func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPage, error) {
-	out := TopicPage{Items: []TopicRecord{}, Revision: c.revision.Load()}
+	out := TopicPage{Items: []TopicRecord{}, Revision: c.readRevision(ctx)}
 	req.Scope, req.WorkspaceRoot = normalizeScope(req.Scope, req.WorkspaceRoot)
 	if req.Limit <= 0 {
 		req.Limit = DefaultLimit
@@ -32,7 +32,7 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 		where += ` AND lower(title) LIKE ?`
 		args = append(args, "%"+strings.ToLower(query)+"%")
 	}
-	if cutoff := timeFilterCutoff(req.TimeFilter, c.opts.Now()); cutoff > 0 {
+	if cutoff := timeFilterCutoff(req.TimeFilter, c.readTime(ctx)); cutoff > 0 {
 		where += ` AND last_activity_at>=?`
 		args = append(args, cutoff)
 	}
@@ -45,7 +45,7 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
 		query, pageArgs := topicPageQuery(req, where, args, scanCursor, scanLimit)
-		rows, queryErr := c.db.QueryContext(ctx, query, pageArgs...)
+		rows, queryErr := c.readDB(ctx).QueryContext(ctx, query, pageArgs...)
 		if queryErr != nil {
 			return out, queryErr
 		}

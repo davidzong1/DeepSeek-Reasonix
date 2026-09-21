@@ -164,12 +164,21 @@ func TestOwnersSerializeSameWorkspaceAndNotifyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	var notices atomic.Int32
-	second, err := New(root, locks, func() { notices.Add(1) })
+	waiting := make(chan struct{}, 1)
+	second, err := New(root, locks, func() {
+		notices.Add(1)
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.BeginRun()
 	second.BeginRun()
+	t.Cleanup(first.EndRun)
+	t.Cleanup(second.EndRun)
 	if err := first.AcquireWrite(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +188,9 @@ func TestOwnersSerializeSameWorkspaceAndNotifyOnce(t *testing.T) {
 	select {
 	case err := <-acquired:
 		t.Fatalf("second owner acquired early: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-waiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second owner did not report waiting")
 	}
 	first.EndRun()
 	select {

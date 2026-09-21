@@ -40,7 +40,7 @@ func TestListProjectTreeSkipsRemoteTopicState(t *testing.T) {
 	}
 
 	found := false
-	for _, node := range NewApp().ListProjectTree() {
+	for _, node := range mustListProjectTree(t, NewApp()) {
 		if node.Remote == nil {
 			continue
 		}

@@ -331,14 +331,14 @@ func TestDeepSeekAnthropicPresetIsOptionalAndModelScoped(t *testing.T) {
 		t.Fatalf("DeepSeek Anthropic preset = %+v, want one entry", preset)
 	}
 	entry := preset.Entries[0]
-	if entry.Kind != "anthropic" || entry.BaseURL != deepSeekAnthropicBaseURL || entry.Default != "deepseek-v4-flash" || entry.Thinking != "enabled" || !EffectiveWebSearch(&entry) || entry.Vision || entry.APIKeyEnv != "DEEPSEEK_API_KEY" {
+	if entry.Kind != "anthropic" || entry.BaseURL != deepSeekAnthropicBaseURL || entry.Default != "deepseek-flash" || entry.Thinking != "enabled" || !EffectiveWebSearch(&entry) || entry.Vision || entry.APIKeyEnv != "DEEPSEEK_API_KEY" {
 		t.Fatalf("DeepSeek Anthropic preset entry = %+v", entry)
 	}
 	var cfg Config
 	if err := cfg.UpsertProvider(entry); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
 	}
-	flash, ok := cfg.ResolveModel("deepseek-anthropic/deepseek-v4-flash")
+	flash, ok := cfg.ResolveModel("deepseek-anthropic/deepseek-flash")
 	if !ok {
 		t.Fatal("Flash model did not resolve")
 	}
@@ -366,7 +366,7 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 	if entry.Kind != "responses" || entry.BaseURL != "https://api.deepseek.com" || entry.ResponsesMode != "stateless" {
 		t.Fatalf("deepseek responses endpoint = %+v", entry)
 	}
-	if !entry.HasModel("deepseek-v4-flash") || !entry.HasModel("deepseek-v4-pro") || entry.Default != "deepseek-v4-flash" {
+	if !entry.HasModel("deepseek-flash") || !entry.HasModel("deepseek-v4-pro") || entry.Default != "deepseek-flash" {
 		t.Fatalf("deepseek responses models = %v default=%q", entry.Models, entry.Default)
 	}
 	if entry.ModelsURL != "" {
@@ -379,7 +379,7 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 	if err := cfg.UpsertProvider(entry); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
 	}
-	flash, ok := cfg.ResolveModel("deepseek-responses/deepseek-v4-flash")
+	flash, ok := cfg.ResolveModel("deepseek-responses/deepseek-flash")
 	if !ok {
 		t.Fatal("Flash model did not resolve")
 	}

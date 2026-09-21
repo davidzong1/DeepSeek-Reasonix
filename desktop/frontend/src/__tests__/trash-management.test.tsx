@@ -57,10 +57,11 @@ await act(async () => (document.querySelectorAll('.archived-sessions__open')[1] 
 await act(async () => latePreview());
 assert.ok(document.querySelector('.archived-sessions__preview')?.textContent?.includes("B history"));
 assert.ok(!document.body.textContent?.includes("stale preview"));
-await act(async () => (document.querySelector('.history-clear') as HTMLButtonElement).click());
-assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("these 3 archived conversations"));
+await act(async () => (document.querySelector('.archived-sessions__management') as HTMLButtonElement).click());
+await act(async () => (document.querySelector('[role="menuitem"]:last-child') as HTMLButtonElement).click());
+assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("all 3 archived conversations"));
 assert.equal(document.activeElement?.textContent, "Cancel");
-await act(async () => button("Permanently delete").click());
+await act(async () => button("Delete all 3 conversations").click());
 assert.deepEqual(calls, ["purge:a", "purge:b", "purge:c"]);
 assert.ok(document.body.textContent?.includes("changed state. Refresh and try again"));
 assert.equal(document.querySelectorAll('.archived-sessions__row').length, 2);
@@ -73,7 +74,9 @@ assert.ok(document.body.textContent?.includes("Operation completed. Refresh fail
 assert.equal(document.querySelectorAll('.archived-sessions__row').length, 1);
 listFails = false;
 throwConflict = true;
-await act(async () => (document.querySelector('.archived-sessions__delete') as HTMLButtonElement).click());
+await act(async () => (document.querySelector('.archived-sessions__open') as HTMLButtonElement).click());
+await act(async () => (document.querySelector('.archived-sessions__session-menu') as HTMLButtonElement).click());
+await act(async () => (document.querySelector('[role="menuitem"]') as HTMLButtonElement).click());
 await act(async () => button("Permanently delete").click());
 assert.ok(document.body.textContent?.includes("changed state. Refresh and try again"), "top-level conflict uses the refresh guidance");
 assert.equal(button("Retry").textContent?.trim(), "Retry", "terminal conflict is not eligible for request retry");

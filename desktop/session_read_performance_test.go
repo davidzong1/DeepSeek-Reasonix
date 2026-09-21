@@ -111,11 +111,11 @@ func TestTopicIndexReusesOrderAndObservesPresentationChanges(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.NextCursor == "" {
 		t.Fatalf("first page: %+v %v", page, err)
 	}
-	index := &app.desktopSessions.topicIndex
+	index := &app.desktopSessions.readSnapshots
 	index.mu.Lock()
 	entries := len(index.entries)
 	index.mu.Unlock()
-	if entries != 1 {
+	if entries != 2 {
 		t.Fatalf("index entries=%d", entries)
 	}
 	req.Cursor = page.NextCursor
@@ -138,8 +138,8 @@ func TestTopicIndexReusesOrderAndObservesPresentationChanges(t *testing.T) {
 	if err := app.workspaceRegistry().UpdatePresentation(t.Context(), []string{refs["c"].SessionID}, nil, &pinned); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ListProjectTopics(req); err == nil {
-		t.Fatal("old cursor survived a changed order")
+	if frozen, err := app.ListProjectTopics(req); err != nil || frozen.SnapshotID != page.SnapshotID {
+		t.Fatalf("presentation write disturbed snapshot: %+v %v", frozen, err)
 	}
 	req.Cursor, req.pinnedOnly = "", true
 	page, err = app.ListProjectTopics(req)

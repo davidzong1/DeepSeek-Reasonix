@@ -67,7 +67,7 @@ func TestV1382OpenCodeRoundTripProbe(t *testing.T) {
 		}
 		c := LoadForEdit(path)
 		p, ok := c.Provider("go")
-		if c.ConfigVersion != 10 || len(c.Providers) != 5 || !ok || p.DisplayName != "old-reader-edited" {
+		if c.ConfigVersion != Default().ConfigVersion || len(c.Providers) != 5 || !ok || p.DisplayName != "old-reader-edited" {
 			t.Fatalf("round-trip lost configuration: version=%d providers=%d old_output=%s", c.ConfigVersion, len(c.Providers), output)
 		}
 		if e, ok := c.ResolveModel("go/deepseek-v4-pro"); !ok || e.Name != "go-chat-2" || e.APIKeyEnv != "ACCOUNT_A_KEY" {

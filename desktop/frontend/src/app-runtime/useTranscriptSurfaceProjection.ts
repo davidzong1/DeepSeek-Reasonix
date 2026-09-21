@@ -3,6 +3,7 @@ import { useCommittedCommand } from "../lib/useCommittedCommand";
 import type { useNavigationSurface } from "../lib/useNavigationSurface";
 import type { HistoryLoadOutcome, HistoryLoadTrigger, Item } from "../lib/useController";
 import type { SessionAvailability } from "../lib/sessionAvailability";
+import type { NavigateToTurn, TurnNavigationTarget } from "../lib/historyTurnNavigation";
 
 type NavigationSurfaceApi = ReturnType<typeof useNavigationSurface>;
 
@@ -28,8 +29,9 @@ export type TranscriptSurfaceProjectionInput = {
   commitPaint: NavigationSurfaceApi["commitPaint"];
   commitSingleSurface: (tabId: string) => void;
   ports: {
+    navigateToTurn?(tabId: string, target: TurnNavigationTarget, current: () => boolean): ReturnType<NavigateToTurn>;
     loadOlderHistory(tabId: string, targetTurn: number | undefined, trigger: HistoryLoadTrigger): Promise<HistoryLoadOutcome>;
-    loadNewerHistory(tabId: string, latest: boolean): Promise<HistoryLoadOutcome>;
+    loadNewerHistory(tabId: string, latest: boolean, current?: () => boolean): Promise<HistoryLoadOutcome>;
     commitThenSend(tabId: string, displayText: string, submitText?: string): Promise<void>;
   };
 };
@@ -59,8 +61,11 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
   const handleLoadOlderHistory = useCommittedCommand((targetTurn?: number, trigger: HistoryLoadTrigger = "retry") => {
     return activeTabId ? ports.loadOlderHistory(activeTabId, targetTurn, trigger) : Promise.resolve("empty" as const);
   });
-  const handleLoadNewerHistory = useCommittedCommand((latest = false) => {
-    return activeTabId ? ports.loadNewerHistory(activeTabId, latest) : Promise.resolve("empty" as const);
+  const handleLoadNewerHistory = useCommittedCommand((latest = false, current?: () => boolean) => {
+    return activeTabId ? ports.loadNewerHistory(activeTabId, latest, current) : Promise.resolve("empty" as const);
+  });
+  const handleNavigateToTurn = useCommittedCommand((target: TurnNavigationTarget, current: () => boolean) => {
+    return activeTabId && !transitioning && ports.navigateToTurn ? ports.navigateToTurn(activeTabId, target, current) : Promise.resolve("cancelled" as const);
   });
 
   // Display items: backend history is authoritative after immediate commit.
@@ -114,6 +119,7 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
     visibleTranscriptGeometryKey,
     handleLoadOlderHistory,
     handleLoadNewerHistory,
+    handleNavigateToTurn,
     handleSurfacePaintReady,
     latestGuidanceConsumed,
     handleTranscriptPrompt,

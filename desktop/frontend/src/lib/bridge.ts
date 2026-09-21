@@ -41,6 +41,7 @@ export type { FileBrowserPreviewRequest, FileBrowserPreviewResult } from "../gen
 import type { ExactInteractionBindings } from "./exactInteractionBindings";
 import type { InvocationRequest } from "./invocationDisplay";
 import type { FollowupBindings } from "./pendingFollowup";
+import type { InboxQueueBindings } from "./inboxQueueCommands";
 import { addBreadcrumb } from "./breadcrumbs";
 import { maybeShare } from "./queryCoalesce";
 import { makeMockSessionCatalogBindings } from "./sessionCatalogBridge";
@@ -248,7 +249,7 @@ interface DesktopWindowState {
 }
 // AppBindings is the hand-written React-to-Go contract. _CheckGeneratedBindings
 // catches generated methods missing here; update this interface and typecheck.
-export interface AppBindings extends AttachmentBindings, SessionExportBindings, SessionLifecycleBindings, ForkTargetsBindings, ToolRecoveryBindings, ModelSettingsBindings, SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings, ScrollDiagnosticBindings, RemoteProjectBindings, MCPAppBindings, PinnedContextBindings, FollowupBindings, TranscriptProtocolBindings, SessionReaderBindings, ExactInteractionBindings {
+export interface AppBindings extends AttachmentBindings, SessionExportBindings, SessionLifecycleBindings, ForkTargetsBindings, ToolRecoveryBindings, ModelSettingsBindings, SessionCatalogBindings, ProjectTreeOrganizationBindings, HistoryCatalogBindings, TaskCatalogBindings, BlankProjectBindings, QualityFloorBindings, SessionTitleBindings, ScrollDiagnosticBindings, RemoteProjectBindings, MCPAppBindings, PinnedContextBindings, FollowupBindings, InboxQueueBindings, TranscriptProtocolBindings, SessionReaderBindings, ExactInteractionBindings {
   GetLegacyEmptySessionCleanupStatus(): Promise<LegacyEmptySessionCleanupStatus>;
   RetryLegacyEmptySessionCleanup(): Promise<LegacyEmptySessionCleanupStatus>;
   OpenSessionDraft(workspaceId: string): Promise<SessionDraftView>;
@@ -854,6 +855,8 @@ export interface AppBindings extends AttachmentBindings, SessionExportBindings, 
   RenameTopic(topicID: string, title: string): Promise<void>;
   DeleteTopic(topicID: string): Promise<void>;
   TrashTopic(topicID: string): Promise<void>;
+  InspectTopicRemoval(target: import("../generated/desktopContract.generated").TopicRemovalTarget): Promise<import("../generated/desktopContract.generated").TopicRemovalInspection>;
+  RemoveTopic(request: import("../generated/desktopContract.generated").TopicRemovalRequest): Promise<import("../generated/desktopContract.generated").TopicRemovalResult>;
   SetTopicPinned(topicID: string, pinned: boolean): Promise<void>;
   ContextPanel(tabID: string): Promise<ContextPanelInfo>;
   // New native-feel bindings (added with the desktop native-feel plan).
@@ -1146,7 +1149,10 @@ export const app: AppBindings = new Proxy({} as AppBindings, {
   get(_t, prop) {
     const host = desktopHost().app, target = host ?? getMock();
     let v = (target as unknown as Record<string, unknown>)[String(prop)];
-    if (!host && v === undefined && typeof prop === "string") v = (...args: unknown[]) => import("./attachmentBindings").then(
+    // Inbox commands are optional. A synthesized attachment fallback would
+    // make ordinary browser mocks claim support for absent queue methods.
+    if (!host && v === undefined && typeof prop === "string" &&
+        !prop.includes("Inbox")) v = (...args: unknown[]) => import("./attachmentBindings").then(
       module => module.callMockAttachment(target, prop as keyof AttachmentBindings, args));
     if (typeof v !== "function") return v;
     return (...args: unknown[]) => {
@@ -1283,7 +1289,7 @@ const mockProviderPresetTemplates: MockProviderPresetTemplate[] = [
     ],
     { recommended: true, billingMode: "subscription_equivalent", displayGroup: "opencode", displaySection: "go", displayTier: "primary", routeKind: "bundle", displayOrder: 0 },
   ),
-  mockPreset("deepseek-responses", "DeepSeek Official Responses API", "Official stateless DeepSeek Responses API for Flash and Pro with server-side web search.", "DEEPSEEK_API_KEY", mockProviderTemplate({ name: "deepseek-responses", kind: "responses", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", balanceUrl: "https://api.deepseek.com/user/balance", webSearch: true, serverWebSearchCapability: true, contextWindow: 1000000, modelOverrides: [{ model: "deepseek-v4-flash", reasoningProtocol: "", supportedEfforts: ["disabled", "low", "high", "max"], defaultEffort: "high" }, { model: "deepseek-v4-pro", reasoningProtocol: "", supportedEfforts: ["disabled", "high", "max"], defaultEffort: "high" }] })),
+  mockPreset("deepseek-responses", "DeepSeek Official Responses API", "Official stateless DeepSeek Responses API for Flash and Pro with server-side web search.", "DEEPSEEK_API_KEY", mockProviderTemplate({ name: "deepseek-responses", kind: "responses", baseUrl: "https://api.deepseek.com", models: ["deepseek-flash", "deepseek-v4-pro"], default: "deepseek-flash", apiKeyEnv: "DEEPSEEK_API_KEY", balanceUrl: "https://api.deepseek.com/user/balance", webSearch: true, serverWebSearchCapability: true, contextWindow: 1000000, modelOverrides: [{ model: "deepseek-flash", reasoningProtocol: "", supportedEfforts: ["disabled", "low", "high", "max"], defaultEffort: "high" }, { model: "deepseek-v4-pro", reasoningProtocol: "", supportedEfforts: ["disabled", "high", "max"], defaultEffort: "high" }] })),
   mockPreset("longcat-openai", "LongCat OpenAI", "LongCat Platform OpenAI-compatible endpoint for LongCat-2.0.", "LONGCAT_API_KEY", mockProviderTemplate({ name: "longcat-openai", kind: "openai", baseUrl: "https://api.longcat.chat/openai/v1", modelsUrl: "https://api.longcat.chat/openai/v1/models", models: mockLongCatModels, default: "LongCat-2.0", apiKeyEnv: "LONGCAT_API_KEY", contextWindow: 131072, thinking: "enabled", supportedEfforts: ["enabled", "disabled"], defaultEffort: "enabled" })),
   mockPreset("longcat-anthropic", "LongCat Anthropic", "LongCat Platform Anthropic-compatible Messages endpoint for LongCat-2.0.", "LONGCAT_API_KEY", mockProviderTemplate({ name: "longcat-anthropic", kind: "anthropic", baseUrl: "https://api.longcat.chat/anthropic", modelsUrl: "https://api.longcat.chat/anthropic/v1/models", models: mockLongCatModels, default: "LongCat-2.0", apiKeyEnv: "LONGCAT_API_KEY", authHeader: true, contextWindow: 131072, thinking: "enabled", supportedEfforts: ["enabled", "disabled"], defaultEffort: "enabled" })),
   mockPreset("token-rhythm", "Token Rhythm", "Token Rhythm (基元律动) multi-model OpenAI-compatible gateway.", "TOKEN_RHYTHM_API_KEY", mockProviderTemplate({ name: "token-rhythm", kind: "openai", baseUrl: "https://tokenrhythm.studio/v1", modelsUrl: "https://tokenrhythm.studio/v1/models", models: mockTokenRhythmModels, visionModels: ["kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code"], default: "deepseek-v4-flash", apiKeyEnv: "TOKEN_RHYTHM_API_KEY", contextWindow: 1000000, modelOverrides: mockTokenRhythmModelOverrides })),
@@ -1427,7 +1433,9 @@ function makeMockApp(): MockAppBindings {
     },
   });
   const freshMock = scenario === "fresh";
-  const guidanceMock = scenario === "guidance", recoveryMock = typeof import.meta.env !== "undefined" && import.meta.env.DEV && scenario === "recovery";
+  const devPreview = typeof import.meta.env !== "undefined" && import.meta.env.DEV;
+  const guidanceMock = scenario === "guidance", recoveryMock = devPreview && scenario === "recovery";
+  const inboxQueuePreview = devPreview && guidanceMock ? import("./inboxQueuePreview").then(module => module.createInboxQueuePreviewBindings()) : undefined;
   const runningMock = scenario === "running" || guidanceMock;
   const sandboxEscapeMock = scenario === "sandbox_escape";
   const noticePreviewMock = scenario === "notice";
@@ -2478,7 +2486,7 @@ function makeMockApp(): MockAppBindings {
     async RetryLegacyEmptySessionCleanup() {
       return { version: 1, state: "complete", removed: 0, pending: 0, busy: 0, unknown: 0, protected: 0, hasContent: 0, items: [] };
     },
-    ...makeMockSessionLifecycleBindings(mockWorkspaceSnapshot, mockArchivedSessionIDs, mockPurgedSessionIDs, notifyMockProjectTreeChanged),
+    ...makeMockSessionLifecycleBindings(mockWorkspaceSnapshot, mockArchivedSessionIDs, mockPurgedSessionIDs, notifyMockProjectTreeChanged, mockProjectTree),
     async CreateSession(_workspaceId: string) { return { hostId: "local", sessionId: `mock-${Date.now()}` }; },
     async ForkSession(_ref: SessionRef, _turnBoundary: string) { return { hostId: "local", sessionId: `mock-fork-${Date.now()}` }; },
     async ForkSessionTarget(_selector: SessionSelector, _turnBoundary: string) { return { hostId: "local", sessionId: `mock-fork-${Date.now()}` }; },
@@ -3128,7 +3136,11 @@ function makeMockApp(): MockAppBindings {
         async SteerForTab(_tabID, _text) {
           await this.Steer(_text);
         },
-        async InboxSnapshot(_tabID) { if (recoveryMock) return (await import("./inboxRecoveryPreview")).inboxRecoveryPreviewSnapshot();
+        ...inboxQueuePreview && Object.fromEntries(["CaptureInboxTarget", "InboxQueueForTarget", "EnqueueInboxFollowupForTarget", "LookupInboxFollowupForTarget"].map(name => [name, async (...args: unknown[]) => {
+          const bindings = await inboxQueuePreview as Record<string, (...values: unknown[]) => Promise<unknown>>;
+          return bindings[name](...args);
+        }])),
+        async InboxSnapshot(_tabID) { if (inboxQueuePreview) return (await inboxQueuePreview).InboxSnapshot(_tabID); if (recoveryMock) return (await import("./inboxRecoveryPreview")).inboxRecoveryPreviewSnapshot();
           return {
             revision: 0,
             paused: false,
@@ -4857,7 +4869,7 @@ function makeMockApp(): MockAppBindings {
     },
     async AddOfficialProviderAccess(kind: string, key: string) {
       const templates: Record<string, ProviderView> = {
-        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", thinking: "enabled", webSearch: true, serverWebSearchCapability: true, supportedEfforts: [], defaultEffort: "", modelOverrides: [{ model: "deepseek-v4-flash", reasoningProtocol: "", supportedEfforts: ["disabled", "low", "high", "max"], defaultEffort: "high" }, { model: "deepseek-v4-pro", reasoningProtocol: "", supportedEfforts: ["disabled", "high", "max"], defaultEffort: "high" }] },
+        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", thinking: "enabled", webSearch: true, serverWebSearchCapability: true, supportedEfforts: [], defaultEffort: "", modelOverrides: [{ model: "deepseek-flash", reasoningProtocol: "", supportedEfforts: ["disabled", "low", "high", "max"], defaultEffort: "high" }, { model: "deepseek-v4-pro", reasoningProtocol: "", supportedEfforts: ["disabled", "high", "max"], defaultEffort: "high" }] },
       };
       const next = templates[kind];
       if (!next) throw new Error(`unknown official provider template ${kind}`);
@@ -5723,9 +5735,11 @@ function makeMockApp(): MockAppBindings {
           createdAt: now,
         }, ...projectChildren(parent)];
       }
+      (await import("./topicRemovalMock")).markTopic(mockProjectTree, id, !title.trim());
       return { id, title: topicTitle, createdAt: now };
     },
     async RenameTopic(topicID: string, title: string) {
+      (await import("./topicRemovalMock")).markTopic(mockProjectTree, topicID, false);
       const topic = findMockTopic(topicID);
       const nextTitle = title.trim();
       if (!topic || !nextTitle) return;

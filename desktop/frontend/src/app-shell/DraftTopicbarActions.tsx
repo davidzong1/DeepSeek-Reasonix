@@ -14,6 +14,7 @@ export function DraftTopicbarActions(props: {
 }) {
   const { draft, t } = props;
   const editingLocked = draft.preparingSubmission || draftSubmissionLocksEditing(draft.operation);
+  const discardLabel = t(draft.discarding ? "draft.discarding" : editingLocked ? "draft.discardBlocked" : "draft.discard");
   const enabledServers = draft.servers.filter((server) => server.enabled && !draft.settings.disabledMcp[server.name]).length;
   return <div className="topicbar__actions draft-topicbar-actions">
     {draft.servers.length > 0 ? <details className="draft-topicbar-mcp">
@@ -34,9 +35,9 @@ export function DraftTopicbarActions(props: {
         })}
       </div>
     </details> : null}
-    <Tooltip label={t("draft.discard")}>
+    <Tooltip label={discardLabel}>
       <button className="topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility" type="button"
-        aria-label={t("draft.discard")} disabled={editingLocked} onClick={props.onDiscard}>
+        aria-label={discardLabel} aria-busy={Boolean(draft.discarding)} disabled={editingLocked} onClick={props.onDiscard}>
         <Trash2 size={15} aria-hidden="true" />
       </button>
     </Tooltip>

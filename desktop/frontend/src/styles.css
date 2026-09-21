@@ -8725,6 +8725,8 @@ body > .mermaid-diagram--fullscreen {
 }
 .reasonix-confirm-dialog {
   max-width: 420px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   color: var(--fg);
 }
 .reasonix-confirm-dialog__title { margin-bottom: 8px; }

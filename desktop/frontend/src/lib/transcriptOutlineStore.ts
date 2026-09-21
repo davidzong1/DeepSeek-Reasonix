@@ -1,275 +1,180 @@
 import { app } from "./bridge";
-import type { TranscriptOutlineEntry, TranscriptOutlinePage, TranscriptOutlineRequest } from "./transcriptProtocol";
+import { observeOutline } from "./transcriptOutlineSignals";
+import type { HistoryOutlineEntry, HistoryOutlinePage, HistoryOutlineRequest } from "../generated/desktopContract.generated";
 
-/** Reads one outline page. */
-export type OutlineRead = (tabId: string, request: TranscriptOutlineRequest) => Promise<TranscriptOutlinePage>;
+export type OutlineRead = (tabId: string, request: HistoryOutlineRequest) => Promise<HistoryOutlinePage>;
+export type TranscriptOutlineView = {
+  mode: "loading" | "ready" | "error" | "unsupported";
+  generation: string; snapshotSequence?: number; totalTurns: number;
+  entries: ReadonlyMap<number, HistoryOutlineEntry>; errors: ReadonlyMap<number, string>;
+};
+const EMPTY: TranscriptOutlineView = Object.freeze({ mode: "loading", generation: "", totalTurns: 0, entries: new Map(), errors: new Map() });
+export const OUTLINE_PAGE_SIZE = 128;
+const MAX_PAGES = 6;
+const MAX_BYTES = 8 << 20;
+type Page = { entries: HistoryOutlineEntry[]; bytes: number; touched: number };
+type Binding = {
+  identity: string; read: OutlineRead; active: number; epoch: number; dirty: boolean;
+  view: TranscriptOutlineView; pages: Map<number, Page>; pending: Map<number, Promise<void>>;
+  timer?: ReturnType<typeof setTimeout>; lastRead: number;
+  refresh?: Promise<void>;
+  releaseSignal?: () => void;
+  range?: [number, number];
+};
 
-/**
- * The host does not implement the outline protocol. This is a compatibility
- * answer rather than a failure: it must not be presented as a retryable error,
- * and it must not be mistaken for "this conversation has no turns".
- */
-export class OutlineUnsupported extends Error {}
-
-export type TranscriptOutlineMode =
-  /** No outline protocol: the rail shows loaded turns only and claims nothing. */
-  | "legacy"
-  /** Bound to a snapshot, pages still arriving. The rail keeps its area. */
-  | "loading"
-  | "ready"
-  /** A real read failure. Known markers stay and a retry is offered. */
-  | "error";
-
-export interface TranscriptOutlineView {
-  readonly mode: TranscriptOutlineMode;
-  readonly snapshotId: string;
-  readonly entries: readonly TranscriptOutlineEntry[];
-  readonly error?: string;
-  /** True when a read budget stopped the index short of the whole session. */
-  readonly truncated?: boolean;
-}
-
-const EMPTY_ENTRIES: readonly TranscriptOutlineEntry[] = [];
-const LEGACY: TranscriptOutlineView = Object.freeze({ mode: "legacy", snapshotId: "", entries: EMPTY_ENTRIES });
-
-// A hostile or buggy host drives this loop, so it is bounded like every other
-// server-driven read in this codebase (MAX_REPLAY_PAGES, MAX_JUMP_PAGES).
-// 64 pages of 1000 entries is far beyond any real conversation.
-const MAX_OUTLINE_PAGES = 64;
-const MAX_OUTLINE_ENTRIES = 20_000;
-
-/**
- * A budget running out keeps the turns already indexed and marks the view
- * truncated, so a huge conversation still navigates. Discarding the whole
- * index would trade a bounded cost for losing navigation entirely.
- */
-const TRUNCATED = "outline is incomplete";
-
-/**
- * The complete turn index of the installed snapshot, shared by the local
- * controller and remote sessions. Paging the body changes what is mounted, not
- * what exists, so this answers from one snapshot regardless of how much history
- * the reader has loaded.
- *
- * Reads are fenced by tab generation and by snapshot identity: a response from a
- * replaced session, a replaced snapshot, or a released tab can neither publish
- * nor clear state.
- */
+/** Sparse, fixed-cut directory. Body residency never determines the rail size. */
 export class TranscriptOutlineStore {
-  private readonly views = new Map<string, TranscriptOutlineView>();
-  private readonly listeners = new Map<string, Set<() => void>>();
-  private readonly generations = new Map<string, number>();
-  private readonly pending = new Map<string, Promise<void>>();
-  private readonly readers = new Map<string, OutlineRead>();
-  private readonly refreshers = new Map<string, () => Promise<void>>();
-
-  /**
-   * Bind a tab to the host that owns it. Local controllers and remote sessions
-   * share this index, so the owning hook registers the reader for its own tabs
-   * and a tab it never loaded stays in the legacy mode.
-   */
-  register(tabId: string, read: OutlineRead, refresh?: () => Promise<void>): void {
-    this.readers.set(tabId, read);
-    if (refresh) this.refreshers.set(tabId, refresh);
+  private bindings = new Map<string, Binding>();
+  private listeners = new Map<string, Set<() => void>>();
+  private clock = 0;
+  constructor(private now = () => Date.now()) {}
+  getView(tab: string): TranscriptOutlineView { return this.bindings.get(tab)?.view ?? EMPTY; }
+  subscribe(tab: string, listener: () => void): () => void {
+    const set = this.listeners.get(tab) ?? new Set();
+    this.listeners.set(tab, set); set.add(listener);
+    return () => { set.delete(listener); if (!set.size) this.listeners.delete(tab); };
   }
-
-  /**
-   * Have the owning session install a fresh snapshot, whatever the current view
-   * says. A navigation jump that hit a recycled cut needs this even when the
-   * outline itself still reads as ready, so it is not gated on the view's mode.
-   */
-  async refresh(tabId: string): Promise<void> {
-    const refresh = this.refreshers.get(tabId);
-    if (!refresh) throw new Error("transcript snapshot refresh is unavailable");
-    await refresh();
-    // The cut notification starts outline synchronization without blocking the
-    // controller commit. A reader retry, however, must wait until the fresh
-    // identity is usable before it resolves its target again.
-    const pending = this.pending.get(tabId);
-    if (pending) await pending;
-    const view = this.views.get(tabId);
-    if (view?.mode === "error") throw new Error(view.error || "transcript outline refresh failed");
+  private publish(tab: string, b: Binding): void {
+    const entries = new Map<number, HistoryOutlineEntry>();
+    for (const page of b.pages.values()) for (const entry of page.entries) entries.set(entry.turn, entry);
+    b.view = { ...b.view, entries };
+    for (const listener of [...(this.listeners.get(tab) ?? [])]) listener();
   }
-
-  /**
-   * A user-initiated retry after a recycled cut. A stale id cannot be read
-   * again, so the owning session installs a fresh snapshot first and this index
-   * re-aligns with it through the ordinary cut notification. The body is only
-   * replaced by that explicit request, never as an automatic reaction.
-   */
-  retry(tabId: string): Promise<void> {
-    const view = this.views.get(tabId);
-    if (view?.error && this.refreshers.has(tabId)) return this.refresh(tabId);
-    if (!view?.snapshotId) return Promise.resolve();
-    return this.load(tabId, view.snapshotId);
-  }
-
-  subscribe(tabId: string, listener: () => void): () => void {
-    let listeners = this.listeners.get(tabId);
-    if (!listeners) { listeners = new Set(); this.listeners.set(tabId, listeners); }
-    listeners.add(listener);
-    return () => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(tabId); };
-  }
-
-  getView(tabId: string): TranscriptOutlineView {
-    return this.views.get(tabId) ?? LEGACY;
-  }
-
-  /** Resolve an entry again after refreshing its snapshot. Message identity
-   * wins because an optimistic mounted key can differ from the durable record
-   * id learned later in the same app session. */
-  resolve(tabId: string, target: TranscriptOutlineEntry): TranscriptOutlineEntry | undefined {
-    const entries = this.views.get(tabId)?.entries ?? EMPTY_ENTRIES;
-    if (target.messageId) {
-      const byMessage = entries.find(entry => entry.messageId === target.messageId);
-      if (byMessage) return byMessage;
+  activate(tab: string, identity: string, read: OutlineRead, knownTurns: number): () => void {
+    let b = this.bindings.get(tab);
+    if (!b || b.identity !== identity) {
+      this.release(tab);
+      b = { identity, read, active: 0, epoch: 0, dirty: true, view: { ...EMPTY, totalTurns: knownTurns }, pages: new Map(), pending: new Map(), lastRead: -Infinity };
+      this.bindings.set(tab, b);
+      b.releaseSignal = observeOutline(tab, signal => signal === "suspend" ? this.suspend(tab) : this.dirty(tab));
     }
-    return entries.find(entry => entry.id === target.id);
+    b.active++; b.read = read;
+    if (b.dirty) this.schedule(tab, b);
+    const owner = b;
+    return () => {
+      if (this.bindings.get(tab) !== owner) return;
+      owner.active = Math.max(0, owner.active - 1);
+      if (!owner.active) this.release(tab);
+    };
   }
-
-  /** Fence and hide a cut being replaced while preserving the owning host
-   * binding. A failed refresh can therefore be retried instead of degrading
-   * permanently to the legacy rail. */
-  invalidate(tabId: string): void {
-    this.generations.set(tabId, (this.generations.get(tabId) ?? 0) + 1);
-    this.views.delete(tabId);
-    this.pending.delete(tabId);
-    this.publish(tabId);
+  release(tab: string): void {
+    const b = this.bindings.get(tab);
+    if (b) { b.epoch++; clearTimeout(b.timer); b.releaseSignal?.(); }
+    this.bindings.delete(tab);
   }
-
-  /** Drop a tab's index and fence every read still in flight for it. */
-  release(tabId: string): void {
-    this.invalidate(tabId);
-    this.readers.delete(tabId);
-    this.refreshers.delete(tabId);
+  suspend(tab: string): void {
+    const b = this.bindings.get(tab);
+    if (!b) return;
+    b.epoch++; b.pending.clear(); b.refresh = undefined; clearTimeout(b.timer); b.timer = undefined; b.dirty = true;
   }
-
-  /**
-   * Align the index with the installed snapshot. An unchanged snapshot reuses
-   * the current index instead of re-reading it, and an absent host or an absent
-   * snapshot stays in the legacy mode.
-   */
-  sync(tabId: string, snapshotId: string | undefined): Promise<void> {
-    if (!snapshotId || !this.readers.has(tabId)) return Promise.resolve();
-    const view = this.views.get(tabId);
-    if (view && view.snapshotId === snapshotId && view.mode !== "error") return this.pending.get(tabId) ?? Promise.resolve();
-    return this.load(tabId, snapshotId);
+  dirty(tab: string): void {
+    const b = this.bindings.get(tab);
+    if (!b) return;
+    b.dirty = true;
+    if (b.active) this.schedule(tab, b);
   }
-
-  /** Retry after a failure, or after the capability was reported absent. */
-  load(tabId: string, snapshotId: string): Promise<void> {
-    const read = this.readers.get(tabId);
-    if (!read) return Promise.resolve();
-    const generation = (this.generations.get(tabId) ?? 0) + 1;
-    this.generations.set(tabId, generation);
-    this.set(tabId, { mode: "loading", snapshotId, entries: EMPTY_ENTRIES });
-    const run = this.readAll(tabId, snapshotId, generation, read).finally(() => {
-      if (this.pending.get(tabId) === run) this.pending.delete(tabId);
+  private schedule(tab: string, b: Binding): void {
+    if (b.timer !== undefined || b.refresh) return;
+    b.timer = setTimeout(() => {
+      b.timer = undefined;
+      if (b.active && this.bindings.get(tab) === b) void this.refresh(tab);
+    }, Math.max(0, 250 - (this.now() - b.lastRead)));
+  }
+  async refresh(tab: string): Promise<void> {
+    const b = this.bindings.get(tab);
+    if (!b) return;
+    if (b.refresh) return b.refresh;
+    clearTimeout(b.timer); b.timer = undefined;
+    b.epoch++; b.pending.clear(); b.dirty = false; b.lastRead = this.now();
+    // Keep the previous directory visible until the new cut has arrived.
+    const run = this.readPage(tab, b, 1, true).finally(() => {
+      if (this.bindings.get(tab) !== b || b.refresh !== run) return;
+      b.refresh = undefined;
+      if (b.dirty && b.active) this.schedule(tab, b);
     });
-    this.pending.set(tabId, run);
-    return run;
+    b.refresh = run;
+    await run;
   }
-
-  private async readAll(tabId: string, snapshotId: string, generation: number, read: OutlineRead): Promise<void> {
-    const current = () => this.generations.get(tabId) === generation;
-    const entries: TranscriptOutlineEntry[] = [];
-    const seen = new Set<string>();
-    let truncated = false;
-    try {
-      let offset = 0;
-      for (let pages = 0; ; pages++) {
-        if (pages >= MAX_OUTLINE_PAGES) { truncated = true; break; }
-        const page = await read(tabId, { snapshotId, offset });
+  async retry(tab: string): Promise<void> {
+    const b = this.bindings.get(tab);
+    if (!b) return;
+    const failed = [...b.view.errors.keys()];
+    await this.refresh(tab);
+    if (this.bindings.get(tab) !== b || b.view.snapshotSequence === undefined || b.view.mode === "unsupported") return;
+    await Promise.all(failed.filter(start => start > 1 && start <= b.view.totalTurns).map(start => this.readPage(tab, b, start)));
+    if (b.range) await this.ensure(tab, ...b.range);
+  }
+  async ensure(tab: string, first: number, last = first): Promise<void> {
+    const b = this.bindings.get(tab);
+    if (!b || b.view.mode === "unsupported") return;
+    b.range = [first, last];
+    await b.refresh;
+    if (this.bindings.get(tab) !== b) return;
+    if (b.view.snapshotSequence === undefined) {
+      await (b.pending.get(1) ?? this.readPage(tab, b, 1, true));
+      if (b.view.snapshotSequence === undefined) return;
+    }
+    const starts = new Set<number>();
+    for (let turn = Math.max(1, first); turn <= Math.min(last, b.view.totalTurns);) {
+      const start = Math.floor((turn - 1) / OUTLINE_PAGE_SIZE) * OUTLINE_PAGE_SIZE + 1;
+      starts.add(start); turn = start + OUTLINE_PAGE_SIZE;
+    }
+    await Promise.all([...starts].map(start => {
+      const page = b.pages.get(start);
+      if (page) { page.touched = ++this.clock; return; }
+      return this.readPage(tab, b, start);
+    }));
+  }
+  async entry(tab: string, turn: number): Promise<HistoryOutlineEntry | undefined> {
+    await this.ensure(tab, turn); return this.getView(tab).entries.get(turn);
+  }
+  private readPage(tab: string, b: Binding, start: number, fresh = false): Promise<void> {
+    const pending = b.pending.get(start);
+    if (pending) return pending;
+    const epoch = b.epoch;
+    const current = () => this.bindings.get(tab) === b && b.epoch === epoch;
+    const request: HistoryOutlineRequest = { startTurn: start, limit: OUTLINE_PAGE_SIZE,
+      ...(fresh ? {} : { generation: b.view.generation, snapshotSequence: b.view.snapshotSequence }) };
+    const run = Promise.resolve().then(async () => {
+      try {
+        const page = await b.read(tab, request);
         if (!current()) return;
-        if (page.stale) {
-          // The cut was recycled. Reporting it lets the caller install a fresh
-          // snapshot and resolve the target again; silently continuing would
-          // answer positions against a different revision.
-          this.set(tabId, { mode: "error", snapshotId, entries: EMPTY_ENTRIES, error: "outline snapshot expired" });
-          return;
-        }
-        if (page.snapshotId !== snapshotId) {
-          this.set(tabId, { mode: "error", snapshotId, entries: EMPTY_ENTRIES, error: "outline snapshot changed" });
-          return;
-        }
-        for (const entry of page.entries) {
-          // Identity is unique per turn; a duplicate would make the rail
-          // ambiguous and break keyed reconciliation.
-          if (seen.has(entry.id)) continue;
-          seen.add(entry.id);
-          entries.push(entry);
-          if (entries.length >= MAX_OUTLINE_ENTRIES) { truncated = true; break; }
-        }
-        if (truncated || page.done) break;
-        if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset) {
-          this.set(tabId, { mode: "error", snapshotId, entries: EMPTY_ENTRIES, error: "outline cursor stalled" });
-          return;
-        }
-        offset = page.nextOffset;
-      }
-      if (!current()) return;
-      entries.sort((left, right) => left.order - right.order);
-      this.set(tabId, { mode: "ready", snapshotId, entries, error: truncated ? TRUNCATED : undefined, truncated });
-    } catch (error) {
-      if (!current()) return;
-      if (error instanceof OutlineUnsupported) {
-        // Keep any markers already known, and never report this as a network
-        // failure that the reader could retry.
-        this.set(tabId, { mode: "legacy", snapshotId: "", entries: EMPTY_ENTRIES });
-        return;
-      }
-      this.set(tabId, { mode: "error", snapshotId, entries: EMPTY_ENTRIES, error: message(error) });
+        if (page.status === "preparing") { b.dirty = true; this.schedule(tab, b); return; }
+        if (page.status === "unsupported") { b.pages.clear(); b.view = { ...EMPTY, mode: "unsupported" }; this.publish(tab, b); return; }
+        if (page.status !== "ready") throw new Error(page.status);
+        if (!Number.isSafeInteger(page.totalTurns) || page.totalTurns < 0 || !Array.isArray(page.entries)
+          || (!fresh && (page.generation !== b.view.generation || page.snapshotSequence !== b.view.snapshotSequence))) throw new Error("invalid outline cut");
+        const changedCut = fresh && (page.generation !== b.view.generation || page.snapshotSequence !== b.view.snapshotSequence);
+        if (changedCut) b.pages.clear();
+        const entries = page.entries.filter(entry => Number.isSafeInteger(entry.turn) && entry.turn >= start && entry.turn < start + OUTLINE_PAGE_SIZE && Boolean(entry.messageId));
+        b.pages.set(start, { entries, bytes: JSON.stringify(entries).length * 2, touched: ++this.clock });
+        const errors = new Map(changedCut ? [] : b.view.errors); errors.delete(start);
+        b.view = { ...b.view, mode: errors.size ? "error" : "ready", generation: page.generation, snapshotSequence: page.snapshotSequence, totalTurns: page.totalTurns, errors };
+        this.trim(); this.publish(tab, b);
+        if (changedCut && b.range && b.range[0] > OUTLINE_PAGE_SIZE) void this.ensure(tab, ...b.range);
+      } catch (error) {
+        if (!current()) return;
+        const errors = new Map(b.view.errors); errors.set(start, String(error));
+        b.view = { ...b.view, mode: "error", errors }; this.publish(tab, b);
+      } finally { if (current() && b.pending.get(start) === run) b.pending.delete(start); }
+    });
+    b.pending.set(start, run); return run;
+  }
+  private trim(): void {
+    let bytes = 0;
+    const pages: { tab: string; b: Binding; start: number; page: Page }[] = [];
+    for (const [tab, b] of this.bindings) for (const [start, page] of b.pages) { bytes += page.bytes; pages.push({ tab, b, start, page }); }
+    pages.sort((a, b) => a.page.touched - b.page.touched);
+    for (const item of pages) {
+      if (item.b.pages.size <= MAX_PAGES && bytes <= MAX_BYTES) continue;
+      item.b.pages.delete(item.start); bytes -= item.page.bytes; this.publish(item.tab, item.b);
     }
   }
-
-  private set(tabId: string, view: TranscriptOutlineView): void {
-    this.views.set(tabId, view);
-    this.publish(tabId);
-  }
-
-  private publish(tabId: string): void {
-    for (const listener of [...(this.listeners.get(tabId) ?? [])]) listener();
-  }
 }
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-// Bridge-backed singleton, matching the transcript store: the owning session
-// hook registers its own reader, and a tab it never loaded stays legacy.
 let singleton: TranscriptOutlineStore | undefined;
-
-export function getTranscriptOutlineStore(): TranscriptOutlineStore {
-  singleton ??= new TranscriptOutlineStore();
-  return singleton;
-}
-
-/** Local tabs read the controller binding; absent means the host is older. */
-export function localOutlineRead(tabId: string, request: TranscriptOutlineRequest): Promise<TranscriptOutlinePage> {
-  const read = app.TranscriptOutlineForTab;
-  if (typeof read !== "function") return Promise.reject(new OutlineUnsupported("transcript outline is unavailable"));
-  return read(tabId, request).catch((error: unknown) => { throw unavailable(error); });
-}
-
-/**
- * Remote tabs read the negotiated Serve route. The Go client already refuses
- * the request when the capability was not advertised, so an unavailable
- * projection is translated here rather than retried.
- */
-export function remoteOutlineRead(tabId: string, request: TranscriptOutlineRequest): Promise<TranscriptOutlinePage> {
-  const read = app.RemoteTranscriptOutlineForTab;
-  if (typeof read !== "function") return Promise.reject(new OutlineUnsupported("remote transcript outline is unavailable"));
-  return read(tabId, request).catch((error: unknown) => { throw unavailable(error); });
-}
-
-/**
- * The host answering "this controller has no outline projection" is a
- * compatibility answer, not a failure: both transports must degrade to the
- * loaded-turn rail rather than offer a retry that can never succeed.
- */
-function unavailable(error: unknown): unknown {
-  return message(error).toLowerCase().includes("transcript projection is unavailable")
-    ? new OutlineUnsupported("transcript outline is unavailable")
-    : error;
-}
+export function getTranscriptOutlineStore(): TranscriptOutlineStore { return singleton ??= new TranscriptOutlineStore(); }
+const unsupported = (): HistoryOutlinePage => ({ status: "unsupported", entries: [], totalTurns: 0, generation: "", snapshotSequence: 0, coverageSequence: 0, nextTurn: 1, done: true });
+export const localOutlineRead: OutlineRead = (tab, request) => typeof app.SessionHistoryOutlineForTab === "function"
+  ? app.SessionHistoryOutlineForTab(tab, request) : Promise.resolve(unsupported());
+export const remoteOutlineRead: OutlineRead = (tab, request) => typeof app.RemoteSessionHistoryOutlineForTab === "function"
+  ? app.RemoteSessionHistoryOutlineForTab(tab, request) : Promise.resolve(unsupported());

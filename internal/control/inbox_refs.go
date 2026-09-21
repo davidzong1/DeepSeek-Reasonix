@@ -86,7 +86,7 @@ func (c *Controller) RefreshInboxReferences(id string) error {
 	if err != nil {
 		return err
 	}
-	_, env, err := st.ReadItem(id)
+	meta, env, err := st.ReadItem(id)
 	if err != nil {
 		return err
 	}
@@ -94,12 +94,7 @@ func (c *Controller) RefreshInboxReferences(id string) error {
 	if err := c.freezeInboxEnvelopeReferences(context.Background(), &env, env.SubmitText, env.ExplicitRefs); err != nil {
 		return err
 	}
-	_, err = st.UpdateItem(id, env)
-	if err == nil && len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		err = st.SetState(id, sessioninbox.StateBlocked, reason)
-		_ = st.SetPaused(true)
-	}
+	_, err = st.UpdateItemIfVersion(id, env, sessioninbox.ContentVersion(meta))
 	return err
 }
 

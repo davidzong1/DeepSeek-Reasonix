@@ -20,7 +20,7 @@ var extendedProviderPresets = []ProviderPreset{
 	newCatalogPreset("amd-gpu-cloud", "AMD GPU Cloud", "AMD_GPU_CLOUD_API_KEY", "openai", "https://developer.amd.com.cn/radeon/api/v1", "DeepSeek-V4-Flash", "DeepSeek-V4-Pro", "Qwen3.6-35B-A3B", "GLM-5.1", "GLM-5.2", "gpt-oss-120b", "Kimi-K2.6"),
 	{ID: "deepseek-chat", Label: "DeepSeek Chat Completions", KeyEnv: "DEEPSEEK_API_KEY",
 		Description: "Official DeepSeek Chat Completions API.",
-		Entries:     []ProviderEntry{{Name: "deepseek-chat", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", APIKeyEnv: "DEEPSEEK_API_KEY", Models: deepSeekOfficialModels, Default: "deepseek-v4-flash", ContextWindow: 1_000_000, Prices: deepSeekV4PricesUSD(), ModelOverrides: deepSeekV4EffortOverrides(), WebSearch: boolPointer(false)}},
+		Entries:     []ProviderEntry{{Name: "deepseek-chat", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", APIKeyEnv: "DEEPSEEK_API_KEY", Models: deepSeekOfficialModels, Default: "deepseek-flash", VisionModels: deepSeekOfficialVisionModels, ContextWindow: 1_000_000, Prices: deepSeekV4PricesUSD(), ModelOverrides: deepSeekV4EffortOverrides(), WebSearch: boolPointer(false)}},
 	},
 	newCatalogPreset("openai-responses", "OpenAI", "OPENAI_API_KEY", "responses", "https://api.openai.com/v1", "gpt-4.1"),
 	newCatalogPreset("openai-chat", "OpenAI", "OPENAI_API_KEY", "openai", "https://api.openai.com/v1", "gpt-4.1"),

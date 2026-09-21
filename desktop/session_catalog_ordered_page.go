@@ -13,6 +13,9 @@ func (a *App) catalogSessionOrderedPage(catalog *sessioncatalog.Catalog, req Pro
 	topicOverlays, sessionOverlays := a.catalogRuntimeOverlays()
 	ctx, cancel := a.catalogReadContext()
 	defer cancel()
+	if req.readContext != nil {
+		ctx = req.readContext
+	}
 	preferred, _ := catalog.PreferredOrdinarySessionPaths(ctx, req.Scope, req.WorkspaceRoot)
 	cursor := ""
 	for {

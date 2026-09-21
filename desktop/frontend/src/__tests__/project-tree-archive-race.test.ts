@@ -203,7 +203,7 @@ function testProjectTreeWiresEveryRaceGuard() {
   assert.match(archiveSource, /finishPending: \(\) => endTrashingTopic\(topicId\)/);
   assert.match(source, /const topicMenuOpen = menuNodeKey === key/);
   assert.match(source, /onContextMenu=\{openTopicMenu\}/);
-  assert.match(source, /node\.sessionPath \?\? ""/);
+  assert.match(source, /const sessionPath = node\.sessionPath\?\.trim\(\) \?\? ""/);
   assert.match(sessionMenuSource, /disabled: !sessionPath \|\| blocked \|\| busy/);
   assert.match(source, /sessionPath=\{sessionPath\} blocked=\{archiveBlocked \|\| topicTrashing\}/);
   assert.match(source, /void trashSession\(node\)/);

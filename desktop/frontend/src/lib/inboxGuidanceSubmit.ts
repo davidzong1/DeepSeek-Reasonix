@@ -1,8 +1,27 @@
 import type { AppBindings } from "./bridge";
 import type { StructuredInvocationSubmit } from "./invocationDisplay";
 import { resolveActiveTurnId } from "./inboxSubmit";
+import type { PendingFollowup } from "./pendingFollowup";
 
 type InboxEnqueueBindings = Pick<AppBindings, "EnqueueInboxFollowup" | "EnqueueInboxFollowupWithInvocations" | "EnqueueInboxSteer" | "EnqueueInboxSteerForTurn" | "EnqueueForAttachmentTarget">;
+
+export async function enqueueComposerGuidance(binding: AppBindings, request: PendingFollowup, queueOnly: boolean, turnId?: string) {
+  const { target, structured, tabId, display, submit, key } = request;
+  // Structured invocations and image submissions require their own turn.
+  if (queueOnly || structured) {
+    return target && binding.EnqueueInboxFollowupForTarget && !structured?.attachments?.length
+      ? binding.EnqueueInboxFollowupForTarget(target, display, submit, structured?.invocations ?? [], key)
+      : enqueueInboxGuidance(binding, tabId, display, submit, structured, { idempotency: key });
+  }
+  if (target && binding.InboxQueueForTarget && !structured) {
+    const activeTurnId = await resolveActiveTurnId(binding, tabId, turnId);
+    if (!activeTurnId) throw new Error("reasonix_error:inbox_not_submitted");
+    const result = await binding.InboxQueueForTarget(target, { kind: "enqueue_steer", text: submit, display, turnId: activeTurnId, idempotencyKey: key });
+    if (result.reason === "unsupported") throw new Error("reasonix_error:inbox_not_submitted — update the service to guide the current turn");
+    return result.receipt;
+  }
+  return enqueueInboxGuidanceForActiveTurn(binding, tabId, display, submit, structured, turnId);
+}
 
 export async function enqueueInboxGuidanceForActiveTurn(
   binding: InboxEnqueueBindings & Pick<AppBindings, "ListTabs">,

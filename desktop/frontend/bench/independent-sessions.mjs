@@ -169,6 +169,15 @@ try {
   assert.equal(pageRequests[rejection].cursor, "old:5");
   assert.equal(pageRequests[rejection + 1].cursor, "", "stale cursor recovery must restart at page one");
   await page.screenshot({ path: path.join(evidence, "pagination-recovered.png") });
+  for (const size of [205, 405, 1000]) {
+    await page.goto(`http://127.0.0.1:${port}/bench/independent-sessions.html?window=${size}`);
+    await page.waitForFunction((size) => document.querySelectorAll(".project-tree__topic-main").length === size, size);
+    const labels = await page.locator(".project-tree__topic-label").allTextContents();
+    assert.equal(new Set(labels).size, size, "recovered whole window has no duplicates");
+    const requests = await page.evaluate(() => window.__independentEvidence.pageRequests);
+    assert.ok(requests.some((request) => request.cursor === "old:200" && request.rejected));
+    assert.equal(requests.filter((request) => request.cursor === "").length, 2, "exactly one automatic recovery");
+  }
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(evidence, "result.json"), JSON.stringify({ passed: true, calls, organizationCalls, runtimeCalls, pageRequests, unreadChecks: ["B 10→20 unread while A=100", "reading A preserves B unread", "reading B clears its unread", "stale ready 10 then20 preserves baseline20 across remount"], errors, scope: "Chromium product components + actual command owners, controlled Desktop RPC; approval/stop use real prompt card (sidebar has no such action)" }, null, 2));
   console.log("PASS independent-session browser: sibling rows, keyboard open, exact group/drag order, approval/stop target, top/history rename, light/dark, creation, archive stale runtime/remount");

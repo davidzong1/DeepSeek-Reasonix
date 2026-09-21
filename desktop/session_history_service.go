@@ -15,6 +15,15 @@ import (
 
 const sessionHistoryContentChunkBytes = 1 << 20
 
+// SessionHistoryOutlineForTab reads durable navigation metadata before runtime startup.
+func (a *App) SessionHistoryOutlineForTab(tabID string, req session.HistoryOutlineRequest) (session.HistoryOutlinePage, error) {
+	query, ref, err := a.canonicalSessionQuery(tabID)
+	if err != nil {
+		return session.HistoryOutlinePage{Entries: []session.HistoryOutlineEntry{}}, err
+	}
+	return query.ReadHistoryOutline(context.Background(), ref, req)
+}
+
 // SessionHistoryContentChunk is one bounded binary chunk from a canonical
 // content reference. Data is base64 so the desktop JSON contract never
 // converts arbitrary attachment bytes through UTF-8 strings.

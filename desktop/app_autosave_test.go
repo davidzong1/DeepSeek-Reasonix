@@ -278,7 +278,7 @@ func TestDesktopSnapshotConflictRecoveryUpdatesTabAndProjectTree(t *testing.T) {
 	if !tabMeta.Recovered || tabMeta.RecoveryDigest != meta.RecoveryDigest || tabMeta.RecoveryParentID != string(meta.ParentID) {
 		t.Fatalf("tab recovery meta = %+v, want digest %q parent %q", tabMeta, meta.RecoveryDigest, meta.ParentID)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	foundOriginal := false
 	var walk func([]ProjectNode)
 	walk = func(list []ProjectNode) {

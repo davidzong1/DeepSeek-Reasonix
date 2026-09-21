@@ -5,11 +5,16 @@ import { chromium } from "playwright";
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
+  const openDelete = async () => {
+    await page.locator(".archived-sessions__open").click();
+    await page.getByRole("button", { name: "Conversation actions" }).click();
+    await page.getByRole("menuitem", { name: "Permanently delete" }).click();
+  };
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   const url = process.env.REASONIX_TRASH_BROWSER_URL || "http://127.0.0.1:4771/bench/trash-lifecycle.html";
   await page.goto(url);
-  await page.getByRole("button", { name: "Permanently delete Fixture conversation" }).click();
+  await openDelete();
   await page.getByRole("dialog").waitFor();
   await page.evaluate(() => window.trashFixture.changeTarget());
   await page.getByRole("button", { name: "Permanently delete", exact: true }).click();
@@ -25,7 +30,7 @@ try {
   assert.equal(await page.getByText("late fixture history").count(), 0);
 
   await page.reload();
-  await page.getByRole("button", { name: "Permanently delete Fixture conversation" }).click();
+  await openDelete();
   await page.evaluate(() => { window.trashFixture.changeOther(); window.trashFixture.loseResult(); });
   await page.getByRole("button", { name: "Permanently delete", exact: true }).click();
   await page.getByRole("button", { name: "Retry failed items" }).waitFor();

@@ -108,11 +108,11 @@ func TestListProjectTopicsPaginatesCustomGroupsIndependently(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ListProjectTopics(ProjectTopicPageRequest{
+	if frozen, err := app.ListProjectTopics(ProjectTopicPageRequest{
 		Scope: "project", WorkspaceRoot: root, Limit: 1, Cursor: first.NextCursor,
 		GroupFilter: "group", GroupID: "feature", ExcludePinned: true,
-	}); err == nil {
-		t.Fatal("cursor from the prior group membership revision must be rejected")
+	}); err != nil || frozen.SnapshotID != first.SnapshotID || len(frozen.Items) != 1 {
+		t.Fatalf("group edit disturbed the frozen read: %+v %v", frozen, err)
 	}
 }
 
@@ -211,11 +211,11 @@ func TestMetadataFallbackBindsGroupCursorToMembershipRevision(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ListProjectTopics(ProjectTopicPageRequest{
+	if frozen, err := app.ListProjectTopics(ProjectTopicPageRequest{
 		Scope: "project", WorkspaceRoot: root, Limit: 1, Cursor: first.NextCursor,
 		GroupFilter: "group", GroupID: "feature",
-	}); err == nil {
-		t.Fatal("metadata cursor from prior group revision must be rejected")
+	}); err != nil || frozen.SnapshotID != first.SnapshotID || len(frozen.Items) != 1 {
+		t.Fatalf("metadata group edit disturbed the frozen read: %+v %v", frozen, err)
 	}
 }
 

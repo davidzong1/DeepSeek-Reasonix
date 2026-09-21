@@ -29,8 +29,9 @@ func (c *Controller) RunInboxTurn(ctx context.Context, id string) error {
 		return err
 	}
 	if block != "" {
-		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateBlocked, block, true); err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
 	err = c.runSynchronousTurn(ctx, func() error {
@@ -38,7 +39,7 @@ func (c *Controller) RunInboxTurn(ctx context.Context, id string) error {
 		defer c.inbox.admissionMu.Unlock()
 		c.inbox.trackAdmission(id)
 		defer c.inbox.untrackAdmission(id)
-		if err := st.ClaimItem(id); err != nil {
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateRunning, "", true); err != nil {
 			return err
 		}
 		c.inbox.mu.Lock()

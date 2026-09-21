@@ -28,6 +28,8 @@ const { resetProjectTreeRuntimeWindowLimits } = await import("../lib/projectTree
 
 const roots = ["/review-a", "/review-b"];
 const projects: ProjectNode[] = roots.map((root, i) => ({ key: `project-${i}`, kind: "project", label: i ? "B" : "A", root, children: [] }));
+let visibleProjects = projects;
+const releasedSnapshots: string[] = [];
 const topic = (id: string, root = roots[0]): ProjectNode => ({ key: id, topicId: id, kind: "topic", label: id, root, children: [] });
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let revision = 1;
@@ -45,7 +47,8 @@ function page(req: ProjectTopicPageRequest): ProjectTopicPage {
   return { revision, items, complete: true, nextCursor: start + items.length < selected.length ? String(start + items.length) : undefined };
 }
 const bindings = {
-  GetProjectTreeSnapshot: async () => ({ revision, projects, catalog: catalog() }),
+  GetProjectTreeSnapshot: async () => ({ revision, projects: visibleProjects, catalog: catalog() }),
+  ReleaseReadSnapshot: async (id: string) => { releasedSnapshots.push(id); },
   ListProjectTopics: async (req: ProjectTopicPageRequest) => { calls.push(req); return intercept?.(req) ?? page(req); },
   GetSessionCatalogStatus: async () => catalog(),
   GetSessionOrganization: async () => ({ groups, revision, order: [], manualOrderEnabled: false }),
@@ -84,7 +87,7 @@ async function event(stale = false) {
   await act(async () => {
     for (const callback of listeners.get("project-tree:changed-v2") ?? []) callback({ revision: stale ? 0 : revision, roots: [roots[0]], reason: "changed" });
   });
-  await flush();
+	await advance(500);
 }
 async function search(value: string) {
   const input = container.querySelector<HTMLInputElement>(".project-tree__search input")!;
@@ -96,7 +99,7 @@ async function search(value: string) {
   await flush();
 }
 async function mount(withGroups = false) {
-  revision = 1; calls = []; intercept = undefined;
+  revision = 1; calls = []; intercept = undefined; visibleProjects = projects; releasedSnapshots.length = 0;
   rows = Object.fromEntries(roots.map((path, i) => [path, Array.from({ length: 12 }, (_, n) => topic(`${i ? "B" : "A"}-${n}`, path))]));
   groups = withGroups ? [{ id: "feature", title: "Feature", topicIds: [] }] : [];
   resetProjectTreeRuntimeWindowLimits(); localStorage.clear();
@@ -111,7 +114,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-mock.timers.enable({ apis: ["setTimeout"] });
+mock.timers.enable({ apis: ["setTimeout", "Date"] });
 try {
   await mount();
   assert.equal(count(), 1, "cold first page loads once");
@@ -160,31 +163,24 @@ try {
   await unmount();
   console.log("  PASS  grouped cold start requests each list exactly once");
 
-  for (const oldFinishesFirst of [true, false]) {
-    await mount();
-    const oldRequest = deferred<ProjectTopicPage>(), freshRequest = deferred<ProjectTopicPage>();
-    let requestIndex = 0;
-    intercept = () => (++requestIndex === 1 ? oldRequest.promise : freshRequest.promise);
-    await event();
-    const oldPage = page(calls.at(-1)!);
-    rows[roots[0]] = [topic("A-fresh"), ...rows[roots[0]]];
-    await event();
-    const freshPage = page(calls.at(-1)!);
-    assert.equal(count(), 3, "invalidation starts a new generation despite an older pending request");
-    if (oldFinishesFirst) {
-      await act(async () => oldRequest.resolve(oldPage)); await flush();
-      assert.ok(container.querySelector(".project-tree__topic-window-status"), "old completion cannot clear the newer loading state");
-      await act(async () => freshRequest.resolve(freshPage));
-    } else {
-      await act(async () => freshRequest.resolve(freshPage)); await flush();
-      await act(async () => oldRequest.resolve(oldPage));
-    }
-    await flush();
-    assert.ok(labels().includes("A-fresh"), "late stale response cannot overwrite fresh data");
-    assert.equal(count(), 3);
-    await unmount();
-  }
-  console.log("  PASS  old/new request completion order preserves the current generation");
+  await mount();
+  const oldRequest = deferred<ProjectTopicPage>(), freshRequest = deferred<ProjectTopicPage>();
+  let requestIndex = 0;
+  intercept = () => (++requestIndex === 1 ? oldRequest.promise : freshRequest.promise);
+  await event();
+  const oldPage = page(calls.at(-1)!);
+  rows[roots[0]] = [topic("A-fresh"), ...rows[roots[0]]];
+  await event();
+  assert.equal(count(), 2, "background events queue behind an active logical read");
+  await act(async () => oldRequest.resolve(oldPage)); await flush();
+  await advance(500);
+  assert.equal(count(), 3, "queued refresh starts after the old read completes");
+  const freshPage = page(calls.at(-1)!);
+  await act(async () => freshRequest.resolve(freshPage)); await flush();
+  assert.ok(labels().includes("A-fresh"));
+  assert.equal(count(), 3);
+  await unmount();
+  console.log("  PASS  background events do not starve pending reads and coalesce into one follow-up");
 
   await mount();
   await folder();
@@ -228,6 +224,29 @@ try {
   assert.equal(count(), 3);
   await unmount();
   console.log("  PASS  sort changes retire pending requests and their cursors");
+
+  await mount();
+  const removedRequest = deferred<ProjectTopicPage>();
+  intercept = req => req.workspaceRoot === roots[0] ? removedRequest.promise : undefined;
+  await event();
+  visibleProjects = [projects[1]]; revision++;
+  await act(async () => root.render(<LocaleProvider><ProjectTree activeScope="project" activeWorkspaceRoot={roots[1]} refreshSignal={1} onOpenTopic={() => {}} onAddProject={async () => {}} /></LocaleProvider>));
+  await flush();
+  assert.ok(!container.textContent?.includes("A-0"));
+  visibleProjects = projects; revision++;
+  intercept = undefined;
+  rows[roots[0]] = [topic("A-returned")];
+  await act(async () => root.render(<LocaleProvider><ProjectTree activeScope="project" activeWorkspaceRoot={roots[0]} refreshSignal={2} onOpenTopic={() => {}} onAddProject={async () => {}} /></LocaleProvider>));
+  await flush(); await advance(500);
+  assert.ok(labels().includes("A-returned"));
+  await event();
+  await act(async () => removedRequest.resolve({ revision: revision + 1, items: [topic("A-obsolete")], snapshotId: "removed-project-read", complete: true }));
+  await flush();
+  assert.ok(labels().includes("A-returned"));
+  assert.ok(!labels().includes("A-obsolete"), "removed/re-added project cannot reuse an old request generation");
+  assert.ok(releasedSnapshots.includes("removed-project-read"));
+  await unmount();
+  console.log("  PASS  project removal/re-addition fences late responses and releases obsolete snapshots");
 } finally {
   mock.timers.reset();
   dom.window.close();

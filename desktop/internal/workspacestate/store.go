@@ -65,6 +65,7 @@ type State struct {
 	PendingOperations  map[string]Operation     `json:"pendingOperations"`
 	RecoveryEntries    map[string]RecoveryEntry `json:"recoveryEntries"`
 	Presentation       map[string]Presentation  `json:"presentation"`
+	TopicRemovals      map[string]TopicRemoval  `json:"topicRemovals,omitempty"`
 	extra              map[string]json.RawMessage
 }
 
@@ -575,6 +576,9 @@ func newState() State {
 }
 
 func normalize(state *State) {
+	if state.TopicRemovals == nil {
+		state.TopicRemovals = map[string]TopicRemoval{}
+	}
 	if state.SessionStates == nil {
 		state.SessionStates = map[string]SessionState{}
 	}
@@ -694,7 +698,7 @@ func (s *State) UnmarshalJSON(body []byte) error {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return err
 	}
-	for _, key := range []string{"version", "generation", "initialized", "workspaceIds", "workspaces", "archivedSessionIds", "pendingCreates", "sessionStates", "sourceMappings", "pendingOperations", "recoveryEntries", "presentation"} {
+	for _, key := range []string{"version", "generation", "initialized", "workspaceIds", "workspaces", "archivedSessionIds", "pendingCreates", "sessionStates", "sourceMappings", "pendingOperations", "recoveryEntries", "presentation", "topicRemovals"} {
 		delete(fields, key)
 	}
 	*s = State(decoded)

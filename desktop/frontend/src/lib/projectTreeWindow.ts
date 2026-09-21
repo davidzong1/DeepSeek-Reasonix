@@ -1,4 +1,5 @@
 import type { ProjectNode } from "./types";
+import { isStaleRead, releaseReadSnapshot } from "./readSnapshot";
 
 export const PROJECT_TREE_WINDOW_INITIAL = 5;
 export const PROJECT_TREE_WINDOW_STEP = 5;
@@ -6,6 +7,7 @@ export const PROJECT_TREE_SEARCH_PAGE = 50;
 export const PROJECT_TREE_BACKEND_PAGE_MAX = 200;
 
 export type ProjectTreeListPageState = {
+  snapshotId?: string;
   itemKeys?: string[];
   nextCursor?: string;
   loading: boolean;
@@ -52,6 +54,8 @@ export type ProjectTreeRequestLimiter = {
 };
 
 type ProjectTreePage<T> = {
+  snapshotId?: string;
+  replacedSnapshot?: boolean;
   items: T[];
   nextCursor?: string;
   revision: number;
@@ -62,7 +66,9 @@ export async function loadProjectTreePageWindow<T, TPage extends ProjectTreePage
   initialCursor: string,
   requestedLimit: number,
   load: (cursor: string, limit: number) => Promise<TPage>,
-): Promise<TPage> {
+  recoveryLimit = requestedLimit,
+  allowRecovery = true,
+): Promise<TPage & { replacedSnapshot?: boolean }> {
   const items: T[] = [];
   let cursor = initialCursor;
   let remaining = Math.max(1, Math.floor(requestedLimit));
@@ -70,8 +76,14 @@ export async function loadProjectTreePageWindow<T, TPage extends ProjectTreePage
   let revision = 0;
   let incomplete = false;
 
+  try {
   while (remaining > 0) {
     const page = await load(cursor, Math.min(remaining, PROJECT_TREE_BACKEND_PAGE_MAX));
+    if (result?.snapshotId && page.snapshotId !== result.snapshotId) {
+      releaseReadSnapshot(page.snapshotId);
+      throw new Error("Mixed read snapshots in one list window");
+    }
+    if (page.nextCursor && (page.nextCursor === cursor || page.items.length === 0)) throw new Error("List cursor did not advance");
     result = page;
     items.push(...page.items);
     revision = Math.max(revision, page.revision);
@@ -79,6 +91,12 @@ export async function loadProjectTreePageWindow<T, TPage extends ProjectTreePage
     remaining -= page.items.length;
     if (!page.nextCursor || page.items.length === 0) break;
     cursor = page.nextCursor;
+  }
+  } catch (error) {
+    if (!initialCursor) releaseReadSnapshot(result?.snapshotId);
+    if (!allowRecovery || !isStaleRead(error)) throw error;
+    const rebuilt = await loadProjectTreePageWindow("", recoveryLimit, load, recoveryLimit, false);
+    return { ...rebuilt, replacedSnapshot: true };
   }
 
   if (!result) throw new Error("project tree page loader returned no page");

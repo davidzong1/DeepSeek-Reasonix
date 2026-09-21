@@ -3,6 +3,9 @@ import { asArray } from "./array";
 import { removeEmptyAssistantItems } from "./assistantItems";
 import type { Item, State } from "./useController";
 import { removeLocalSubmission, updateLocalSubmission } from "./localSubmissionState";
+import type { ManagementReceipt } from "./turnSubmit";
+import { t } from "./i18n";
+import { isTerminalSessionOperation } from "./sessionMaintenanceOperation";
 
 export function reduceSubmitFailure(
   state: State,
@@ -43,9 +46,11 @@ export function reduceSubmitFailure(
   };
 }
 
-export function reduceManagementConfirmation(state: State, submissionId: string, observedAt: number): State {
-  if (state.pendingSubmissionId !== submissionId) return removeLocalSubmission(state, submissionId);
-  return removeLocalSubmission({
+export function reduceManagementConfirmation(state: State, submissionId: string, observedAt: number, receipt?: ManagementReceipt): State {
+  const ownsRequest = state.pendingSubmissionId === submissionId;
+  // Compact requests do not create optimistic chat turns. Only legacy
+  // management submissions with their own echo need conversational cleanup.
+  const next = removeLocalSubmission(ownsRequest ? {
     ...state,
     pendingUser: undefined,
     pendingSubmissionId: undefined,
@@ -61,7 +66,17 @@ export function reduceManagementConfirmation(state: State, submissionId: string,
     streamAttemptJournal: undefined,
     deliveryRecoveryActive: false,
     turnLifecycleObservedAt: observedAt,
-  }, submissionId);
+  } : state, submissionId);
+  if (!receipt?.errorCode) return next;
+  const busy = receipt.errorCode === "maintenance_busy";
+  // An admission response can arrive after the operation's durable terminal event.
+  if (busy && next.items.some(item => item.kind === "compaction" && item.operationId === receipt.operationId
+    && isTerminalSessionOperation(item.status))) return next;
+  const text = t(busy ? "compaction.alreadyRunning" : receipt.errorCode === "maintenance_recovery_required"
+    ? "compaction.recoveryRequired" : "compaction.unavailable");
+  const id = `management:${receipt.operationId || submissionId}:${receipt.errorCode}`;
+  return { ...next, items: [...next.items.filter(item => item.id !== id),
+    { kind: "notice", id, local: true, level: busy ? "info" : "warn", text } as Item] };
 }
 
 export async function findTabAfterSubmitFailure(

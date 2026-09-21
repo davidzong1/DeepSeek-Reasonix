@@ -11,6 +11,7 @@ import (
 )
 
 func (s *Server) registerInboxRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /inbox/queue", s.foregroundMutation(s.inboxQueueCommand))
 	mux.HandleFunc("GET /inbox", s.inboxList)
 	mux.HandleFunc("GET /inbox/receipt", s.inboxReceipt)
 	mux.HandleFunc("POST /inbox/items", s.foregroundMutation(s.inboxEnqueue))
@@ -22,6 +23,30 @@ func (s *Server) registerInboxRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /inbox/resume", s.foregroundMutation(s.inboxResume))
 	mux.HandleFunc("POST /inbox/items/{id}/retry", s.foregroundMutation(s.inboxRetry))
 	mux.HandleFunc("POST /inbox/items/{id}/refresh", s.foregroundMutation(s.inboxRefresh))
+}
+
+func (s *Server) inboxQueueCommand(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionPath string                    `json:"sessionPath"`
+		Request     control.InboxQueueRequest `json:"request"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, sessioninbox.DefaultMaxItemBytes+4096)).Decode(&body); err != nil || body.SessionPath == "" {
+		http.Error(w, "missing queue target", http.StatusBadRequest)
+		return
+	}
+	api, ok := s.inboxAPI().(interface {
+		InboxQueue(string, control.InboxQueueRequest) (control.InboxQueueResult, error)
+	})
+	if !ok {
+		http.Error(w, "unsupported", http.StatusNotImplemented)
+		return
+	}
+	result, err := api.InboxQueue(body.SessionPath, body.Request)
+	if err != nil {
+		writeInboxError(w, err)
+		return
+	}
+	writeJSON(w, result)
 }
 
 func (s *Server) inboxAPI() control.SessionAPI {

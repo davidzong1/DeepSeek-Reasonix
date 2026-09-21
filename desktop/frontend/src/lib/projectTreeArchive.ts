@@ -5,10 +5,13 @@ import type { ToastContextValue } from "./toast";
 import type { ProjectNode } from "./types";
 import { sessionLifecycleFences } from "./sessionLifecycleFences";
 import { projectSessionIdentity } from "./projectSessionIdentity";
+import { releaseReadSnapshot } from "./readSnapshot";
+import { useT } from "./i18n";
+import type { TopicRemovalInspection, TopicRemovalRequest } from "../generated/desktopContract.generated";
 
 export { projectTreeWithoutTopics } from "./projectTreeTopic";
 
-type TopicPageState = { itemKeys?: string[]; nextCursor?: string; loading: boolean; initialized?: boolean; error?: string };
+type TopicPageState = { snapshotId?: string; itemKeys?: string[]; nextCursor?: string; loading: boolean; initialized?: boolean; error?: string };
 
 export type ProjectTreeRefreshOptions = {
   reloadTopicKeys?: string[];
@@ -53,14 +56,14 @@ export async function runProjectTreeArchiveJob({
   finishPending,
   recover,
 }: {
-  archive: () => Promise<void>;
+  archive: () => Promise<void | boolean>;
   commit: () => void;
   reload: () => Promise<void>;
   finishPending: () => void;
   recover: (error: unknown) => Promise<void>;
 }): Promise<boolean> {
   try {
-    await archive();
+    if (await archive() === false) { finishPending(); return false; }
   } catch (error) {
     // Failed mutations must become visible to the recovery reload.
     finishPending();
@@ -176,6 +179,14 @@ export function useProjectTreeArchiveController({
   showToast: ToastContextValue["showToast"];
   sessionErrorMessage?: (error: unknown) => string;
 }) {
+  const t = useT();
+  const [topicRemovalInspections, setTopicRemovalInspections] = useState<Record<string, TopicRemovalInspection>>({});
+  const topicRemovalRequests = useRef(new Map<string, TopicRemovalRequest>());
+  const inspectTopicRemoval = useCallback(async (topicId: string) => {
+    const view = await app.InspectTopicRemoval({ workspaceId: "", topicId });
+    setTopicRemovalInspections(previous => ({ ...previous, [topicId]: view }));
+    return view;
+  }, []);
   const {
     trashingTopics,
     beginTrashingTopic,
@@ -203,7 +214,7 @@ export function useProjectTreeArchiveController({
 
     const queued = enqueueProjectTreeArchive(archiveQueueRef.current, async () => {
       await runProjectTreeArchiveJob({
-        archive: () => app.TrashTopic(topicId),
+        archive: async () => (await import("./topicRemovalCommand")).removeProjectTopic(topicId, inspectTopicRemoval, topicRemovalRequests.current, t),
         commit: () => {
           commitArchiveTombstone(topicId);
           // Fence every load that captured the catalog before backend commit,
@@ -216,7 +227,8 @@ export function useProjectTreeArchiveController({
             }
             for (const [key, state] of Object.entries(topicPageStateRef.current)) {
               if (key !== folderKey && !key.startsWith(prefix)) continue;
-              updateTopicPageState(key, { ...state, nextCursor: undefined, loading: false, initialized: false, error: undefined });
+              releaseReadSnapshot(state.snapshotId);
+              updateTopicPageState(key, { ...state, snapshotId: undefined, nextCursor: undefined, loading: false, initialized: false, error: undefined });
             }
           }
           optimisticallyRemoveTopic(topicId);
@@ -234,7 +246,7 @@ export function useProjectTreeArchiveController({
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, topicLoadPendingRef, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
+  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, inspectTopicRemoval, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, t, topicLoadPendingRef, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
 
   const trashSession = useCallback(async (target: ProjectNode) => {
     const sessionPath = (target.sessionPath ?? "").trim();
@@ -278,5 +290,5 @@ export function useProjectTreeArchiveController({
     await queued;
   }, [closeMenu, commitArchiveTombstone, onTopicsChanged, optimisticallyRemoveSession, refreshRef, releaseArchiveTombstone, sessionErrorMessage, showToast, topicLoadSeqRef, treeRef]);
 
-  return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession };
+  return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession, inspectTopicRemoval, topicRemovalInspections };
 }

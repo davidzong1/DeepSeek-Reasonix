@@ -25,7 +25,7 @@ func (c *Catalog) directoryScanCanSkip(ctx context.Context, target DirectoryTarg
 	}
 	var expectedTotal, present, unprojected, missing int
 	var storedScope, storedRoot string
-	err := c.db.QueryRowContext(ctx, `SELECT scope,workspace_root,total,
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT scope,workspace_root,total,
 		(SELECT COUNT(*) FROM catalog_sessions WHERE directory_key=? AND missing_since=0),
 		(SELECT COUNT(*) FROM catalog_sessions s
 		 WHERE s.directory_key=? AND s.missing_since=0 AND s.topic_id<>''
@@ -73,7 +73,7 @@ func (c *Catalog) directoryScanCanSkip(ctx context.Context, target DirectoryTarg
 		c.markRepair(repairReasonPathMismatch, c.opts.Now().UnixMilli())
 		return false, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT path,directory,scope,workspace_root,
+	rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT path,directory,scope,workspace_root,
 		topic_id,topic_title,custom_title,created_at,last_activity_at,preview,
 		turns,turns_state,recovered,recovery_reason,recovery_digest,parent_id,
 		recovery_copy,recovery_group_id,recovery_role,recovery_canonical,
@@ -152,7 +152,7 @@ func (c *Catalog) markDirectoryVerified(target DirectoryTarget, signature string
 
 func (c *Catalog) markDirectoryVerifiedIfStable(ctx context.Context, target DirectoryTarget, signature string) {
 	var missing int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE directory_key=? AND missing_since>0`,
+	if err := c.readDB(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE directory_key=? AND missing_since>0`,
 		c.pathKey(target.Path)).Scan(&missing); err == nil && missing == 0 {
 		c.markDirectoryVerified(target, signature)
 	}

@@ -3,6 +3,10 @@ import type { StructuredInvocationSubmit } from "./invocationDisplay";
 import type { CollaborationMode, ToolApprovalMode } from "./types";
 import { submitAttachmentTurn } from "./attachmentSubmit";
 import { draftSubmit } from "./draftSubmit";
+import { isCompactSubmission } from "./sessionMaintenanceOperation";
+
+export type ManagementReceipt = { operationId?: string; errorCode?: string };
+type SubmitOutcome = [0] | [1, string[]] | [2, ManagementReceipt] | [3, string];
 
 export async function submitTurn(
   app: AppBindings,
@@ -13,9 +17,14 @@ export async function submitTurn(
   original: string,
   structured?: StructuredInvocationSubmit,
   initialGoal?: { goal: string; collaborationMode: CollaborationMode; toolApprovalMode: ToolApprovalMode },
-): Promise<[number, (string | string[])?]> {
+): Promise<SubmitOutcome> {
   let receipt: unknown;
-  if (structured?.attachments?.length) receipt = await submitAttachmentTurn(app, submissionId, structured, original, initialGoal);
+  // Management commands have no durable user row to edit. Preserve the actual
+  // instructions (including expanded paste blocks) through the typed admission.
+  if (isCompactSubmission(submit, structured, initialGoal)) receipt = typeof app.StartTurnForTab === "function"
+    ? await app.StartTurnForTab(tabId, submit, submissionId)
+    : await app.SubmitToTabWithID(tabId, submit, submissionId);
+  else if (structured?.attachments?.length) receipt = await submitAttachmentTurn(app, submissionId, structured, original, initialGoal);
   else if (initialGoal) {
     receipt = await app.SubmitInitialGoalToTabWithID(
       tabId,
@@ -32,7 +41,10 @@ export async function submitTurn(
   else if (display !== submit) receipt = await app.SubmitDisplayToTabWithID(tabId, display, submit, submissionId);
   else receipt = await draftSubmit(app, tabId, submit, submissionId);
   if (initialGoal) return [1, Array.isArray(receipt) ? receipt : []];
-  if (receipt && typeof receipt === "object" && "disposition" in receipt && receipt.disposition === "management_handled") return [2];
+  if (receipt && typeof receipt === "object" && "disposition" in receipt && receipt.disposition === "management_handled") return [2, {
+    operationId: "operationId" in receipt && typeof receipt.operationId === "string" ? receipt.operationId : undefined,
+    errorCode: "managementErrorCode" in receipt && typeof receipt.managementErrorCode === "string" ? receipt.managementErrorCode : undefined,
+  }];
   if (receipt && typeof receipt === "object" && "turnId" in receipt && typeof receipt.turnId === "string") return [3, receipt.turnId];
   return [0];
 }

@@ -54,7 +54,7 @@ func scanSession(scanner interface{ Scan(...any) error }) (SessionRecord, error)
 // ListSessions returns only catalog metadata. It never opens a transcript or
 // sidecar and therefore remains safe on startup and UI pagination paths.
 func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (SessionPage, error) {
-	out := SessionPage{Items: []SessionRecord{}, Revision: c.revision.Load()}
+	out := SessionPage{Items: []SessionRecord{}, Revision: c.readRevision(ctx)}
 	if req.Limit <= 0 {
 		req.Limit = DefaultLimit
 	}
@@ -90,7 +90,7 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 		like := "%" + query + "%"
 		args = append(args, like, like, like, like)
 	}
-	appendSessionTimeFilter(&where, &args, req.TimeFilter, c.opts.Now())
+	appendSessionTimeFilter(&where, &args, req.TimeFilter, c.readTime(ctx))
 	scanCursor := cursor
 	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
@@ -101,7 +101,7 @@ func (c *Catalog) ListSessions(ctx context.Context, req SessionPageRequest) (Ses
 			pageArgs = append(pageArgs, scanCursor.Activity, scanCursor.Activity, scanCursor.Path)
 		}
 		pageArgs = append(pageArgs, scanLimit)
-		rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE `+
+		rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE `+
 			strings.Join(pageWhere, ` AND `)+` ORDER BY last_activity_at DESC,path ASC LIMIT ?`, pageArgs...)
 		if err != nil {
 			return out, err
@@ -172,7 +172,7 @@ func (c *Catalog) GetSession(ctx context.Context, path string) (SessionRecord, b
 	if c.pathRemoved(path) {
 		return SessionRecord{}, false, nil
 	}
-	record, err := scanSession(c.db.QueryRowContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE path_key=?`, c.pathKey(path)))
+	record, err := scanSession(c.readDB(ctx).QueryRowContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions WHERE path_key=?`, c.pathKey(path)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, false, nil
 	}

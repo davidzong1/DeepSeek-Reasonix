@@ -48,7 +48,7 @@ func TestProjectTreeShowsDetachedRuntimeStatus(t *testing.T) {
 
 	ctrl.Submit("keep detached runtime running")
 	<-runner.started
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
@@ -134,7 +134,7 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 		t.Fatal("waiting prompt was not committed")
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
 		t.Fatalf("project tree = %#v, want two independent global sessions", nodes)
 	}
@@ -199,7 +199,7 @@ func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {
 	app.tabOrder = []string{"job"}
 	app.activeTabID = "job"
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
@@ -224,7 +224,7 @@ func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {
 
 	close(release)
 	waitNoJobs(t, ctrl)
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree after job finish = %#v, want one global topic", nodes)
 	}

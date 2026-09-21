@@ -90,7 +90,15 @@ func sessionlessModelSettingsOperation(t *testing.T, app *App, kind, ref string)
 			t.Fatal(err)
 		}
 	case "protocol_upgrade":
-		if _, err := app.AddOfficialProviderAccess("deepseek", key); err != nil {
+		// This compatibility operation upgrades a legacy single-model OpenAI
+		// connection. A newly added official connection already has the current
+		// catalog and is intentionally ineligible.
+		cfg := config.LoadForEdit(config.UserConfigPath())
+		cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+			Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com",
+			Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
+		})
+		if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 			t.Fatal(err)
 		}
 		change.Name = "deepseek-flash"

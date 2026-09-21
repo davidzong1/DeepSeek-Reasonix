@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { captureListReadAnchor, restoreListReadAnchor, type ListReadAnchor } from "../lib/listReadAnchor";
 import { ProjectTreeSessionBadges } from "./ProjectTreeSessionBadges";
 import { sessionLifecycleFences } from "../lib/sessionLifecycleFences";
 import { projectSessionIdentity, projectSessionRowKey } from "../lib/projectSessionIdentity";
@@ -8,6 +9,7 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
 import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
+import { releaseReadSnapshot } from "../lib/readSnapshot";
 import { sessionCatalogNotice } from "../lib/sessionCatalogPresentation";
 import { sessionTitleErrorKey, sessionTitleTarget } from "../lib/sessionTitleOperation";
 import { useSessionTitleOperation } from "../lib/useSessionTitleOperation";
@@ -35,11 +37,8 @@ import type { ProjectTreeProps } from "./ProjectTreeProps";
 import { PROJECT_TREE_SEARCH_PAGE, PROJECT_TREE_WINDOW_INITIAL, PROJECT_TREE_WINDOW_STEP, forgetProjectTreeWindowLimits, loadProjectTreePageWindow, projectTreeListKey, projectTreeListNeedsInitialization, projectTreeProjectsNeedingInitialLoad, projectTreeWindowRows, reloadProjectTreeTopicLists, rememberProjectTreeWindowLimit, type ProjectTreeListPageState } from "../lib/projectTreeWindow";
 import { useProjectTreeReadActivity } from "./useProjectTreeReadActivity";
 import { useProjectTreeListRuntime } from "../lib/useProjectTreeListRuntime";
-
-function projectNodeKey(node: ProjectNode, depth: number): string {
-  if (node.session || node.sessionPath || node.source || node.remoteSession || node.tabId) return projectSessionRowKey(node);
-  return node.key || `${node.kind}-${node.root ?? ""}-${node.topicId ?? ""}-${node.sessionPath ?? ""}-${depth}`;
-}
+import { activeSessionAncestorKeys, collapsibleProjectTreeFolderKeys, defaultExpandedProjectTreeKeys, projectTreeNodeKey as projectNodeKey } from "../lib/projectTreeExpansion";
+export { activeSessionAncestorKeys, defaultExpandedProjectTreeKeys } from "../lib/projectTreeExpansion";
 
 type WorkbenchHeaderMenu = "more" | "add" | null;
 
@@ -47,70 +46,6 @@ type CollapseSnapshot = {
   expanded: Set<string>;
   manuallyCollapsed: Set<string>;
 };
-
-function collapsibleFolderKeys(nodes: ProjectNode[], depth = 0): string[] {
-  const keys: string[] = [];
-  for (const node of nodes) {
-    if (!node) continue;
-    const children = asArray(node.children);
-    if ((node.kind === "project" || node.kind === "global_folder") && children.length > 0) {
-      keys.push(projectNodeKey(node, depth));
-    }
-    keys.push(...collapsibleFolderKeys(children, depth + 1));
-  }
-  return keys;
-}
-
-export function activeSessionAncestorKeys(
-  nodes: ProjectNode[],
-  activeScope?: string,
-  activeWorkspaceRoot?: string,
-  activeTopicId?: string,
-  activeSessionPath?: string,
-): string[] {
-  const walk = (nodeList: ProjectNode[], ancestors: string[]): string[] | null => {
-    for (const node of nodeList) {
-      if (!node) continue;
-      if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) return ancestors;
-      const children = asArray(node.children);
-      if (children.length > 0) {
-        const next = walk(children, [...ancestors, projectNodeKey(node, ancestors.length)]);
-        if (next) return next;
-      }
-    }
-    return null;
-  };
-  const found = walk(nodes, []);
-  if (found) return found;
-  // Shell-only snapshots no longer embed topics. Expand the matching project or
-  // Global folder by workspace identity so the first lazy page can load.
-  const scope = (activeScope ?? "").trim();
-  const root = (activeWorkspaceRoot ?? "").trim();
-  for (const node of nodes) {
-    if (!node) continue;
-    if (scope === "global" && node.kind === "global_folder") {
-      return [projectNodeKey(node, 0)];
-    }
-    if (node.kind === "project" && root && (node.root === root || node.root === activeWorkspaceRoot)) {
-      return [projectNodeKey(node, 0)];
-    }
-    if (!scope && !root && activeTopicId && (node.kind === "project" || node.kind === "global_folder")) {
-      // Active topic without resolved scope still needs a folder open path.
-      return [projectNodeKey(node, 0)];
-    }
-  }
-  return [];
-}
-
-export function defaultExpandedProjectTreeKeys(
-  nodes: ProjectNode[],
-  activeScope?: string,
-  activeWorkspaceRoot?: string,
-  activeTopicId?: string,
-  activeSessionPath?: string,
-): string[] {
-  return activeSessionAncestorKeys(nodes, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
-}
 
 // Global rows use the same project tree recipe; the fallback supplies their non-workspace accent.
 function projectAccentStyle(color?: string, fallbackValue?: string): CSSProperties | undefined {
@@ -189,6 +124,7 @@ export function ProjectTree({
   const t = useT();
   const { showToast } = useToast();
   const projectTreeRef = useRef<HTMLDivElement>(null);
+  const readAnchorRef = useRef<ListReadAnchor | undefined>(undefined);
   const compactTopics = variant === "workbench";
   const creationTopics = variant === "creation";
   const [tree, setTree] = useState<ProjectNode[]>([]);
@@ -245,7 +181,7 @@ export function ProjectTree({
   topicRequestContextRef.current = { query: query.trim(), sortMode: creationTopics ? "updated" : workbenchSortMode };
   const activeSummaryRequestRef = useRef("");
   const refreshRef = useRef<ProjectTreeRefresh>(async () => {});
-  const { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession } = useProjectTreeArchiveController({
+  const { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession, inspectTopicRemoval, topicRemovalInspections } = useProjectTreeArchiveController({
     treeRef, topicLoadSeqRef, topicLoadPendingRef, topicPageStateRef, updateTopicPageState, refreshRef,
     optimisticallyRemoveTopic: (topicId) => setTree((current) => projectTreeWithoutTopic(current, topicId)),
     optimisticallyRemoveSession: (node) => setTree((current) => projectTreeWithoutSession(current, node)),
@@ -287,14 +223,36 @@ export function ProjectTree({
     });
   }, []);
 
-  const loadProjectTopicsRef = useRef<(project: ProjectNode, append?: boolean, groupID?: string) => Promise<void>>(async () => {});
+  const loadProjectTopicsRef = useRef<(project: ProjectNode, append?: boolean, groupID?: string, background?: boolean) => Promise<void>>(async () => {});
+  const topicRefreshPendingRef = useRef(new Map<string, () => void>());
+  const topicLastStartRef = useRef<Record<string, number>>({});
+  const topicRefreshTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => () => {
+    for (const timer of topicRefreshTimersRef.current.values()) clearTimeout(timer);
+    topicRefreshPendingRef.current.clear();
+    for (const state of Object.values(topicPageStateRef.current)) releaseReadSnapshot(state.snapshotId);
+    for (const key of Object.keys(topicLoadSeqRef.current)) topicLoadSeqRef.current[key]++;
+  }, [topicLoadSeqRef, topicPageStateRef]);
 
-  const loadProjectTopics = useCallback(async (project: ProjectNode, append = false, groupID = "") => {
+  const loadProjectTopics = useCallback(async (project: ProjectNode, append = false, groupID = "", background = false) => {
     if ((project.kind !== "project" && project.kind !== "global_folder") || project.remote) return;
     const key = project.key;
     const normalizedQuery = query.trim();
     const listKey = projectTreeListKey(key, groupID, normalizedQuery);
-    if (topicLoadPendingRef.current[listKey] !== undefined) return;
+    if (topicLoadPendingRef.current[listKey] !== undefined) {
+      if (!append) topicRefreshPendingRef.current.set(listKey, () => { void loadProjectTopicsRef.current(project, false, groupID, true); });
+      return;
+    }
+    if (background && !append && Date.now() - (topicLastStartRef.current[listKey] ?? 0) < 500) {
+      if (!topicRefreshTimersRef.current.has(listKey)) {
+        topicRefreshTimersRef.current.set(listKey, setTimeout(() => {
+          topicRefreshTimersRef.current.delete(listKey);
+          void loadProjectTopicsRef.current(project, false, groupID, true);
+        }, 500 - (Date.now() - topicLastStartRef.current[listKey])));
+      }
+      return;
+    }
+    topicLastStartRef.current[listKey] = Date.now();
     const pageState = topicPageStateRef.current[listKey];
     if (pageState?.loading) return;
     const cursor = append ? pageState?.nextCursor ?? "" : "";
@@ -338,14 +296,17 @@ export function ProjectTree({
           // for ordinary projects. A pinned project is itself that section's
           // folder, so its children must remain available inside it.
           excludePinned,
-        }));
+        }), append ? Math.max(limit, (pageState?.itemKeys?.length ?? 0) + limit) : limit);
       });
       if (!page) return;
-      if (topicLoadSeqRef.current[listKey] !== seq) return;
+      if (topicLoadSeqRef.current[listKey] !== seq) { if (!append || page.replacedSnapshot) releaseReadSnapshot(page.snapshotId); return; }
       const currentContext = topicRequestContextRef.current;
-      if (currentContext.query !== normalizedQuery || currentContext.sortMode !== sortMode) return;
+      if (currentContext.query !== normalizedQuery || currentContext.sortMode !== sortMode) { if (!append || page.replacedSnapshot) releaseReadSnapshot(page.snapshotId); return; }
+      const appendPage = append && !page.replacedSnapshot;
+      if (appendPage && pageState?.snapshotId && page.snapshotId !== pageState.snapshotId) throw new Error("Mixed read snapshots in one list");
       delete topicLoadErrorRef.current[listKey];
       if (!projectTreeTopicPageIsFresh(topicRevisionRef.current, listKey, page.revision)) {
+        if (!appendPage) releaseReadSnapshot(page.snapshotId);
         updateTopicPageState(listKey, { ...topicPageStateRef.current[listKey], loading: false });
         return;
       }
@@ -354,35 +315,41 @@ export function ProjectTree({
       const items = projectTreeWithoutTopics(asArray(page.items), currentArchiveTombstones());
       const completeBaseline = topicCompletePageRef.current[listKey];
       const preserveCompletePage = page.complete === false && completeBaseline?.signature === requestSignature;
+      if (preserveCompletePage && !appendPage) {
+        releaseReadSnapshot(page.snapshotId);
+        updateTopicPageState(listKey, { ...topicPageStateRef.current[listKey], loading: false });
+        return;
+      }
       const incomingKeys = items.map((item) => item.key);
       const previousKeys = topicPageStateRef.current[listKey]?.itemKeys ?? [];
-      const itemKeys = append || preserveCompletePage
+      const itemKeys = appendPage || preserveCompletePage
         ? [...new Set([...previousKeys, ...incomingKeys])]
         : incomingKeys;
       if (page.complete !== false) {
         topicCompletePageRef.current[listKey] = { signature: requestSignature, revision: page.revision };
       }
+      if (!appendPage && pageState?.initialized && !readAnchorRef.current) readAnchorRef.current = captureListReadAnchor(projectTreeRef.current);
       setTree((current) => applyRuntimeProjection(current.map((node) => {
         if (node.key !== key) return node;
+        const previous = new Set(previousKeys);
+        const otherLists = new Set(Object.entries(topicPageStateRef.current)
+          .filter(([other]) => other !== listKey && other.startsWith(`${key}\u001f`))
+          .flatMap(([, state]) => state.itemKeys ?? []));
+        const retained = appendPage ? asArray(node.children) : asArray(node.children)
+          .filter((child) => child.pinned || !previous.has(child.key) || otherLists.has(child.key));
         const children = preserveCompletePage
           ? mergeIncompleteProjectTopicPage(asArray(node.children), items)
-          : mergeProjectTopicPage(asArray(node.children), items, true);
+          : mergeProjectTopicPage(retained, items, true);
         return children === node.children ? node : { ...node, children };
       })));
       updateTopicPageState(listKey, preserveCompletePage
         ? { ...topicPageStateRef.current[listKey], itemKeys, loading: false, initialized: true }
-        : { itemKeys, nextCursor: page.nextCursor, loading: false, initialized: true });
+        : { itemKeys, nextCursor: page.nextCursor, snapshotId: page.snapshotId, loading: false, initialized: true });
+      if (preserveCompletePage && !appendPage) releaseReadSnapshot(page.snapshotId);
+      else if (!appendPage && pageState?.snapshotId !== page.snapshotId) releaseReadSnapshot(pageState?.snapshotId);
     } catch (error) {
       if (topicLoadSeqRef.current[listKey] !== seq) return;
       const message = error instanceof Error ? error.message : String(error);
-      if (cursor && ((error as { code?: string })?.code === "stale_cursor" || (error as { data?: { sessionCode?: string } })?.data?.sessionCode === "stale_cursor" || message.includes("stale_cursor"))) {
-        delete topicCompletePageRef.current[listKey];
-        delete topicRevisionRef.current[listKey];
-        updateTopicPageState(listKey, { itemKeys: [], loading: false, initialized: false });
-        if (topicLoadPendingRef.current[listKey] === seq) delete topicLoadPendingRef.current[listKey];
-        void loadProjectTopicsRef.current(project, false, groupID);
-        return;
-      }
       updateTopicPageState(listKey, { ...topicPageStateRef.current[listKey], loading: false, initialized: true, error: message });
       if (topicLoadErrorRef.current[listKey] !== message) {
         topicLoadErrorRef.current[listKey] = message;
@@ -390,9 +357,15 @@ export function ProjectTree({
       }
     } finally {
       if (topicLoadPendingRef.current[listKey] === seq) delete topicLoadPendingRef.current[listKey];
+      if (topicLoadSeqRef.current[listKey] === seq) {
+        const pending = topicRefreshPendingRef.current.get(listKey);
+        topicRefreshPendingRef.current.delete(listKey);
+        pending?.();
+      }
     }
   }, [applyRuntimeProjection, creationTopics, currentArchiveTombstones, query, showToast, updateTopicPageState]);
   loadProjectTopicsRef.current = loadProjectTopics;
+  useLayoutEffect(() => { restoreListReadAnchor(projectTreeRef.current, readAnchorRef.current); readAnchorRef.current = undefined; }, [tree]);
 
   const topicListState = useCallback((project: ProjectNode, groupID = "") => (
     topicPageState[projectTreeListKey(project.key, groupID, query)]
@@ -435,6 +408,7 @@ export function ProjectTree({
     delete topicCompletePageRef.current[listKey];
     delete topicLoadErrorRef.current[listKey];
     const nextPages = { ...topicPageStateRef.current };
+    releaseReadSnapshot(nextPages[listKey]?.snapshotId);
     delete nextPages[listKey];
     topicPageStateRef.current = nextPages;
     setTopicPageState(nextPages);
@@ -445,11 +419,10 @@ export function ProjectTree({
     rememberProjectTreeWindowLimit(listKey, PROJECT_TREE_WINDOW_INITIAL);
   }, []);
   const reloadProjectTopicLists = useCallback((project: ProjectNode) => {
-    invalidateProjectTopicLists(project.key);
     return reloadProjectTreeTopicLists(project,
       topicRequestContextRef.current.query, topicPageStateRef.current,
-      (target, groupID) => ensureTopicListRef.current(target, groupID));
-  }, [invalidateProjectTopicLists]);
+      (target, groupID) => loadProjectTopicsRef.current(target, false, groupID, true));
+  }, []);
 
   const changeQuery = useCallback((value: string) => {
     if (value.trim() !== topicRequestContextRef.current.query) {
@@ -574,7 +547,10 @@ export function ProjectTree({
     void refresh();
   }, [refresh, refreshSignal]);
 
-  useEffect(() => onProjectTreeChangedV2((event) => {
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let latest: Parameters<Parameters<typeof onProjectTreeChangedV2>[0]>[0] | undefined;
+    const apply = (event: NonNullable<typeof latest>) => {
     // A stale or missed revision means the tree may have drifted from the
     // catalog; refetch the full snapshot instead of dropping the event.
     if (!projectTreeRevisionIsFresh(latestRevisionRef.current, event.revision)) {
@@ -593,7 +569,13 @@ export function ProjectTree({
         else invalidateProjectTopicLists(project.key);
       }
     }
-  }), [expanded, invalidateProjectTopicLists, refresh, reloadProjectTopicLists]);
+    };
+    const unsubscribe = onProjectTreeChangedV2((event) => {
+      latest = latest ? { ...event, roots: latest.roots.length && event.roots.length ? [...new Set([...latest.roots, ...event.roots])] : [], reason: latest.reason === "metadata" ? "metadata" : event.reason } : event;
+      if (timer === undefined) timer = setTimeout(() => { timer = undefined; const event = latest; latest = undefined; if (event) apply(event); }, 200);
+    });
+    return () => { unsubscribe(); if (timer !== undefined) clearTimeout(timer); };
+  }, [expanded, invalidateProjectTopicLists, refresh, reloadProjectTopicLists]);
   // Debounce query reloads so typing does not stampede the catalog.
   // Dependency is the project-shell signature, not tree: topic page loads
   // rewrite children and would otherwise re-arm this effect in a loop.
@@ -609,13 +591,18 @@ export function ProjectTree({
     const nextPages: Record<string, ProjectTreeListPageState> = {};
     for (const [key, state] of Object.entries(topicPageStateRef.current)) {
       if (keep(key)) nextPages[key] = state;
-      else changed = true;
+      else { releaseReadSnapshot(state.snapshotId); changed = true; }
     }
     if (changed) {
       topicPageStateRef.current = nextPages;
       setTopicPageState(nextPages);
     }
-    for (const records of [topicLoadSeqRef.current, topicLoadPendingRef.current, topicRevisionRef.current, topicCompletePageRef.current, topicLoadErrorRef.current]) {
+    // Keep monotonically increasing request identities if a project is removed
+    // and re-added while an older RPC is still completing (A -> B -> A).
+    for (const key of Object.keys(topicLoadSeqRef.current)) if (!keep(key)) topicLoadSeqRef.current[key]++;
+    for (const [key, timer] of topicRefreshTimersRef.current) if (!keep(key)) { clearTimeout(timer); topicRefreshTimersRef.current.delete(key); }
+    for (const key of topicRefreshPendingRef.current.keys()) if (!keep(key)) topicRefreshPendingRef.current.delete(key);
+    for (const records of [topicLoadPendingRef.current, topicRevisionRef.current, topicCompletePageRef.current, topicLoadErrorRef.current]) {
       for (const key of Object.keys(records)) if (!keep(key)) delete records[key];
     }
   }, [projectShellSignature, tree]);
@@ -709,7 +696,7 @@ export function ProjectTree({
     });
   };
 
-  const folderKeys = useMemo(() => collapsibleFolderKeys(tree), [tree]);
+  const folderKeys = useMemo(() => collapsibleProjectTreeFolderKeys(tree), [tree]);
   const searchActive = query.trim().length > 0;
   const hasExpandedFolders = !searchActive && folderKeys.some((key) => expanded.has(key));
   const canRestoreCollapsedView = collapseSnapshot !== null;
@@ -1237,6 +1224,7 @@ export function ProjectTree({
         setMenuPoint(contextMenuPointFromEvent(event));
         setMenuNodeKey(key);
         setConfirmArchiveTarget(null);
+        if (!node.sessionPath && !node.remoteSession && (!node.session?.hostId || node.session.hostId === "local") && node.topicId) void inspectTopicRemoval(node.topicId).catch(() => undefined);
       };
       const topicMenuItems: ContextMenuItem[] = [
         ...organization.topicMenuItems(node, t),
@@ -1266,11 +1254,12 @@ export function ProjectTree({
         {
           key: "trash",
           icon: <Archive className={topicTrashing || sessionTrashing ? "project-tree__archive-spinner" : undefined} size={13} />,
-          label: confirmArchiveTarget === archiveTargetKey ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
+          label: topicRemovalInspections[node.topicId ?? ""]?.disposition === "discard_placeholder" ? t("projectTree.removeEmptyTopic") : confirmArchiveTarget === archiveTargetKey ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
           disabled: archiveBlocked || topicTrashing || sessionTrashing || remoteSessionArchiveBlocked(node.remoteSession),
           danger: true,
           onSelect: () => {
-            if (confirmArchiveTarget === archiveTargetKey) void trashTopicAny(node);
+            if (!node.sessionPath && !node.remoteSession && (!node.session?.hostId || node.session.hostId === "local")) void trashTopicAny(node);
+            else if (confirmArchiveTarget === archiveTargetKey) void trashTopicAny(node);
             else setConfirmArchiveTarget(archiveTargetKey);
           },
         },
@@ -1545,6 +1534,7 @@ export function ProjectTree({
       setConfirmArchiveTarget(null);
       setMenuPoint(contextMenuPointFromEvent(event));
       setMenuProject({ key, root: projectRoot, path: projectPath, scope, label: projectLabel });
+      if (activeTopicId) void inspectTopicRemoval(activeTopicId).catch(() => undefined);
       setConfirmRemoveProject(null);
       if (scope === "project" && projectRoot) {
         void app.IsolatedWorktreeAvailability(projectRoot).then((availability) => {
@@ -1556,7 +1546,6 @@ export function ProjectTree({
       }
     };
     const isolationAvailability = worktreeAvailability[projectRoot];
-    const activeTopicArchiveTarget = activeTopicId ? projectTreeTopicArchiveTargetKey(scope, projectRoot, activeTopicId) : "";
     const isolatedWorkspaceItems: ContextMenuItem[] = scope === "project"
       ? [{
           key: "isolated-delivery-workspace",
@@ -1671,15 +1660,12 @@ export function ProjectTree({
       {
         key: "archive-active-topic",
         icon: <Archive className={activeTopicId && trashingTopics.has(activeTopicId) ? "project-tree__archive-spinner" : undefined} size={13} />,
-        label: activeTopicArchiveTarget && confirmArchiveTarget === activeTopicArchiveTarget
-          ? t("history.confirmMoveToTrash")
-          : t("projectTree.archiveConversation"),
+        label: topicRemovalInspections[activeTopicId ?? ""]?.disposition === "discard_placeholder" ? t("projectTree.removeEmptyTopic") : t("projectTree.archiveConversation"),
         disabled: !activeTopicInProject || !activeTopicId || activeTopicArchiveBlocked || Boolean(activeTopicId && trashingTopics.has(activeTopicId)),
         danger: true,
         onSelect: () => {
           if (!activeTopicId) return;
-          if (confirmArchiveTarget === activeTopicArchiveTarget) void trashTopic(activeTopicId);
-          else setConfirmArchiveTarget(activeTopicArchiveTarget);
+          void trashTopic(activeTopicId);
         },
       },
       ...(scope === "project"

@@ -170,7 +170,7 @@ console.log("\ncomposer inbox interleaving");
   });
   const { root, rerender } = await renderComposer({ running: true });
   await rerender({ insertRequest: { id: 7001, text: "consume before receipt", mode: "replace" } });
-  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  const sendButton = document.querySelector(".composer__queue-steer") as HTMLButtonElement | null;
   if (!sendButton) throw new Error("running composer send button did not render for early consume");
   await act(async () => {
     sendButton.click();

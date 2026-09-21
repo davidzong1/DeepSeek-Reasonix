@@ -1,4 +1,5 @@
 import type {
+  HistoryOutlineRequest, HistoryOutlinePage,
   HistoryWindowPage,
   HistoryWindowRequest,
   MessageFieldPage,
@@ -14,6 +15,8 @@ import type {
 import type { HistoryContentChunk, HistoryContentRef, HistoryMessage, HistorySlice, HistorySliceRequest, WireEvent } from "./types";
 
 export interface SessionReaderBindings {
+  SessionHistoryOutlineForTab?(tabID: string, req: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
+  RemoteSessionHistoryOutlineForTab?(tabID: string, req: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
   TranscriptFollowForTab(tabID: string, request: FollowRequest): Promise<TranscriptFollowResponse>;
   RemoteTranscriptFollowForTab(tabID: string, request: FollowRequest): Promise<TranscriptFollowResponse>;
   SessionHistoryPageForTab(tabID: string, cursor: string, limit: number): Promise<MessageHistoryPage>;

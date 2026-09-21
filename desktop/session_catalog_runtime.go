@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -249,80 +248,6 @@ func (a *App) runtimeProjectTopicNodes(scope, workspaceRoot string, snapshots []
 	return out, sessionsByTopic
 }
 
-func (a *App) metadataTopicPage(req ProjectTopicPageRequest) (ProjectTopicPage, error) {
-	items := a.metadataProjectTopics(req.Scope, req.WorkspaceRoot)
-	filteredByGroup := items[:0]
-	for _, item := range items {
-		if projectTopicRequestAllows(req, item.TopicID, item.Pinned) && projectNodeRequestAllows(req, item) {
-			filteredByGroup = append(filteredByGroup, item)
-		}
-	}
-	items = filteredByGroup
-	manualOrder := manualTopicOrderFor(req.Scope, req.WorkspaceRoot)
-	query := strings.ToLower(strings.TrimSpace(req.Query))
-	if query != "" {
-		filtered := items[:0]
-		for _, item := range items {
-			if strings.Contains(strings.ToLower(item.Label), query) {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return projectTopicLess(items[i], items[j], req.SortMode, manualOrder)
-	})
-	start := 0
-	if lastID, ok := strings.CutPrefix(req.Cursor, "meta:"); ok {
-		if req.groupCursorBind != "" {
-			return ProjectTopicPage{Items: []ProjectNode{}}, fmt.Errorf("project topic cursor filter changed")
-		}
-		for index, item := range items {
-			if item.TopicID == lastID {
-				start = index + 1
-				break
-			}
-		}
-	} else if strings.TrimSpace(req.Cursor) != "" {
-		start = len(items)
-		for index, item := range items {
-			var after bool
-			var err error
-			if manualOrder {
-				after, err = sessioncatalog.TopicSortKeyAfterOrderedCursorBound(
-					req.Cursor, req.groupCursorBind, item.Pinned, item.SortOrder,
-					projectTopicSortValue(item.CreatedAt, item.LastActivityAt, req.SortMode), item.TopicID,
-				)
-			} else {
-				after, err = sessioncatalog.TopicSortKeyAfterCursorBound(
-					req.Cursor, req.groupCursorBind, item.Pinned,
-					projectTopicSortValue(item.CreatedAt, item.LastActivityAt, req.SortMode), item.TopicID,
-				)
-			}
-			if err != nil {
-				return ProjectTopicPage{Items: []ProjectNode{}}, err
-			}
-			if after {
-				start = index
-				break
-			}
-		}
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = sessioncatalog.DefaultLimit
-	}
-	if limit > sessioncatalog.MaxLimit {
-		limit = sessioncatalog.MaxLimit
-	}
-	end := min(start+limit, len(items))
-	page := ProjectTopicPage{Items: append([]ProjectNode(nil), items[start:end]...)}
-	if end < len(items) && end > start {
-		page.NextCursor = encodeProjectNodeCursor(items[end-1], req.SortMode, manualOrder, req.groupCursorBind)
-	}
-	return page, nil
-}
-
 func (a *App) projectNodeFromCatalogTopic(topic sessioncatalog.TopicRecord, topicOverlays, sessionOverlays map[string]catalogRuntimeOverlay, preferred map[string]struct{}) (ProjectNode, bool) {
 	kind := "topic"
 	if topic.Scope == "global" {
@@ -480,7 +405,12 @@ func (a *App) listProjectTopics(req ProjectTopicPageRequest) (ProjectTopicPage, 
 	if catalog == nil {
 		return a.metadataTopicPage(req)
 	}
-	availability := a.catalogWorkspaceAvailability(catalog, req.Scope, req.WorkspaceRoot)
+	var availability catalogWorkspaceAvailability
+	if req.readAvailability != nil {
+		availability = *req.readAvailability
+	} else {
+		availability = a.catalogWorkspaceAvailability(catalog, req.Scope, req.WorkspaceRoot, req.readContext)
+	}
 	if !availability.usable {
 		// A freshly opened catalog cache is live but empty until the first directory
 		// scan. Treat that the same as "catalog unavailable" so upgrade does
@@ -539,6 +469,9 @@ func (a *App) withLiveTopics(catalog *sessioncatalog.Catalog, req ProjectTopicPa
 	runtimeNodes, sessionsByTopic := a.runtimeOnlyProjectTopicsWithSessions(req.Scope, req.WorkspaceRoot)
 	ctx, cancel := a.catalogReadContext()
 	defer cancel()
+	if req.readContext != nil {
+		ctx = req.readContext
+	}
 	for _, node := range runtimeNodes {
 		if indexed[node.TopicID] {
 			continue
@@ -607,11 +540,14 @@ func liveTopicProjectedOnPage(ctx context.Context, catalog *sessioncatalog.Catal
 }
 
 func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopicPageRequest) (ProjectTopicPage, error) {
-	if manualSessionOrderFor(req.Scope, req.WorkspaceRoot) {
+	if !req.readAllSources && manualSessionOrderFor(req.Scope, req.WorkspaceRoot) {
 		return a.catalogSessionOrderedPage(catalog, req)
 	}
 	out := ProjectTopicPage{Items: []ProjectNode{}}
 	manualOrder := manualTopicOrderFor(req.Scope, req.WorkspaceRoot)
+	if req.readAllSources {
+		manualOrder = false
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = sessioncatalog.DefaultLimit
@@ -622,6 +558,9 @@ func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopic
 	topicOverlays, sessionOverlays := a.catalogRuntimeOverlays()
 	ctx, cancel := a.catalogReadContext()
 	defer cancel()
+	if req.readContext != nil {
+		ctx = req.readContext
+	}
 	// Workspace-wide preference collapses cross-topic recovery replicas that
 	// share a lineage but were indexed as separate topic rows.
 	preferred, prefErr := catalog.PreferredOrdinarySessionPaths(ctx, req.Scope, req.WorkspaceRoot)
@@ -695,7 +634,7 @@ func (a *App) GetSessionCatalogStatus() SessionCatalogStatus {
 // ListProjectTree is the one-release compatibility wrapper. It composes only
 // catalog pages and project shells; it never migrates, scans, or decodes a
 // session synchronously.
-func (a *App) ListProjectTree() []ProjectNode {
+func (a *App) ListProjectTree() ([]ProjectNode, error) {
 	snapshot := a.GetProjectTreeSnapshot()
 	hasGlobal := false
 	for _, project := range snapshot.Projects {
@@ -735,7 +674,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 		for {
 			page, err := a.ListProjectTopics(ProjectTopicPageRequest{Scope: scope, WorkspaceRoot: root, Cursor: cursor, Limit: sessioncatalog.MaxLimit})
 			if err != nil {
-				break
+				return nil, err
+			}
+			if cursor == "" {
+				defer a.ReleaseReadSnapshot(page.SnapshotID)
 			}
 			project.Children = append(project.Children, page.Items...)
 			if page.NextCursor == "" {
@@ -743,11 +685,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 			}
 			cursor = page.NextCursor
 		}
-		if len(project.Children) == 0 {
-			project.Children = a.metadataProjectTopics(scope, root)
-		}
 	}
-	return snapshot.Projects
+	return snapshot.Projects, nil
 }
 
 func (a *App) catalogSessionPathForTopic(scope, workspaceRoot, topicID string) string {

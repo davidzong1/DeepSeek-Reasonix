@@ -64,6 +64,33 @@ func (a *App) beginTabTurn(tabID string, reclaim bool, submissionID ...string) (
 }
 
 func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionID ...string) (*tabTurnAdmission, control.SessionAPI, error) {
+	return a.beginRuntimeTurnChecked(tabID, reclaim, detached, nil, submissionID...)
+}
+
+func checkRuntimeAdmission(ctrl control.SessionAPI, check func(control.SessionAPI) error) error {
+	if check == nil {
+		return nil
+	}
+	return check(ctrl)
+}
+
+func controllerAuthenticationError(ctrl control.SessionAPI) error {
+	authentication, ok := ctrl.(interface {
+		AuthenticationState() control.AuthenticationState
+	})
+	if !ok {
+		return nil
+	}
+	state := authentication.AuthenticationState()
+	if state.Ready() {
+		return nil
+	}
+	return &control.AuthenticationError{State: state}
+}
+
+// check observes the selected controller under the same admission locks as the
+// running check and submit. A refusal must carry this owner's identity with it.
+func (a *App) beginRuntimeTurnChecked(tabID string, reclaim, detached bool, check func(control.SessionAPI) error, submissionID ...string) (*tabTurnAdmission, control.SessionAPI, error) {
 	for {
 		tab, ctrl := a.tabAndCtrlByID(tabID)
 		if detached {
@@ -113,7 +140,12 @@ func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionI
 			abort()
 			return nil, nil, err
 		}
-		if ctrl.RuntimeStatus().Running {
+		running := ctrl.RuntimeStatus().Running
+		if err := checkRuntimeAdmission(ctrl, check); err != nil {
+			abort()
+			return nil, nil, err
+		}
+		if running {
 			if waiter, ok := ctrl.(turnFinishingWaiter); ok {
 				if done, finishing := waiter.TurnFinishingDone(); finishing {
 					// Re-resolve after waiting so close/switch cannot misroute retry.
@@ -166,14 +198,9 @@ func (a *App) beginRuntimeTurn(tabID string, reclaim, detached bool, submissionI
 			}
 			continue
 		}
-		if authentication, ok := ctrl.(interface {
-			AuthenticationState() control.AuthenticationState
-		}); ok {
-			state := authentication.AuthenticationState()
-			if !state.Ready() {
-				abort()
-				return nil, nil, &control.AuthenticationError{State: state}
-			}
+		if err := controllerAuthenticationError(ctrl); err != nil {
+			abort()
+			return nil, nil, err
 		}
 		if tab.sink != nil && !tab.sink.tryBeginTurn(submissionID...) {
 			abort()

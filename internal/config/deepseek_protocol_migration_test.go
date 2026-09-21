@@ -616,49 +616,23 @@ func TestCanUpgradeDeepSeekProviderProtocolRejectsProxyButAllowsExplicitUpgradeO
 	}
 }
 
-func TestNormalizeOfficialDeepSeekModelsAddsProToResponses(t *testing.T) {
-	c := &Config{Providers: []ProviderEntry{{
-		Name: "deepseek", Kind: "responses", BaseURL: "https://api.deepseek.com",
-		Model: "deepseek-v4-flash",
-	}}}
-
-	normalizeOfficialDeepSeekModels(c)
-	p, ok := c.Provider("deepseek")
-	if !ok {
-		t.Fatal("DeepSeek provider missing after normalization")
-	}
-	if !p.HasModel("deepseek-v4-flash") || !p.HasModel("deepseek-v4-pro") {
-		t.Fatalf("Responses models = %v, want Flash and Pro", p.ModelList())
-	}
-}
-
-func TestNormalizeOfficialDeepSeekResponsesPresetAddsPro(t *testing.T) {
-	c := &Config{Providers: []ProviderEntry{{
-		Name: "deepseek-responses", Kind: "responses", BaseURL: "https://api.deepseek.com",
-		Models: []string{"deepseek-v4-flash"}, Default: "deepseek-v4-flash",
-	}}}
-
-	normalizeOfficialDeepSeekModels(c)
-	p, ok := c.Provider("deepseek-responses")
-	if !ok {
-		t.Fatal("deepseek-responses provider missing after normalization")
-	}
-	if !p.HasModel("deepseek-v4-flash") || !p.HasModel("deepseek-v4-pro") {
-		t.Fatalf("deepseek-responses models = %v, want Flash and Pro", p.ModelList())
-	}
-	if p.Default != "deepseek-v4-flash" {
-		t.Fatalf("default = %q, want deepseek-v4-flash", p.Default)
-	}
-	flash, _ := c.ResolveModel("deepseek-responses/deepseek-v4-flash")
-	if !containsString(flash.SupportedEfforts, "low") {
-		t.Fatalf("Flash effort override = %+v", flash)
-	}
-	pro, _ := c.ResolveModel("deepseek-responses/deepseek-v4-pro")
-	if !containsString(pro.SupportedEfforts, "low") || !containsString(pro.SupportedEfforts, "max") {
-		t.Fatalf("Pro effort override = %+v", pro)
-	}
-	if len(p.ModelOverrides) != 0 {
-		t.Fatal("built-in reasoning defaults must not become saved overrides")
+func TestNormalizeOfficialDeepSeekResponsesPreservesFlashOnly(t *testing.T) {
+	for _, entry := range []ProviderEntry{
+		{Name: "deepseek-responses", Kind: "responses", BaseURL: "https://api.deepseek.com", Models: []string{"deepseek-v4-flash"}, Default: "deepseek-v4-flash"},
+	} {
+		c := &Config{Providers: []ProviderEntry{entry}}
+		normalizeOfficialDeepSeekModels(c)
+		p := &c.Providers[0]
+		if !stringSlicesEqual(p.ModelList(), []string{"deepseek-v4-flash"}) {
+			t.Fatalf("normalization restored unselected models: %v", p.ModelList())
+		}
+		flash, ok := c.ResolveModel(entry.Name + "/deepseek-v4-flash")
+		if !ok || !containsString(flash.SupportedEfforts, "low") || !containsString(flash.SupportedEfforts, "max") {
+			t.Fatalf("legacy Flash effort compatibility = %+v", flash)
+		}
+		if len(p.ModelOverrides) != 0 {
+			t.Fatal("built-in reasoning defaults must not become saved overrides")
+		}
 	}
 }
 
@@ -755,7 +729,7 @@ func TestNormalizeOfficialDeepSeekResponsesAddsProPriceForLegacyFlashPrice(t *te
 	flash := deepSeekV4FlashPriceUSD()
 	c := &Config{Providers: []ProviderEntry{{
 		Name: "deepseek-responses", Kind: "responses", BaseURL: "https://api.deepseek.com",
-		Models: []string{"deepseek-v4-flash"}, Default: "deepseek-v4-flash",
+		Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, Default: "deepseek-v4-flash",
 		Price: flash,
 	}}}
 

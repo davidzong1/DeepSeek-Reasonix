@@ -161,7 +161,7 @@ func TestObserveSettingsSnapshotUsesSafeBuckets(t *testing.T) {
 		"settings_status_bar_style":        "icon",
 		"settings_status_bar_items_count":  "n_3",
 		"settings_check_updates":           "off",
-		"settings_default_model":           "deepseek_deepseek_v4_flash",
+		"settings_default_model":           "deepseek_deepseek_flash",
 		"settings_planner_model":           metricBucket("custom_" + customProvider + "_" + customModel),
 		"settings_provider_access":         metricBucket("custom_" + customProvider),
 		"settings_bot_enabled":             "off",

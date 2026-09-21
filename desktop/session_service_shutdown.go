@@ -9,6 +9,7 @@ import (
 
 // Run after controllers and lifecycle barriers release their bindings.
 func (a *App) closeSessionServices() {
+	a.desktopSessions.readSnapshots.close()
 	a.sessionServicesMu.Lock()
 	services := make([]*session.Service, 0, len(a.sessionServices))
 	for _, service := range a.sessionServices {

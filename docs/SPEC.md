@@ -1046,8 +1046,8 @@ kind           = "anthropic"
 base_url       = "https://api.deepseek.com/anthropic"
 # request_url  = "https://proxy.example.com/anthropic/v1/messages" # optional exact provider request URL
 # models_url   = "https://proxy.example.com/v1/models"             # optional model discovery URL
-models         = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
-default        = "deepseek-v4-flash"   # optional; defaults to models[0]
+models         = ["deepseek-flash", "deepseek-v4-pro"]
+default        = "deepseek-flash"   # optional; defaults to models[0]
 # vision_models = ["deepseek-v4-flash-vision-exp"]  # legacy compatibility; Settings derives image support from model metadata
 # Official DeepSeek vision accepts inline base64, http(s) image URLs, and Files API file_id.
 api_key_env    = "DEEPSEEK_API_KEY"
@@ -1058,7 +1058,7 @@ context_window = 1000000   # tokens; harness compacts older history near this li
 # max_output_tokens = 65536          # optional cost cap
 # max_output_tokens = -1             # force-omit optional wire limits; compact if the auto budget no longer fits
 # max_output_tokens never changes compact_ratio
-# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
+# model_overrides = { "deepseek-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
 
 # A single-model entry still works for custom OpenAI-compatible endpoints.
 

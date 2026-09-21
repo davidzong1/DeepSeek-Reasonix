@@ -11,7 +11,6 @@ import (
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/session"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -50,21 +49,22 @@ type WorkspaceSessionPage struct {
 }
 
 type SessionArchitectureDiagnostics struct {
-	PendingOperations       int    `json:"pending_operations"`
-	MissingMembers          int    `json:"missing_members"`
-	IdentityMismatches      int    `json:"identity_mismatches"`
-	SourceConflicts         int    `json:"source_conflicts"`
-	RecoveryEntries         int    `json:"recovery_entries"`
-	SessionHeadersTotal     int    `json:"session_headers_total"`
-	WorkspaceMembersTotal   int    `json:"workspace_members_total"`
-	UnassignedSessions      int    `json:"unassigned_sessions"`
-	MigrationPending        int    `json:"migration_pending"`
-	MigrationFailed         int    `json:"migration_failed"`
-	MigrationCompleted      int    `json:"migration_completed"`
-	ProjectionPending       int    `json:"projection_pending"`
-	ProjectionFailed        int    `json:"projection_failed"`
-	PendingCreateRecovered  uint64 `json:"pending_create_recovered"`
-	PruneBlockedPersistence uint64 `json:"prune_blocked_persistence"`
+	ReadSnapshots           *ReadSnapshotDiagnostics `json:"readSnapshots,omitempty"`
+	PendingOperations       int                      `json:"pending_operations"`
+	MissingMembers          int                      `json:"missing_members"`
+	IdentityMismatches      int                      `json:"identity_mismatches"`
+	SourceConflicts         int                      `json:"source_conflicts"`
+	RecoveryEntries         int                      `json:"recovery_entries"`
+	SessionHeadersTotal     int                      `json:"session_headers_total"`
+	WorkspaceMembersTotal   int                      `json:"workspace_members_total"`
+	UnassignedSessions      int                      `json:"unassigned_sessions"`
+	MigrationPending        int                      `json:"migration_pending"`
+	MigrationFailed         int                      `json:"migration_failed"`
+	MigrationCompleted      int                      `json:"migration_completed"`
+	ProjectionPending       int                      `json:"projection_pending"`
+	ProjectionFailed        int                      `json:"projection_failed"`
+	PendingCreateRecovered  uint64                   `json:"pending_create_recovered"`
+	PruneBlockedPersistence uint64                   `json:"prune_blocked_persistence"`
 }
 
 func unixMillis(value time.Time) int64 {
@@ -112,6 +112,7 @@ func (a *App) GetSessionArchitectureDiagnostics() (SessionArchitectureDiagnostic
 	}
 	infos, listErr := listAllCanonicalSessionInfo(context.Background(), a.desktopSessionService("").Query())
 	result := SessionArchitectureDiagnostics{
+		ReadSnapshots:           a.desktopSessions.readSnapshots.diagnostics(),
 		PendingCreateRecovered:  a.desktopSessions.pendingCreateRecovered.Load(),
 		PruneBlockedPersistence: a.desktopSessions.pruneBlockedPersistence.Load(),
 	}
@@ -273,14 +274,6 @@ func listWorkspaceSessionInfo(ctx context.Context, reader workspaceSessionInfoRe
 		infos[id] = info
 	}
 	return infos, readErr
-}
-
-// Double-collect the owner metadata around list materialization. Registry and
-// catalog revisions alone do not observe a live session's title/result events.
-// Stat reads metadata only; it never synchronously replays cold transcripts.
-func workspaceSessionInfoUnchanged(ctx context.Context, reader workspaceSessionInfoReader, ids []string, before map[string]session.SessionInfo) bool {
-	after, _ := listWorkspaceSessionInfo(ctx, reader, ids)
-	return reflect.DeepEqual(before, after)
 }
 
 func listAllCanonicalSessionInfo(ctx context.Context, query *session.Query) (map[string]session.SessionInfo, error) {

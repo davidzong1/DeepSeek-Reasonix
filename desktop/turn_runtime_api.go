@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,12 +15,14 @@ import (
 // TurnStartView is the synchronous admission receipt for the new Wails turn
 // API. Events remain the streaming authority after admission.
 type TurnStartView struct {
-	TurnID       string                    `json:"turnId"`
-	Status       event.TurnStatus          `json:"status"`
-	Disposition  control.SubmitDisposition `json:"disposition"`
-	OperationID  string                    `json:"operationId,omitempty"`
-	RuntimeEpoch string                    `json:"runtimeEpoch,omitempty"`
-	SubmissionID string                    `json:"submissionId,omitempty"`
+	TurnID      string                    `json:"turnId"`
+	Status      event.TurnStatus          `json:"status"`
+	Disposition control.SubmitDisposition `json:"disposition"`
+	OperationID string                    `json:"operationId,omitempty"`
+	// A management refusal is correlated with its existing operation, not a failed chat turn.
+	ManagementErrorCode string `json:"managementErrorCode,omitempty"`
+	RuntimeEpoch        string `json:"runtimeEpoch,omitempty"`
+	SubmissionID        string `json:"submissionId,omitempty"`
 }
 
 // validatePromptIdentity fences a decision to the runtime and turn that
@@ -91,6 +94,19 @@ func (a *App) StartTurnForTab(tabID, input, submissionID string) (TurnStartView,
 	}
 	result, err := a.submitToTabResult(tabID, input, false, true, submissionID)
 	if err != nil {
+		if result.Disposition == control.SubmitManagementHandled && result.OperationID != "" {
+			code := ""
+			switch {
+			case errors.Is(err, control.ErrMaintenanceBusy):
+				code = "maintenance_busy"
+			case errors.Is(err, control.ErrMaintenanceRecovery):
+				code = "maintenance_recovery_required"
+			}
+			if code != "" {
+				return TurnStartView{Disposition: result.Disposition, OperationID: result.OperationID,
+					SubmissionID: submissionID, ManagementErrorCode: code}, nil
+			}
+		}
 		return TurnStartView{}, err
 	}
 	if result.Disposition == control.SubmitManagementHandled {

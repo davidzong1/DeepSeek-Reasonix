@@ -73,9 +73,14 @@ await act(async () => { rootEl.querySelector<HTMLButtonElement>(".btn--primary")
 assert.equal(submittedFormat,"anthropic");
 // A legacy host can put the Anthropic preset first. New official connections
 // must still start with Chat Completions, while explicit choices survive refresh.
-const deepseekChoice = choices.find(c => c.catalog.brandId === "deepseek")!;
+const deepseekTemplate = data.templates.find(p => p.id === "deepseek-chat")!;
+assert.deepEqual(deepseekTemplate.provider.models, ["deepseek-flash", "deepseek-v4-pro"]);
+assert.equal(deepseekTemplate.provider.default, "deepseek-flash");
+const deepseekChoice = {...choices.find(c => c.id === "deepseek-chat")!, models: deepseekTemplate.provider.models};
 await act(async () => {render(false, [{...deepseekChoice, catalog: {...deepseekChoice.catalog, format: "anthropic"}}]);});
 assert.equal(select("format").value, "openai");
+assert.match(rootEl.querySelector(".provider-catalog__models")!.textContent!, /deepseek-flash, deepseek-v4-pro/);
+assert.doesNotMatch(rootEl.querySelector(".provider-catalog__models")!.textContent!, /deepseek-v4-flash/);
 assert.equal(rootEl.querySelector<HTMLInputElement>('input[id$="-url"]')!.value, "https://api.deepseek.com/v1");
 assert.deepEqual(await settingsOptionValues(select("format")), ["openai", "responses", "anthropic"]);
 await act(async () => { rootEl.querySelector<HTMLButtonElement>(".btn--primary")!.click(); });

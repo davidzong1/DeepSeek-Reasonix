@@ -15,10 +15,6 @@ import (
 	"reasonix/internal/session"
 )
 
-func (a *App) archiveSessionRefsLocked(refs []session.SessionRef, dependencies ...string) error {
-	return a.archiveSessionRefsWithOperation(refs, "archive-"+newTabID(), dependencies...)
-}
-
 func (a *App) archiveSessionRefsWithOperation(refs []session.SessionRef, operationID string, dependencies ...string) error {
 	return a.archiveSessionRefsWithOperationConditional(refs, operationID, nil, dependencies...)
 }
@@ -113,6 +109,7 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	if err := a.workspaceRegistry().PrepareOperationContent(ctx, op.ID, ids, nil, nil); err != nil {
 		return err
 	}
+	a.lifecycleCheckpoint("before-archive-commit")
 	if err := a.workspaceRegistry().CommitOperation(ctx, op.ID); err != nil {
 		return err
 	}
@@ -204,11 +201,11 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 	if !ok {
 		return errTopicArchiveBusy
 	}
-	defer func() {
-		if release != nil {
-			release()
-		}
-	}()
+	defer release()
+	return a.archiveCompatibleTopicAdmissionHeld(topicID, "")
+}
+
+func (a *App) archiveCompatibleTopicAdmissionHeld(topicID, operationID string) error {
 	topicID = strings.TrimSpace(topicID)
 	if topicID == "" {
 		return fmt.Errorf("topicID is required")
@@ -238,13 +235,22 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 		}
 	}
 	a.mu.RUnlock()
+	owners := a.captureTopicRuntimeBindings(topicID)
+	if err := a.snapshotTopicRuntimeBindings(owners); err != nil {
+		return err
+	}
+	// Snapshot first: a legacy runtime may publish its first durable file here.
+	// Only a topic with neither canonical identities nor legacy content may use
+	// the metadata-only removal path.
 	targets, err := a.topicTrashTargets(topicID)
 	if err != nil {
 		return err
 	}
-	owners := a.captureTopicRuntimeBindings(topicID)
-	if err := a.snapshotTopicRuntimeBindings(owners); err != nil {
+	if err := a.validateCompatibleTopicOwner(state, topicID, len(targets) > 0); err != nil {
 		return err
+	}
+	if len(refs) == 0 && len(targets) == 0 {
+		return a.removeCompatiblePlaceholderAdmissionHeld(topicID)
 	}
 	// Originals stay in place, so retain existing leases and acquire only cold
 	// sources. The importer recognizes these same-process owners when freezing.
@@ -283,15 +289,16 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 	for _, ref := range refs {
 		list = append(list, ref)
 	}
-	if err := a.archiveSessionRefsLocked(list, dependencies...); err != nil {
+	if operationID == "" {
+		operationID = "archive-" + newTabID()
+	}
+	if err := a.archiveSessionRefsWithOperation(list, operationID, dependencies...); err != nil {
 		return err
 	}
 	for _, lease := range leases {
 		lease.Release()
 	}
 	leases = nil
-	release()
-	release = nil
 	a.emitProjectTreeChanged()
 	return nil
 }

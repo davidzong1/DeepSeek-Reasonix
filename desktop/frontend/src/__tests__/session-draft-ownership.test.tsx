@@ -43,6 +43,68 @@ async function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 try {
+  for (const field of ["attachments", "workspaceRefs", "invocations", "pastedBlocks", "sessionRefs", "selectedTextRefs"]) {
+    let confirmations = 0;
+    const f = await fixture({ ConfirmAction: async () => { confirmations++; return false; } });
+    const payload = JSON.parse(JSON.stringify(content("")));
+    payload[field] = [{ id: "saved-content", name: "keep", path: "/tmp/keep", text: "keep" }];
+    act(() => f.owner.updateContent(payload));
+    await act(async () => { await f.owner.confirmDiscard({ title: "Discard", message: "Discard", detail: "Cannot restore", confirmLabel: "Discard", cancelLabel: "Cancel" }); });
+    assert.equal(confirmations, 1, `${field} without body text requires confirmation`);
+    assert.deepEqual(f.deleted, [], `${field} survives cancellation`);
+    await f.close();
+  }
+  {
+    let confirmations = 0;
+    const f = await fixture({ ConfirmAction: async () => { confirmations++; return false; } });
+    const labels = { title: "Discard", message: "Discard", detail: "Cannot restore", confirmLabel: "Discard", cancelLabel: "Cancel" };
+    await act(async () => { await f.owner.confirmDiscard(labels); });
+    assert.deepEqual(f.deleted, [], "cancel keeps the saved draft");
+    assert.equal(f.owner.surface!.content.text, "text-a");
+    act(() => f.owner.updateContent(content("")));
+    await act(async () => { await f.owner.confirmDiscard(labels); });
+    assert.equal(confirmations, 1, "an empty draft needs no confirmation");
+    assert.deepEqual(f.deleted, ["a"]);
+    assert.equal(f.owner.surface, null);
+    await f.close();
+  }
+  {
+    const f = await fixture({ DiscardSessionDraft: async () => { throw new Error("write failed"); } });
+    await act(async () => { await assert.rejects(f.owner.discard(), /write failed/); });
+    assert.equal(f.owner.surface!.content.text, "text-a", "failed discard retains content");
+    assert.equal(f.owner.surface!.discarding, false, "failed discard unlocks retry");
+    await f.close();
+  }
+  {
+    const gate = deferred<void>();
+    let calls = 0;
+    const f = await fixture({ DiscardSessionDraft: () => { calls++; return gate.promise; } });
+    let first!: Promise<void>;
+    act(() => { first = f.owner.discard(); });
+    await act(async () => { await f.owner.discard(); });
+    assert.equal(calls, 1, "duplicate clicks share the in-flight deletion");
+    assert.equal(f.owner.surface!.discarding, true);
+    await act(async () => { gate.resolve(); await first; });
+    await f.close();
+  }
+  {
+    const confirmation = deferred<boolean>();
+    const f = await fixture({ ConfirmAction: () => confirmation.promise });
+    let pending!: Promise<void>;
+    act(() => { pending = f.owner.confirmDiscard({ title: "", message: "", detail: "", confirmLabel: "", cancelLabel: "" }); });
+    act(() => f.owner.updateContent(content("new edit after confirmation opened")));
+    await act(async () => { confirmation.resolve(true); await assert.rejects(pending, /draft changed/); });
+    assert.deepEqual(f.deleted, [], "confirmation cannot discard unseen edits");
+    assert.equal(f.owner.surface!.content.text, "new edit after confirmation opened");
+    await f.close();
+  }
+  {
+    const f = await fixture();
+    act(() => { f.owner.captureSubmission("a", 1); });
+    await act(async () => { await assert.rejects(f.owner.discard(), /Cancel the submission/); });
+    assert.deepEqual(f.deleted, [], "submission owns the draft until cancellation is acknowledged");
+    await f.close();
+  }
   {
     const f = await fixture();
     await act(async () => { await f.owner.open("project", "/tmp/b"); });

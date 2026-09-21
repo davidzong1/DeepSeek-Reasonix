@@ -98,12 +98,19 @@ func (c *Controller) TrySteerInboxItemForTurn(turnID, id string) (sessioninbox.I
 }
 
 func (c *Controller) trySteerInboxItem(id, expectedTurnID string) (sessioninbox.InboxReceipt, error) {
+	return c.trySteerInboxItemForSession(id, expectedTurnID, "")
+}
+
+func (c *Controller) trySteerInboxItemForSession(id, expectedTurnID, expectedPath string) (sessioninbox.InboxReceipt, error) {
 	c.inbox.admissionMu.Lock()
 	dispatchAfterUnlock := false
 	defer c.unlockInboxSteerAdmission(&dispatchAfterUnlock)
 	st, err := c.ensureInbox()
 	if err != nil {
 		return sessioninbox.InboxReceipt{}, err
+	}
+	if expectedPath != "" && st.SessionPath() != expectedPath {
+		return sessioninbox.InboxReceipt{}, ErrInboxSessionChanged
 	}
 	meta, env, err := c.readSteerCandidate(st, id)
 	if err != nil {
@@ -153,7 +160,7 @@ func (c *Controller) trySteerInboxItem(id, expectedTurnID string) (sessioninbox.
 	c.inbox.trackAdmission(id)
 	defer c.inbox.untrackAdmission(id)
 	if len(env.FrozenImages) == 0 {
-		if err := st.SetState(id, sessioninbox.StateSteerAccepted, ""); err != nil {
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateSteerAccepted, "", false); err != nil {
 			return sessioninbox.InboxReceipt{}, err
 		}
 	}

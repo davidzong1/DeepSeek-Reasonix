@@ -25,8 +25,8 @@ type freshSessionCreator interface {
 // desktopSessionState groups the Desktop-only persistence and navigation
 // authority so App does not grow a second set of independent scalar owners.
 type desktopSessionState struct {
+	readSnapshots                 readSnapshotStore
 	layoutWrites                  tabLayoutWriter
-	topicIndex                    workspaceTopicIndex
 	organizations                 organizationReadCache
 	beforeMigrationRegistryCommit func() error
 	root                          string

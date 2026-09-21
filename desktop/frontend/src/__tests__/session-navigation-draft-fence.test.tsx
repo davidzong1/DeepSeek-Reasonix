@@ -24,6 +24,7 @@ const firstDismiss = deferred();
 const secondDismiss = deferred();
 const dismissals = [firstDismiss, secondDismiss];
 const enqueued: Array<{ request: unknown; intent: number }> = [];
+const openedDrafts: Array<[string, string]> = [];
 
 function Probe() {
   commands = useSessionNavigationCommands({
@@ -50,7 +51,7 @@ function Probe() {
     pickWorkspace: async () => "",
     switchWorkspace: async () => {},
     draft: {
-      open: async () => {},
+      open: async (scope, workspaceRoot) => { openedDrafts.push([scope, workspaceRoot]); },
       dismiss: () => dismissals.shift()!.promise,
     },
     ports: {
@@ -64,6 +65,14 @@ function Probe() {
 const root = createRoot(document.getElementById("root")!);
 try {
   await act(async () => { root.render(<Probe />); });
+  await act(async () => {
+    await commands.openBlankSession("global", "/ignored/global/root");
+    await commands.openBlankSession("project", "/workspace");
+    await commands.handleNewTab();
+  });
+  assert.deepEqual(openedDrafts, [["global", ""], ["project", "/workspace"], ["project", "/workspace"]],
+    "global, project and new-tab entry points open drafts without creating formal sessions");
+  assert.deepEqual(enqueued, []);
 
   let stale!: Promise<void>;
   let latest!: Promise<void>;
