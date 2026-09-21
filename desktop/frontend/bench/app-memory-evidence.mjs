@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { boundedParserWorker, domListenerCount } from "./app-memory-workers.mjs";
 
 export function buildIdentity(frontendDir) {
   const hash = createHash("sha256");
@@ -107,11 +108,12 @@ export function attributeRetention(samples, cohorts = retainedCohorts(samples)) 
   const baselineStable = samples[0]?.baselineStable !== false;
   const reasons = [];
   if (retained) reasons.push("persistent-render-cohort");
+  if (samples.some(sample => !boundedParserWorker(sample) || domListenerCount(sample) < 0)) reasons.push("worker-population-drift");
   if (!nativeCountersValid) reasons.push("invalid-native-counters");
   if (!baselineStable) reasons.push(BASELINE_NOT_SETTLED_REASON);
   if (nativeCountersValid) {
     const nodeDrift = counterDriftReason(samples.map((sample) => sample.dom.nodes), phases, baselineStable);
-    const listenerDrift = counterDriftReason(samples.map((sample) => sample.dom.jsEventListeners), phases, baselineStable);
+    const listenerDrift = counterDriftReason(samples.map(domListenerCount), phases, baselineStable);
     if (nodeDrift === "persistent" || listenerDrift === "persistent") reasons.push("post-gc-dom-or-listener-drift");
     else if (nodeDrift === "transient" || listenerDrift === "transient") reasons.push(TRANSIENT_EXCURSION_REASON);
   }

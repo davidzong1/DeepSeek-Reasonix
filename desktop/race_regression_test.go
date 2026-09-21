@@ -167,7 +167,13 @@ func TestModeRebuildAndABANavigationFenceLeaseFailureAndOldEpochEvent(t *testing
 	app.mu.RUnlock()
 
 	restored := make(chan struct{})
+	candidateBuilt := make(chan struct{})
 	continueCommit := make(chan struct{})
+	var continueCommitOnce sync.Once
+	releaseCommit := func() {
+		continueCommitOnce.Do(func() { close(continueCommit) })
+	}
+	defer releaseCommit()
 	oldEvent := make(chan wireEventTab, 1)
 	var capturedOldEvent wireEventTab
 	oldSink.runtimeEvents.emit = func(_ context.Context, name string, payload ...any) {
@@ -179,8 +185,11 @@ func TestModeRebuildAndABANavigationFenceLeaseFailureAndOldEpochEvent(t *testing
 		}
 	}
 	var blockOnce sync.Once
+	var builtOnce sync.Once
 	app.rebindCandidateHook = func(stage string) error {
 		switch stage {
+		case "built":
+			builtOnce.Do(func() { close(candidateBuilt) })
 		case "restored":
 			blockOnce.Do(func() {
 				close(restored)
@@ -202,9 +211,18 @@ func TestModeRebuildAndABANavigationFenceLeaseFailureAndOldEpochEvent(t *testing
 		rebindDone <- app.rebindTabToLoadedSessionPath(tab, pathB, loadedB)
 	}()
 	select {
-	case <-restored:
+	case <-candidateBuilt:
+	case err := <-rebindDone:
+		t.Fatalf("A to B rebind ended before building the candidate: %v", err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("A to B rebind did not reach restored candidate")
+		t.Fatal("A to B rebind did not build a candidate")
+	}
+	select {
+	case <-restored:
+	case err := <-rebindDone:
+		t.Fatalf("A to B rebind ended before restoring the candidate: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("A to B rebind did not restore the built candidate")
 	}
 
 	// Concurrent deprecated mode call must not interleave with the rebind
@@ -213,7 +231,7 @@ func TestModeRebuildAndABANavigationFenceLeaseFailureAndOldEpochEvent(t *testing
 	go func() {
 		modeDone <- app.SetTokenModeForTab(tab.ID, boot.TokenModeFull)
 	}()
-	close(continueCommit)
+	releaseCommit()
 	if err := <-rebindDone; err != nil {
 		t.Fatalf("A to B rebind: %v", err)
 	}

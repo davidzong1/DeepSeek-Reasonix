@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAbsoluteDisplayPath, formatWorkspaceSource } from "../lib/workspacePanelFormat";
 import type { WorkspaceChangeRevealRequest, WorkspaceVerificationRevealRequest, WorkspaceFileListRequest, WorkspaceChangeListRequest, WorkspaceChangeListEntry } from "../lib/dockDelivery";
 import type { FileResourceRef } from "../lib/fileResource";
-import { fileNavigationOwner } from "../lib/fileNavigationCommands";
+import { fileNavigationOwner, isHTMLResource, openResource } from "../lib/fileNavigationCommands";
 import type { FileNavigationOwner } from "../lib/fileNavigationOwner";
 import { useFileNavigationRecord } from "../app-shell/useFileNavigation";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
@@ -582,8 +582,8 @@ export function WorkspacePanel({
   const openFile = useCallback(
     (path: string, view: "files" | "changed" = "files") => {
       const ref: FileResourceRef = { source: "workspace", hostId: "local", tabId: workspaceTabId, path };
-      // A click inside this panel navigates this panel: it is already the target
-      // dock, so it must not ask the activity bar which dock to open.
+      if (isHTMLResource(ref)) return void openResource(ref, { view: "preview" });
+      // This panel owns tree clicks, so it must not ask the activity bar which dock to open.
       void Promise.resolve(fileNavigation.openIn(fileScope, { ref, params: { action: "preview", view } }));
     },
     [fileNavigation, fileScope, workspaceTabId],
@@ -1814,7 +1814,7 @@ export function WorkspacePanel({
           onMouseUp={showSelectionToolbar}
         >
           {viewMode === "changed" && activeVerificationRevealRequest && visibleCompletionSummary ? (
-            <WorkspaceTurnResult key={activeVerificationRevealRequest.id} ref={verificationSummaryRef} summary={visibleCompletionSummary} tabId={workspaceTabId} sessionPath={sessionPath ?? ""} initialView={activeVerificationRevealRequest.view} onAllChanges={() => { onDismissTurnResult?.(); }} />
+            <WorkspaceTurnResult key={activeVerificationRevealRequest.id} ref={verificationSummaryRef} summary={visibleCompletionSummary} tabId={workspaceTabId} sessionPath={sessionPath ?? ""} initialView={activeVerificationRevealRequest.view} initialPath={activeVerificationRevealRequest.initialPath} onAllChanges={() => { onDismissTurnResult?.(); }} />
           ) : viewMode === "changed" && scopedChangeRows ? (
             <div className="workspace-change-scope">
               <div className="workspace-change-scope__head">

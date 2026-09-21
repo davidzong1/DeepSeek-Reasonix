@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +13,71 @@ const env = {
   GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "2",
 };
 const identity = releaseIdentity(env);
+
+test("Windows signing finalization works in a fresh checkout for both architectures", t => {
+  const root = mkdtempSync(path.join(tmpdir(), "reasonix-signing-checkout-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (name, content, mode) => {
+    const target = path.join(root, name);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, content, { mode });
+  };
+  for (const name of ["scripts/finalize-windows-signed-candidate.sh", "scripts/package-windows-desktop.sh",
+    "scripts/verify-windows-portable.sh", "scripts/desktop-release-artifacts.mjs",
+    "desktop/packaging/lib.mjs", "desktop/packaging/signing-files.mjs",
+    "desktop/build/windows/installer/project.nsi", "desktop/build/windows/icon.ico"]) {
+    put(name, readFileSync(new URL(`../${name}`, import.meta.url)), 0o755);
+  }
+  put("desktop/packaging/size-report.mjs", "// Size measurement is outside this handoff fixture.\n");
+  put("commands/pwsh", "#!/usr/bin/env bash\nexit 0\n", 0o755);
+  put("commands/go", `#!/usr/bin/env bash
+set -euo pipefail
+case "$3" in
+  windows-payload) printf '{}' > "$4/reasonix-payload.json" ;;
+  sign) shift 3; for file in "$@"; do printf signature > "$file.minisig"; done ;;
+  verify) test -s "$4.minisig" ;;
+  *) exit 1 ;;
+esac
+`, 0o755);
+  put("commands/makensis", `#!/usr/bin/env bash
+set -euo pipefail
+test -s project.nsi
+test -s ../icon.ico
+test -d ../../bin
+test -s reasonix_project.nsh
+test -s reasonix-payload.json.minisig
+test -s app/resources/app.asar
+printf installer > ../../bin/fixture-installer.exe
+`, 0o755);
+  const run = (command, args, extra = {}) => {
+    const result = spawnSync(command, args, {
+      cwd: root, encoding: "utf8",
+      env: { ...process.env, ...env, CERTUM_KEY_ID: "fixture", MINISIGN_PRIVATE_KEY: "fixture",
+        MINISIGN_PASSWORD: "fixture", PATH: `${path.join(root, "commands")}:${process.env.PATH}`, ...extra },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  };
+  for (const arch of ["amd64", "arm64"]) {
+    // A signing runner never built locally, and a second architecture must not
+    // consume the first architecture's generated installer or payload.
+    rmSync(path.join(root, "desktop/build/bin"), { recursive: true, force: true });
+    const payload = `payload-${arch}`;
+    for (const name of ["reasonix-desktop.exe", "reasonix-guard.exe", "reasonix-launcher.exe",
+      "reasonix-update-helper.exe", "reasonix-cli.exe", "reasonix-uninstall.exe",
+      "app/Reasonix.exe", "app/resources/bin/reasonix-cli-launcher.exe",
+      "app/resources/app.asar", "app/resources/build.json", "app/resources/app/index.html"]) {
+      put(`${payload}/${name}`, `${arch}:${name}`);
+    }
+    put(`signing-work-${arch}/desktop/build/windows/installer/reasonix_project.nsh`, '!define REASONIX_VERSION_TAG "v1.2.3"\n');
+    run(process.execPath, ["desktop/packaging/signing-files.mjs", payload]);
+    run("bash", ["scripts/finalize-windows-signed-candidate.sh", arch, `signing-work-${arch}`,
+      payload, `dist-${arch}`, `bundle-${arch}`, "v1.2.3"]);
+    assert.equal(readFileSync(path.join(root, "desktop/build/windows/installer/project.nsi"), "utf8"),
+      readFileSync(new URL("../desktop/build/windows/installer/project.nsi", import.meta.url), "utf8"));
+    assert.ok(readFileSync(path.join(root, `dist-${arch}/Reasonix-windows-${arch}.zip`)).length > 0);
+    assert.ok(readFileSync(path.join(root, `dist-${arch}/Reasonix-windows-${arch}-installer.exe.minisig`)).length > 0);
+  }
+});
 function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), "reasonix-signed-handoff-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

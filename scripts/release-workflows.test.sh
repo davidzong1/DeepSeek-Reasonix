@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 node --test "$repo_root/scripts/verify-manual-desktop-producer.test.mjs"
+node --test "$repo_root/scripts/release-publication-ledger.test.mjs"
 bash "$repo_root/scripts/manual-desktop-exception.test.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-release-workflow-test.XXXXXX")"
 cleanup() {
@@ -55,6 +56,38 @@ PY
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
 test ! -e "$repo_root/.github/workflows/release-stable-trigger.yml"
 candidate="$repo_root/.github/workflows/release-candidate.yml"
+python3 - "$repo_root" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1]) / '.github/workflows'
+levels = {'none': 0, 'read': 1, 'write': 2}
+
+def permissions(text, indent):
+    match = re.search(r'(?m)^' + ' ' * indent + r'permissions:\n((?:' + ' ' * (indent + 2) + r'[^\n]*\n)+)', text)
+    if not match:
+        return None
+    return {key: levels[value] for key, value in re.findall(r'([\w-]+): (none|read|write)', match[1])}
+
+desktop = (root / 'release-desktop.yml').read_text()
+required = permissions(desktop, 0)
+for block in re.split(r'(?m)^  [\w-]+:\n', desktop.split('\njobs:\n', 1)[1])[1:]:
+    for key, value in (permissions(block, 4) or {}).items():
+        required[key] = max(required.get(key, 0), value)
+# Conditions cannot hide a nested permission escalation at workflow parsing.
+# Cover both preparation and the current/legacy publishing entrypoints.
+for name in ('release-candidate.yml', 'release-promote.yml', 'release-stable.yml'):
+    workflow = (root / name).read_text()
+    default = permissions(workflow, 0)
+    calls = 0
+    for block in re.split(r'(?m)^  [\w-]+:\n', workflow.split('\njobs:\n', 1)[1])[1:]:
+        if 'uses: ./.github/workflows/release-desktop.yml' not in block:
+            continue
+        calls += 1
+        explicit = permissions(block, 4)
+        effective = default if explicit is None else explicit
+        for key, value in required.items():
+            assert effective.get(key, 0) >= value, f'{name}: Desktop call cannot grant {key} at required level {value}'
+    assert calls, f'{name}: expected a Desktop call'
+PY
 promote="$repo_root/.github/workflows/release-promote.yml"
 verify="$repo_root/.github/workflows/release-verify.yml"
 rehearsal_verify="$repo_root/.github/workflows/release-candidate-verify.yml"
@@ -87,11 +120,12 @@ grep -Fq 'bash scripts/release-candidate-tags.sh activate' "$promote"
 grep -Fq 'git push --atomic "$remote"' "$repo_root/scripts/release-candidate-tags.sh"
 [ "$(grep -Ec '^    environment: release$' "$promote")" = "1" ]
 grep -Fq 'group: stable-release-publication' "$promote"
-grep -Fq 'VERIFY_PUBLIC_SITE_ONLY: "true"' "$promote"
+grep -Fq 'run: bash scripts/sync-release-site.sh' "$promote"
+grep -Fq 'VERIFY_PUBLIC_SITE_ONLY=true' "$repo_root/scripts/sync-release-site.sh"
 grep -Fq 'release-publication-ledger-' "$promote"
 grep -Fq 'release-publication-timing-' "$promote"
 grep -Fq 'release-candidate-timing-' "$candidate"
-grep -Fq 'immutable-complete-newer-pointer-preserved' "$promote"
+grep -Fq 'immutable-complete-newer-pointer-preserved' "$repo_root/scripts/sync-release-site.sh"
 grep -Fq 'RELEASE_REVOKED_CANDIDATES' "$candidate"
 grep -Fq 'PUSH_SHA: ${{ github.sha }}' "$candidate"
 grep -Fq 'node scripts/resolve-release-candidate.mjs active "$candidate_id"' "$candidate"

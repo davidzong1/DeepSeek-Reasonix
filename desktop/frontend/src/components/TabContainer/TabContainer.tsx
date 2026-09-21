@@ -11,15 +11,17 @@ import { useActivityBarStore, type TabItem, type TabType } from "../../store/act
 import { TabAddMenu } from "./TabAddMenu";
 import { TabBar } from "./TabBar";
 import { TabContent } from "./TabContent";
+import "../WorkspacePanelStability.css";
 
 interface TabContainerProps {
   /** App-provided panel renderer for a given tab. */
   renderTab: (tab: TabItem) => ReactNode;
   /** Opens (or activates) the view a tab-picker entry stands for. */
   onPickEntry: (entryId: string) => void;
+  onClosePanel?: () => void;
 }
 
-export function TabContainer({ renderTab, onPickEntry }: TabContainerProps) {
+export function TabContainer({ renderTab, onPickEntry, onClosePanel }: TabContainerProps) {
   const tabs = useActivityBarStore((s) => s.tabs);
   const activeTabId = useActivityBarStore((s) => s.activeTabId);
   const addMenuOpen = useActivityBarStore((s) => s.addMenuOpen);
@@ -52,6 +54,7 @@ export function TabContainer({ renderTab, onPickEntry }: TabContainerProps) {
         onMoveTab={moveTab}
         onAdd={() => setAddMenuOpen(!addMenuOpen)}
         addButtonRef={addButtonRef}
+        onClosePanel={onClosePanel}
       />
       {addMenuOpen && <TabAddMenu anchorRef={addButtonRef} onPick={handlePickTab} onClose={() => setAddMenuOpen(false)} />}
       <div className="tab-container__content">

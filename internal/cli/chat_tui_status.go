@@ -278,12 +278,13 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 	primaryStatus := m.appendTeamButton(m.primaryStatusLine(modeTag, shellMode, cancelRequested))
 	statusBlock := m.renderStatusBlock(primaryStatus, width)
 
-	// Replicate the working (spinner) line from View(), shown only while a turn runs.
+	// Replicate the working (spinner) line from View(), shown only while a turn
+	// runs or a controller-owned maintenance operation is active.
 	working := m.runningWorkingLine(cancelRequested, false)
 
 	// Count wrapped rows for every piece that View() renders as wrapped.
 	var lines int
-	if m.state == tuiRunning {
+	if working != "" {
 		// working (spinner) line — wraps independently of the status block below.
 		lines += strings.Count(wrapStatusLine(working, width), "\n") + 1
 	}

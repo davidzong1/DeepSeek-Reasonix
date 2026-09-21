@@ -8,7 +8,7 @@ import (
 )
 
 func (s *turnEventSink) publishOutsideTurn(ledger *turnevent.Ledger, e event.Event) error {
-	if ledger.CurrentStatus() == event.TurnRecoveryRequired && lateBusinessEvent(e.Kind) {
+	if ledger != nil && ledger.CurrentStatus() == event.TurnRecoveryRequired && lateBusinessEvent(e.Kind) {
 		return nil
 	}
 	s.c.refreshRuntimeState(e)

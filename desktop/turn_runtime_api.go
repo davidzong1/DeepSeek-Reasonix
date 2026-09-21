@@ -17,6 +17,7 @@ type TurnStartView struct {
 	TurnID       string                    `json:"turnId"`
 	Status       event.TurnStatus          `json:"status"`
 	Disposition  control.SubmitDisposition `json:"disposition"`
+	OperationID  string                    `json:"operationId,omitempty"`
 	RuntimeEpoch string                    `json:"runtimeEpoch,omitempty"`
 	SubmissionID string                    `json:"submissionId,omitempty"`
 }
@@ -93,7 +94,7 @@ func (a *App) StartTurnForTab(tabID, input, submissionID string) (TurnStartView,
 		return TurnStartView{}, err
 	}
 	if result.Disposition == control.SubmitManagementHandled {
-		return TurnStartView{Disposition: result.Disposition, SubmissionID: submissionID}, nil
+		return TurnStartView{Disposition: result.Disposition, OperationID: result.OperationID, SubmissionID: submissionID}, nil
 	}
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if ctrl == nil {

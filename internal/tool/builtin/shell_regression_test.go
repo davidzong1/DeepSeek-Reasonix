@@ -55,6 +55,9 @@ func TestInvalidJobFilterPreservesUnreadOutput(t *testing.T) {
 }
 
 func TestBackgroundPermissionFailureOffersExactRetry(t *testing.T) {
+	if !sandbox.OSSandboxSupported() {
+		t.Skip("exact denial retries require an OS shell sandbox")
+	}
 	previous := bashSandboxCommand
 	bashSandboxCommand = func(_ sandbox.Spec, _ sandbox.Shell, _ string) ([]string, bool) {
 		if runtime.GOOS == "windows" {

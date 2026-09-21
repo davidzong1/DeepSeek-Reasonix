@@ -37,6 +37,8 @@ export interface TranscriptProjection {
   revision: number;
   revisionKnown: boolean;
   digest: string;
+  /** Structural publication kind used by the controller's anchor policy. */
+  mutation?: "replace" | "prepend" | "append" | "patch";
 }
 
 export interface PreparedTranscriptInstall {
@@ -72,9 +74,12 @@ export interface AppendEntriesResult extends TranscriptProjection {
 
 export interface TranscriptContentChange {
   tabId: string;
+  evictedPath?: string;
   /** Re-converted items keyed by their stable item id. */
   patches: Record<string, Item>;
   expected?: Record<string, Item>;
+  /** Present when resolving content changed ownership or record structure. */
+  projection?: AppendEntriesResult;
 }
 
 export interface SessionTranscript {
@@ -86,8 +91,16 @@ export interface SessionTranscript {
   sessionPath: string;
   records: TranscriptRecord[];
   byId: Map<string, TranscriptRecord>;
-  /** toolCallId -> result record entryId (first record wins, like resultByID). */
+  /** toolCallId -> result record entryId when the resident match is unique. */
   toolResultOwners: Map<string, string>;
+  /** assistant entryId + call index -> the uniquely associated result row. */
+  toolCallOwners: Map<string, string>;
+  /** assistant entryId + call index -> stable display node id. */
+  toolCallDisplayIds: Map<string, string>;
+  /** Result record entryId -> stable display node id. */
+  toolDisplayIds: Map<string, string>;
+  /** Calls and result rows whose identity is ambiguous. */
+  toolIdentityConflicts: Set<string>;
   /** entryId -> projected items of that record ([] when consumed). */
   contributions: Map<string, Item[]>;
   /** Result record entryIds folded into a call's tool item. */

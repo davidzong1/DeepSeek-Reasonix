@@ -3,6 +3,8 @@ package transcript
 import (
 	"slices"
 	"testing"
+
+	"reasonix/internal/provider"
 )
 
 func TestRestoreCheckpointRepairsLegacyMissingRecordIdentities(t *testing.T) {
@@ -39,5 +41,64 @@ func TestRestoreCheckpointStillRejectsNonEmptyDuplicateIdentity(t *testing.T) {
 	}}
 	if _, err := RestoreCheckpoint(state, testIdentity); err == nil {
 		t.Fatal("duplicate checkpoint identity was accepted")
+	}
+}
+
+func TestRepairCheckpointToolResultsRestoresUniqueFormalIdentityAndMetadata(t *testing.T) {
+	execution := &provider.ToolExecution{Kind: "shell", State: "completed", DurationMs: 42}
+	records := []Message{{RecordID: "tool:call-1", Role: "tool", ToolCallID: "call-1", ToolName: "PowerShell",
+		Content: "event display", ToolResultError: "", HistoryTurn: 1}}
+	canonical := []Message{
+		{RecordID: "m:user-1", MessageID: "user-1", Role: "user"},
+		{RecordID: "tool:call-1", MessageID: "result-1", Role: "tool", ToolCallID: "call-1", ToolName: "PowerShell",
+			Content: "canonical body", CreatedAt: 123, Execution: execution, ToolResultArchived: true},
+	}
+
+	got, stats := RepairCheckpointToolResults(records, canonical)
+	if stats.Repaired != 1 || stats.Missing != 0 || stats.Conflicts != 0 {
+		t.Fatalf("repair stats = %+v", stats)
+	}
+	if len(got) != 1 || got[0].MessageID != "result-1" || got[0].RecordID != "tool:call-1" || got[0].Content != "event display" ||
+		got[0].HistoryTurn != 1 || got[0].CreatedAt != 123 || got[0].Execution != execution || !got[0].ToolResultArchived {
+		t.Fatalf("repaired checkpoint row = %+v", got)
+	}
+	if records[0].MessageID != "" {
+		t.Fatal("repair mutated the caller-owned checkpoint slice")
+	}
+}
+
+func TestRepairCheckpointToolResultsRefusesAmbiguousOrConflictingIdentity(t *testing.T) {
+	records := []Message{
+		{RecordID: "tool:ambiguous", Role: "tool", ToolCallID: "ambiguous", HistoryTurn: 1},
+		{RecordID: "tool:wrong-turn", Role: "tool", ToolCallID: "wrong-turn", HistoryTurn: 2},
+	}
+	canonical := []Message{
+		{MessageID: "user-1", Role: "user"},
+		{MessageID: "a", Role: "tool", ToolCallID: "ambiguous"},
+		{MessageID: "b", Role: "tool", ToolCallID: "ambiguous"},
+		{MessageID: "c", Role: "tool", ToolCallID: "wrong-turn"},
+	}
+
+	got, stats := RepairCheckpointToolResults(records, canonical)
+	if stats.Repaired != 0 || stats.Conflicts != 1 || stats.Missing != 1 {
+		t.Fatalf("repair stats = %+v", stats)
+	}
+	if got[0].MessageID != "" || got[1].MessageID != "" {
+		t.Fatalf("inconclusive rows were guessed: %+v", got)
+	}
+}
+
+func TestRepairCheckpointToolResultsDoesNotReuseOccupiedFormalIdentity(t *testing.T) {
+	records := []Message{
+		{RecordID: "m:result", MessageID: "result", Role: "tool", ToolCallID: "call"},
+		{RecordID: "tool:call", Role: "tool", ToolCallID: "call"},
+	}
+	canonical := []Message{{RecordID: "m:result", MessageID: "result", Role: "tool", ToolCallID: "call"}}
+	got, stats := RepairCheckpointToolResults(records, canonical)
+	if stats.Repaired != 0 || stats.Conflicts != 1 || got[1].MessageID != "" {
+		t.Fatalf("occupied formal identity was reused: stats=%+v rows=%+v", stats, got)
+	}
+	if !NeedsToolResultRepair(records) || NeedsToolResultRepair(records[:1]) {
+		t.Fatal("repair fast-path predicate does not match missing tool identities")
 	}
 }

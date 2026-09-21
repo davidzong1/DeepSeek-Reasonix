@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Bug, Compass, Download, Hand, Plus, RotateCw, TriangleAlert, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bug, Code2, Compass, Download, ExternalLink, Hand, Plus, RotateCw, TriangleAlert, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 
 import { zoomPercent } from "../lib/browserAddress";
@@ -6,9 +6,11 @@ import type { BrowserDownloadView, BrowserTabView } from "../lib/browserHost";
 import { useBrowserCopy, type BrowserCopy } from "../lib/browserPanelCopy";
 import { selectActiveTab, selectAddress, useBrowserPanelStore } from "../lib/browserPanelStore";
 import { desktopHost } from "../lib/desktopHost";
-import { useI18n } from "../lib/i18n";
+import { useI18n, useT } from "../lib/i18n";
 import { useToast } from "../lib/toast";
 import { useBrowserSurfaceLayout } from "../lib/useBrowserSurfaceLayout";
+import { openResource, performResourceAction, refreshBrowserResource } from "../lib/fileNavigationCommands";
+import { useFileBrowserPreview } from "../lib/fileBrowserPreviewBindings";
 
 const DOWNLOAD_STRIP_LIMIT = 5;
 
@@ -28,12 +30,14 @@ export function BrowserDockTab({ active, onSelect }: { active: boolean; onSelect
 
 export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
   const copy = useBrowserCopy();
+  const t = useT();
   const { showToast } = useToast();
   const host = desktopHost().browser;
   const tabs = useBrowserPanelStore((state) => state.shown);
   const activeTab = useBrowserPanelStore(selectActiveTab);
   const address = useBrowserPanelStore(selectAddress);
   const downloads = useBrowserPanelStore((state) => state.downloads);
+  const activeFilePreview = useFileBrowserPreview(activeTab);
   const addressRef = useRef<HTMLInputElement>(null);
   const [surface, setSurface] = useState<HTMLDivElement | null>(null);
   const notifyRef = useRef((message: string) => showToast(copy.actionFailed(message), "error"));
@@ -64,6 +68,22 @@ export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
   const openFromDraft = async () => {
     if (!(await store().openDraft())) focusAddress();
   };
+  const reloadActive = async () => {
+    if (!activeTab) return;
+    if (activeFilePreview) {
+      const outcome = await refreshBrowserResource(activeFilePreview.ref);
+      if (outcome.status === "failed") showToast(copy.actionFailed(outcome.error.message), "error");
+      return;
+    }
+    await store().navigate(activeTab.id, { action: "reload" });
+  };
+  const runFileAction = async (action: "source" | "open-native") => {
+    if (!activeFilePreview) return;
+    const outcome = action === "source"
+      ? await openResource(activeFilePreview.ref, { view: "source" })
+      : await performResourceAction(activeFilePreview.ref, action);
+    if (outcome.status === "failed") showToast(copy.actionFailed(outcome.error.message), "error");
+  };
   const addressBar = <AddressBar copy={copy} value={address} inputRef={addressRef} tabId={activeTab?.id ?? null} />;
 
   return (
@@ -87,11 +107,17 @@ export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
           {activeTab?.loading
             ? <button type="button" className="browser-panel__icon-btn" aria-label={copy.stop} onClick={() => void store().navigate(activeTab.id, { action: "stop" })}><X size={14} /></button>
             : <button type="button" className="browser-panel__icon-btn" aria-label={copy.reload} disabled={!activeTab}
-              onClick={() => activeTab && void store().navigate(activeTab.id, { action: "reload" })}><RotateCw size={14} /></button>}
+              onClick={() => void reloadActive()}><RotateCw size={14} /></button>}
           {addressBar}
           {activeTab?.mode === "agent" && (
             <button type="button" className="btn btn--small" onClick={() => void store().takeover(activeTab.id)}>{copy.takeControl}</button>
           )}
+          {activeFilePreview && <>
+            <button type="button" className="browser-panel__icon-btn" aria-label={t("present.source")}
+              onClick={() => void runFileAction("source")}><Code2 size={14} /></button>
+            <button type="button" className="browser-panel__icon-btn" aria-label={t("present.openNative")}
+              onClick={() => void runFileAction("open-native")}><ExternalLink size={14} /></button>
+          </>}
           <button type="button" className="browser-panel__icon-btn" aria-label={copy.zoomOut} disabled={!activeTab}
             onClick={() => activeTab && void store().zoom(activeTab.id, -1)}><ZoomOut size={14} /></button>
           <button type="button" className="browser-panel__zoom" aria-label={copy.zoomReset(zoomPercent(activeTab?.zoom ?? 1))} disabled={!activeTab}

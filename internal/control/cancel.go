@@ -29,7 +29,7 @@ func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 		return CancelReceipt{Accepted: true, AlreadyIdle: true}
 	}
 	c.mu.Lock()
-	alreadyIdle := c.turns.cancel == nil && !c.bodyActiveLocked() && !c.finalizingLocked()
+	alreadyIdle := c.turns.cancel == nil && !c.bodyActiveLocked() && !c.finalizingLocked() && c.maintenance == nil
 	sessionRef := c.sessionPath
 	c.mu.Unlock()
 	headID := agent.BranchID(sessionRef)
@@ -42,12 +42,23 @@ func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 		sessionRef = runtime.Ref().SessionID
 		headID = ""
 	}
-	token, turnID, cancelled := c.signalTurnCancelIdentity()
+	maintenanceID, maintenancePresent, _ := c.signalMaintenanceCancel()
+	var token uint64
+	var turnID string
+	var cancelled bool
+	if maintenancePresent {
+		turnID = maintenanceID
+		alreadyIdle = false
+	} else {
+		token, turnID, cancelled = c.signalTurnCancelIdentity()
+	}
 	c.recordLifecycle("cancel_requested", source, turnID, 0, "")
 	if cancelled {
 		alreadyIdle = false
 	}
-	go c.finishCancellation(token, turnID, cancelled)
+	if !maintenancePresent {
+		go c.finishCancellation(token, turnID, cancelled)
+	}
 	receipt := CancelReceipt{
 		SessionRef: sessionRef, HeadID: headID, RuntimeEpoch: epoch,
 		Accepted: true, AlreadyIdle: alreadyIdle, RecoveryRequired: recoveryRequired,
@@ -60,6 +71,9 @@ func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 // unblocks via the cancelled context.
 func (c *Controller) Cancel() {
 	c.recordLifecycle("cancel_requested", "unknown", "", 0, "")
+	if _, present, _ := c.signalMaintenanceCancel(); present {
+		return
+	}
 	turnID, cancelled := c.cancelTurnLocked()
 	c.finishCancel(turnID, cancelled)
 }

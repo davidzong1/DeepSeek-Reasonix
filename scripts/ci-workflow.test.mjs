@@ -31,20 +31,30 @@ test("Windows PR verifies credential aliases before full push CI", () => {
   assert.match(ci, /name: test \(Windows credential ACL identity\)[\s\S]*?runner\.os == 'Windows' && github\.event_name == 'pull_request'[\s\S]*?go test -timeout=2m -run '\^TestCredentialAccessRepairsLegacyCredentialDeny\|\^TestRepairLegacyCredentialDenyMatchesFileAcrossPathAliases\$' \.\/internal\/config \.\/internal\/winaclresidue/);
 });
 
-test("release candidate verification cannot mutate repository contents before approval", () => {
+test("release tag mutation follows approval with an explicit identity and read-only default token", () => {
   assert.match(job(promote, "preflight"), /permissions:\n      actions: read\n      attestations: read\n      contents: read/);
   assert.match(job(promote, "authorize"), /environment: release[\s\S]*permissions:\n      contents: read/);
-  assert.match(job(promote, "activate"), /permissions:\n      contents: write/);
+  const activation = job(promote, "activate");
+  assert.match(activation, /needs: \[preflight, authorize\]/);
+  assert.match(activation, /permissions:\n      contents: read/);
+  assert.match(activation, /persist-credentials: false/);
+  assert.match(activation, /GH_TOKEN: \$\{\{ secrets.RELEASE_TAG_TOKEN \}\}/);
+  assert.match(activation, /RELEASE_TAG_ACTOR_ID: \$\{\{ needs.preflight.outputs.tag_actor_id \}\}/);
+  assert.doesNotMatch(job(promote, "preflight"), /release-candidate-tags.sh activate|git push/);
 });
 
-test("cancelled CI stops expensive workers but keeps result aggregation", () => {
+test("cancelled CI releases workers, aggregates, and metrics without hiding live failures", () => {
   for (const name of ["test", "windows-control", "windows-isolated", "race", "sdk", "desktop-prepare",
     "desktop-frontend", "desktop-browser-group", "desktop-go", "desktop-go-race", "desktop-macos",
     "desktop-windows", "desktop-windows-go-group", "desktop-windows-package", "lint-code", "site", "coverage", "prune-go-cache"]) {
     assert.equal(condition(job(ci, name), { cancelled: () => true }), false, name);
   }
-  for (const name of ["root", "lint", "desktop", "desktop-browser", "desktop-windows-go"])
-    assert.equal(condition(job(ci, name), { cancelled: () => true }), true, name);
+  for (const name of ["root", "lint", "desktop", "desktop-browser", "desktop-windows-go", "ci-metrics"]) {
+    assert.equal(condition(job(ci, name), { cancelled: () => true }), false, name);
+    // A failed dependency must still reach the fail-closed shell assertions.
+    assert.equal(condition(job(ci, name), { cancelled: () => false, success: () => false,
+      failure: () => true, needs: { child: { result: "failure" } } }), true, name);
+  }
 });
 
 test("packaging changes run native installer acceptance before merge", () => {
@@ -162,7 +172,7 @@ test("Windows full runs use the partitioned suite without a duplicate module swe
     }
   }
   assert.match(body, /run: node scripts\/windows-go-tests\.mjs full/);
-  assert.match(job(ci, "windows-isolated"), /group: \[agent, boot, serve, session, worktree\]/);
+  assert.match(job(ci, "windows-isolated"), /group: \[acp, agent, boot, bot, serve, session, worktree\]/);
   assert.match(job(ci, "windows-control"), /run: node scripts\/windows-go-tests\.mjs control/);
 });
 
@@ -429,6 +439,9 @@ test("all desktop consumers verify the prepared build and reject a failed prepar
     assert.match(body, /canary_artifact_name/);
   }
   assert.match(job(ci, "desktop-macos"), /REASONIX_FRONTEND_PNPM_VERSION="\$\(pnpm --version\)"\n\s+export REASONIX_FRONTEND_PNPM_VERSION/);
+  for (const name of ["desktop-macos", "desktop-windows", "desktop-windows-package"]) {
+    assert.ok(job(ci, name).includes("REASONIX_FRONTEND_PRODUCER_ATTEMPT: ${{ needs.desktop-prepare.outputs.producer_attempt }}"));
+  }
   const prepare = job(ci, "desktop-prepare");
   assert.match(prepare, /producer_attempt: \$\{\{ steps\.artifact-identity\.outputs\.attempt \}\}/);
   assert.match(prepare, /id: artifact-identity\n\s+run: echo "attempt=\$GITHUB_RUN_ATTEMPT" >> "\$GITHUB_OUTPUT"/);

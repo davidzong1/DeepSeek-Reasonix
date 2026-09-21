@@ -1,4 +1,4 @@
-import { useLayoutStore } from "../store/layout";
+import { useLayoutStore, useSidebarCollapsed } from "../store/layout";
 import { useOverlayStore } from "../store/overlays";
 import { useAppNavigationStore } from "../store/appNavigation";
 import { useRemoteStore } from "../store/remote";
@@ -42,7 +42,7 @@ export function useAppShellStores() {
   const settingsFocus = useAppNavigationStore((s) => s.settingsFocus);
   const setSettingsFocus = useAppNavigationStore((s) => s.setSettingsFocus);
 
-  const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
+  const sidebarCollapsed = useSidebarCollapsed();
   const sidebarResizing = useLayoutStore((state) => state.sidebarResizing);
   const sidebarTogglePressed = useLayoutStore((state) => state.sidebarTogglePressed);
   const workspacePanelOpen = useLayoutStore((s) => s.workspacePanelOpen);

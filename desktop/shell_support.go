@@ -49,9 +49,8 @@ type ShellCapabilityView struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// ShellInstallActionView is retained in the bridge shape for older desktop
-// clients. Current settings views leave it nil because Git Bash is no longer a
-// Windows Agent runtime or a Shell settings repair target.
+// ShellInstallActionView exposes manual Git for Windows repair guidance.
+// It never authorizes an automatic installer launch.
 type ShellInstallActionView struct {
 	ID        string `json:"id"`
 	Mode      string `json:"mode"`
@@ -164,6 +163,7 @@ func (a *App) sandboxViewFor(cfg *config.Config, ctrl control.SessionAPI, writeR
 		ShellReloadRequired: bound != resolved,
 		ShellCapabilities:   sandboxCapabilityViews(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path),
 		GitCapability:       gitCapabilityView(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path),
+		ShellInstallAction:  shellInstallActionViewForGOOS(runtime.GOOS),
 		ShellRepairGuidance: shellRepairGuidanceForGOOS(runtime.GOOS),
 		GitRepairGuidance:   gitRepairGuidanceForGOOS(runtime.GOOS),
 	}

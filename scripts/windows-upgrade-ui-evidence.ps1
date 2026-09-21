@@ -21,6 +21,44 @@ function Invoke-PendingHistoricalSession($root) {
   return $false
 }
 
+function Get-UpgradeUITimeMilliseconds {
+  return [long]([Diagnostics.Stopwatch]::GetTimestamp() * 1000.0 / [Diagnostics.Stopwatch]::Frequency)
+}
+
+function Wait-UpgradeUIPoll { Start-Sleep -Milliseconds 250 }
+
+# This is functional recovery acceptance, not a cold-import latency SLO. A
+# loaded Windows runner can spend the old entire 20-second budget importing,
+# activating and exposing the first Markdown body through UI Automation. Keep
+# a bounded completion wait and record its cost; startup readiness has its own
+# separate deadline. Always sample before checking the deadline, including the
+# final observation, instead of failing on a previously sampled empty surface.
+function Wait-VisibleUpgradeHistory {
+  param(
+    [Parameter(Mandatory=$true)][scriptblock]$ReadRoot,
+    [Parameter(Mandatory=$true)][string]$Text,
+    [switch]$PrepareHistoricalSession,
+    [ValidateRange(1,300)][int]$TimeoutSeconds = 60
+  )
+  $started = Get-UpgradeUITimeMilliseconds
+  $prepared = -not $PrepareHistoricalSession
+  $found = $false
+  $root = $null
+  $polls = 0
+  while ($true) {
+    $root = & $ReadRoot
+    $polls++
+    if ($null -ne $root) {
+      if (-not $prepared) { $prepared = Invoke-PendingHistoricalSession $root }
+      $found = $prepared -and (Test-VisibleUpgradeHistory $root $Text)
+    }
+    $elapsed = (Get-UpgradeUITimeMilliseconds) - $started
+    if ($found -or $elapsed -ge ($TimeoutSeconds * 1000)) { break }
+    Wait-UpgradeUIPoll
+  }
+  return [pscustomobject]@{Root=$root; Found=$found; Prepared=$prepared; ElapsedMilliseconds=$elapsed; Polls=$polls; TimeoutSeconds=$TimeoutSeconds}
+}
+
 function Test-VisibleUpgradeHistory($root, [string]$text) {
   if ([string]::IsNullOrWhiteSpace($text)) { return $false }
   $descendants = @(Get-UpgradeUIDescendants $root)

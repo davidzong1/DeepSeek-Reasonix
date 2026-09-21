@@ -337,8 +337,13 @@ type Controller struct {
 	// and rotating are mutually exclusive gates — a turn refuses to start while
 	// a rotation is in progress, and a rotation refuses to start while a turn
 	// runs — so the run loop's session reference cannot change under it.
-	rotating   bool
-	autosaveWG sync.WaitGroup
+	rotating bool
+	// maintenance is the controller-owned foreground maintenance operation.
+	// It is deliberately separate from rotating: Stop can cancel it and normal
+	// user input can remain in the durable inbox until it reaches a terminal
+	// boundary.
+	maintenance *controllerMaintenance
+	autosaveWG  sync.WaitGroup
 	// sessionSettings groups the per-session posture knobs that share one
 	// lifetime: swapped together on session rotation.
 	sessionSettings sessionSettings
@@ -1544,15 +1549,12 @@ func (c *Controller) submitCommandOrTurnReady(trimmed, input, display string, sc
 	switch {
 	case trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact "):
 		focus := strings.TrimSpace(strings.TrimPrefix(trimmed, "/compact"))
-		go func() {
-			// CompactionDone already carries the outcome card to every sink; a
-			// second "compacted" notice only adds a folded duplicate row.
-			if err := c.Compact(context.Background(), focus); err != nil {
-				c.notice("compaction failed: " + err.Error())
-			} else if err := c.SnapshotRewrite(); err != nil {
-				slog.Warn("controller: snapshot after compact", "err", err)
-			}
-		}()
+		// Register synchronously before returning the management-command receipt.
+		// This removes the window in which the command looked complete while a
+		// new turn could still enter before compaction claimed the session.
+		if err := c.startCompactAsync(focus); err != nil {
+			c.notice("compaction failed: " + err.Error())
+		}
 	case trimmed == "/context":
 		c.noticeDetail(c.ContextReport())
 	case trimmed == "/new":
@@ -2031,6 +2033,9 @@ func (c *Controller) beginRotation() error {
 	defer c.mu.Unlock()
 	if c.bodyActiveLocked() || c.finalizingLocked() {
 		return errTurnRunningRotation
+	}
+	if c.maintenance != nil {
+		return ErrMaintenanceBusy
 	}
 	if c.rotating {
 		return errRotationInProgress
@@ -2912,18 +2917,13 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
-	// The rotation gate keeps a turn from starting while a manual compaction is
-	// building and installing a new model-visible projection.
-	if err := c.beginRotation(); err != nil {
-		if errors.Is(err, errTurnRunningRotation) {
-			return fmt.Errorf("cannot compact while a turn is running")
-		}
+	op, runCtx, err := c.beginMaintenance(ctx, "compact")
+	if err != nil {
 		return err
 	}
-	defer c.endRotation()
-	err := c.executor.CompactNow(ctx, instructions)
-	c.authentication.recordFailure(err, c.ModelRef())
-	return err
+	return c.executeMaintenance(op, runCtx, func(work context.Context) error {
+		return c.executor.CompactNow(work, instructions)
+	})
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
@@ -3149,27 +3149,26 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	// Hold the rotation gate from the checkpoint-boundary lookup through
-	// projection installation so a turn cannot start against an intermediate
-	// context view.
-	if err := c.beginRotation(); err != nil {
-		if errors.Is(err, errTurnRunningRotation) {
-			return c.rewindFail(fmt.Errorf("cannot summarize while a turn is running"))
-		}
+	kind := "summarize_up_to"
+	if from {
+		kind = "summarize_from"
+	}
+	op, runCtx, err := c.beginMaintenance(ctx, kind)
+	if err != nil {
 		return c.rewindFail(err)
 	}
-	defer c.endRotation()
 	boundary, hasBound := c.checkpoints.boundary(turn)
 	if !hasBound {
-		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))
+		err = fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn)
+		_ = c.executeMaintenance(op, runCtx, func(context.Context) error { return err })
+		return c.rewindFail(err)
 	}
-	var err error
-	if from {
-		err = c.executor.SummarizeFrom(ctx, boundary)
-	} else {
-		err = c.executor.SummarizeUpTo(ctx, boundary)
-	}
-	c.authentication.recordFailure(err, c.ModelRef())
+	err = c.executeMaintenance(op, runCtx, func(work context.Context) error {
+		if from {
+			return c.executor.SummarizeFrom(work, boundary)
+		}
+		return c.executor.SummarizeUpTo(work, boundary)
+	})
 	if err != nil {
 		return c.rewindFail(err)
 	}
@@ -4875,11 +4874,14 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		cancel := c.turns.cancel
+		maintenance := c.maintenance
 		done := c.turns.done
 		// A phase marker alone is not a live turn: recovery may retain one after
 		// cancel/done ownership has gone. Only a live body or terminal fanout
 		// defers final resource release.
-		turnActive := done != nil || c.finalizingLocked() || c.turns.recoveryFanout
+		maintenanceActive := maintenance != nil && !maintenance.safeToRelease
+		maintenanceNeedsCancel := maintenanceActive && maintenance.activity != "finalizing"
+		turnActive := done != nil || c.finalizingLocked() || c.turns.recoveryFanout || maintenanceActive
 		// Seal turn admission and drop anything already parked: a parked turn
 		// must not start against a controller that is being torn down, and
 		// without the closed flag a submit landing after this critical
@@ -4900,11 +4902,18 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 			c.turns.cancelRequested = false
 		}
 		if !turnActive {
+			if maintenance != nil {
+				c.maintenance = nil
+				close(maintenance.done)
+			}
 			c.turns.phase = session.RuntimeClosed
 			c.turns.finishingBound.end()
 			c.turns.finishingBound.endIdle()
 		}
 		c.mu.Unlock()
+		if maintenanceNeedsCancel {
+			maintenance.cancel()
+		}
 		if cancel != nil {
 			// Signal the owned turn before prompt bookkeeping or callbacks. A
 			// stalled registry/adapter must never delay Stop during shutdown.

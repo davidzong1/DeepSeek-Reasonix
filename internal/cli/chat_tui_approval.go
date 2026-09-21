@@ -58,7 +58,21 @@ func (m chatTUI) cancelRequested() bool {
 
 func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 	if m.state != tuiRunning {
-		return ""
+		if m.maintenance == nil {
+			return ""
+		}
+		var label string
+		switch strings.ToLower(strings.TrimSpace(m.maintenance.Activity)) {
+		case "cancelling":
+			label = i18n.M.CompactionStopping
+		case "finalizing":
+			label = i18n.M.CompactionSaving
+		case "recovery_required":
+			label = i18n.M.CompactionRecoveryRequired
+		default:
+			label = i18n.M.CompactionWorking
+		}
+		return fmt.Sprintf("  %s %s", m.spinner.View(), label)
 	}
 	if m.retryAttempt > 0 && !cancelRequested {
 		if line, ok := m.waitingRecoveryLine(); ok {

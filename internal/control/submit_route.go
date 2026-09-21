@@ -129,6 +129,7 @@ func classifyDocsSubmit(trimmed, command string) SubmitDisposition {
 // legacy Submit* methods intentionally keep their void/error contracts.
 type SubmitResult struct {
 	Disposition SubmitDisposition `json:"disposition"`
+	OperationID string            `json:"operationId,omitempty"`
 }
 
 // SubmitDisplayWithResult preserves the existing asynchronous submit behavior
@@ -136,5 +137,9 @@ type SubmitResult struct {
 func (c *Controller) SubmitDisplayWithResult(display, input string) SubmitResult {
 	disposition := c.ClassifySubmitRoute(input)
 	c.SubmitDisplay(display, input)
-	return SubmitResult{Disposition: disposition}
+	result := SubmitResult{Disposition: disposition}
+	if disposition == SubmitManagementHandled {
+		result.OperationID = c.ActiveMaintenanceOperationID()
+	}
+	return result
 }

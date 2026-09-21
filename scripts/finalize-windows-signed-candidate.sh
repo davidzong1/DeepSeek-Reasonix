@@ -25,7 +25,9 @@ done
 
 pwsh -NoProfile -File "$control_root/scripts/sign-certum.ps1" -PayloadDirectory "$signed_payload"
 
-rm -rf "$product_root/desktop/build/windows" "$dist" "$bundle"
+# Keep the immutable checkout's NSIS template and icon. The signing handoff
+# carries generated identity and payload files, not these committed inputs.
+rm -rf "$dist" "$bundle"
 mkdir -p "$product_root/desktop/build/windows/installer"
 cp "$signing_work/desktop/build/windows/installer/reasonix_project.nsh" \
 	"$product_root/desktop/build/windows/installer/"

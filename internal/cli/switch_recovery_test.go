@@ -396,7 +396,7 @@ func TestResumePickerKeepsLeaseOnRecoveryPathWhenTargetHeld(t *testing.T) {
 	}
 }
 
-func TestCompactDoneKeepsLeaseOnRecoveryPathAfterSnapshotConflict(t *testing.T) {
+func TestCompactDoneDoesNotRepeatMaintenanceSnapshot(t *testing.T) {
 	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	active := filepath.Join(dir, "compact-active-conflict.jsonl")
@@ -412,12 +412,11 @@ func TestCompactDoneKeepsLeaseOnRecoveryPathAfterSnapshotConflict(t *testing.T) 
 	next, _ := m.Update(compactDoneMsg{})
 	m = next.(chatTUI)
 
-	recoveryPath := m.ctrl.SessionPath()
-	if recoveryPath == "" || recoveryPath == active || !strings.Contains(filepath.Base(recoveryPath), "-recovery-") {
-		t.Fatalf("session path after compact snapshot = %q, want recovery path distinct from active %q", recoveryPath, active)
+	if got := m.ctrl.SessionPath(); got != active {
+		t.Fatalf("compact completion repeated snapshot and moved session path to %q, want %q", got, active)
 	}
-	if got, want := m.leases.HeldPath(), agent.CanonicalSessionPath(recoveryPath); got != want {
-		t.Fatalf("lease after compact snapshot = %q, want recovery path %q", got, want)
+	if got, want := m.leases.HeldPath(), agent.CanonicalSessionPath(active); got != want {
+		t.Fatalf("lease after compact completion = %q, want unchanged %q", got, want)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/session"
+	"reasonix/internal/transcript"
 )
 
 func TestWindowsUpgradeFixtureMigratesLegacyAndRestarts(t *testing.T) {
@@ -58,6 +60,7 @@ func TestWindowsUpgradeFixtureMigratesLegacyAndRestarts(t *testing.T) {
 	for _, phase := range []string{"first", "restart"} {
 		app := NewApp()
 		closeApp := sync.OnceFunc(func() {
+			app.shutdown(context.Background())
 			app.stopHistoricalImports()
 			app.closeSessionServices()
 			if err := app.draftStore().Close(); err != nil {
@@ -113,6 +116,20 @@ func TestWindowsUpgradeFixtureMigratesLegacyAndRestarts(t *testing.T) {
 		if err != nil || len(page.Messages) != 2 || page.Messages[1].Content != evidence.History {
 			t.Fatalf("%s history API: %+v, %v", phase, page, err)
 		}
+		events := newActivationEventRecorder(app)
+		ticket, err := app.StartTopicActivation(TopicActivationRequest{Scope: "global", TopicID: "windows-upgrade-topic", SessionPath: "session-id:" + evidence.SessionID, RequestID: phase})
+		if err != nil {
+			t.Fatal(err)
+		}
+		events.waitFor(t, activationEventFor(phase, "ready"))
+		follow, err := app.TranscriptFollowForTab(ticket.TabID, transcript.FollowRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if follow.Snapshot == nil || follow.History == nil || len(follow.History.Messages) != 2 || follow.History.Messages[1].Preview != evidence.History {
+			t.Fatalf("%s activation did not expose the imported history through Follow", phase)
+		}
+		_, _ = app.TranscriptFollowForTab(ticket.TabID, transcript.FollowRequest{Subscription: follow.Subscription, Close: true})
 		closeApp()
 	}
 }

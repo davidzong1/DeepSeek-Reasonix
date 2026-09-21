@@ -16,7 +16,7 @@ const maxInspectBytes = 16 << 10
 func (t *UseCapabilityTool) resolveDiscovery(ctx context.Context, p useCapabilityArgs, action, id string, base tool.ResolvedCall) (tool.ResolvedCall, error) {
 	switch action {
 	case "list":
-		out, err := t.listCapabilitiesPage(p.Limit, p.Cursor)
+		out, err := t.listCapabilitiesPage(ctx, p.Limit, p.Cursor)
 		if err != nil {
 			if t.audit != nil {
 				t.audit.RecordMCPProxy(true, false, true)
@@ -36,7 +36,7 @@ func (t *UseCapabilityTool) resolveDiscovery(ctx context.Context, p useCapabilit
 		if query == "" {
 			return tool.ResolvedCall{}, capabilityInputErrorf("query is required for action=search")
 		}
-		out, resultCount, err := t.searchCapabilities(query, p.Limit)
+		out, resultCount, err := t.searchCapabilities(ctx, query, p.Limit)
 		if err != nil {
 			return tool.ResolvedCall{}, err
 		}
@@ -79,12 +79,13 @@ func (t *UseCapabilityTool) resolveDiscovery(ctx context.Context, p useCapabilit
 	}
 }
 
-func (t *UseCapabilityTool) inspect(_ context.Context, id string) (string, error) {
+func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, error) {
 	cat := t.currentCatalog()
 	e, ok := cat.Lookup(id)
 	if !ok {
 		return "", fmt.Errorf("unknown capability_id %q", id)
 	}
+	e = t.contextualEntry(ctx, e)
 	payload := map[string]any{
 		"id":           e.ID,
 		"kind":         e.Kind,
@@ -98,6 +99,15 @@ func (t *UseCapabilityTool) inspect(_ context.Context, id string) (string, error
 		"tool_name":    e.ToolName,
 		"auto_start":   e.AutoStart,
 		"network_call": false,
+	}
+	if e.Kind == capability.KindTool && e.FailureReason != "" {
+		payload["unavailable_reason"] = e.FailureReason
+	}
+	if e.Kind == capability.KindTool && t.registry != nil {
+		if target, ok := t.registry.Get(e.ToolName); ok {
+			payload["input_schema"] = target.Schema()
+			payload["schema_fingerprint"] = tool.SchemaFingerprint(target.Schema())
+		}
 	}
 	if strings.HasPrefix(id, "skill:") {
 		if contract, ok := capabilityArgumentContract(e); ok {

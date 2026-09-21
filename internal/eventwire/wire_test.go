@@ -380,7 +380,7 @@ func readDesktopTypes(t *testing.T) string {
 	}
 	dir := filepath.Join(filepath.Dir(file), "..", "..", "desktop", "frontend", "src", "lib")
 	var source strings.Builder
-	for _, name := range []string{"types.ts", "sessionContextTypes.ts", "recoveryStatus.ts"} {
+	for _, name := range []string{"types.ts", "transcriptEventTypes.ts", "sessionContextTypes.ts", "recoveryStatus.ts"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("read desktop type %s: %v", name, err)

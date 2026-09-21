@@ -73,6 +73,13 @@ test("Go, Electron and packaging inputs stay on their owning surfaces", () => {
   assert.equal(flags.browser, false);
 });
 
+test("Windows shell ownership paths select the full builtin package", () => {
+  for (const path of ["internal/tool/builtin/workspace.go", "internal/tool/tool.go", "internal/sandbox/sandbox.go", "internal/permission/permission.go", "internal/permissionpreset/preset.go"]) {
+    assert.equal(classifyPaths([path]).flags.windows_builtin, true, path);
+  }
+  assert.equal(classifyPaths(["internal/acp/e2e_test.go"]).flags.windows_builtin, false);
+});
+
 test("mixed changes cannot hide affected work and unknown paths fail closed", () => {
   let result = classifyPaths(["README.md", "desktop/frontend/src/App.tsx"]);
   assert.equal(result.flags.memory, true);
@@ -90,7 +97,7 @@ test("release notes and full events are deterministic", () => {
   assert.equal(classifyPaths([]).flags.desktop, false);
   const full = classifyPaths([], { full: true }).flags;
   assert.equal(full.notes_only, false);
-  for (const name of ["code", "desktop", "frontend", "browser", "memory", "memory_full", "electron", "native", "packaging", "site", "sdk"])
+  for (const name of ["code", "desktop", "frontend", "browser", "memory", "memory_full", "electron", "native", "packaging", "site", "sdk", "windows_builtin"])
     assert.equal(full[name], true, name);
 });
 
@@ -126,7 +133,7 @@ test("invalid diff identities fail instead of producing a skip", () => {
 test("CLI entry runs from paths with URL-significant characters", t => {
   const root = mkdtempSync(path.join(os.tmpdir(), "reasonix-ci-entry-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const expectedNames = ["code", "desktop", "desktop_go", "frontend", "browser", "memory", "memory_full", "electron", "native", "packaging", "site", "sdk", "release_control", "notes_only"];
+  const expectedNames = ["code", "desktop", "desktop_go", "frontend", "browser", "memory", "memory_full", "electron", "native", "packaging", "site", "sdk", "windows_builtin", "release_control", "notes_only"];
   for (const directory of ["ordinary", "with space", "中文", "hash#directory", "literal%20directory"]) {
     const target = path.join(root, directory, "ci-paths.mjs");
     mkdirSync(path.dirname(target), { recursive: true });
@@ -148,7 +155,7 @@ test("CLI writes GitHub output and module import stays side-effect free", t => {
   const stdout = execFileSync(process.execPath, [target, "--full", "--github-output", outputPath], { encoding: "utf8" });
   assert.equal(stdout, "");
   const output = readFileSync(outputPath, "utf8");
-  assert.equal(output.trim().split("\n").length, 14);
+  assert.equal(output.trim().split("\n").length, 15);
   assert.match(output, /^desktop=true$/m);
   assert.match(output, /^notes_only=false$/m);
 
@@ -188,6 +195,10 @@ test("release control changes run focused contracts without selecting product su
     ".github/workflows/release-promote.yml",
     ".github/workflows/pages.yml",
     "scripts/release-candidate.mjs",
+    "scripts/sync-release-site.sh",
+    "scripts/sync-release-site.test.mjs",
+    "scripts/check-release-public-access.sh",
+    "scripts/validate-release-control-plane.sh",
     "scripts/verify-release-artifact-archive.mjs",
     "scripts/desktop-release-artifacts.test.mjs",
     "npm/publish-candidate.mjs",

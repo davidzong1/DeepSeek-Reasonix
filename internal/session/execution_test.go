@@ -21,6 +21,35 @@ type blockingRejectExecution struct {
 	release <-chan struct{}
 }
 
+type advancingCancelExecution struct {
+	*testExecution
+	advance func()
+}
+
+func (e *advancingCancelExecution) Cancel() bool { e.advance(); return true }
+
+func TestMaintenanceCancelAcknowledgementCannotCancelSuccessor(t *testing.T) {
+	_, runtime := reviewRuntime(t)
+	exec := &advancingCancelExecution{testExecution: &testExecution{runtime: runtime}}
+	exec.gen = runtime.BindExecution(exec)
+	if !runtime.BeginExecution(exec.gen, MaintenanceActivity) {
+		t.Fatal("maintenance admission failed")
+	}
+	exec.advance = func() {
+		if !runtime.FinishMaintenanceExecution(exec.gen) || !runtime.BeginExecution(exec.gen, "turn") {
+			t.Fatal("could not hand off to queued turn")
+		}
+	}
+	if !runtime.Cancel() {
+		t.Fatal("cancellation was not acknowledged")
+	}
+	if got := runtime.StateSnapshot(); got.Phase != RuntimeRunning || got.Activity != "turn" {
+		t.Fatalf("late acknowledgement changed successor: %+v", got)
+	}
+	runtime.NoteExecution(exec.gen, RuntimeIdle, "")
+	runtime.UnbindExecution(exec.gen)
+}
+
 func (e *blockingRejectExecution) Snapshot() RuntimeSnapshot {
 	return RuntimeSnapshot{Phase: RuntimeIdle}
 }

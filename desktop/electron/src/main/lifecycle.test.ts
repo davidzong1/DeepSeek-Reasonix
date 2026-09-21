@@ -5,6 +5,13 @@ import { QuitSequencer } from "./lifecycle.js";
 const silent = { info() {}, warn() {}, error() {} };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 function fakeApp(sequencer: () => QuitSequencer) {
   const calls: string[] = [];
   // Mirrors Electron: app.quit() re-enters before-quit until the sequencer lets it pass.
@@ -52,7 +59,7 @@ test("a plain quit asks Go, shuts the service down once, then exits", async () =
   assert.equal(sequencer.currentPhase, "preparing");
   await tick();
   await tick();
-  assert.deepEqual(log, ["flush", "beforeClose:quit", "flush", "shutdown", "closeAllowed"]);
+  assert.deepEqual(log, ["flush", "beforeClose:quit", "shutdown", "closeAllowed"]);
   assert.deepEqual(calls, ["quit", "quit", "quit", "exit"]);
   assert.equal(sequencer.currentPhase, "completed");
 });
@@ -78,6 +85,173 @@ test("re-entrant quits while asking do not ask twice", async () => {
   assert.deepEqual(calls, ["quit", "quit"]);
 });
 
+test("repeated native window closes share one draft save and one shutdown", async () => {
+  const saved = deferred();
+  const events: string[] = [];
+  let q!: QuitSequencer;
+  const { app, calls } = fakeApp(() => q);
+  q = new QuitSequencer({
+    service: {
+      beforeClose: async () => { events.push("beforeClose"); return false; },
+      shutdown: async () => { events.push("shutdown"); },
+    },
+    app,
+    flushRenderer: async () => { events.push("flush"); await saved.promise; },
+    onCloseAllowed: () => events.push("closeAllowed"),
+    log: silent,
+  });
+
+  const first = q.requestWindowClose();
+  const second = q.requestWindowClose();
+  assert.equal(first, second);
+  assert.deepEqual(events, ["flush"]);
+  saved.resolve();
+  await Promise.all([first, second]);
+  await tick();
+  await tick();
+
+  assert.deepEqual(events, ["flush", "beforeClose", "shutdown", "closeAllowed"]);
+  assert.equal(events.filter(event => event === "shutdown").length, 1);
+  assert.equal(calls.at(-1), "exit");
+});
+
+test("an explicit quit upgrades an in-flight background window close", async () => {
+  const policy = deferred<boolean>();
+  const events: string[] = [];
+  const reasons: string[] = [];
+  let q!: QuitSequencer;
+  const { app } = fakeApp(() => q);
+  q = new QuitSequencer({
+    service: {
+      beforeClose: async () => { events.push("beforeClose"); return policy.promise; },
+      shutdown: async (reason) => { reasons.push(reason ?? ""); events.push("shutdown"); },
+    },
+    app,
+    flushRenderer: async () => { events.push("flush"); },
+    resumeRenderer: async () => { events.push("resume"); },
+    onWindowClosePrevented: () => events.push("hidden"),
+    onCloseAllowed: () => events.push("closeAllowed"),
+    log: silent,
+  });
+
+  const close = q.requestWindowClose();
+  await tick();
+  q.requestQuit("system_signal");
+  policy.resolve(true);
+  await close;
+  await tick();
+  await tick();
+
+  assert.deepEqual(reasons, ["system_signal"]);
+  assert.equal(events.filter(event => event === "flush").length, 1);
+  assert.equal(events.filter(event => event === "shutdown").length, 1);
+  assert.ok(!events.includes("hidden"));
+  assert.ok(!events.includes("resume"));
+});
+
+test("a background close restores draft editing, hides, and remains reusable", async () => {
+  const events: string[] = [];
+  let policyChecks = 0;
+  let q!: QuitSequencer;
+  const { app } = fakeApp(() => q);
+  q = new QuitSequencer({
+    service: {
+      beforeClose: async () => { policyChecks++; return true; },
+      shutdown: async () => { events.push("shutdown"); },
+    },
+    app,
+    flushRenderer: async () => { events.push("flush"); },
+    resumeRenderer: async () => { events.push("resume"); },
+    onWindowClosePrevented: () => events.push("hidden"),
+    onCloseAllowed: () => events.push("closeAllowed"),
+    log: silent,
+  });
+
+  await q.requestWindowClose();
+  assert.deepEqual(events, ["flush", "resume", "hidden"]);
+  assert.equal(q.currentPhase, "idle");
+  assert.equal(q.isQuitting, false);
+  await q.requestWindowClose();
+  assert.equal(policyChecks, 2, "a reopened window can close to background again");
+  assert.deepEqual(events, ["flush", "resume", "hidden", "flush", "resume", "hidden"]);
+  assert.ok(!events.includes("shutdown"));
+});
+
+for (const trigger of ["quit", "relaunch"] as const) {
+  test(`${trigger} during background resume upgrades only after the preparation releases ownership`, async () => {
+    const resumed = deferred();
+    const events: string[] = [];
+    let q!: QuitSequencer;
+    const { app, calls } = fakeApp(() => q);
+    q = new QuitSequencer({
+      service: {
+        beforeClose: async () => true,
+        shutdown: async reason => { events.push(`shutdown:${reason}`); },
+      }, app,
+      flushRenderer: async () => { events.push("flush"); },
+      resumeRenderer: async () => { events.push("resume"); await resumed.promise; },
+      onWindowClosePrevented: () => events.push("hidden"), onCloseAllowed() {}, log: silent,
+    });
+    const closing = q.requestWindowClose();
+    await tick();
+    assert.deepEqual(events, ["flush", "resume"]);
+    assert.equal(q.currentPhase, "preparing");
+    if (trigger === "quit") q.requestQuit("system_signal");
+    else q.relaunch(["--updated"]);
+    assert.equal(q.requestWindowClose(), closing);
+    resumed.resolve();
+    await closing;
+    await tick();
+    assert.deepEqual(events, ["flush", "resume", "flush", `shutdown:${trigger === "quit" ? "system_signal" : "update_restart"}`]);
+    assert.equal(q.currentPhase, "completed");
+    assert.equal(calls.at(-1), "exit");
+  });
+}
+
+for (const approved of [false, true]) {
+  test(`quit during draft failure prompt can retry (${approved ? "approved" : "window"} close)`, async () => {
+    const prompt = deferred();
+    let saves = 0, prompts = 0, shutdowns = 0;
+    let q!: QuitSequencer;
+    const { app } = fakeApp(() => q);
+    q = new QuitSequencer({
+      service: { beforeClose: async () => false, shutdown: async () => { shutdowns++; } }, app,
+      flushRenderer: async () => { if (++saves === 1) throw new Error("draft conflict"); },
+      onPrepareFailed: async () => { prompts++; await prompt.promise; },
+      onCloseAllowed() {}, log: silent,
+    });
+    if (approved) q.approve(); else void q.requestWindowClose();
+    await tick();
+    assert.equal(prompts, 1);
+    assert.equal(q.currentPhase, "preparing");
+    q.requestQuit(); q.requestQuit(); void q.requestWindowClose();
+    assert.equal(saves, 1);
+    prompt.resolve();
+    await tick();
+    assert.equal(saves, 2);
+    assert.equal(shutdowns, 1);
+    assert.equal(q.currentPhase, "completed");
+  });
+}
+
+test("a quit received while a veto resumes editing starts a new policy check", async () => {
+  const resumed = deferred();
+  let checks = 0, saves = 0, shutdowns = 0;
+  let q!: QuitSequencer;
+  const { app } = fakeApp(() => q);
+  q = new QuitSequencer({
+    service: { beforeClose: async () => ++checks === 1, shutdown: async () => { shutdowns++; } }, app,
+    flushRenderer: async () => { saves++; }, resumeRenderer: () => resumed.promise,
+    onCloseAllowed() {}, log: silent,
+  });
+  q.requestQuit(); await tick();
+  q.requestQuit(); resumed.resolve(); await tick();
+  assert.equal(checks, 2);
+  assert.equal(saves, 2);
+  assert.equal(shutdowns, 1);
+  assert.equal(q.currentPhase, "completed");
+});
+
 test("host/app.quit approval skips beforeClose and goes straight to shutdown", async () => {
   const { sequencer, calls, log } = build({ prevent: true });
   sequencer.approve();
@@ -91,7 +265,7 @@ test("a failed beforeClose does not trap the user in a shell that cannot quit", 
   app.quit();
   await tick();
   await tick();
-  assert.deepEqual(log, ["flush", "beforeClose:quit", "flush", "shutdown", "closeAllowed"]);
+  assert.deepEqual(log, ["flush", "beforeClose:quit", "shutdown", "closeAllowed"]);
   assert.equal(calls[calls.length - 1], "exit");
 });
 
@@ -223,4 +397,32 @@ test("shutdown failure prompt can retry without restoring renderer editing", asy
   assert.equal(prompts, 1);
   assert.equal(exits, 1);
   assert.equal(q.currentPhase, "completed");
+});
+
+test("repeated close and quit requests share one pending shutdown failure prompt", async () => {
+  const prompt = deferred<boolean>();
+  let attempts = 0;
+  let prompts = 0;
+  let q!: QuitSequencer;
+  q = new QuitSequencer({
+    service: {
+      beforeClose: async () => false,
+      shutdown: async () => { attempts++; throw new Error("save failed"); },
+    },
+    app: { quit: () => { q.onBeforeQuit(); }, relaunch() {}, },
+    onShutdownFailed: async () => { prompts++; return prompt.promise; },
+    onCloseAllowed() {},
+    log: silent,
+  });
+
+  q.approve();
+  await tick();
+  assert.equal(prompts, 1);
+  q.requestWindowClose();
+  q.requestQuit();
+  assert.equal(attempts, 1);
+  assert.equal(prompts, 1);
+  prompt.resolve(false);
+  await tick();
+  assert.equal(q.currentPhase, "failed");
 });

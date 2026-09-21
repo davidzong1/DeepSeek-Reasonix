@@ -3,6 +3,7 @@ import { duplicateLiveItemIds } from "./hydrateHistoryApply";
 import { historyRevisionIsOlder } from "./sessionTranscriptMode";
 import type { HistoryMutation, Item } from "./useController";
 import { canonicalUserConfirmations, settleLocalSubmissions, type LocalSubmissionFields } from "./localSubmissionState";
+import { reconcileSessionOperationItems } from "./sessionMaintenanceOperation";
 
 type WindowFields = LocalSubmissionFields & {
   items: Item[];
@@ -63,12 +64,13 @@ function common<S extends WindowFields>(state: S, action: HistoryWindowMutationA
 export function reduceHistoryWindowState<S extends WindowFields>(state: S, action: HistoryWindowMutationAction): S {
   if (historyRevisionIsOlder(state.historyRevision, action.revision)) return state;
   if (action.type === "history_replace") {
-    return settleLocalSubmissions(common(state, action, action.items, action.items.length, "replace"), action.items);
+    const items = reconcileSessionOperationItems(action.items, state.items);
+    return settleLocalSubmissions(common(state, action, items, items.length, "replace"), items);
   }
   if (action.type === "history_rebase") {
     const liveTail = state.items.slice(Math.min(state.historyPrefixCount, state.items.length));
     const duplicates = new Set(duplicateLiveItemIds(action.items, liveTail));
-    const items = [...action.items, ...liveTail.filter((item) => !duplicates.has(item.id))];
+    const items = reconcileSessionOperationItems([...action.items, ...liveTail.filter((item) => !duplicates.has(item.id))], state.items);
     return settleLocalSubmissions({ ...common(state, action, items, action.items.length, "replace"), historyLayoutRevision: state.historyLayoutRevision + 1 }, items, canonicalUserConfirmations(action.items));
   }
   if (action.type === "history_prepend") {
@@ -77,11 +79,12 @@ export function reduceHistoryWindowState<S extends WindowFields>(state: S, actio
     const prefix = state.items.slice(0, Math.min(state.historyPrefixCount, state.items.length));
     const retainedPrefix = remove ? prefix.filter((item) => !remove.has(item.id)) : prefix;
     const incoming = new Set(action.items.map(item => item.id));
-    const items = [...new Map(action.items.map(item => [item.id, item])).values(), ...rest.filter(item => !incoming.has(item.id))];
+    const items = reconcileSessionOperationItems([...new Map(action.items.map(item => [item.id, item])).values(), ...rest.filter(item => !incoming.has(item.id))], state.items);
     return settleLocalSubmissions(common(state, action, items, action.items.length + retainedPrefix.filter(item => !incoming.has(item.id)).length, "prepend"), items, canonicalUserConfirmations(action.items));
   }
+  const items = reconcileSessionOperationItems(action.items, state.items);
   return settleLocalSubmissions({
-    ...common(state, action, action.items, action.items.length, "append"),
+    ...common(state, action, items, items.length, "append"),
     historyLayoutRevision: state.historyLayoutRevision + 1,
-  }, action.items);
+  }, items);
 }

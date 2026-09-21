@@ -7,6 +7,7 @@ required=(
 	.github/workflows/release-candidate.yml
 	.github/workflows/release-candidate-verify.yml
 	.github/workflows/release-promote.yml
+	.github/workflows/release-site-recovery.yml
 	.github/workflows/release-desktop.yml
 	.signpath/contracts/release-signing.yml
 	npm/publish-candidate.mjs
@@ -17,6 +18,12 @@ required=(
 	scripts/package-windows-desktop.sh
 	scripts/release-candidate.mjs
 	scripts/release-candidate-tags.sh
+	scripts/test-release-control-contracts.sh
+	scripts/sync-release-site.sh
+	scripts/observe-release-site.sh
+	scripts/release-publication-ledger.mjs
+	scripts/check-release-public-access.sh
+	scripts/fetch-stable-release-manifest.sh
 	scripts/resolve-release-candidate.mjs
 	scripts/sign-certum.ps1
 	scripts/test-windows-installer-startup.ps1
@@ -54,4 +61,5 @@ bash -n "$root/scripts/finalize-windows-signed-candidate.sh"
 bash -n "$root/scripts/release-candidate-tags.sh"
 bash -n "$root/scripts/package-windows-desktop.sh"
 
+bash "$root/scripts/test-release-control-contracts.sh" "$root"
 echo "release control preflight: PASS"

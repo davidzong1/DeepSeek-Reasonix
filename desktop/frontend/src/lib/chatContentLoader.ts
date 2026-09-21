@@ -4,20 +4,22 @@ import { historyEntryIdForItemId } from "./transcriptHistoryEntry";
 import { getTranscriptStore } from "./transcriptStore";
 import type { Item } from "./useController";
 
+type ContentField = "content" | "reasoning" | "tool" | "summary";
+
 /** Two requests per session under a shared four-request application budget. */
 export class ChatContentLoader {
   private readonly requestOwner = contentRequestScheduler.owner();
   private closed = false;
   private generation = 0;
   private pending = new Map<string, { item: Item; promise: Promise<string> }>();
-  constructor(private tabId?: string, private resolve?: (item: Item, field: "content" | "reasoning" | "tool") => Promise<string>) {}
+  constructor(private tabId?: string, private resolve?: (item: Item, field: ContentField) => Promise<string>) {}
   activate() { this.closed = false; }
-  needsFullContent(item: Item, field: "content" | "reasoning" | "tool"): boolean {
+  needsFullContent(item: Item, field: ContentField): boolean {
     if (field === "tool" && item.kind === "tool" && (item.dataArchived || item.truncated || item.contentState === "unloaded")) return true;
-    const entry = historyEntryIdForItemId(item.id);
+    const entry = item.kind === "compaction" ? item.historyEntryId : historyEntryIdForItemId(item.id);
     return Boolean(entry && this.tabId && getTranscriptStore().hasContentReference(this.tabId, entry, field));
   }
-  load = (item: Item, field: "content" | "reasoning" | "tool"): Promise<string> => {
+  load = (item: Item, field: ContentField): Promise<string> => {
     const key = `${item.id}:${field}`;
     const previous = this.pending.get(key);
     if (previous && sameContent(previous.item, item)) return previous.promise;
@@ -41,7 +43,7 @@ export class ChatContentLoader {
     this.pending.set(key, { item, promise: request });
     return request;
   };
-  private async fetch(item: Item, field: "content" | "reasoning" | "tool"): Promise<string> {
+  private async fetch(item: Item, field: ContentField): Promise<string> {
     if (field === "tool" && item.kind === "tool") {
       if (this.tabId && item.contentState === "unloaded") {
         const canonical = await getTranscriptStore().requestToolContent(this.tabId, item, { args: item.args, output: item.output, error: item.error, execution: item.execution });
@@ -63,8 +65,10 @@ export class ChatContentLoader {
       return (this.tabId && await getTranscriptStore().requestToolContent(this.tabId, item, value)) || JSON.stringify(value, null, 2);
     }
     const fallback = item.kind === "assistant" ? field === "reasoning" ? item.reasoning : item.text
+      : item.kind === "compaction" && field === "summary" ? item.summary
       : item.kind === "user" || item.kind === "phase" || item.kind === "notice" ? item.text : "";
-    const entry = item.kind === "user" && item.messageId ? `m:${item.messageId}` : historyEntryIdForItemId(item.id);
+    const entry = item.kind === "compaction" ? item.historyEntryId
+      : item.kind === "user" && item.messageId ? `m:${item.messageId}` : historyEntryIdForItemId(item.id);
     if (!entry || !this.tabId) return fallback;
     const store = getTranscriptStore();
     const text = await store.requestFullContent(this.tabId, entry, field);

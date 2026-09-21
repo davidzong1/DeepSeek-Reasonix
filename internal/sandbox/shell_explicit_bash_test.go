@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestExplicitBashPreservesHookDialectDespiteWindowsAgentPolicy(t *testing.T) {
+func TestExplicitBashPreservesHookDialectWithoutPowerShellFallback(t *testing.T) {
 	const bashPath = `C:\Git\bin\bash.exe`
 	snap := &shellSnapshot{
 		goos:       "windows",
@@ -19,9 +19,6 @@ func TestExplicitBashPreservesHookDialectDespiteWindowsAgentPolicy(t *testing.T)
 	got, ok := resolveExplicitBash(snap, "")
 	if !ok || got.Kind != ShellBash || got.Path != bashPath {
 		t.Fatalf("explicit hook shell = %+v, found=%v", got, ok)
-	}
-	if preference := effectiveShellPreference("windows", "bash", nil); preference != "auto" {
-		t.Fatalf("Agent policy changed: %q", preference)
 	}
 	snap.bashCands = nil
 	if _, ok := resolveExplicitBash(snap, ""); ok {

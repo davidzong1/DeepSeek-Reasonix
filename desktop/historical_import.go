@@ -61,6 +61,7 @@ type historicalImportCoordinator struct {
 	discoveryPending         bool
 	catalogEnabled           bool
 	catalogAt                time.Time
+	catalogRevision          uint64
 	catalog                  []historicalCatalogEntry
 	sources                  map[string]historicalSource
 	views                    map[string]HistoricalSessionView
@@ -102,53 +103,6 @@ func (a *App) historicalPreparationStatus(sourceKey string) string {
 // Listing reads directory entries and registry metadata only.
 func (a *App) ListHistoricalSessions() (HistoricalImportStatus, error) {
 	return a.listHistoricalSessions(a.bootContext())
-}
-
-func (a *App) listHistoricalSessions(ctx context.Context) (HistoricalImportStatus, error) {
-	c := &a.historicalImports
-	c.discoveryMu.Lock()
-	defer c.discoveryMu.Unlock()
-	state, err := a.workspaceRegistry().Load(ctx)
-	if err != nil {
-		return HistoricalImportStatus{Items: []HistoricalSessionView{}}, err
-	}
-	sources := map[string]historicalSource{}
-	add := func(path, format, scope, root, head string) {
-		sources[desktopSourceKey(path, head)] = historicalSource{path: path, format: format, scope: scope, root: root, head: head}
-	}
-	canonical, legacy := a.desktopHistoricalRoots()
-	var joined error
-	for _, source := range canonical {
-		joined = errors.Join(joined, scanHistoricalRoot(ctx, *source, "canonical", add))
-	}
-	for _, source := range legacy {
-		joined = errors.Join(joined, scanHistoricalRoot(ctx, source, "legacy", add))
-	}
-	addHistoricalRegistrySources(state, add)
-	catalog := readHistoricalCanonicalCatalog(ctx, sources)
-	saved, presentationErr := readHistoricalSidecar()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.initialize(ctx)
-	if !c.queueLoaded {
-		c.loadQueueLocked()
-	}
-	c.catalog, c.catalogAt = catalog, time.Now()
-	if presentationErr == nil {
-		c.presentations = saved.Presentations
-	}
-	for id, source := range sources {
-		if source.path == "" {
-			continue
-		}
-		c.sources[id] = source
-		view := historicalImportView(state, id, source, c.views[id])
-		if presentation := c.presentations[id]; presentation.Title != "" {
-			view.Title = presentation.Title
-		}
-		c.views[id] = view
-	}
-	return c.status(), joined
 }
 
 func scanHistoricalRoot(ctx context.Context, source desktopMigrationSource, format string, add func(string, string, string, string, string)) error {
@@ -341,9 +295,19 @@ func (a *App) prepareHistoricalSession(id string, interactive, batch bool) (*his
 		c.mu.Unlock()
 		return call, nil
 	}
+	for operationID, previous := range c.operations {
+		if previous.sourceKey == id {
+			if previous.status == "ready" {
+				c.mu.Unlock()
+				return previous, nil
+			}
+			delete(c.operations, operationID)
+		}
+	}
 	ctx, cancel := context.WithCancel(c.ctx)
 	c.revision++
-	call := &historicalImportCall{operationID: "prepare-" + id, sourceKey: id, ctx: ctx, cancel: cancel,
+	operationID := "prepare-" + strings.TrimPrefix(newTabID(), "tab_")
+	call := &historicalImportCall{operationID: operationID, sourceKey: id, ctx: ctx, cancel: cancel,
 		done: make(chan struct{}), status: "queued", revision: c.revision, interactive: interactive, batch: batch}
 	c.calls[id] = call
 	c.operations[call.operationID] = call
@@ -382,6 +346,12 @@ func (a *App) runHistoricalPreparation(call *historicalImportCall, id string, so
 		presentationErr = a.applyHistoricalSourcePresentation(desktopSourceKey(source.path, source.head), result.Session)
 	}
 	c.mu.Lock()
+	if c.calls[id] != call {
+		call.result, call.err = result, err
+		close(call.done)
+		c.mu.Unlock()
+		return
+	}
 	call.result, call.err = result, err
 	view = c.views[id]
 	if err == nil {
@@ -487,6 +457,9 @@ func (a *App) importHistoricalSource(ctx context.Context, id string, source hist
 	workspace, err := a.ensureDesktopWorkspace(ctx, source.scope, source.root)
 	if err != nil {
 		return SessionRestoreResult{}, err
+	}
+	if result, handled, err := a.resumeConflictingHistoricalVersion(ctx, state, source, workspace); handled {
+		return result, err
 	}
 	migration := desktopMigrationSource{scope: source.scope, workspaceRoot: source.root, headID: source.head, versionFingerprint: source.version}
 	if resume := pendingHistoricalOperation(state, id); resume != nil {

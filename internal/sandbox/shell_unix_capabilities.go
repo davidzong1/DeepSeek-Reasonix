@@ -1,5 +1,7 @@
 package sandbox
 
+import "strings"
+
 // unixShellCapabilities reports the common POSIX-family interpreters present
 // on macOS and Linux. Linux remains Bash-only for execution; macOS may fall
 // back to zsh and then sh when Bash is unavailable, while Settings reports the
@@ -14,6 +16,13 @@ func unixShellCapabilities(snap *shellSnapshot) []ShellCapability {
 
 func unixShellCapability(snap *shellSnapshot, id string, names, standardPaths []string) ShellCapability {
 	capability := ShellCapability{ID: id, Variant: "system"}
+	if id == ShellCapabilityBash && strings.EqualFold(strings.TrimSpace(snap.prefer), "bash") {
+		path := configuredShellPathForPreference(snap.goos, snap.prefer, snap.configPath, snap.exists, snap.isWSL)
+		if path != "" && snap.exists(path) && snap.probe(path) {
+			capability.Available, capability.Path, capability.Source = true, path, ShellSourceConfig
+			return capability
+		}
+	}
 	for _, name := range names {
 		if path, err := snap.lookPath(name); err == nil {
 			capability.Available = true

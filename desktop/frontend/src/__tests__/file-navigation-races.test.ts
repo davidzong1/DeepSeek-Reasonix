@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { installDesktopHostStub } from "./desktopHostStub";
-import { performResourceAction } from "../lib/fileNavigationCommands";
+import { openResource, performResourceAction } from "../lib/fileNavigationCommands";
 import { createFileNavigationOwner, setFileNavigationOwner } from "../lib/fileNavigationCommands";
 import { fileNavigationKey, type FileNavigationSnapshot } from "../lib/fileNavigationOwner";
 import { useActivityBarStore } from "../store/activityBar";
@@ -151,5 +151,30 @@ for (const action of ["open-native", "reveal-native", "save-copy"] as const) {
   assert.equal((await performResourceAction(reference, action)).status, "opened");
 }
 assert.deepEqual(referenceCalls, ["resolve:answer.md", "open:answer.md", "reveal:answer.md", "save:answer.md"]);
+
+// Default preview routing is centralized: every local HTML entry point asks
+// the shared backend service for a task-owned browser tab.
+const sharedPreviewCalls: Array<{ tabId: string; source: string; path: string; userInitiated?: boolean }> = [];
+const taskTab = {
+  id: "task-html", taskId: "session", url: "http://preview.test/index.html", title: "index.html",
+  loading: false, canGoBack: false, canGoForward: false, temporary: false,
+  mode: "agent" as const, epoch: 0, zoom: 1, error: null,
+};
+Object.assign(stub.commands, {
+  OpenFileBrowserPreviewForTab: async (tabId: string, request: { source: string; path: string; userInitiated?: boolean }) => {
+    sharedPreviewCalls.push({ tabId, source: request.source, path: request.path, userInitiated: request.userInitiated });
+    return { tabId: taskTab.id, url: taskTab.url, status: "opened", sessionGeneration: 1 };
+  },
+});
+useBrowserPanelStore.setState({
+  host: {
+    list: async () => [taskTab], activate: async () => {}, close: async () => {},
+  } as unknown as NonNullable<ReturnType<typeof useBrowserPanelStore.getState>["host"]>,
+  tabs: [], taskId: "session",
+});
+const htmlDefault = await openResource({ hostId: "local", tabId: "session", source: "workspace", path: "INDEX.HTML" }, { view: "preview" });
+assert.equal(htmlDefault.status, "opened");
+assert.deepEqual(sharedPreviewCalls, [{ tabId: "session", source: "workspace", path: "INDEX.HTML", userInitiated: false }]);
+assert.equal(useBrowserPanelStore.getState().activeTabId, taskTab.id);
 stub.uninstall(); dom.window.close();
 console.log("PASS navigation ordering, cancellation, failed outcomes and browser resource cleanup");

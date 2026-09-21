@@ -10,6 +10,7 @@ export interface LifecycleService {
     reason?: "user_quit" | "update_restart" | "system_signal",
     onProgress?: (phase: ShutdownPhase) => void,
   ): Promise<void>;
+  shutdownRequestIdentity?(): string;
 }
 
 export interface LifecycleApp {
@@ -23,10 +24,13 @@ export interface QuitSequencerDeps {
   app: LifecycleApp;
   flushRenderer?: () => Promise<void>;
   resumeRenderer?: () => Promise<void>;
+  onWindowClosePrevented?: () => void;
+  onPrepareFailed?: (message: string) => Promise<void> | void;
   onShutdownFailed?: (message: string) => Promise<boolean>;
   onCloseAllowed(): void;
   cleanup?: Array<{ name: string; run(): void }>;
   schedule?: (run: () => void, milliseconds: number) => void;
+  now?: () => number;
   log: Logger;
 }
 
@@ -40,6 +44,12 @@ export class QuitSequencer {
   private attempt = "";
   private reason: "user_quit" | "update_restart" | "system_signal" = "user_quit";
   private reasonClaimed = false;
+  private preparing: Promise<void> | null = null;
+  private finishing: Promise<void> | null = null;
+  private quitRequested = false;
+  private rendererFlushed = false;
+  private attemptStartedAt = 0;
+  private draftSaveMs = 0;
 
   constructor(private readonly deps: QuitSequencerDeps) {}
 
@@ -60,31 +70,54 @@ export class QuitSequencer {
   onBeforeQuit(): boolean {
     if (this.phase === "completed") return true;
     if (this.phase === "failed") {
-      this.phase = "saving";
-      void this.finish();
+      if (!this.finishing) this.phase = "saving";
+      void this.startFinishing();
+      return false;
+    }
+    if (this.phase === "preparing") {
+      this.quitRequested = true;
+      this.claimReason("user_quit");
       return false;
     }
     if (this.phase !== "idle") return false;
     this.claimReason("user_quit");
-    if (!this.attempt) this.attempt = randomUUID();
+    this.quitRequested = true;
+    this.beginAttempt();
     this.deps.log.info(`exit ${this.attempt}: ${this.approved ? "saving" : "preparing"}`);
     if (!this.approved) {
       this.phase = "preparing";
-      void this.ask();
+      this.startPreparing(() => this.ask());
       return false;
     }
     this.phase = "saving";
-    void this.finish();
+    void this.startFinishing();
     return false;
   }
 
   requestQuit(reason: "user_quit" | "system_signal" = "user_quit"): void {
     this.claimReason(reason);
+    this.quitRequested = true;
     this.deps.app.quit();
+  }
+
+  requestWindowClose(): Promise<void> {
+    if (this.phase === "completed") return Promise.resolve();
+    if (this.phase === "failed") {
+      if (!this.finishing) this.phase = "saving";
+      return this.startFinishing();
+    }
+    if (this.isQuitting) return this.preparing ?? Promise.resolve();
+    if (this.phase === "preparing") return this.preparing ?? Promise.resolve();
+    if (this.phase !== "idle") return Promise.resolve();
+    this.beginAttempt();
+    this.phase = "preparing";
+    this.deps.log.info(`exit ${this.attempt}: preparing window close`);
+    return this.startPreparing(() => this.prepareWindowClose());
   }
 
   approve(): void {
     this.approved = true;
+    this.quitRequested = true;
     this.deps.app.quit();
   }
 
@@ -97,56 +130,79 @@ export class QuitSequencer {
 
   private async ask(): Promise<void> {
     let prevent = false;
-    try {
-      await this.deps.flushRenderer?.();
-    } catch (error) {
-      this.deps.log.warn(`exit ${this.attempt}: draft flush failed; quit cancelled: ${errorText(error)}`);
-      this.phase = "idle";
-      this.approved = false;
-      this.resetTrigger();
-      return;
-    }
+    if (!(await this.flushRenderer("quit cancelled"))) return;
     try {
       prevent = await this.deps.service.beforeClose("quit");
     } catch (error) {
       this.deps.log.warn(`beforeClose(quit) failed, quitting anyway: ${errorText(error)}`);
     }
-    this.phase = "idle";
     if (prevent && !this.approved) {
       this.deps.log.info(`exit ${this.attempt}: cancelled`);
-      this.resetTrigger();
+      this.quitRequested = false;
       await this.resumeRenderer();
+      this.rendererFlushed = false;
+      if (!this.quitRequested && !this.approved) this.resetTrigger();
       return;
     }
     this.approved = true;
-    this.deps.app.quit();
+  }
+
+  private async prepareWindowClose(): Promise<void> {
+    if (!(await this.flushRenderer("window close cancelled"))) return;
+    let prevent = false;
+    try {
+      prevent = await this.deps.service.beforeClose("window");
+    } catch (error) {
+      this.deps.log.warn(`beforeClose(window) failed, quitting anyway: ${errorText(error)}`);
+    }
+    if (this.quitRequested || this.approved || !prevent) {
+      this.approved = true;
+      this.quitRequested = true;
+      this.claimReason("user_quit");
+      return;
+    }
+    await this.resumeRenderer();
+    this.rendererFlushed = false;
+    // Resuming editing crosses the renderer boundary. A quit received during
+    // that await owns the next transition and must flush any resumed edits.
+    if (this.quitRequested || this.approved) {
+      this.approved = true;
+      return;
+    }
+    this.deps.onWindowClosePrevented?.();
+    this.deps.log.info(`exit ${this.attempt}: window hidden`);
+    this.resetTrigger();
   }
 
   private async finish(): Promise<void> {
-    try {
-      await this.deps.flushRenderer?.();
-    } catch (error) {
-      this.deps.log.warn(`exit ${this.attempt}: draft flush failed; shutdown cancelled: ${errorText(error)}`);
-      this.phase = "idle";
-      this.approved = false;
-      this.resetTrigger();
-      return;
-    }
+    if (!(await this.flushRenderer("shutdown cancelled"))) return;
+    const serviceStartedAt = this.now();
     try {
       await this.deps.service.shutdown(this.reason, (phase) => {
         if (phase === "preparing" || phase === "saving" || phase === "closing") this.phase = phase;
       });
     } catch (error) {
       const message = errorText(error);
-      this.deps.log.warn(`exit ${this.attempt}: shutdown failed: ${message}`);
+      this.deps.log.warn(
+        `exit ${this.attempt}: shutdown failed request=${this.shutdownRequestIdentity()} reason=${this.reason} draft_ms=${this.draftSaveMs} service_ms=${this.now() - serviceStartedAt} total_ms=${this.totalMs()}: ${message}`,
+      );
       this.phase = "failed";
       this.approved = true;
-      if (await this.deps.onShutdownFailed?.(message)) {
+      let retry = false;
+      try {
+        retry = await this.deps.onShutdownFailed?.(message) === true;
+      } catch (promptError) {
+        this.deps.log.warn(`exit ${this.attempt}: shutdown failure prompt failed: ${errorText(promptError)}`);
+      }
+      if (retry) {
         this.phase = "saving";
-        void this.finish();
+        await this.finish();
       }
       return;
     }
+    this.deps.log.info(
+      `exit ${this.attempt}: shutdown complete request=${this.shutdownRequestIdentity()} reason=${this.reason} draft_ms=${this.draftSaveMs} service_ms=${this.now() - serviceStartedAt} total_ms=${this.totalMs()}`,
+    );
     this.phase = "closing";
     for (const step of [{ name: "close permission", run: () => this.deps.onCloseAllowed() }, ...(this.deps.cleanup ?? [])]) {
       try {
@@ -184,6 +240,58 @@ export class QuitSequencer {
     }
   }
 
+  private startPreparing(run: () => Promise<void>): Promise<void> {
+    if (this.preparing) return this.preparing;
+    this.preparing = run().finally(() => {
+      this.preparing = null;
+      this.settlePreparation();
+    });
+    return this.preparing;
+  }
+
+  private startFinishing(): Promise<void> {
+    if (this.finishing) return this.finishing;
+    this.finishing = this.finish().finally(() => {
+      this.finishing = null;
+      this.settlePreparation();
+    });
+    return this.finishing;
+  }
+
+  private settlePreparation(): void {
+    if (this.phase !== "preparing") return;
+    // Publish idle only after the previous promise releases ownership. A new
+    // transaction must never attach to a cancelled preparation's promise.
+    this.phase = "idle";
+    if (this.approved || this.quitRequested) this.deps.app.quit();
+  }
+
+  private async flushRenderer(cancelled: string): Promise<boolean> {
+    if (this.rendererFlushed) return true;
+    const startedAt = this.now();
+    try {
+      await this.deps.flushRenderer?.();
+      this.draftSaveMs = this.now() - startedAt;
+      this.rendererFlushed = true;
+      this.deps.log.info(`exit ${this.attempt}: draft saved draft_ms=${this.draftSaveMs}`);
+      return true;
+    } catch (error) {
+      const message = errorText(error);
+      this.deps.log.warn(`exit ${this.attempt}: draft flush failed; ${cancelled}: ${message}`);
+      this.phase = "preparing";
+      this.approved = false;
+      this.quitRequested = false;
+      this.rendererFlushed = false;
+      try {
+        await this.deps.onPrepareFailed?.(message);
+      } catch (promptError) {
+        this.deps.log.warn(`exit ${this.attempt}: draft failure prompt failed: ${errorText(promptError)}`);
+      }
+      if (!this.quitRequested && !this.approved) this.resetTrigger();
+      return false;
+    }
+  }
+
   private claimReason(reason: "user_quit" | "update_restart" | "system_signal"): void {
     if (this.reasonClaimed) return;
     this.reason = reason;
@@ -194,5 +302,26 @@ export class QuitSequencer {
     this.attempt = "";
     this.reason = "user_quit";
     this.reasonClaimed = false;
+    this.quitRequested = false;
+    this.attemptStartedAt = 0;
+    this.draftSaveMs = 0;
+  }
+
+  private beginAttempt(): void {
+    if (this.attempt) return;
+    this.attempt = randomUUID();
+    this.attemptStartedAt = this.now();
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now();
+  }
+
+  private totalMs(): number {
+    return this.attemptStartedAt > 0 ? Math.max(0, this.now() - this.attemptStartedAt) : 0;
+  }
+
+  private shutdownRequestIdentity(): string {
+    return this.deps.service.shutdownRequestIdentity?.() || "none";
   }
 }

@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:bd3ca289b0444e33be634816036c2a8debcdb8ae5f87262a82eff6a1796bb448";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:4834c0e613010e6104b461f33ca8ddd31d407adbc5977b8e221269abfbbfb936";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -326,6 +326,7 @@ export const DESKTOP_COMMANDS = [
   "OpenChannelSessionPageForTab",
   "OpenChannelTranscriptSessionForTab",
   "OpenDownloadPage",
+  "OpenFileBrowserPreviewForTab",
   "OpenGlobalTab",
   "OpenLocalPath",
   "OpenLocalPathInExternalOpener",
@@ -1221,6 +1222,21 @@ export interface event_FinalReadiness {
   missing?: string[];
 }
 
+export interface MaintenanceState {
+  operationId: string;
+  operationRevision?: number;
+  runtimeEpoch?: string;
+  kind: string;
+  activity: string;
+  status?: string;
+  errorCode?: string;
+  detail?: string;
+  applied?: boolean;
+  inputTokens?: number;
+  resultTokens?: number;
+  messages?: number;
+}
+
 export interface PendingInteraction {
   requestId: string;
   toolCallId?: string;
@@ -1274,6 +1290,24 @@ export interface RuntimeStateSnapshot {
   recovery?: RecoveryStatus | null;
   goal?: View | null;
   goalError?: string;
+  maintenance?: MaintenanceState | null;
+}
+
+export interface SessionOperationInfo {
+  operationId: string;
+  operationRevision?: number;
+  runtimeEpoch?: string;
+  kind: string;
+  activity: string;
+  status: string;
+  errorCode?: string;
+  detail?: string;
+  applied?: boolean;
+  inputTokens?: number;
+  resultTokens?: number;
+  messages?: number;
+  summary?: string;
+  archive?: string;
 }
 
 export interface Todo {
@@ -1421,6 +1455,7 @@ export interface Event {
   mcpInteraction?: MCPInteraction | null;
   compaction?: Compaction | null;
   maintenance?: ContextMaintenance | null;
+  sessionOperation?: SessionOperationInfo | null;
   guardian?: Guardian | null;
   decisionReceipt?: eventwire_DecisionReceipt | null;
   extension?: ExtensionSurface | null;
@@ -2313,6 +2348,23 @@ export interface FeishuBotView {
   mode: string;
   webhookPort: number;
   requireMention: boolean;
+}
+
+export interface FileBrowserPreviewRequest {
+  source: string;
+  path: string;
+  toolCallId?: string;
+  operationId: string;
+  expectedSessionGeneration?: number;
+  userInitiated?: boolean;
+}
+
+export interface FileBrowserPreviewResult {
+  tabId: string;
+  url: string;
+  status: string;
+  error?: string;
+  sessionGeneration: number;
 }
 
 export interface FilePreview {
@@ -4680,6 +4732,7 @@ export interface TurnStartView {
   turnId: string;
   status: string;
   disposition: string;
+  operationId?: string;
   runtimeEpoch?: string;
   submissionId?: string;
 }
@@ -5380,6 +5433,16 @@ export interface Message {
   messages?: number;
   summary?: string;
   archive?: string;
+  operationId?: string;
+  operationRevision?: number;
+  runtimeEpoch?: string;
+  operationKind?: string;
+  operationStatus?: string;
+  operationActivity?: string;
+  errorCode?: string;
+  applied?: boolean;
+  inputTokens?: number;
+  resultTokens?: number;
   decisionReceipt?: provider_DecisionReceipt | null;
   readiness?: event_FinalReadiness | null;
   readPause?: ReadPause | null;
@@ -5914,6 +5977,7 @@ export interface GeneratedDesktopCommands {
   OpenChannelSessionPageForTab(arg0: string, arg1: string, arg2: number): Promise<HistoryPage>;
   OpenChannelTranscriptSessionForTab(arg0: string, arg1: string): Promise<HistorySwitchPhases>;
   OpenDownloadPage(): Promise<void>;
+  OpenFileBrowserPreviewForTab(arg0: string, arg1: FileBrowserPreviewRequest): Promise<FileBrowserPreviewResult>;
   OpenGlobalTab(arg0: string): Promise<TabMeta>;
   OpenLocalPath(arg0: string): Promise<void>;
   OpenLocalPathInExternalOpener(arg0: string, arg1: string): Promise<void>;

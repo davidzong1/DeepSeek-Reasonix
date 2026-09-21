@@ -21,17 +21,18 @@ type listServerInfo struct {
 	Connected    bool   `json:"connected"`
 }
 
-func (t *UseCapabilityTool) listCapabilitiesPage(limit int, cursor string) (string, error) {
+func (t *UseCapabilityTool) listCapabilitiesPage(ctx context.Context, limit int, cursor string) (string, error) {
 	if limit == 0 {
 		limit = 50
 	}
 	type capInfo struct {
-		ID          string `json:"id"`
-		Kind        string `json:"kind"`
-		Name        string `json:"name"`
-		Status      string `json:"status,omitempty"`
-		ReadOnly    bool   `json:"read_only,omitempty"`
-		Description string `json:"description,omitempty"`
+		ID                string `json:"id"`
+		Kind              string `json:"kind"`
+		Name              string `json:"name"`
+		Status            string `json:"status,omitempty"`
+		ReadOnly          bool   `json:"read_only,omitempty"`
+		Description       string `json:"description,omitempty"`
+		UnavailableReason string `json:"unavailable_reason,omitempty"`
 	}
 	var caps []capInfo
 	if t.currentToolResultTarget() != nil {
@@ -43,6 +44,7 @@ func (t *UseCapabilityTool) listCapabilitiesPage(limit int, cursor string) (stri
 	catalog := t.currentCatalog()
 	if len(catalog.Entries) > 0 {
 		for _, e := range catalog.Entries {
+			e = t.contextualEntry(ctx, e)
 			// Servers already have a compact representation below. Keep concrete
 			// MCP tools in the internal catalog for routing, inspect, and known-ID
 			// calls, but do not inject every cached directory into model context.
@@ -54,12 +56,13 @@ func (t *UseCapabilityTool) listCapabilitiesPage(limit int, cursor string) (stri
 				continue
 			}
 			caps = append(caps, capInfo{
-				ID:          e.ID,
-				Kind:        string(e.Kind),
-				Name:        e.Name,
-				Status:      string(e.Status),
-				ReadOnly:    e.ReadOnly,
-				Description: e.Description,
+				ID:                e.ID,
+				Kind:              string(e.Kind),
+				Name:              e.Name,
+				Status:            string(e.Status),
+				ReadOnly:          e.ReadOnly,
+				Description:       e.Description,
+				UnavailableReason: e.FailureReason,
 			})
 		}
 	}

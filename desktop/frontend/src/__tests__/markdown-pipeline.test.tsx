@@ -12,6 +12,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import { JSDOM } from "jsdom";
 import { normalizeMath } from "../components/mathNormalize";
 import { createComponents } from "../components/markdownComponents";
+import { LocaleProvider } from "../lib/i18n";
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
 import { hastBlockToJsx } from "../lib/hastJsx";
 import { visibleMarkdownBlockCount } from "../lib/markdownDomBudget";
@@ -47,23 +48,23 @@ function eq(actual: unknown, expected: unknown, label: string) {
 
 function renderCurrent(text: string): string {
   return renderToStaticMarkup(
-    createElement(ReactMarkdown, {
+    createElement(LocaleProvider, null, createElement(ReactMarkdown, {
       remarkPlugins: reasonixRemarkPlugins,
       rehypePlugins: reasonixRehypePlugins,
       components: createComponents(false),
       urlTransform: markdownUrlTransform,
       children: normalizeMath(text),
-    }),
+    })),
   );
 }
 
 function renderBlocks(blocks: MarkdownBlock[]): string {
   const components = createComponents(false);
   return renderToStaticMarkup(
-    createElement(Fragment, {
+    createElement(LocaleProvider, null, createElement(Fragment, {
       children: blocks.map((block) =>
         createElement(Fragment, { key: block.key, children: hastBlockToJsx(block, components) as ReactNode })),
-    }),
+    })),
   );
 }
 

@@ -128,6 +128,22 @@ func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, park
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: the session is being switched — please resend"})
 		return turnDroppedRotating
 	}
+	if c.maintenance != nil {
+		kind := queuedUser
+		if goalRound != nil {
+			kind = queuedGoal
+		}
+		item := queuedTurn{kind: kind, body: body, onStart: onStart, goalRound: goalRound, admissionCtx: admissionCtx}
+		if parkWhileRunning {
+			c.queueTurnLocked(item)
+			c.mu.Unlock()
+			return turnParked
+		}
+		// Durable inbox items stay queued on disk. The maintenance terminal
+		// boundary republishes the dispatcher exactly once.
+		c.mu.Unlock()
+		return turnDroppedRunning
+	}
 	if c.turns.phase == session.RuntimeRecoveryRequired {
 		c.mu.Unlock()
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: ErrRecoveryRequired.Error()})

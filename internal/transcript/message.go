@@ -40,20 +40,30 @@ type Message struct {
 	ToolResultError    string     `json:"toolResultError,omitempty"`
 	// Execution is local shell metadata restored onto ToolCards after history
 	// reload. Omitted when absent so older frontends ignore it safely.
-	Execution        *provider.ToolExecution          `json:"execution,omitempty"`
-	PresentedFiles   []provider.PresentedFile         `json:"presentedFiles,omitempty"`
-	Pending          bool                             `json:"pending,omitempty"`
-	Trigger          string                           `json:"trigger,omitempty"`
-	Messages         int                              `json:"messages,omitempty"`
-	Summary          string                           `json:"summary,omitempty"`
-	Archive          string                           `json:"archive,omitempty"`
-	DecisionReceipt  *provider.DecisionReceipt        `json:"decisionReceipt,omitempty"`
-	Readiness        *event.FinalReadiness            `json:"readiness,omitempty"`
-	ReadPause        *provider.ReadPause              `json:"readPause,omitempty"`
-	ReadCompletion   *provider.ReadCompletion         `json:"readCompletion,omitempty"`
-	ProtocolRecovery *provider.ProtocolRecoveryAction `json:"protocolRecovery,omitempty"`
-	Diagnostic       *provider.FailureDiagnostic      `json:"diagnostic,omitempty"`
-	ServerSearch     []provider.ServerSearchCall      `json:"serverSearch,omitempty"`
+	Execution         *provider.ToolExecution          `json:"execution,omitempty"`
+	PresentedFiles    []provider.PresentedFile         `json:"presentedFiles,omitempty"`
+	Pending           bool                             `json:"pending,omitempty"`
+	Trigger           string                           `json:"trigger,omitempty"`
+	Messages          int                              `json:"messages,omitempty"`
+	Summary           string                           `json:"summary,omitempty"`
+	Archive           string                           `json:"archive,omitempty"`
+	OperationID       string                           `json:"operationId,omitempty"`
+	OperationRevision uint64                           `json:"operationRevision,omitempty"`
+	RuntimeEpoch      string                           `json:"runtimeEpoch,omitempty"`
+	OperationKind     string                           `json:"operationKind,omitempty"`
+	OperationStatus   string                           `json:"operationStatus,omitempty"`
+	OperationActivity string                           `json:"operationActivity,omitempty"`
+	ErrorCode         string                           `json:"errorCode,omitempty"`
+	Applied           bool                             `json:"applied,omitempty"`
+	InputTokens       int                              `json:"inputTokens,omitempty"`
+	ResultTokens      int                              `json:"resultTokens,omitempty"`
+	DecisionReceipt   *provider.DecisionReceipt        `json:"decisionReceipt,omitempty"`
+	Readiness         *event.FinalReadiness            `json:"readiness,omitempty"`
+	ReadPause         *provider.ReadPause              `json:"readPause,omitempty"`
+	ReadCompletion    *provider.ReadCompletion         `json:"readCompletion,omitempty"`
+	ProtocolRecovery  *provider.ProtocolRecoveryAction `json:"protocolRecovery,omitempty"`
+	Diagnostic        *provider.FailureDiagnostic      `json:"diagnostic,omitempty"`
+	ServerSearch      []provider.ServerSearchCall      `json:"serverSearch,omitempty"`
 	// Attachments are display-only facts for admitted session images. They never
 	// participate in provider requests; the frontend loads bytes through a
 	// digest-only session read authorized from this session's content graph.

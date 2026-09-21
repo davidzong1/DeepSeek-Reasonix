@@ -1,6 +1,7 @@
 import type { PersistentMessage } from "../generated/desktopContract.generated";
 import { HistoryPreparingError } from "./historyPreparation";
 import { canonicalUserDisplay } from "./canonicalUserDisplay";
+import { parseSessionOperation, sessionOperationHistoryMessage } from "./sessionMaintenanceOperation";
 import type { HistoryContentChunk, HistoryContentRef, HistoryEntry, HistoryMessage, HistorySlice, HistorySliceRequest, HistoryWindowPageView, HistoryWindowRequestView, MemoryCitation } from "./types";
 
 const contentRecovery = new Map<string, () => void>();
@@ -15,6 +16,18 @@ function asWireObject(value: unknown): Record<string, unknown> {
 
 export function canonicalMessage(message: PersistentMessage, body: unknown): HistoryMessage {
   const raw = asWireObject(body);
+  if (raw.role === "compaction" || message.role === "compaction") {
+    const operation = parseSessionOperation(raw);
+    if (operation) return sessionOperationHistoryMessage(String(raw.id ?? message.messageId), operation);
+    const operationId = message.messageId.startsWith("maintenance:") ? message.messageId.slice("maintenance:".length) : message.messageId;
+    return sessionOperationHistoryMessage(message.messageId, {
+      operationId,
+      kind: "compact",
+      activity: message.contentRef ? "loading" : "unavailable",
+      status: message.contentRef ? "loading" : "unavailable",
+      errorCode: message.contentRef ? undefined : "record_incomplete",
+    });
+  }
   if (raw.role === "notice") return { role: "notice", messageId: String(raw.id ?? message.messageId), content: String(raw.content ?? ""), detail: typeof raw.detail === "string" ? raw.detail : undefined, code: typeof raw.code === "string" ? raw.code : undefined, level: raw.level === "warn" ? "warn" : "info" };
   const decisionReceipt = asWireObject(raw.decision_receipt);
   if (Object.keys(decisionReceipt).length > 0) {

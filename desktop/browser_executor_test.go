@@ -215,3 +215,27 @@ func TestBrowserExecutorRevokedFailsClosed(t *testing.T) {
 		t.Fatal("without the shell no executor may be registered")
 	}
 }
+
+func TestTabBrowserExecutorRotatesGrantAcrossSessionGeneration(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	a := NewApp()
+	a.hostShell = &hostShellBridge{app: a}
+	tab := &WorkspaceTab{ID: "tab", SessionID: "session", SessionGeneration: 1}
+	a.tabs[tab.ID] = tab
+	proxy := a.browserExecutorForTab(tab).(*tabBrowserExecutor)
+	first, err := proxy.current()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.mu.Lock()
+	tab.SessionGeneration++
+	a.mu.Unlock()
+	second, err := proxy.current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !first.revoked.Load() || second.sessionKey != "session:2" {
+		t.Fatalf("session rotation first=%p revoked=%v second=%p key=%q", first, first.revoked.Load(), second, second.sessionKey)
+	}
+}

@@ -26,6 +26,115 @@ type Checkpoint struct {
 	Completion        *eventwire.CompletionSummary `json:"completion,omitempty"`
 }
 
+// ToolResultRepairStats reports legacy identity recovery without including
+// tool arguments or result bodies in diagnostics.
+type ToolResultRepairStats struct {
+	Repaired  int
+	Missing   int
+	Conflicts int
+}
+
+// NeedsToolResultRepair keeps the common restore path from rebuilding
+// canonical history when every tool-result display row already has identity.
+func NeedsToolResultRepair(records []Message) bool {
+	for _, message := range records {
+		if message.Role == "tool" && message.MessageID == "" && message.ToolCallID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func checkpointMessageIDs(records []Message) map[string]bool {
+	occupied := make(map[string]bool)
+	for _, message := range records {
+		if message.MessageID != "" {
+			occupied[message.MessageID] = true
+		}
+	}
+	return occupied
+}
+
+// RepairCheckpointToolResults joins legacy display rows that lost MessageID
+// with authoritative persisted history. ToolCallID is the only cross-stream
+// join key; known turn boundaries must also agree. Ambiguous or conflicting
+// rows are deliberately left unchanged.
+func RepairCheckpointToolResults(records, canonical []Message) ([]Message, ToolResultRepairStats) {
+	repaired := append([]Message(nil), records...)
+	byCall := make(map[string][]Message)
+	occupied := checkpointMessageIDs(records)
+	historyTurn := 0
+	for _, message := range canonical {
+		if message.Role == "user" {
+			historyTurn++
+		}
+		if message.HistoryTurn == 0 {
+			message.HistoryTurn = historyTurn
+		}
+		if message.Role == "tool" && message.ToolCallID != "" && message.MessageID != "" {
+			byCall[message.ToolCallID] = append(byCall[message.ToolCallID], message)
+		}
+	}
+	stats := ToolResultRepairStats{}
+	for index := range repaired {
+		legacy := &repaired[index]
+		if legacy.Role != "tool" || legacy.MessageID != "" || legacy.ToolCallID == "" {
+			continue
+		}
+		candidates := make([]Message, 0, len(byCall[legacy.ToolCallID]))
+		for _, candidate := range byCall[legacy.ToolCallID] {
+			if legacy.TurnID != "" && candidate.TurnID != "" && legacy.TurnID != candidate.TurnID {
+				continue
+			}
+			if legacy.HistoryTurn != 0 && candidate.HistoryTurn != 0 && legacy.HistoryTurn != candidate.HistoryTurn {
+				continue
+			}
+			candidates = append(candidates, candidate)
+		}
+		if len(candidates) == 0 {
+			stats.Missing++
+			continue
+		}
+		if len(candidates) != 1 {
+			stats.Conflicts++
+			continue
+		}
+		formal := candidates[0]
+		if occupied[formal.MessageID] {
+			stats.Conflicts++
+			continue
+		}
+		// Keep the checkpoint row's display location and event-formatted result,
+		// while restoring fields owned by the persisted message.
+		legacy.MessageID = formal.MessageID
+		occupied[formal.MessageID] = true
+		if legacy.RecordID == "" {
+			legacy.RecordID = formal.RecordID
+		}
+		if legacy.ToolName == "" {
+			legacy.ToolName = formal.ToolName
+		}
+		if legacy.CreatedAt == 0 {
+			legacy.CreatedAt = formal.CreatedAt
+		}
+		if legacy.Execution == nil {
+			legacy.Execution = formal.Execution
+		}
+		legacy.ToolResultArchived = legacy.ToolResultArchived || formal.ToolResultArchived
+		if len(legacy.PresentedFiles) == 0 {
+			legacy.PresentedFiles = append(legacy.PresentedFiles, formal.PresentedFiles...)
+		}
+		if legacy.ReadCompletion == nil {
+			legacy.ReadCompletion = formal.ReadCompletion
+		}
+		if legacy.Diagnostic == nil {
+			legacy.Diagnostic = formal.Diagnostic
+		}
+		stats.Repaired++
+	}
+	return repaired, stats
+}
+
 func (p *Projection) Checkpoint(digest string) (Checkpoint, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -87,7 +87,7 @@ func TestWindowsBashCandidateOrder(t *testing.T) {
 	}
 }
 
-func TestWindowsShellCapabilitiesOnlyReportPowerShellRuntimes(t *testing.T) {
+func TestWindowsShellCapabilitiesReportGitBashAndPowerShellRuntimes(t *testing.T) {
 	const pwsh = `C:\Program Files\PowerShell\7\pwsh.exe`
 	snap := &shellSnapshot{
 		lookPath:   fakeLookPath(map[string]string{"pwsh": pwsh}),
@@ -99,13 +99,11 @@ func TestWindowsShellCapabilitiesOnlyReportPowerShellRuntimes(t *testing.T) {
 		probeCache: map[string]bool{},
 	}
 	caps := windowsShellCapabilities(snap)
-	if len(caps) != 2 || caps[0].ID != ShellCapabilityPwsh || caps[1].ID != ShellCapabilityPowerShell {
-		t.Fatalf("Windows shell capabilities = %+v, want pwsh and powershell only", caps)
+	if len(caps) != 3 || caps[0].ID != ShellCapabilityGitBash || caps[1].ID != ShellCapabilityPwsh || caps[2].ID != ShellCapabilityPowerShell {
+		t.Fatalf("Windows shell capabilities = %+v, want Git Bash, pwsh and powershell", caps)
 	}
-	for _, cap := range caps {
-		if cap.ID == ShellCapabilityGitBash || cap.ID == ShellCapabilityBash {
-			t.Fatalf("Windows shell capabilities must not advertise Bash: %+v", caps)
-		}
+	if caps[0].Available || caps[0].Reason != "not-installed" {
+		t.Fatalf("missing Git Bash must report not-installed: %+v", caps[0])
 	}
 }
 
@@ -131,6 +129,50 @@ func TestConfiguredWindowsBashPathMatchesPreference(t *testing.T) {
 				t.Fatalf("configuredWindowsBashPath(%q, %q) = %q, want %q", test.prefer, test.path, got, test.want)
 			}
 		})
+	}
+}
+
+func TestWindowsGitBashDetectionMatchesExplicitResolution(t *testing.T) {
+	const configured = `E:\Portable\Git\bin\bash.exe`
+	const onPath = `C:\Program Files\Git\bin\bash.exe`
+	const installed = `D:\Git\bin\bash.exe`
+	const wsl = `C:\Windows\System32\bash.exe`
+	for _, tc := range []struct {
+		name, config, path, failed, want, source string
+	}{
+		{"configured before PATH", configured, onPath, "", configured, ShellSourceConfig},
+		{"PATH before install locations", "", onPath, "", onPath, ShellSourcePath},
+		{"broken configured runtime", configured, onPath, configured, onPath, ShellSourcePath},
+		{"broken PATH runtime", "", onPath, onPath, installed, ShellSourceStandard},
+		{"WSL launcher excluded", "", wsl, "", installed, ShellSourceStandard},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := &shellSnapshot{
+				goos: "windows", lookPath: fakeLookPath(map[string]string{"bash": tc.path}),
+				exists:    func(string) bool { return true },
+				isWSL:     func(path string) bool { return path == wsl },
+				bashCands: []string{installed}, sources: map[string]string{strings.ToLower(installed): ShellSourceStandard},
+				probeFunc: func(path string) bool { return path != tc.failed }, probeCache: map[string]bool{},
+			}
+			if tc.config != "" {
+				snap.bashCands = append([]string{tc.config}, snap.bashCands...)
+				snap.sources[strings.ToLower(tc.config)] = ShellSourceConfig
+			}
+			cap := windowsShellCapabilities(snap)[0]
+			sh := resolveShell("bash", tc.config, nil, snap.goos, snap.lookPath, snap.exists, snap.bashCands, nil, snap.probe, snap.isWSL)
+			if !cap.Available || cap.Path != tc.want || cap.Source != tc.source || sh.Kind != ShellBash || sh.Path != cap.Path {
+				t.Fatalf("capability=%+v resolved=%+v, want %s (%s)", cap, sh, tc.want, tc.source)
+			}
+		})
+	}
+}
+
+func TestMissingWindowsGitBashFallsBackToPowerShellWithWarning(t *testing.T) {
+	var warn strings.Builder
+	got := resolveShell("bash", "", &warn, "windows", fakeLookPath(map[string]string{"pwsh": "pwsh.exe"}),
+		func(string) bool { return false }, nil, nil, func(string) bool { return false }, func(string) bool { return false })
+	if got.Kind != ShellPowerShell || got.Path != "pwsh.exe" || !strings.Contains(warn.String(), "not found") {
+		t.Fatalf("missing Bash resolution=%+v warning=%q", got, warn.String())
 	}
 }
 
@@ -374,7 +416,7 @@ func TestGitCandidatesFromWindowsBashFindInstallRoot(t *testing.T) {
 }
 
 // TestShellCapabilitiesShape ensures the exported capability report matches
-// the platform: both native PowerShells on Windows, and bash/zsh/sh on
+// the platform: Git Bash and both native PowerShells on Windows, and bash/zsh/sh on
 // Unix — with unavailable entries carrying a reason, never an error.
 func TestShellCapabilitiesShape(t *testing.T) {
 	caps := ShellCapabilities()
@@ -392,12 +434,12 @@ func TestShellCapabilitiesShape(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "windows" {
-		for _, id := range []string{ShellCapabilityPowerShell, ShellCapabilityPwsh} {
+		for _, id := range []string{ShellCapabilityGitBash, ShellCapabilityPowerShell, ShellCapabilityPwsh} {
 			if !ids[id] {
 				t.Errorf("Windows report missing %q: %v", id, caps)
 			}
 		}
-		for _, id := range []string{ShellCapabilityBash, ShellCapabilityGitBash} {
+		for _, id := range []string{ShellCapabilityBash} {
 			if ids[id] {
 				t.Errorf("Windows report must not advertise %q: %v", id, caps)
 			}

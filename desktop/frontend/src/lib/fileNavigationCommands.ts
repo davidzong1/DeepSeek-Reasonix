@@ -15,6 +15,8 @@ import {
   type FileNavigationOutcome,
   type FileNavigationParams,
 } from "./fileNavigationOwner";
+import { pathExtension } from "./filePaths";
+import { bindFileBrowserPreview } from "./fileBrowserPreviewBindings";
 
 /** Every action a file row or preview menu can ask for. */
 export type FileAction =
@@ -25,6 +27,15 @@ const CANCELLED: FileNavigationOutcome = { status: "cancelled", reason: "superse
 const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(String(reason)));
 const isNavigation = (action: FileAction): action is FileNavigationParams["action"] =>
   action === "preview" || action === "source" || action === "reveal-tree";
+
+export const isHTMLResource = (ref: Pick<FileResourceRef, "hostId" | "path">): boolean =>
+  ref.hostId === "local" && (pathExtension(ref.path) === "html" || pathExtension(ref.path) === "htm");
+
+let previewOperationSequence = 0;
+function previewOperationID(ref: FileResourceRef): string {
+  previewOperationSequence += 1;
+  return `file-preview-${Date.now().toString(36)}-${previewOperationSequence.toString(36)}-${ref.source}`;
+}
 
 /**
  * Bring the dock that presents this resource to the front and return its tab.
@@ -86,12 +97,9 @@ async function releaseBrowserPreview(url: string): Promise<void> {
   else await app.RevokeWorkspaceBrowserPreview(url).catch(() => undefined);
 }
 
-async function openBrowserPreview(ref: FileResourceRef): Promise<FileNavigationOutcome> {
+async function openBrowserPreview(ref: FileResourceRef, userInitiated = false): Promise<FileNavigationOutcome> {
   if (ref.hostId !== "local") {
     return { status: "failed", error: new Error("Remote file browser preview is unavailable; save a copy to this device first") };
-  }
-  if (ref.source === "reference") {
-    return { status: "failed", error: new Error("Answer references do not expose a browser preview") };
   }
   const operation = fileNavigationOwner().beginOperation({
     sessionTabId: ref.tabId,
@@ -102,6 +110,37 @@ async function openBrowserPreview(ref: FileResourceRef): Promise<FileNavigationO
     operation.finish();
     return owned ? outcome : CANCELLED;
   };
+  const openFilePreview = (app as Partial<typeof app>).OpenFileBrowserPreviewForTab;
+  if (typeof openFilePreview === "function") {
+    try {
+      if (!operation.owns()) return finish(CANCELLED);
+      const result = await openFilePreview.call(app, ref.tabId, {
+        source: ref.source,
+        path: ref.path,
+        toolCallId: ref.source === "presented" ? ref.toolCallId : undefined,
+        operationId: previewOperationID(ref),
+        expectedSessionGeneration: ref.sessionGeneration,
+        userInitiated,
+      });
+      if (!operation.owns()) {
+        await waitForBrowserHost().then((host) => host.close(result.tabId)).catch(() => undefined);
+        return finish(CANCELLED);
+      }
+      await waitForBrowserHost();
+      await useBrowserPanelStore.getState().refreshAndActivate(result.tabId);
+      bindFileBrowserPreview(result.tabId, ref, result.url);
+      if (result.error || result.status === "failed") {
+        return finish({ status: "failed", error: new Error(result.error || "The built-in browser could not load this preview") });
+      }
+      return finish({ status: "opened", resource: resourceOf(ref) });
+    } catch (error) {
+      return finish({ status: "failed", error: asError(error) });
+    }
+  }
+
+  if (ref.source === "reference") {
+    return finish({ status: "failed", error: new Error("This desktop version cannot open answer references in the built-in browser") });
+  }
   let url: string;
   try {
     url = ref.source === "presented"
@@ -120,13 +159,19 @@ async function openBrowserPreview(ref: FileResourceRef): Promise<FileNavigationO
     if (!operation.owns()) return await cancelledAfterCreation();
     await waitForBrowserHost();
     if (!operation.owns()) return await cancelledAfterCreation();
-    await useBrowserPanelStore.getState().open(url, true, operation.signal);
+    const tab = await useBrowserPanelStore.getState().open(url, true, operation.signal, ref.tabId);
+    bindFileBrowserPreview(tab.id, ref, url);
   } catch (error) {
     await releaseBrowserPreview(url);
     return finish({ status: "failed", error: asError(error) });
   }
   if (!operation.owns()) return await cancelledAfterCreation();
   return finish({ status: "opened", resource: resourceOf(ref) });
+}
+
+/** Refresh a bound file preview without returning a user-owned tab to Agent control. */
+export function refreshBrowserResource(ref: FileResourceRef): Promise<FileNavigationOutcome> {
+  return openBrowserPreview(ref, true);
 }
 
 /** A direct-action receipt; dock navigation resolves identity before storing it. */
@@ -185,5 +230,5 @@ export function openResource(
   ref: FileResourceRef,
   options: { view: "preview" | "source" | "browser" },
 ): Promise<FileNavigationOutcome> {
-  return performResourceAction(ref, options.view);
+  return performResourceAction(ref, options.view === "preview" && isHTMLResource(ref) ? "browser" : options.view);
 }

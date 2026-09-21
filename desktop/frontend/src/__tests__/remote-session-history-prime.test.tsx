@@ -7,6 +7,7 @@
 // never primed.
 import React, { act } from "react";
 import { JSDOM } from "jsdom";
+import { mock } from "node:test";
 import type { AppBindings } from "../lib/bridge";
 import type { FollowRequest, HistoryWindowPage, TranscriptFollowResponse } from "../generated/desktopContract.generated";
 import type { TabMeta } from "../lib/types";
@@ -30,12 +31,14 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame?.bind(dom.wind
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject };
 }
 const tape: string[] = [];
 const followMode = new Map<string, "ok" | "deferred">();
 const followDeferred = new Map<string, ReturnType<typeof deferred<TranscriptFollowResponse>>>();
+const polls = new Map<string, ReturnType<typeof deferred<TranscriptFollowResponse>>>();
 const windowDeferred = new Map<string, ReturnType<typeof deferred<HistoryWindowPage>>>();
 const status = { running: false, label: "Model", plan: false, toolApprovalMode: "ask", goal: "" };
 const inline = (id: string, content: string) => ({ messageId: id, position: 0, version: 1, role: "assistant", eventSequence: 1, visibleTurn: 1, preview: "", inline: { id, role: "assistant", content } });
@@ -59,8 +62,8 @@ const desktopStub = installDesktopHostStub({
   async RemoteTabMetadata(tabId: string) { tape.push(`metadata:${tabId}`); return { status }; },
   async RemoteTabSnapshot(tabId: string) { tape.push(`snapshot:${tabId}`); return { history: [], status }; },
   async RemoteTranscriptFollowForTab(tabId: string, request: FollowRequest) {
-    if (request.close) return { protocolVersion: 2, subscription: request.subscription ?? "", changes: [], resetRequired: false };
-    if (request.subscription) return new Promise<TranscriptFollowResponse>(() => {});
+    if (request.close) { tape.push(`close:${tabId}`); return { protocolVersion: 2, subscription: request.subscription ?? "", changes: [], resetRequired: false }; }
+    if (request.subscription) { const poll = deferred<TranscriptFollowResponse>(); polls.set(tabId, poll); return poll.promise; }
     tape.push(`follow:${tabId}`);
     if (followMode.get(tabId) === "deferred") {
       const pending = deferred<TranscriptFollowResponse>();
@@ -133,6 +136,24 @@ ok(texts().includes("follower answer") && !texts().includes("primed history") &&
 const primeReads = count("window:tab-prime-first");
 await act(async () => { desktopStub.emit("remote-tab:updated", meta("tab-prime-first")); await flush(); });
 ok(count("window:tab-prime-first") === primeReads, "a primed-then-followed tab does not read the legacy window again");
+
+// 4. The remote hook uses the same shell-stop fence as local followers.
+await mount("tab-stopping", "/stopping");
+const readsBeforeStop = count("follow:tab-stopping"), closesBeforeStop = count("close:tab-stopping");
+const retainedItems = probe!.transcript.items;
+mock.timers.enable({ apis: ["setTimeout"] });
+try {
+  await act(async () => {
+    desktopStub.emitServiceState({ phase: "stopping", generation: "test-service" });
+    polls.get("tab-stopping")!.reject(new Error("desktop service is shutting down"));
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    mock.timers.tick(1000);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+  });
+  ok(count("follow:tab-stopping") === readsBeforeStop, "remote shutdown does not retry baseline reads");
+  ok(count("close:tab-stopping") === closesBeforeStop, "remote shutdown sends no subscription cleanup RPC");
+  ok(probe!.transcript.items === retainedItems, "remote shutdown retains the displayed transcript");
+} finally { mock.timers.reset(); }
 
 await act(async () => { root.unmount(); });
 desktopStub.uninstall();

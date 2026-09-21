@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -328,7 +329,11 @@ func startSession(req Request, fp string) (*session, error) {
 	if req.Shell.Kind == sandbox.ShellPowerShell {
 		return startPowerShell(req, fp)
 	}
-	conn, err := startPTY(req.Argv, req.Dir, req.Env)
+	return startPOSIXSession(req, fp, startPTY)
+}
+
+func startPOSIXSession(req Request, fp string, start func([]string, string, []string) (ptyConn, error)) (*session, error) {
+	conn, err := start(req.Argv, req.Dir, req.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -518,9 +523,14 @@ func Supports(sh sandbox.Shell) bool {
 	return sh.Kind == sandbox.ShellPowerShell || sh.Kind.IsPOSIX()
 }
 
-// InteractiveArgv is the long-lived interpreter argv (no -c / -Command) used
-// as the PTY child, before sandbox wrapping.
+// InteractiveArgv is the long-lived interpreter argv (no -c / -Command),
+// before sandbox wrapping. Windows POSIX interpreters consume a pipe without
+// interactive prompts or line editing; POSIX hosts retain their native PTY.
 func InteractiveArgv(sh sandbox.Shell) []string {
+	return interactiveArgvForOS(sh, runtime.GOOS)
+}
+
+func interactiveArgvForOS(sh sandbox.Shell, goos string) []string {
 	path := sh.Path
 	if path == "" {
 		path = sh.Kind.String()
@@ -529,10 +539,19 @@ func InteractiveArgv(sh sandbox.Shell) []string {
 	case sandbox.ShellPowerShell:
 		return []string{path, "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", encodedPowerShell(powershellBootstrap)}
 	case sandbox.ShellZsh:
+		if goos == "windows" {
+			return []string{path, "-f"}
+		}
 		return []string{path, "-f", "-i"}
 	case sandbox.ShellSh:
+		if goos == "windows" {
+			return []string{path}
+		}
 		return []string{path, "-i"}
 	default:
+		if goos == "windows" {
+			return []string{path, "--noprofile", "--norc"}
+		}
 		return []string{path, "--noprofile", "--norc", "-i"}
 	}
 }

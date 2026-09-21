@@ -14,7 +14,9 @@
 import type { Dispatch, SetStateAction } from "react";
 import { create } from "zustand";
 
-import { loadLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
+import { loadLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
+import { DOCK_DEFAULT_RATIO, SIDEBAR_AUTO_COLLAPSE_WIDTH } from "../lib/workspaceLayout";
+import { useWindowChromeStore } from "./windowChrome";
 
 import { applySetState } from "./setState";
 
@@ -24,7 +26,6 @@ export const SIDEBAR_MIN_WIDTH = 264;
 export const SIDEBAR_MAX_WIDTH = 300;
 const SIDEBAR_VIEWPORT_RATIO = 0.18;
 
-const RIGHT_DOCK_TREE_DEFAULT_WIDTH = 300;
 export const RIGHT_DOCK_TREE_MIN_WIDTH = 300;
 export const RIGHT_DOCK_TREE_MAX_WIDTH = 560;
 export const RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH = 660;
@@ -36,10 +37,6 @@ const WORKSPACE_PANEL_OPEN_KEY = "reasonix.workspacePanel.open";
 const WORKSPACE_PANEL_DEFAULT_OPEN = true;
 
 export function clampSidebarWidth(width: number): number {
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
-}
-
-function clampStoredSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 }
 
@@ -68,7 +65,13 @@ export function defaultSidebarWidth(): number {
 }
 
 export function defaultRightDockTreeWidth(): number {
-  return RIGHT_DOCK_TREE_DEFAULT_WIDTH;
+  return Math.max(RIGHT_DOCK_TREE_MIN_WIDTH, Math.round(useWindowChromeStore.getState().viewportWidth * DOCK_DEFAULT_RATIO));
+}
+
+/** Responsive presentation never overwrites the user's wide-window preference. */
+export function useSidebarCollapsed(): boolean {
+  const collapsed = useLayoutStore(state => state.sidebarCollapsed);
+  return useWindowChromeStore(state => state.viewportWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH ? !state.narrowSidebarExpanded : collapsed);
 }
 
 function loadSidebarCollapsed(): boolean {
@@ -89,17 +92,11 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-function loadSidebarWidth(): number {
-  return loadLayoutSize("sidebarWidthGraphite", defaultSidebarWidth(), clampStoredSidebarWidth);
-}
-
 export function saveSidebarWidth(width: number): void {
-  saveLayoutSize("sidebarWidthGraphite", width, clampStoredSidebarWidth);
+  saveLayoutSize("sidebarWidthGraphite", width, clampSidebarWidth);
 }
 
-function loadRightDockTreeWidth(): number {
-  return loadLayoutSize("rightDockTreeWidth", defaultRightDockTreeWidth(), clampStoredRightDockTreeWidth);
-}
+const savedDockWidth = loadOptionalLayoutSize("rightDockTreeWidth", clampStoredRightDockTreeWidth);
 
 export function saveRightDockTreeWidth(width: number): void {
   saveLayoutSize("rightDockTreeWidth", width, clampStoredRightDockTreeWidth);
@@ -218,6 +215,7 @@ export type LayoutState = {
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   rightDockTreeWidth: number;
+  dockWidthReady: boolean;
   rightDockPreviewWidth: number;
   workspacePanelOpen: boolean;
   workspacePanelMaximized: boolean;
@@ -251,8 +249,9 @@ export type LayoutState = {
 
 export const useLayoutStore = create<LayoutState>((set) => ({
   sidebarCollapsed: loadSidebarCollapsed(),
-  sidebarWidth: loadSidebarWidth(),
-  rightDockTreeWidth: loadRightDockTreeWidth(),
+  sidebarWidth: loadLayoutSize("sidebarWidthGraphite", defaultSidebarWidth(), clampSidebarWidth),
+  rightDockTreeWidth: savedDockWidth ?? defaultRightDockTreeWidth(),
+  dockWidthReady: savedDockWidth !== null,
   rightDockPreviewWidth: loadRightDockPreviewWidth(),
   workspacePanelOpen: loadWorkspacePanelOpen(""),
   workspacePanelMaximized: false,
@@ -268,9 +267,17 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   liveTerminalHeight: null,
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
-  setRightDockTreeWidth: (width) => set({ rightDockTreeWidth: width }),
+  setRightDockTreeWidth: (width) => set({ rightDockTreeWidth: width, dockWidthReady: true }),
   setRightDockPreviewWidth: (width) => set({ rightDockPreviewWidth: width }),
-  setWorkspacePanelOpen: (update) => set((s) => ({ workspacePanelOpen: applySetState(s.workspacePanelOpen, update) })),
+  setWorkspacePanelOpen: (update) => set((s) => {
+    const open = applySetState(s.workspacePanelOpen, update);
+    if (open && !s.workspacePanelOpen) useWindowChromeStore.setState({ narrowSidebarExpanded: false });
+    return {
+      workspacePanelOpen: open,
+      ...(open && !s.dockWidthReady
+        ? { rightDockTreeWidth: defaultRightDockTreeWidth(), dockWidthReady: true } : {}),
+    };
+  }),
   setWorkspacePanelMaximized: (update) => set((s) => ({ workspacePanelMaximized: applySetState(s.workspacePanelMaximized, update) })),
   setWorkspacePreviewActive: (update) => set((s) => ({ workspacePreviewActive: applySetState(s.workspacePreviewActive, update) })),
   setRightDockMode: (update) => set((s) => ({ rightDockMode: applySetState(s.rightDockMode, update) })),

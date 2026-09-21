@@ -5,6 +5,7 @@ import { useState } from "react";
 import { CheckCheck, ChevronRight, CirclePlay, ClipboardCheck, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { Item } from "../lib/useController";
+import { sessionOperationStatus } from "../lib/sessionMaintenanceOperation";
 type CompactionItem = Extract<Item, { kind: "compaction" }>;
 type NoticeItem = Extract<Item, { kind: "notice" }>;
 import type { WireCompletionSummary } from "../lib/types";
@@ -127,18 +128,33 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
 export function CompactionCard({ item }: { item: CompactionItem }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  if (item.pending) {
-    return <div className="compaction compaction--pending" data-entrance={item.id} data-transcript-layout-variant="static"><ProcessCompactIcon size={12} /><span>{t("compaction.working")}</span></div>;
+  const status = item.operationId ? sessionOperationStatus(item.status, item.activity) : item.status;
+  const stateLabel = status === "cancelling" ? t("compaction.stopping")
+    : status === "finalizing" ? t("compaction.saving")
+    : status === "noop" ? t("compaction.noHistory")
+    : status === "cancelled" ? t("compaction.cancelled")
+    : status === "partially_completed" ? t("compaction.cancelledPartial")
+    : status === "failed" ? t("compaction.failed")
+    : status === "recovery_required" ? t("compaction.recoveryRequired")
+    : status === "interrupted" ? t("compaction.interrupted")
+    : status === "confirming" ? t("compaction.confirming")
+    : status === "loading" ? t("common.loading")
+    : status === "unavailable" ? t("compaction.unavailable")
+    : item.pending ? t("compaction.working") : t("compaction.title");
+  if (item.pending || status === "noop" || status === "cancelled" || status === "interrupted" || status === "unavailable") {
+    return <div className={`compaction${item.pending ? " compaction--pending" : ""}`} data-entrance={item.id} data-transcript-layout-variant="static"><ProcessCompactIcon size={12} /><span>{stateLabel}</span></div>;
   }
+  const tokenMeta = item.inputTokens != null && item.resultTokens != null
+    ? t("compaction.tokens", { before: item.inputTokens, after: item.resultTokens }) : "";
   return (
     <div className="compaction" data-entrance={item.id} data-transcript-layout-variant={open ? "compaction-expanded" : "compaction-collapsed"}>
       <button type="button" className="compaction__head" onClick={() => {  setOpen((v) => !v); }} aria-expanded={open}>
         <ProcessCompactIcon size={12} />
-        <span>{t("compaction.title")}</span>
-        <span className="compaction__meta">{t("compaction.messages", { n: item.messages })}{item.trigger ? ` · ${item.trigger}` : ""}</span>
+        <span>{stateLabel}</span>
+        <span className="compaction__meta">{tokenMeta || t("compaction.messages", { n: item.messages })}</span>
         <ChevronRight className={open ? "compaction__chevron--open" : ""} size={12} />
       </button>
-      {open && <pre className="compaction__body">{item.summary}</pre>}
+      {open && <pre className="compaction__body">{item.detail || item.summary}</pre>}
     </div>
   );
 }

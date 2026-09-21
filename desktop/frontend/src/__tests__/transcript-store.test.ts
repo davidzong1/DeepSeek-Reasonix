@@ -135,6 +135,85 @@ async function drainOlder(store: TranscriptStore, tabId: string, path: string, t
 console.log("\ntranscript store");
 
 {
+  const store = new TranscriptStore(new FakeBackend([]));
+  const projection = store.installSlice("tool-alias", "/tool-alias", {
+    entries: [
+      { entryId: "m:user", turn: 1, order: 0, message: { role: "user", messageId: "user", content: "build" }, refs: [] },
+      { entryId: "m:owner", turn: 1, order: 1, message: { role: "assistant", messageId: "owner", content: "", toolCalls: [{ id: "call-1", name: "edit_file", arguments: '{"path":"blackhole.html"}' }] }, refs: [] },
+      { entryId: "m:result", turn: 1, order: 2, message: { role: "tool", messageId: "result", toolCallId: "call-1", toolName: "edit_file", content: "written", execution: { state: "completed", durationMs: 8 } }, refs: [] },
+      { entryId: "m:final", turn: 1, order: 3, message: { role: "assistant", messageId: "final", content: "done", turnFinal: true }, refs: [] },
+      { entryId: "tool:call-1", turn: 1, order: 4, message: { role: "tool", toolCallId: "call-1", toolName: "edit_file", content: "written" }, refs: [] },
+    ], nextCursor: "", newerCursor: "", hasOlder: false, hasNewer: false, totalTurns: 1, startTurn: 1, endTurn: 1,
+    revision: 1, revisionKnown: true, digest: "tool-alias", stale: false,
+  });
+  const tools = projection.items.filter(item => item.kind === "tool" && item.id === "call-1");
+  eq(tools.length, 1, "formal tool result and event alias project one stable node");
+  eq(tools[0]?.kind === "tool" && tools[0].args, '{"path":"blackhole.html"}', "coalescing preserves full call arguments");
+  eq(tools[0]?.kind === "tool" && tools[0].execution?.durationMs, 8, "coalescing preserves formal execution metadata");
+  ok(projection.items.findIndex(item => item.id === "call-1") < projection.items.findIndex(item => item.id === "m:final"), "tool node remains at its call position before the final answer");
+}
+
+{
+  const store = new TranscriptStore(new FakeBackend([]));
+  store.installSlice("alias-boundary", "/alias-boundary", {
+    entries: [
+      { entryId: "m:final", turn: 1, order: 2, message: { role: "assistant", messageId: "final", content: "done" }, refs: [] },
+      { entryId: "tool:boundary", turn: 1, order: 3, message: { role: "tool", toolCallId: "boundary", toolName: "bash", content: "preview" }, refs: [] },
+    ], nextCursor: "", newerCursor: "", hasOlder: false, hasNewer: false, totalTurns: 1, startTurn: 1, endTurn: 1,
+    revision: 1, revisionKnown: true, digest: "boundary", stale: false,
+  });
+  const projection = store.appendEntries("alias-boundary", "/alias-boundary", [
+    { entryId: "m:owner", turn: 1, order: 0, message: { role: "assistant", messageId: "owner", content: "", toolCalls: [{ id: "boundary", name: "bash", arguments: "echo ok" }] }, refs: [] },
+    { entryId: "m:result", turn: 1, order: 1, message: { role: "tool", messageId: "result", toolCallId: "boundary", toolName: "bash", content: "ok", execution: { state: "completed", exitCode: 0 } }, refs: [] },
+  ]);
+  eq(projection?.items.filter(item => item.id === "boundary").length, 1, "formal result crossing a window boundary supersedes its resident alias");
+  const tool = projection?.items.find((item): item is Extract<Item, { kind: "tool" }> => item.kind === "tool" && item.id === "boundary");
+  eq(tool?.args, "echo ok", "cross-boundary merge keeps call arguments");
+  eq(tool?.execution?.exitCode, 0, "cross-boundary merge adopts formal execution metadata");
+  ok((projection?.items.findIndex(item => item.id === "boundary") ?? -1) < (projection?.items.findIndex(item => item.id === "m:final") ?? -1), "cross-boundary merge restores call order");
+}
+
+{
+  const store = new TranscriptStore(new FakeBackend([]));
+  store.installSlice("identity-conflict", "/identity-conflict", {
+    entries: [
+      { entryId: "m:result-a", turn: 1, order: 0, message: { role: "tool", messageId: "result-a", toolCallId: "conflict", content: "a" }, refs: [] },
+      { entryId: "m:result-b", turn: 1, order: 1, message: { role: "tool", messageId: "result-b", toolCallId: "conflict", content: "b" }, refs: [] },
+    ], nextCursor: "", newerCursor: "", hasOlder: false, hasNewer: false, totalTurns: 1, startTurn: 1, endTurn: 1,
+    revision: 1, revisionKnown: true, digest: "conflict", stale: false,
+  });
+  eq(store.residentWindowEntries(), 2, "identity conflict does not silently discard a formal record");
+}
+
+{
+  const backend = new FakeBackend([]);
+  const canonical = JSON.stringify({ id: "owner", role: "assistant", content: "",
+    tool_calls: [{ id: "lazy-call", name: "write_file", arguments: '{"path":"late.html"}' }] });
+  backend.HistoryContentForTab = async (_tab, ref, chunk) => ({ entryId: ref.entryId, field: ref.field, chunk,
+    chunks: 1, data: canonical, done: true, stale: false });
+  const store = new TranscriptStore(backend);
+  const changes: import("../lib/transcriptStore").TranscriptContentChange[] = [];
+  store.subscribe("lazy-owner", change => changes.push(change));
+  const before = store.installSlice("lazy-owner", "/lazy-owner", {
+    entries: [
+      { entryId: "m:owner", turn: 1, order: 0, message: { role: "assistant", messageId: "owner", content: "" },
+        refs: [{ entryId: "m:owner", field: "canonicalMessage", size: canonical.length, chunks: 1, revision: 1, digest: "lazy" }] },
+      { entryId: "m:final", turn: 1, order: 1, message: { role: "assistant", messageId: "final", content: "done", turnFinal: true }, refs: [] },
+      { entryId: "m:result", turn: 1, order: 2, message: { role: "tool", messageId: "result", toolCallId: "lazy-call", toolName: "write_file", content: "written" }, refs: [] },
+    ], nextCursor: "", newerCursor: "", hasOlder: false, hasNewer: false, totalTurns: 1, startTurn: 1, endTurn: 1,
+    revision: 1, revisionKnown: true, digest: "lazy", stale: false,
+  });
+  ok(before.items.findIndex(item => item.id === "lazy-call") > before.items.findIndex(item => item.id === "m:final"), "unresolved call initially leaves its result at the historical result position");
+  await store.requestFullContent("lazy-owner", "m:owner", "canonicalMessage");
+  const after = store.peek("lazy-owner", "/lazy-owner")!;
+  eq(after.items.filter(item => item.id === "lazy-call").length, 1, "lazy canonical body keeps one tool key after ownership changes");
+  ok(after.items.findIndex(item => item.id === "lazy-call") < after.items.findIndex(item => item.id === "m:final"), "lazy canonical body moves the tool to its call position");
+  eq(after.items.find(item => item.id === "lazy-call")?.kind === "tool" && (after.items.find(item => item.id === "lazy-call") as Extract<Item, { kind: "tool" }>).args,
+    '{"path":"late.html"}', "lazy canonical body restores full call arguments");
+  ok(Boolean(changes[changes.length - 1]?.projection), "lazy ownership changes publish one authoritative structural projection");
+}
+
+{
   const messages: HistoryMessage[] = [
     { role: "user", content: "read all" },
     { role: "assistant", content: "candidate answer" },
@@ -395,7 +474,7 @@ console.log("\ntranscript store");
   );
   const store = new TranscriptStore(backend);
   const changes: string[] = [];
-  store.subscribe("tab-c", (change) => changes.push(...Object.keys(change.patches)));
+  store.subscribe("tab-c", (change) => changes.push(...(change.projection?.items.map(item => item.id) ?? Object.keys(change.patches))));
   const first = await store.loadLatest("tab-c", "/s/c.jsonl", { turns: 12 });
   // ChatContentLoader owns automatic body reads and the four-request budget.
   // The store must not eagerly bypass it or load closed thought/tool fields.

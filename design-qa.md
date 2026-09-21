@@ -1,78 +1,55 @@
-# Chat presentation design QA
+# Sandbox settings — selected direction 3
 
-## Harness source port, 2026-09-12
+final result: passed
 
-- Source provenance and host adaptations: `desktop/frontend/src/components/harness-chat/README.md`.
-- Ported disclosure, reasoning, turn-process, context-record, tool-row, terminal,
-  diff, web-source, status and folding primitives; copied scoped Markdown styling.
-- Preserved Reasonix's safe-link host, Markdown workers, composer, approvals,
-  fork capability checks and content API. No feedback voting controls.
-- Removed Settings → Conversation experience → Standard/Deep and its search
-  summary. Kept the approval control and persisted compatibility field.
-- Completed tool errors can fold with a successful final answer; a visible
-  failed-call count remains in the process summary. Interrupted/terminal
-  failure records stay visible. Permission text is disclosed on demand.
-- In real Electron, opened the user's existing weather turn, expanded and
-  collapsed its seven tools, and verified the two failed calls remained visible
-  in the summary. Inspected the settings screen and confirmed there are only
-  the three default approval choices in that section.
-- Production ZIP: SHA256 `3409b930ca85eebc7dae8e266821300e2358518827736394602769c4ddf303ce`.
-  Build `v0.0.0-dev`, commit label `0e5319ad145b` plus current worktree changes,
-  build time `2026-09-12T12:54:05Z`, macOS arm64 / Electron 44.2.0.
-- Ad-hoc signature verification and packaged smoke passed: 3.1s handshake,
-  real renderer `Version` call, normal shell and service exit. The user-facing
-  launch uses the isolated `Reasonix-Test-ChatRefactor` profile.
-- The final font-only correction uses a root-owned token for portaled usage/time
-  dialogs; the typography contract passed all 165 assertions. Long-history
-  replay numbers above were captured before that portal-only correction.
-- Browser evidence: `docs/evidence/harness-chat-port/`. Synthetic weather
-  screenshots use fixture data, not a fresh weather query. Each tool header is
-  24px high; collapsed processes do not mount tool bodies.
-- WebKit 26.6: 1,000 turns input P95 103ms, switch P95 40ms. Its Long Tasks
-  API is unavailable, so no maximum-long-task claim is made for WebKit.
-- Chromium 153: 1,000 turns input P95 120.7ms, max long task 138ms,
-  switch P95 32.8ms, released heap growth 125,396 bytes over 20 switches.
-- Electron 44.2.0 replay: 1,000 turns input P95 43.4ms, max long task 142ms,
-  switch P95 20.3ms. Stream anchor drift 0px; prepend drift 0.094px.
-- Native WebView hosts on other platforms, native IME soak and exposed native
-  scrollbar dragging were not rerun in this pass. This is a local test build,
-  not a published or notarized release.
+## Visual truth and evidence
 
-## Earlier footer verification
+- Selected source: the third generated direction shown during the design review; it supersedes direction 1.
+- Preview route: `/dev/settings-layout-preview.html?page=sandbox&platform=windows`.
+- Visual comparison artifacts were kept in the local QA workspace and are not part of this repository.
+- Implementation screenshot: `option3-final.png` in the local QA artifacts.
+- Full-view comparison: `comparison-final.png`; focused environment-table comparison: `comparison-detail.png`. Both were opened and inspected with source and implementation together.
+- Source pixels: 1312 × 1200, normalized to the intended 1032 × 944 viewport. Implementation: 1032 × 944 screenshot pixels and CSS viewport, density 1. No device/browser chrome.
+- Matched state: light graphite theme, Windows preview fixtures, Git Bash selected and active, no pending shell reload, default workspace, no additional writable directories. The saved indicator follows a successful add/remove operation.
+- Additional responsive captures: `option3-600.png`, `option3-390.png`, and `option3-390-fields.png`. Temporary viewport overrides were reset after verification.
 
-## Reference
+## Findings and comparison history
 
-- DeepSeek Harness commit: `c291e7961a`
-- Source components:
-  - `<deepseek-harness>/packages/client/ui-chat/src/client/chat/TurnUsagePanel.tsx`
-  - `<deepseek-harness>/packages/client/ui-chat/src/client/chat/MessageIconActions.tsx`
-- Visual references supplied by the user:
-  - Reference screenshot: assistant footer actions and turn metrics.
-  - Reference screenshot: token usage detail popover.
-  - Reference screenshot: elapsed-time detail popover.
+1. **P2, first desktop comparison: excess vertical spacing.** `comparison-first.png` showed the directory entry reaching the bottom edge, unlike the target. Reduced table row padding, aligned the root label to its input, narrowed the directory label column, and removed unnecessary field spacing. `comparison-final.png` shows the complete form and empty state visible within the comparison viewport.
+2. **P2, narrow-window review: fragmented executable paths.** At 600 px, three columns left too little room for Windows paths. Below a 660 px content width, each environment uses a name/status row followed by a full-width path. Post-fix 600 px and 390 px captures retain readable paths, accessible copy controls, and no horizontal overflow. The lower form was scrolled into view and checked at 390 px.
+3. **P2, misleading save feedback and stale drafts.** Rule additions now clear only after a successful save and reject concurrent Enter submissions. Failed root saves retain input; refreshed authoritative roots replace stale values. Saved feedback uses a dedicated label and appears only after confirmed success. Deterministic tests cover both writable directories and the sibling permission-rule form.
 
-## Implemented target
+No actionable P0/P1/P2 findings remain.
 
-- Assistant turn footer contains copy, branch-in-new-chat, usage, duration, and timestamp.
-- Like and dislike actions are intentionally omitted.
-- Usage popover shows exact total tokens, provider/model route, cache hit rate, uncached input, cache-read input, output, and reasoning output.
-- Duration popover shows total turn time and live throughput when the active turn exposes it.
-- Compact values use the same `K tok` treatment as Harness while popovers retain exact values.
-- Long provider/model routes remain on one line with ellipsis and expose the full route as a native title.
-- Branch action uses the existing checkpoint and capability checks and creates a real conversation fork.
-- Popovers dismiss with Escape or outside interaction and return focus to their trigger.
+## Required fidelity surfaces
 
-## Native verification
+- **Typography:** existing system/PingFang fallback retained; 22 px page title, 16 px section headings, 13–14 px form and table text. Long paths wrap rather than being truncated. Native font rendering differs slightly from the raster mock; hierarchy and readability are preserved.
+- **Spacing/layout:** current-shell strip, three-column diagnostic table, Windows boundary note, network status, and compact directory form match direction 3. Existing navigation, container radius and page routing remain intact. The final form sits roughly 20 px lower than the generated target; this is minor rhythm variation, with all controls visible at the matched viewport.
+- **Colors/tokens:** existing warm graphite light surfaces, subtle border tokens, foreground/dim text and semantic success color retained. Dark mode inherits the existing theme tokens; no hardcoded light-only colors were introduced.
+- **Assets/icons:** no raster assets are required by this settings screen. Existing Lucide library icons supply terminal, Git, information, copy and check affordances. Monochrome terminal icons intentionally preserve the application's icon system instead of introducing PowerShell branding from the generated mock.
+- **Copy/content:** file-tool scope explicitly excludes Windows Shell commands; Windows network access is a factual unrestricted status. Git is labelled as a dependency. PowerShell keeps its existing precise runtime label. Scope and automatic saving are explained; manual reload remains a separate action. Successful save status is not fabricated on initial load.
 
-- App: `~/Applications/Reasonix-Canary/Reasonix.app`
-- Platform: macOS arm64, Electron 44.2.0
-- Data directory: isolated `Reasonix-Test-ChatRefactor` profile
-- Compared the Harness reference and the running app in one visual comparison input.
-- Verified a real newly completed turn displayed `用量 7.4K tok`, `用时 2秒`, and a timestamp.
-- Verified its usage details displayed 7,370 total tokens, 96.7% cache hit, 238 uncached input, 7,040 cache-read input, 92 output tokens, and 25 reasoning tokens.
-- Verified the duration dialog, usage dialog, copy action, branch action, keyboard dismissal, and normal transcript scrolling.
-- Found and fixed a queued-turn timing bug that could reuse the preceding turn start time; the new regression test covers this event order.
+## Verification
 
-## Result
+- 55 shell/settings interaction assertions passed, including Git Bash preference compatibility, pending-reload state, Linux/macOS repair behavior, path copying, failed/retried writes, duplicate Enter prevention, reloaded root state, empty-root reset and permission-rule sibling behavior.
+- 99 settings snapshot assertions passed.
+- Frontend and test TypeScript checks passed; changed-file ESLint, CSS syntax and application-layer checks passed.
+- Browser checks: Git Bash selection updates active state; root Enter save and keyboard clear restore default workspace; directory add/remove updates effective directories; copy returns the full executable path; narrow-window inputs and actions remain reachable.
+- Console: locale-module hot replacement produced transient context errors during editing. After a clean reload, no new console errors occurred during the final interaction and responsive checks.
+- Browser data are fixtures, so this visual pass does not claim native desktop-shell validation. Shell detection and execution have separate native Windows regression coverage.
 
-PASS. The footer hierarchy, spacing, subdued metadata treatment, popover content, and interaction match the supplied Harness target within the existing Reasonix theme. No like or dislike control is present.
+## Implementation checklist
+
+- [x] Implement selected direction 3 in existing components.
+- [x] Preserve Git Bash support and native PowerShell automatic preference.
+- [x] Repair shared rule saving and authoritative-root synchronization.
+- [x] Verify desktop and narrow layouts with source/render comparisons.
+- [x] Keep the local preview available.
+
+## Follow-up polish
+
+P3 only: a later product-wide icon pass could introduce official runtime logos consistently. No functional work is blocked on it.
+
+## Retrospective
+
+The existing Reasonix skill already covers the reusable lessons applied here: repair shared draft ownership, test failure ordering, and inspect stylesheet specificity in the rendered UI. No additional skill rule was needed.

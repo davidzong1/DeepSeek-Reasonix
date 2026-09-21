@@ -130,11 +130,13 @@ func (a *Agent) applyContextualToolGate(ctx context.Context, plan *toolCallPlan)
 }
 
 func contextualToolGateOutcome(ctx context.Context, target tool.Tool, name string) (toolOutcome, bool) {
-	contextual, ok := target.(tool.ContextualTool)
-	if !ok || contextual.ProviderVisible(ctx) {
+	reason := tool.ContextualUnavailableReason(ctx, target)
+	if reason == "" {
 		return toolOutcome{}, false
 	}
-	msg := contextualToolGateMessage(name)
+	// The allowlist's named refusals win where it has one; every other tool
+	// falls back to its own reason rather than a generic message.
+	msg := contextualToolGateMessage(name, reason)
 	return toolOutcome{output: msg, blocked: true, errMsg: firstLine(msg)}, true
 }
 

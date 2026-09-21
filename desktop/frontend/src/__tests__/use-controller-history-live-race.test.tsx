@@ -4,7 +4,8 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
-import { useController } from "../lib/useController";
+import { initialState, useController } from "../lib/useController";
+import { getTranscriptStore } from "../lib/transcriptStore";
 import { historySliceFromMessages } from "./mockHistorySlice";
 import type { HistorySlice, Meta, TabMeta, WireEvent } from "../lib/types";
 import { installDesktopHostStub } from "./desktopHostStub";
@@ -125,7 +126,9 @@ const desktopStub = installDesktopHostStub(({
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
+let renders = 0;
 function Probe() {
+  renders++;
   controller = useController();
   return null;
 }
@@ -162,6 +165,21 @@ ok(controller?.state.items.some((item) => item.kind === "assistant" && item.stre
 ok(controller?.state.items[0]?.kind === "user", "late history lands in front of the live turn");
 ok(controller?.state.items.at(-1)?.kind === "assistant", "late history leaves the live turn at the tail");
 
+await act(async () => { await flushPromises(); await flushPromises(); });
+const backgroundMeta = { ...meta, sessionPath: "/background", label: "before" };
+getTranscriptStore().setState("background", { ...initialState, meta: backgroundMeta, running: true });
+let backgroundNotifications = 0;
+const releaseBackground = getTranscriptStore().subscribeState("background", () => backgroundNotifications++);
+const foregroundRenders = renders;
+await act(async () => {
+  desktopStub.emit("tab:meta", { tabId: "background", meta: { ...backgroundMeta, label: "updated" } });
+  await flushPromises();
+});
+ok(backgroundNotifications > 0, "background state still reaches its own subscribers");
+ok(getTranscriptStore().states.get("background")?.meta?.label === "updated", "background metadata is published");
+ok(getTranscriptStore().states.get("background")?.running === true, "background task keeps running");
+ok(renders === foregroundRenders, "background structural events do not rerender the foreground controller");
+releaseBackground();
 await act(async () => { root.unmount(); });
 dom.window.close();
 

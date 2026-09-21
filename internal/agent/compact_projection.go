@@ -159,6 +159,16 @@ type visibleCompressionPlan struct {
 	firstFold int
 }
 
+const (
+	emptyCompressionRange             = "selected range is empty"
+	noVisibleCompressionMessages      = "selected range has no model-visible messages"
+	noSummarizableCompressionMessages = "selected range contains no summarizable messages"
+)
+
+func noCompressionHistory(reason string) bool {
+	return reason == emptyCompressionRange || reason == noVisibleCompressionMessages || reason == noSummarizableCompressionMessages
+}
+
 type preparedVisibleCompression struct {
 	fold         []provider.Message
 	instructions string
@@ -176,6 +186,9 @@ func (a *Agent) compressVisibleRange(
 ) (tool.CompressResult, error) {
 	a.sess.compactionRunMu.Lock()
 	defer a.sess.compactionRunMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return tool.CompressResult{}, err
+	}
 	if !a.explicitCompressionSnapshotCurrent(snap) {
 		return tool.CompressResult{}, errCompressStaleContext
 	}
@@ -244,7 +257,7 @@ func (a *Agent) compressVisibleRange(
 
 	inputHash := providerVisibleFingerprint(modelInputMessages(snap.visible))
 	outputHash := providerVisibleFingerprint(projection)
-	state, err := a.commitSummaryProjection(summaryProjectionCommit{
+	state, err := a.commitSummaryProjection(ctx, summaryProjectionCommit{
 		canonical: snap.canonical, fold: prepared.fold, projected: projection, result: res,
 		transcriptVersion: snap.transcriptVersion, projectionVersion: snap.projectionVersion, generation: snap.generation,
 		activeTurn: a.activeTurnCreatedAt.Load(), trigger: trigger, summary: summary,
@@ -324,7 +337,7 @@ func (a *Agent) planVisibleCompression(snap explicitCompressionSnapshot, directi
 		end = completedEnd
 	}
 	if start >= end {
-		plan.result.Reason = "selected range is empty"
+		plan.result.Reason = emptyCompressionRange
 		return plan, false
 	}
 
@@ -352,7 +365,7 @@ func (a *Agent) planVisibleCompression(snap explicitCompressionSnapshot, directi
 		}
 	}
 	if len(plan.fold) == 0 {
-		plan.result.Reason = "selected range has no model-visible messages"
+		plan.result.Reason = noVisibleCompressionMessages
 		return plan, false
 	}
 	return plan, true
@@ -369,7 +382,7 @@ func (a *Agent) prepareVisibleCompression(ctx context.Context, trigger string, f
 	}
 	filteredFold, removedPinned := withoutPinnedContextRevisions(fold)
 	if len(filteredFold) == 0 {
-		return preparedVisibleCompression{}, "selected range contains no summarizable messages", nil
+		return preparedVisibleCompression{}, noSummarizableCompressionMessages, nil
 	}
 	if removedPinned {
 		inputMode = SummaryInputNonPrefix
@@ -572,7 +585,7 @@ func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instruct
 		return CompactionNoop, err
 	}
 	viewOutputHash := providerVisibleFingerprint(modelInputMessages(spliced))
-	_, err = a.commitSummaryProjection(summaryProjectionCommit{
+	_, err = a.commitSummaryProjection(ctx, summaryProjectionCommit{
 		canonical: canonical, fold: fold, projected: projMsgs, result: res,
 		transcriptVersion: transcriptVersion, projectionVersion: startProjectionVersion,
 		generation: startGeneration, activeTurn: activeTurn, trigger: trigger,

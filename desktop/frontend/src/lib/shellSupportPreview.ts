@@ -2,6 +2,11 @@ import type { SandboxView, ShellCapabilityView } from "./types";
 
 type PreviewPlatform = "darwin" | "windows" | "linux" | "";
 
+export function reloadBrowserPreviewShell(sandbox: SandboxView): void {
+  sandbox.effectiveShell = sandbox.resolvedShell || sandbox.effectiveShell;
+  sandbox.shellReloadRequired = false;
+}
+
 // Browser-preview stand-ins for the backend shell inventory and repair policy.
 // Keeping this mock owner outside bridge.ts preserves that generated-style
 // boundary's file-size ratchet as the Settings contract grows.
@@ -13,7 +18,7 @@ export function browserPreviewShellSupport(platform: PreviewPlatform): Pick<Sand
   ] : [
     { id: "git-bash", variant: "git-for-windows", available: true, path: "C:\\Program Files\\Git\\bin\\bash.exe", source: "standard-path" },
     { id: "powershell", available: true, path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", source: "standard-path" },
-    { id: "pwsh", available: false, reason: "not-installed" },
+    { id: "pwsh", available: true, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", source: "standard-path" },
   ];
   return {
     shellCapabilities,

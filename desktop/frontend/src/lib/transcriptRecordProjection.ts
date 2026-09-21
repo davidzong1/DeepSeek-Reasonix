@@ -6,6 +6,7 @@ import { historicalResultNotice } from "./completionResultState";
 import { historyNoticeItems } from "./controllerNotices";
 import { appendHistoryAttachmentRefs } from "./historyAttachmentRefs";
 import { historySearchAndAnswer } from "./searchTranscript";
+import { sessionOperationFromHistory, sessionOperationItem } from "./sessionMaintenanceOperation";
 import { fileDiffFromWire, summarizeFileDiff } from "./tools";
 import { historyToolError, isReadOnlyTool, type Item } from "./useController";
 import type { HistoryContentRef, HistoryEntry, HistoryMessage, MemoryCitation } from "./types";
@@ -18,6 +19,7 @@ export interface TranscriptRecord {
   message: HistoryMessage;
   refs: HistoryContentRef[];
   resolved?: Record<string, string>;
+  previewMessage?: HistoryMessage;
   staleRefs?: Record<string, true>;
   bytes: number;
 }
@@ -28,6 +30,22 @@ export interface RecordConversion {
   unresolvedIds: string[];
   pendingPositional: number[];
   matches: Map<number, string>;
+}
+
+export interface ToolProjectionView {
+  records: TranscriptRecord[];
+  indexOf: Map<string, number>;
+  toolResultOwners: Map<string, string>;
+  toolCallOwners: Map<string, string>;
+  toolCallDisplayIds: Map<string, string>;
+  toolDisplayIds: Map<string, string>;
+  toolIdentityConflicts: Set<string>;
+  suppressedToolResults: Set<string>;
+  claimedToolResults: Set<string>;
+}
+
+export function toolCallKey(entryId: string, callIndex: number): string {
+  return `${entryId}\u0000${callIndex}`;
 }
 
 export function entryToRecord(entry: HistoryEntry): TranscriptRecord {
@@ -48,10 +66,13 @@ export function itemIdForToolCall(toolCallId: string, fallback: string): string 
 /** Converts one record against the complete resident window. */
 export function convertRecord(
   rec: TranscriptRecord,
-  view: { records: TranscriptRecord[]; indexOf: Map<string, number>; toolResultOwners: Map<string, string> },
+  view: ToolProjectionView,
   consumed: Set<string>,
   priorMatches?: Map<number, string>,
 ): RecordConversion {
+  if (view.suppressedToolResults.has(rec.entryId) || view.claimedToolResults.has(rec.entryId)) {
+    return { items: [], claims: [], unresolvedIds: [], pendingPositional: [], matches: new Map() };
+  }
   const converted = convertRecordBody(rec, view, consumed, priorMatches);
   if (rec.message.turnId) converted.items = converted.items.map(item => ({ ...item, turnId: rec.message.turnId }));
   return converted;
@@ -59,7 +80,7 @@ export function convertRecord(
 
 function convertRecordBody(
   rec: TranscriptRecord,
-  view: { records: TranscriptRecord[]; indexOf: Map<string, number>; toolResultOwners: Map<string, string> },
+  view: ToolProjectionView,
   consumed: Set<string>,
   priorMatches?: Map<number, string>,
 ): RecordConversion {
@@ -85,9 +106,18 @@ function convertRecordBody(
     return { items: historyNoticeItems(message, id), claims, unresolvedIds, pendingPositional, matches };
   }
   if (message.role === "compaction") {
+    const operation = sessionOperationFromHistory(message);
+    if (operation) {
+      items.push(sessionOperationItem(operation, rec.entryId));
+      return { items, claims, unresolvedIds, pendingPositional, matches };
+    }
     items.push({
       kind: "compaction", id, pending: Boolean(message.pending), trigger: message.trigger ?? "",
       messages: message.messages ?? 0, summary: message.summary ?? "", archive: message.archive ?? "",
+      operationId: message.operationId, operationKind: message.operationKind,
+      status: message.operationStatus, activity: message.operationActivity,
+      errorCode: message.errorCode, detail: message.detail, applied: message.applied,
+      inputTokens: message.inputTokens, resultTokens: message.resultTokens,
     });
     return { items, claims, unresolvedIds, pendingPositional, matches };
   }
@@ -117,7 +147,8 @@ function convertRecordBody(
         resultEntryId = prior;
         result = view.records[view.indexOf.get(prior) ?? -1]?.message;
       } else if (toolCall.id) {
-        const owner = view.toolResultOwners.get(toolCall.id);
+        const owner = view.toolCallOwners.get(toolCallKey(rec.entryId, callIndex))
+          ?? (toolCall.resultObservation?.messageId ? undefined : view.toolResultOwners.get(toolCall.id));
         if (owner) {
           resultEntryId = owner;
           result = view.records[view.indexOf.get(owner) ?? -1]?.message;
@@ -144,10 +175,16 @@ function convertRecordBody(
       const error = result?.toolResultError || (output ? historyToolError(output) : undefined);
       const fileDiff = fileDiffFromWire(toolCall);
       items.push({
-        kind: "tool", id: itemIdForToolCall(toolCall.id, `he:${rec.entryId}:tc${callIndex}`), name: toolCall.name,
+        kind: "tool", id: view.toolCallDisplayIds.get(toolCallKey(rec.entryId, callIndex))
+          ?? itemIdForToolCall(toolCall.id, `he:${rec.entryId}:tc${callIndex}`), name: toolCall.name,
         args: toolCall.arguments ?? "", readOnly: typeof toolCall.resolvedReadOnly === "boolean" ? toolCall.resolvedReadOnly : isReadOnlyTool(toolCall.name),
         resolvedName: toolCall.resolvedName, capabilityId: toolCall.capabilityId,
-        status: historyToolStatus(result, toolCall, error), contentState: !result || archived ? "unloaded" : "ready", resultMissing: !result && !toolCall.resultObservation?.messageId || undefined, output, error, dataArchived: archived || undefined,
+        status: historyToolStatus(result, toolCall, error), contentState: !result || archived ? "unloaded" : "ready",
+        resultMissing: !result && !toolCall.resultObservation?.messageId || undefined,
+        resultEvidence: result ? "formal" : toolCall.resultObservation ? "observation" : "missing",
+        sourceEntryId: rec.entryId,
+        identityConflict: view.toolIdentityConflicts.has(toolCallKey(rec.entryId, callIndex)) || undefined,
+        output, error, dataArchived: archived || undefined,
         subject: toolCall.subject, summary: summarizeFileDiff(fileDiff) || toolCall.summary, fileDiff,
         isShell: isShellToolName(toolCall.name) || (toolCall.id || "").startsWith("shell-"), execution: result?.execution,
         presentedFiles: result?.presentedFiles,
@@ -160,8 +197,10 @@ function convertRecordBody(
     const output = message.toolResultArchived ? undefined : message.content;
     const error = message.toolResultError || (output ? historyToolError(output) : undefined);
     items.push({
-      kind: "tool", id: itemIdForToolCall(message.toolCallId ?? "", id), name: message.toolName || "tool", args: "",
+      kind: "tool", id: view.toolDisplayIds.get(rec.entryId) ?? itemIdForToolCall(message.toolCallId ?? "", id), name: message.toolName || "tool", args: "",
       readOnly: isReadOnlyTool(message.toolName || "tool"), status: error ? "error" : "done", output, error,
+      resultEvidence: "formal", sourceEntryId: rec.entryId,
+      identityConflict: view.toolIdentityConflicts.has(rec.entryId) || undefined,
       dataArchived: message.toolResultArchived || undefined, isShell: isShellToolName(message.toolName || "") || (message.toolCallId || "").startsWith("shell-"),
       execution: message.execution, presentedFiles: message.presentedFiles,
     });

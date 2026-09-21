@@ -90,13 +90,16 @@ func runLiveWriteAfterEffectResume(t *testing.T, p provider.Provider, label stri
 	resume.SetSessionPath(state)
 	next, done := context.WithTimeout(context.Background(), 90*time.Second)
 	defer done()
-	confirmLiveWriteRecovery(t, next, resume)
-	if err := resume.Run(next, "Continue from the interrupted operation. Use the verified write postconditions. Do not rewrite satisfied content; just report whether the target is satisfied."); err != nil {
+	history := snapshotLiveWriteHistory(t, resume)
+	if err := resume.Run(next, "Continue from the interrupted operation. The host has read the target file and verified that its contents are exactly live-write-marker. This establishes current file state, not a historical execution outcome. Do not rewrite satisfied content; just report whether the target is satisfied."); err != nil {
 		t.Fatal(err)
 	}
 	data, err = os.ReadFile(target)
 	if err != nil || string(data) != "live-write-marker" || writes.Load() != 1 {
 		t.Fatalf("resume changed file or repeated write: writes=%d err=%v", writes.Load(), err)
+	}
+	if snapshotLiveWriteHistory(t, resume) != history {
+		t.Fatal("continuation rewrote historical execution facts")
 	}
 	t.Logf("protocol=%s intent_checkpoints=%d disk_writes=%d original_results=%d reopened_messages=%d", label, sink.checkpoints.Load(), writes.Load(), results, len(reopened.Snapshot()))
 }

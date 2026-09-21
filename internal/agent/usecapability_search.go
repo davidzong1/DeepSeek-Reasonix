@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -12,19 +13,20 @@ import (
 )
 
 type capabilitySearchResult struct {
-	CapabilityID string   `json:"capability_id"`
-	Kind         string   `json:"kind"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description,omitempty"`
-	Status       string   `json:"status,omitempty"`
-	ReadOnly     bool     `json:"read_only"`
-	Arguments    []string `json:"argument_names,omitempty"`
-	score        int
+	CapabilityID      string   `json:"capability_id"`
+	Kind              string   `json:"kind"`
+	Name              string   `json:"name"`
+	Description       string   `json:"description,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	ReadOnly          bool     `json:"read_only"`
+	Arguments         []string `json:"argument_names,omitempty"`
+	UnavailableReason string   `json:"unavailable_reason,omitempty"`
+	score             int
 }
 
 // searchCapabilities ranks the in-memory catalog and schema cache only. It is
 // deliberately incapable of starting an MCP server or issuing tools/list.
-func (t *UseCapabilityTool) searchCapabilities(query string, limit int) (string, int, error) {
+func (t *UseCapabilityTool) searchCapabilities(ctx context.Context, query string, limit int) (string, int, error) {
 	if limit == 0 {
 		limit = 5
 	}
@@ -35,6 +37,11 @@ func (t *UseCapabilityTool) searchCapabilities(query string, limit int) (string,
 	mcpSchemas := t.mcpSearchSchemaIndex()
 	results := make([]capabilitySearchResult, 0, len(cat.Entries))
 	for _, entry := range cat.Entries {
+		entry = t.contextualEntry(ctx, entry)
+		unavailableReason := ""
+		if entry.Kind == capability.KindTool {
+			unavailableReason = entry.FailureReason
+		}
 		arguments, schemaText := t.capabilitySchemaSearchData(entry, mcpSchemas)
 		document := strings.Join([]string{entry.ID, entry.Name, entry.Source, entry.ToolName, entry.Description, schemaText}, " ")
 		score := capabilitySearchScore(entry, document, queryNorm, queryTokens)
@@ -42,14 +49,15 @@ func (t *UseCapabilityTool) searchCapabilities(query string, limit int) (string,
 			continue
 		}
 		results = append(results, capabilitySearchResult{
-			CapabilityID: entry.ID,
-			Kind:         string(entry.Kind),
-			Name:         entry.Name,
-			Description:  truncateSearchDescription(entry.Description),
-			Status:       string(entry.Status),
-			ReadOnly:     entry.ReadOnly,
-			Arguments:    arguments,
-			score:        score,
+			CapabilityID:      entry.ID,
+			Kind:              string(entry.Kind),
+			Name:              entry.Name,
+			Description:       truncateSearchDescription(entry.Description),
+			Status:            string(entry.Status),
+			ReadOnly:          entry.ReadOnly,
+			Arguments:         arguments,
+			UnavailableReason: unavailableReason,
+			score:             score,
 		})
 	}
 	sort.Slice(results, func(i, j int) bool {

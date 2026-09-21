@@ -649,6 +649,9 @@ func (a *App) replayPreparedImport(ctx context.Context, state workspacestate.Sta
 		scope = "global"
 	}
 	source := desktopMigrationSource{scope: scope, workspaceRoot: workspace.Root, operationID: op.ID, headID: mapping.HeadID}
+	if mapping.SourceKey == desktopSourceKey(mapping.Path, mapping.HeadID)+":review:"+mapping.Fingerprint {
+		source.versionFingerprint = mapping.Fingerprint
+	}
 	if mapping.Format == "legacy" {
 		return a.migrateLegacySession(ctx, mapping.Path, source, workspace.ID)
 	}

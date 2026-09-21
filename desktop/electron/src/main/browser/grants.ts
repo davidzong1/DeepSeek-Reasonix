@@ -59,10 +59,11 @@ export class GrantRegistry {
   }
 
   // The tab must belong to the grant's task; a grant never reaches across.
-  verifyTab(grantId: string, tabTaskId: string | undefined): BrowserGrant {
+  verifyTab(grantId: string, tabTaskId: string | undefined, tabSessionId?: string): BrowserGrant {
     const grant = this.verify(grantId);
     if (tabTaskId === undefined) throw noGrant("unknown browser tab");
     if (tabTaskId !== grant.taskId) throw noGrant("browser tab belongs to another task");
+    if ((tabSessionId ?? "") !== grant.sessionId) throw noGrant("browser tab belongs to another session");
     return grant;
   }
 

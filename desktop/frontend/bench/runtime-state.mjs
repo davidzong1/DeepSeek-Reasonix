@@ -36,6 +36,8 @@ try {
     onRemoteTabOpened(tab => { window.__runtimeFixture.tab = tab; });
     onRemoteTabUpdated(tab => { window.__runtimeFixture.tab = tab; });
     const host = installDesktopHostStub(new Proxy(fallback, { get(_target, key) {
+      // Periodic/focus reads must observe the same producer as pushed frames.
+      if (key === "SyncRuntimeState" || key === "GetRuntimeStateSnapshot") return async () => runtimeStateStore.getSnapshot();
       if (key === "CaptureInboxTarget") return async (tabId, sessionPath) => {
         if (!sessionPath || sessionPath !== window.__runtimeFixture.tab.sessionPath) throw new Error("Composer did not bind its selected session path: " + JSON.stringify({ tabId, sessionPath, expected: window.__runtimeFixture.tab.sessionPath }));
         const remote = window.__runtimeFixture.tab.remote;
@@ -88,6 +90,7 @@ try {
   const queries = await page.evaluate(() => window.__runtimeFixture.queries);
   check(calls.length === 1 && queries.length === 1 && calls[0].at(-1) === queries[0].at(-1), "retry only queries the original durable idempotency key");
   await publish("idle", { backgroundJobs: 2 });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.locator(".composer-run-strip").filter({ hasText: /2/ }).waitFor();
   await page.locator(".runtime-activity-indicator:not(.runtime-activity-indicator--static)").first().waitFor();
   check(await page.locator(".runtime-activity-indicator:not(.runtime-activity-indicator--static)").count() > 0, "background jobs keep project activity visible");

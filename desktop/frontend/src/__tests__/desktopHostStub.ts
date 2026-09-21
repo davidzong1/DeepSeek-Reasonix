@@ -7,7 +7,7 @@ import type { AppBindings } from "../lib/bridge";
 import { makeMockSessionReaderBindings, publishMockTranscriptEvent, setMockTranscriptMetadata } from "../lib/sessionReaderBridge";
 import type { NativePerformanceActions, ProcessDiagnosticsSnapshot } from "../lib/processDiagnostics";
 import type { DesktopBrowserHost } from "../lib/browserHost";
-import type { BrowserControlApi, BrowserControlState, ChromeImportOutcome, ReasonixDesktopHost } from "../lib/desktopHost";
+import type { BrowserControlApi, BrowserControlState, ChromeImportOutcome, ReasonixDesktopHost, ServiceState } from "../lib/desktopHost";
 
 export interface DesktopHostStubOptions {
   performance?: NativePerformanceActions;
@@ -27,6 +27,8 @@ export interface DesktopHostStubOptions {
   browserControlCalls?: string[];
   /** Outcome of the Chrome sign-in-state import. */
   chromeImportOutcome?: ChromeImportOutcome;
+  /** Overrides native window calls owned by the Electron shell. */
+  window?: Partial<ReasonixDesktopHost["native"]["window"]>;
 }
 
 function browserControlStub(options: DesktopHostStubOptions): BrowserControlApi {
@@ -70,6 +72,7 @@ export interface DesktopHostStub {
   /** Registered event handlers by name; emit() fans a payload out to them. */
   events: Map<string, Set<(...data: unknown[]) => void>>;
   emit(name: string, ...data: unknown[]): void;
+  emitServiceState(state: ServiceState): void;
   /** Swaps the whole command table (mirrors re-injecting the bindings). */
   replaceCommands(next: object): void;
   uninstall(): void;
@@ -79,6 +82,8 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
   const ref = { current: commands as Record<string, unknown> };
   const readerFallback = () => typeof ref.current.SessionOpenForTab === "function" || typeof ref.current.TranscriptSnapshotForTab === "function" ? {} : makeMockSessionReaderBindings();
   const events = new Map<string, Set<(...data: unknown[]) => void>>();
+  let serviceState: ServiceState = { phase: "ready", generation: "test-service" };
+  const serviceListeners = new Set<(state: ServiceState) => void>();
   const host: ReasonixDesktopHost = {
     kind: "electron",
     contract: {
@@ -129,22 +134,23 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
         setBackgroundColour: () => {},
         getBounds: () => Promise.resolve({ x: 0, y: 0, width: 1280, height: 800, maximised: false }),
         isMaximised: () => Promise.resolve(false),
-        minimise: () => {},
-        toggleMaximise: () => {},
-      close: () => {},
-      // The Electron shell owns zoom natively; tests drive it through the
-      // same command table the bridge path uses, so tables without zoom
-      // commands keep the neutral default.
-      getAppZoom: async () => {
-        const fn = ref.current.GetDesktopZoomFactor as (() => Promise<number>) | undefined;
-        return typeof fn === "function" ? await fn() : 1;
-      },
-      setAppZoom: async (factor: number) => {
-        const fn = ref.current.SetDesktopZoomFactor as ((factor: number) => Promise<number>) | undefined;
-        if (typeof fn === "function") await fn(factor);
-        return factor;
-      },
-      resetAppZoom: async () => 1,
+        minimise: async () => {},
+        toggleMaximise: async () => {},
+        close: async () => {},
+        // The Electron shell owns zoom natively; tests drive it through the
+        // same command table the bridge path uses, so tables without zoom
+        // commands keep the neutral default.
+        getAppZoom: async () => {
+          const fn = ref.current.GetDesktopZoomFactor as (() => Promise<number>) | undefined;
+          return typeof fn === "function" ? await fn() : 1;
+        },
+        setAppZoom: async (factor: number) => {
+          const fn = ref.current.SetDesktopZoomFactor as ((factor: number) => Promise<number>) | undefined;
+          if (typeof fn === "function") await fn(factor);
+          return factor;
+        },
+        resetAppZoom: async () => 1,
+        ...options.window,
       },
       graphics: {
         get: () => Promise.resolve({ hardwareAcceleration: true, startupEnabled: true, override: "none" as const, restartRequired: false, writable: true, warning: null }),
@@ -152,7 +158,12 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
       },
       getPathForFile: options.getPathForFile ?? (() => ""),
       browserControl: browserControlStub(options),
-      onServiceState: () => () => {},
+      onServiceState: (cb) => {
+        serviceListeners.add(cb);
+        cb(serviceState);
+        return () => { serviceListeners.delete(cb); };
+      },
+      recordRendererDiagnostic: async () => {},
     },
     browser: undefined as unknown as DesktopBrowserHost,
   };
@@ -163,6 +174,10 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
       return ref.current;
     },
     events,
+    emitServiceState(state) {
+      serviceState = state;
+      for (const cb of [...serviceListeners]) cb(state);
+    },
     emit(name, ...data) {
       if (name === "runtime:rebuilt" && data[0] && data[1]) setMockTranscriptMetadata(String(data[0]), { runtime: { epoch: String(data[1]) } });
       if (name === "agent:event" && data[0]) publishMockTranscriptEvent(data[0] as import("../lib/types").WireEvent);

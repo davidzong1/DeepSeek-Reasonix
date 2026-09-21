@@ -432,6 +432,12 @@ type App struct {
 	browserExecMu    sync.Mutex
 	browserExecutors map[string]*hostBrowserExecutor
 	browserOps       *browserops.Ledger
+	// fileBrowserPreviews serializes file-to-browser publication and remembers
+	// the task-owned tab for each session-scoped resource. It is deliberately
+	// separate from App.mu: host RPC may wait on Electron and must never hold the
+	// chat runtime lock while doing so.
+	fileBrowserPreviewMu sync.Mutex
+	fileBrowserPreviews  map[string]fileBrowserPreviewBinding
 	// browserControl is the shell-pushed switch that decides whether new
 	// sessions may drive the built-in browser at all.
 	browserControl browserControl
@@ -476,6 +482,7 @@ func NewApp() *App {
 		detachedSessions:        map[string]*WorkspaceTab{},
 		mediaTokens:             newMediaTokenStore(),
 		presentPreview:          newWorkspacePreviewOrigin(),
+		fileBrowserPreviews:     map[string]fileBrowserPreviewBinding{},
 		botInstalls:             map[string]*botInstallSession{},
 		botRuntime:              newDesktopBotRuntime(),
 		remoteWindows:           newRemoteWindowRegistry(),
@@ -2092,7 +2099,7 @@ func (a *App) clearLegacySessionRuntimeLocked(tab *WorkspaceTab, oldCtrl control
 		SessionDir:           sessionDirForSnapshot(snap),
 		EffortOverride:       cloneStringPtr(snap.effort),
 		EffortModel:          snap.model,
-		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForTab(tab),
+		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForRuntime(tab.ID, newSink),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -3101,6 +3108,11 @@ func (a *App) closeRemovedSessionRuntime(item removedSessionRuntime, closed map[
 			if releasedTabs != nil {
 				releasedTabs[item.tab] = true
 			}
+			a.mu.Lock()
+			if owner := a.tabByEventSinkIDLocked(item.tab.ID); owner == nil || owner == item.tab {
+				a.forgetBrowserExecutorLocked(item.tab.ID)
+			}
+			a.mu.Unlock()
 			a.releaseTabSharedHost(item.tab)
 			item.tab.releaseSessionLease()
 		}
@@ -4042,7 +4054,7 @@ func (a *App) buildSessionRebindCandidate(
 		SessionDir:           sessionDir,
 		EffortOverride:       cloneStringPtr(source.effort),
 		EffortModel:          source.model,
-		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForTab(tab),
+		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForRuntime(tab.ID, sink),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -5410,6 +5422,9 @@ func (state *historyMessageConvertState) convertHistoryMessage(
 	toolResults map[string]provider.Message,
 ) []HistoryMessage {
 	var out []HistoryMessage
+	if m.Role == provider.Role("compaction") {
+		return maintenanceHistoryMessage(m)
+	}
 	if m.DecisionReceipt != nil {
 		return append(out, HistoryMessage{
 			Role:            "notice",
@@ -5961,37 +5976,38 @@ func previewSessionPage(sessionDir, path string, beforeTurn, limit int) (History
 }
 
 type previewEventRecord struct {
-	Kind             string                    `json:"kind"`
-	Type             string                    `json:"type"`
-	Role             string                    `json:"role"`
-	Origin           provider.MessageOrigin    `json:"origin"`
-	TS               json.RawMessage           `json:"ts"`
-	Time             json.RawMessage           `json:"time"`
-	Timestamp        json.RawMessage           `json:"timestamp"`
-	CreatedAt        json.RawMessage           `json:"createdAt"`
-	CreatedAtSnake   json.RawMessage           `json:"created_at"`
-	UpdatedAt        json.RawMessage           `json:"updatedAt"`
-	UpdatedAtSnake   json.RawMessage           `json:"updated_at"`
-	Text             string                    `json:"text"`
-	Detail           string                    `json:"detail"`
-	Code             string                    `json:"code"`
-	Content          string                    `json:"content"`
-	RawContent       string                    `json:"raw_content"`
-	Reasoning        string                    `json:"reasoning"`
-	ReasoningContent string                    `json:"reasoningContent"`
-	MemoryCitations  []provider.MemoryCitation `json:"memoryCitations"`
-	Level            string                    `json:"level"`
-	ToolCalls        []previewToolCall         `json:"toolCalls"`
-	CallID           string                    `json:"callId"`
-	ToolCallID       string                    `json:"toolCallId"`
-	ToolName         string                    `json:"toolName"`
-	Name             string                    `json:"name"`
-	Output           string                    `json:"output"`
-	Compaction       *previewCompaction        `json:"compaction"`
-	Trigger          string                    `json:"trigger"`
-	Messages         int                       `json:"messages"`
-	Summary          string                    `json:"summary"`
-	Archive          string                    `json:"archive"`
+	Kind             string                      `json:"kind"`
+	Type             string                      `json:"type"`
+	Role             string                      `json:"role"`
+	Origin           provider.MessageOrigin      `json:"origin"`
+	TS               json.RawMessage             `json:"ts"`
+	Time             json.RawMessage             `json:"time"`
+	Timestamp        json.RawMessage             `json:"timestamp"`
+	CreatedAt        json.RawMessage             `json:"createdAt"`
+	CreatedAtSnake   json.RawMessage             `json:"created_at"`
+	UpdatedAt        json.RawMessage             `json:"updatedAt"`
+	UpdatedAtSnake   json.RawMessage             `json:"updated_at"`
+	Text             string                      `json:"text"`
+	Detail           string                      `json:"detail"`
+	Code             string                      `json:"code"`
+	Content          string                      `json:"content"`
+	RawContent       string                      `json:"raw_content"`
+	Reasoning        string                      `json:"reasoning"`
+	ReasoningContent string                      `json:"reasoningContent"`
+	MemoryCitations  []provider.MemoryCitation   `json:"memoryCitations"`
+	Level            string                      `json:"level"`
+	ToolCalls        []previewToolCall           `json:"toolCalls"`
+	CallID           string                      `json:"callId"`
+	ToolCallID       string                      `json:"toolCallId"`
+	ToolName         string                      `json:"toolName"`
+	Name             string                      `json:"name"`
+	Output           string                      `json:"output"`
+	Compaction       *previewCompaction          `json:"compaction"`
+	Trigger          string                      `json:"trigger"`
+	Messages         int                         `json:"messages"`
+	Summary          string                      `json:"summary"`
+	Archive          string                      `json:"archive"`
+	SessionOperation *event.SessionOperationInfo `json:"sessionOperation"`
 }
 
 type previewToolCall struct {
@@ -6100,6 +6116,8 @@ func previewEventSessionMessages(path string) ([]HistoryMessage, bool, error) {
 				Summary:  c.Summary,
 				Archive:  c.Archive,
 			})
+		case "session_operation":
+			out = upsertMaintenancePreview(out, rec.SessionOperation)
 		}
 	}
 	return out, sawEvent, nil
@@ -9339,7 +9357,7 @@ func (a *App) SetModelForTab(tabID, name string) (retErr error) {
 		SessionDir:           sessionDirForSnapshot(snap),
 		SessionService:       a.desktopSessionService(sessionDirForSnapshot(snap)),
 		EffortOverride:       cloneStringPtr(effortOverride),
-		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForTab(tab),
+		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForRuntime(tab.ID, snap.sink),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -9545,7 +9563,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		SessionDir:           sessionDirForSnapshot(snap),
 		SessionService:       a.desktopSessionService(sessionDirForSnapshot(snap)),
 		EffortOverride:       &effort,
-		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForTab(tab),
+		SharedHost:           sharedHost, BrowserExecutor: a.browserExecutorForRuntime(tab.ID, snap.sink),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
@@ -10345,9 +10363,15 @@ func (a *App) extendWorkspaceBrowserPreviewToken(resourceURL string) {
 	}
 }
 
-// RevokeWorkspaceBrowserPreview invalidates only URLs minted by this app's
-// unprivileged preview origin. Browser tab close calls this best-effort.
+// RevokeWorkspaceBrowserPreview drops the file binding and invalidates only
+// URLs minted by this app's unprivileged preview origin. Browser tab close
+// calls this best-effort.
 func (a *App) RevokeWorkspaceBrowserPreview(rawURL string) {
+	a.releaseFileBrowserPreviewURL(rawURL)
+	a.revokeWorkspaceBrowserPreview(rawURL)
+}
+
+func (a *App) revokeWorkspaceBrowserPreview(rawURL string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return

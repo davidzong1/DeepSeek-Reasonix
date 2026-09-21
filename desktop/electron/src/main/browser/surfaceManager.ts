@@ -17,6 +17,7 @@ export const MAX_ZOOM = 5;
 export interface BrowserTab {
   id: string;
   taskId: string;
+  sessionId: string;
   view: GuestView;
   partition: string;
   temporary: boolean;
@@ -33,6 +34,7 @@ export interface BrowserTab {
 
 export interface OpenOptions {
   taskId: string;
+  sessionId?: string;
   temporary: boolean;
 }
 
@@ -109,6 +111,10 @@ export class BrowserSurfaceManager {
     return this.all().filter((tab) => tab.taskId === taskId);
   }
 
+  tabsForSession(taskId: string, sessionId: string): BrowserTab[] {
+    return this.all().filter((tab) => tab.taskId === taskId && tab.sessionId === sessionId);
+  }
+
   list(): BrowserTabView[] {
     return this.all().map((tab) => this.view(tab));
   }
@@ -145,13 +151,16 @@ export class BrowserSurfaceManager {
     const id = this.nextId();
     const partition = options.temporary ? `temp:${id}` : SHARED_PARTITION;
     const view = this.deps.views.create(partition);
-    const tab = this.register(id, view, options.taskId, partition, options.temporary);
+    const tab = this.register(id, view, options.taskId, options.sessionId ?? "", partition, options.temporary);
     if (this.layout) view.setBounds(this.layout);
     // The application renderer owns selection. Agent opens must not replace
     // another task's visible page while its address bar still names that task.
     this.broadcast();
     const load = view.page.loadURL(href).catch((error: unknown) => {
       this.deps.log.warn(`browser tab ${tab.id} load failed: ${String(error)}`);
+      tab.loading = false;
+      tab.error = { code: 0, description: String(error) };
+      this.broadcast();
     });
     await Promise.race([load, new Promise<void>((resolve) => setTimeout(resolve, this.deps.openWaitMs ?? OPEN_WAIT_MS).unref?.())]);
     return tab;
@@ -205,6 +214,9 @@ export class BrowserSurfaceManager {
     if (typeof target.url !== "string") throw new Error("navigate needs a url or an action");
     await page.loadURL(normaliseBrowserURL(target.url)).catch((error: unknown) => {
       this.deps.log.warn(`browser tab ${tab.id} navigation failed: ${String(error)}`);
+      tab.loading = false;
+      tab.error = { code: 0, description: String(error) };
+      this.broadcast();
     });
     return tab;
   }
@@ -277,10 +289,11 @@ export class BrowserSurfaceManager {
     return `tab-${this.counter}`;
   }
 
-  private register(id: string, view: GuestView, taskId: string, partition: string, temporary: boolean): BrowserTab {
+  private register(id: string, view: GuestView, taskId: string, sessionId: string, partition: string, temporary: boolean): BrowserTab {
     const tab: BrowserTab = {
       id,
       taskId,
+      sessionId,
       view,
       partition,
       temporary,
@@ -329,7 +342,7 @@ export class BrowserSurfaceManager {
       onPopup: () => {
         if (!this.tabs.has(tab.id)) return null;
         return (view) => {
-          this.register(this.nextId(), view, tab.taskId, tab.partition, tab.temporary);
+          this.register(this.nextId(), view, tab.taskId, tab.sessionId, tab.partition, tab.temporary);
           this.broadcast();
         };
       },

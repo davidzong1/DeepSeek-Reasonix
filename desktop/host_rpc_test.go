@@ -141,8 +141,11 @@ func TestHostRPCReturnsWhenStdinCloses(t *testing.T) {
 func TestDetachedShutdownTimeoutLeavesInterruptedEvidence(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	release := make(chan struct{})
+	enteredSave := make(chan struct{})
+	releaseSave := sync.OnceFunc(func() { close(release) })
 	ctrl := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "blocked"})}
 	ctrl.shutdown = func() error {
+		close(enteredSave)
 		<-release
 		return nil
 	}
@@ -155,9 +158,33 @@ func TestDetachedShutdownTimeoutLeavesInterruptedEvidence(t *testing.T) {
 	}
 	app.lifecycle.tracker = tracker
 
-	status, err := requestDetachedShutdown(app, shutdownRequest{
+	request := shutdownRequest{
 		RequestID: "detached-timeout", Reason: shutdownReasonConnectionLost,
-	}, 250*time.Millisecond)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		_, err := app.requestShutdown(context.Background(), request)
+		finished <- err
+	}()
+	t.Cleanup(func() {
+		releaseSave()
+		select {
+		case err := <-finished:
+			if err != nil {
+				t.Errorf("shutdown after releasing save: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("shutdown worker did not settle after releasing save")
+		}
+	})
+	// Start the bounded waiter only after the save owns the blocked phase.
+	// Earlier lifecycle checkpoint I/O must not race the 250ms assertion.
+	select {
+	case <-enteredSave:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not enter the blocked save")
+	}
+	status, err := requestDetachedShutdown(app, request, 250*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) || status.Phase != "saving" {
 		t.Fatalf("detached shutdown = %+v, %v", status, err)
 	}
@@ -169,7 +196,7 @@ func TestDetachedShutdownTimeoutLeavesInterruptedEvidence(t *testing.T) {
 		t.Fatalf("timeout evidence = %+v", state)
 	}
 
-	close(release)
+	releaseSave()
 	deadline := time.Now().Add(5 * time.Second)
 	for !app.shutdownStatus("").Completed {
 		if time.Now().After(deadline) {

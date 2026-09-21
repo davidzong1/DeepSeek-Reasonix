@@ -2,7 +2,7 @@ import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayou
 import { t } from "../lib/i18n";
 
 async function loadMarkdownView<T>(component: Promise<T>): Promise<T> {
-  await import("./MarkdownImage.css");
+  await Promise.all([import("./MarkdownImage.css"), import("./CodeBlock.css")]);
   return component;
 }
 
@@ -15,6 +15,7 @@ export function preloadMarkdownHistory(): Promise<typeof import("./MarkdownHisto
   });
 }
 const LazyMarkdownHistory = lazy(preloadMarkdownHistory);
+const LiveMarkdownCode = lazy(() => loadMarkdownView(import("./markdownComponents")).then(module => ({ default: module.MarkdownCode })));
 const STREAMING_TAIL_THRESHOLD = 8_000;
 const FINALIZE_SETTLE_MS = 50;
 const FINALIZE_IDLE_TIMEOUT_MS = 1_000;
@@ -200,7 +201,7 @@ type StreamingTailFence = { head: string; lang: string; code: string };
 // render with code styling before the closing fence arrives. Bail out cheaply
 // when no fence marker exists; otherwise mirror the fence state machine from
 // streamingCommitTarget in one forward pass over the tail.
-export function splitStreamingTailFence(text: string): StreamingTailFence | null {
+export function splitStreamingTailFence(text: string, includeJustClosed = false): StreamingTailFence | null {
   if (!text.includes("```") && !text.includes("~~~")) return null;
   let lineStart = 0;
   let fence: { marker: string; length: number } | null = null;
@@ -212,14 +213,20 @@ export function splitStreamingTailFence(text: string): StreamingTailFence | null
     const lineEnd = newline === -1 ? text.length : newline + 1;
     const line = text.slice(lineStart, newline === -1 ? text.length : newline).replace(/\r$/, "");
     if (fence) {
-      if (new RegExp(`^ {0,3}${fence.marker}{${fence.length},}[ \\t]*$`).test(line)) fence = null;
+      if (new RegExp(`^ {0,3}${fence.marker}{${fence.length},}[ \\t]*$`).test(line)) {
+        // Keep the styled fence until the committed parser takes it over.
+        if (includeJustClosed && !text.slice(lineEnd).trim()) {
+          return { head: text.slice(0, fenceStart), lang, code: text.slice(fenceBodyStart, lineStart) };
+        }
+        fence = null;
+      }
     } else {
       const fenceMatch = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(line);
-      if (fenceMatch) {
+      if (fenceMatch && newline !== -1) {
         fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
         fenceStart = lineStart;
         fenceBodyStart = lineEnd;
-        lang = fenceMatch[2].trim();
+        lang = fenceMatch[2].trim().split(/\s+/)[0];
       }
     }
     lineStart = lineEnd;
@@ -229,7 +236,7 @@ export function splitStreamingTailFence(text: string): StreamingTailFence | null
 }
 
 export function useRenderedMarkdownText(text: string, streaming: boolean, holdIdleFinalization = false): string {
-  const [renderedText, setRenderedText] = useState(text);
+  const [renderedText, setRenderedText] = useState(() => streaming && splitStreamingTailFence(text) ? streamingCommitTarget(text) : text);
   const latestTextRef = useRef(text);
   const frameRef = useRef<number | null>(null);
   const timeoutRef = useRef<number | null>(null);
@@ -342,6 +349,18 @@ export function useRenderedMarkdownText(text: string, streaming: boolean, holdId
   return renderedText;
 }
 
+function StreamingMarkdownTail({ text }: { text: string }) {
+  const fence = splitStreamingTailFence(text, true);
+  if (!fence) return <span className="md" style={{ whiteSpace: "pre-wrap" }}>{text}</span>;
+  const value = fence.code.replace(/\n$/, "");
+  return <div className="md">
+    {fence.head && <span style={{ whiteSpace: "pre-wrap" }}>{fence.head}</span>}
+    <Suspense fallback={<pre className="code">{value}</pre>}>
+      <LiveMarkdownCode value={value} language={fence.lang} />
+    </Suspense>
+  </div>;
+}
+
 export const Markdown = memo(function Markdown({
   text, plainStatusBlocks = false, streaming = false, cacheKey,
 }: { text: string; plainStatusBlocks?: boolean; streaming?: boolean; cacheKey?: string; wasStreamed?: boolean }) {
@@ -356,6 +375,6 @@ export const Markdown = memo(function Markdown({
       plainStatusBlocks={plainStatusBlocks} cacheKey={cacheKey}
       fallback={<span style={{ whiteSpace: "pre-wrap" }}>{streaming ? renderedText : text}</span>} onError={onError} />
     {streaming && text.startsWith(renderedText) && text.length > renderedText.length &&
-      <span className="md" style={{ whiteSpace: "pre-wrap" }}>{text.slice(renderedText.length)}</span>}
+      <StreamingMarkdownTail text={text.slice(renderedText.length)} />}
   </Suspense>;
 });

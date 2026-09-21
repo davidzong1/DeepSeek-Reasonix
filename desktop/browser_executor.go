@@ -51,32 +51,100 @@ type hostBrowserExecutor struct {
 	grantMu    sync.Mutex
 }
 
+// tabBrowserExecutor is the stable executor held by a long-lived Controller.
+// Every operation follows the runtime-owned sink to its current surface and
+// resolves an immutable host grant. Reusing the original surface for another
+// session must never give the old controller that session's browser.
+type tabBrowserExecutor struct {
+	app   *App
+	tabID string
+	sink  *tabEventSink // runtime-owned binding follows detach/reattach
+}
+
 type hostBrowserTab struct {
 	ID        string `json:"id"`
 	URL       string `json:"url"`
 	Title     string `json:"title"`
 	Loading   bool   `json:"loading"`
 	Temporary bool   `json:"temporary"`
+	Error     string `json:"error,omitempty"`
 }
 
 func (t hostBrowserTab) tab() browser.Tab {
-	return browser.Tab{ID: t.ID, URL: t.URL, Title: t.Title, Loading: t.Loading, Temporary: t.Temporary}
+	return browser.Tab{ID: t.ID, URL: t.URL, Title: t.Title, Loading: t.Loading, Temporary: t.Temporary, Error: t.Error}
 }
 
 func (a *App) browserExecutorForTab(tab *WorkspaceTab) browser.Executor {
-	if tab == nil || !a.hostMode() || a.browserControl.off() {
+	if a == nil || tab == nil {
 		return nil
 	}
+	a.mu.RLock()
+	tabID, sink := tab.ID, tab.sink
+	a.mu.RUnlock()
+	return a.browserExecutorForRuntime(tabID, sink)
+}
+
+func (a *App) browserExecutorForRuntime(tabID string, sink *tabEventSink) browser.Executor {
+	if !a.hostMode() || a.browserControl.off() {
+		return nil
+	}
+	return &tabBrowserExecutor{app: a, tabID: tabID, sink: sink}
+}
+
+func (a *App) hostBrowserExecutorForTab(tabID string) *hostBrowserExecutor {
+	return a.hostBrowserExecutorForBinding(tabID, nil)
+}
+
+// browserBindingTabLocked resolves the runtime's current owner, including a
+// detached owner. Holding App.mu before reading the sink binding matches the
+// transfer lock order and prevents a stale tab ID from selecting another task.
+func (a *App) browserBindingTabLocked(tabID string, sink *tabEventSink) *WorkspaceTab {
+	if sink != nil {
+		tabID, _ = sink.binding()
+	}
+	tab := a.tabByEventSinkIDLocked(tabID)
+	if tab == nil || tab.removed || (sink != nil && tab.sink != sink) {
+		return nil
+	}
+	return tab
+}
+
+func (a *App) hostBrowserExecutorForBinding(tabID string, sink *tabEventSink) *hostBrowserExecutor {
+	a.mu.RLock()
+	tab := a.browserBindingTabLocked(tabID, sink)
+	if tab == nil {
+		a.mu.RUnlock()
+		return nil
+	}
+	tabID = tab.ID
+	identity := tab.SessionID
+	if identity == "" {
+		identity = tab.SessionPath
+	}
+	sessionKey := fmt.Sprintf("%s:%d", identity, tab.SessionGeneration)
 	a.browserExecMu.Lock()
-	defer a.browserExecMu.Unlock()
 	if a.browserExecutors == nil {
 		a.browserExecutors = map[string]*hostBrowserExecutor{}
 	}
-	if exec, ok := a.browserExecutors[tab.ID]; ok {
-		return exec
+	if exec, ok := a.browserExecutors[tabID]; ok {
+		if exec.sessionKey == sessionKey {
+			a.browserExecMu.Unlock()
+			a.mu.RUnlock()
+			return exec
+		}
+		delete(a.browserExecutors, tabID)
+		replacement := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey}
+		a.browserExecutors[tabID] = replacement
+		a.browserExecMu.Unlock()
+		a.mu.RUnlock()
+		a.releaseFileBrowserPreviewsForTask(tabID)
+		a.revokeBrowserExecutor(exec)
+		return replacement
 	}
-	exec := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tab.ID, grantID: newBrowserGrantID()}
-	a.browserExecutors[tab.ID] = exec
+	exec := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey}
+	a.browserExecutors[tabID] = exec
+	a.browserExecMu.Unlock()
+	a.mu.RUnlock()
 	return exec
 }
 
@@ -109,10 +177,107 @@ func (a *App) forgetBrowserExecutorLocked(tabID string) {
 	exec, ok := a.browserExecutors[tabID]
 	delete(a.browserExecutors, tabID)
 	a.browserExecMu.Unlock()
+	a.releaseFileBrowserPreviewsForTask(tabID)
 	if !ok {
 		return
 	}
 	a.revokeBrowserExecutor(exec)
+}
+
+func (e *tabBrowserExecutor) current() (*hostBrowserExecutor, error) {
+	if e == nil || e.app == nil || !e.app.hostMode() || e.app.browserControl.off() {
+		return nil, browser.ErrNoGrant
+	}
+	exec := e.app.hostBrowserExecutorForBinding(e.tabID, e.sink)
+	if exec == nil {
+		return nil, browser.ErrNoGrant
+	}
+	return exec, nil
+}
+
+func (e *tabBrowserExecutor) Available(ctx context.Context) bool {
+	return e.UnavailableReason(ctx) == ""
+}
+
+// Discovery is observational: do not mint or rotate a grant while searching
+// the capability catalog. Execution resolves the same binding under App.mu.
+func (e *tabBrowserExecutor) UnavailableReason(context.Context) string {
+	if e == nil || e.app == nil || !e.app.hostMode() {
+		return "the built-in browser host is not attached to this task"
+	}
+	if e.app.browserControl.off() {
+		return "built-in browser control is disabled in the host settings"
+	}
+	e.app.mu.RLock()
+	tab := e.app.browserBindingTabLocked(e.tabID, e.sink)
+	e.app.mu.RUnlock()
+	if tab == nil {
+		return "the browser's task runtime binding is no longer available"
+	}
+	return ""
+}
+func (e *tabBrowserExecutor) Tabs(ctx context.Context) ([]browser.Tab, error) {
+	x, err := e.current()
+	if err != nil {
+		return nil, err
+	}
+	return x.Tabs(ctx)
+}
+func (e *tabBrowserExecutor) Open(ctx context.Context, req browser.OpenRequest) (browser.Tab, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.Tab{}, err
+	}
+	return x.Open(ctx, req)
+}
+func (e *tabBrowserExecutor) Navigate(ctx context.Context, req browser.NavigateRequest) (browser.Tab, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.Tab{}, err
+	}
+	return x.Navigate(ctx, req)
+}
+func (e *tabBrowserExecutor) Close(ctx context.Context, req browser.CloseRequest) error {
+	x, err := e.current()
+	if err != nil {
+		return err
+	}
+	return x.Close(ctx, req)
+}
+func (e *tabBrowserExecutor) Snapshot(ctx context.Context, req browser.SnapshotRequest) (browser.Snapshot, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.Snapshot{}, err
+	}
+	return x.Snapshot(ctx, req)
+}
+func (e *tabBrowserExecutor) Screenshot(ctx context.Context, req browser.ScreenshotRequest) (browser.Screenshot, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.Screenshot{}, err
+	}
+	return x.Screenshot(ctx, req)
+}
+func (e *tabBrowserExecutor) Act(ctx context.Context, req browser.ActRequest) (browser.ActResult, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.ActResult{}, err
+	}
+	return x.Act(ctx, req)
+}
+func (e *tabBrowserExecutor) Downloads(ctx context.Context, req browser.DownloadsRequest) ([]browser.Download, error) {
+	x, err := e.current()
+	if err != nil {
+		return nil, err
+	}
+	return x.Downloads(ctx, req)
+}
+func (e *tabBrowserExecutor) PreviewFile(ctx context.Context, req browser.FilePreviewRequest) (browser.Tab, error) {
+	x, err := e.current()
+	if err != nil {
+		return browser.Tab{}, err
+	}
+	return x.PreviewFile(ctx, req)
 }
 
 func (a *App) revokeBrowserExecutor(exec *hostBrowserExecutor) {
@@ -120,6 +285,9 @@ func (a *App) revokeBrowserExecutor(exec *hostBrowserExecutor) {
 	a.goSafe("revokeBrowserGrant", func() {
 		exec.grantMu.Lock()
 		defer exec.grantMu.Unlock()
+		if !exec.granted.Load() {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), rpcHostWindowTimeout)
 		defer cancel()
 		_ = exec.host.Request(ctx, "host/browser.revoke", map[string]string{"grantId": exec.grantID}, nil)
@@ -258,8 +426,41 @@ func (e *hostBrowserExecutor) Navigate(ctx context.Context, req browser.Navigate
 	return out.tab(), err
 }
 
+// navigateFilePreview is renderer-only plumbing for an explicit refresh. The
+// host still verifies task and session ownership, but does not require agent
+// mode, so refreshing a user-taken-over page does not hand control back.
+func (e *hostBrowserExecutor) navigateFilePreview(ctx context.Context, req browser.NavigateRequest) (browser.Tab, error) {
+	var out hostBrowserTab
+	err := e.write(ctx, req.OperationID, "navigate", req.TabID, req, "host/browser.tabs.navigate", map[string]any{
+		"tabId": req.TabID, "url": req.URL, "action": req.Action, "allowHuman": true,
+	}, &out)
+	return out.tab(), err
+}
+
 func (e *hostBrowserExecutor) Close(ctx context.Context, req browser.CloseRequest) error {
-	return e.write(ctx, req.OperationID, "close", req.TabID, req, "host/browser.tabs.close", map[string]any{"tabId": req.TabID}, nil)
+	err := e.write(ctx, req.OperationID, "close", req.TabID, req, "host/browser.tabs.close", map[string]any{"tabId": req.TabID}, nil)
+	if err == nil {
+		e.app.releaseFileBrowserPreviewTab(req.TabID)
+	}
+	return err
+}
+
+func (e *hostBrowserExecutor) PreviewFile(ctx context.Context, req browser.FilePreviewRequest) (browser.Tab, error) {
+	_, generation, err := e.app.fileBrowserPreviewTab(e.tabID, 0)
+	if err != nil {
+		return browser.Tab{}, err
+	}
+	result, err := e.app.openFileBrowserPreview(ctx, e.tabID, FileBrowserPreviewRequest{
+		Source: req.Source, Path: req.Path, ToolCallID: req.ToolCallID, OperationID: req.OperationID,
+		ExpectedSessionGeneration: generation,
+	}, e)
+	if err != nil {
+		return browser.Tab{}, err
+	}
+	if result.Error != "" {
+		return browser.Tab{}, errors.New(result.Error)
+	}
+	return browser.Tab{ID: result.TabID, URL: result.URL, Loading: result.Status == "loading"}, nil
 }
 
 // Every browser write uses the same durable reservation, including history

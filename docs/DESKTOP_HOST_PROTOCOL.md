@@ -122,6 +122,14 @@ fallback → exit). A shutdown RPC timeout is an unknown result: the shell queri
 stdin EOF enters the same coordinator with reason `connection_lost`; it does
 not create a second cleanup flow after a completed shutdown.
 
+The shell publishes a `stopping` service phase before the shutdown RPC. During
+that phase readiness is false and new business calls are rejected, while the
+shutdown and shutdown-status requests retain the existing service session.
+Clean exit removes the current temporary file under
+`diagnostics/lifecycle`; an empty lifecycle directory after exit is expected.
+Rotating `logs/shell.log` is the durable post-exit record. See
+[Windows close and transcript diagnostics validation](WINDOWS_CLOSE_TRANSCRIPT_VALIDATION.md).
+
 ## Business commands
 
 ```jsonc

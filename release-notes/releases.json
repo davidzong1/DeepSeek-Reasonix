@@ -2,6 +2,606 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.38.11",
+      "date": "2026-09-20",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Desktop 1.38.11: Session reliability, Windows fixes, and image attachments",
+        "zh": "桌面版 1.38.11：会话可靠性、Windows 修复与图片附件"
+      },
+      "summary": {
+        "en": "This release improves session migration, takeover, and export reliability, fixes Windows credential and shell issues, and repairs image attachment handling across submission, history, and export.",
+        "zh": "此版本提升了会话迁移、接管与导出的可靠性，修复了 Windows 凭据与 Shell 问题，并完善图片附件在提交、历史记录与导出中的处理。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli",
+        "site"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Historical Session Migration on Demand",
+            "zh": "历史会话按需迁移"
+          },
+          "body": {
+            "en": "Learn how historical sessions are migrated on demand and how to manage them.",
+            "zh": "了解历史会话如何按需迁移以及如何管理它们。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/HISTORICAL_SESSION_MIGRATION_ON_DEMAND.md"
+        },
+        {
+          "title": {
+            "en": "Remote Sessions",
+            "zh": "远程会话"
+          },
+          "body": {
+            "en": "Understand cross-client session takeover and remote session management.",
+            "zh": "了解跨端会话接管与远程会话管理。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/REMOTE_SESSIONS.md"
+        },
+        {
+          "title": {
+            "en": "Session Draft Lifecycle",
+            "zh": "会话草稿生命周期"
+          },
+          "body": {
+            "en": "Details on durable local drafts and their lifecycle.",
+            "zh": "关于持久化本地草稿及其生命周期的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/SESSION_DRAFT_LIFECYCLE.md"
+        },
+        {
+          "title": {
+            "en": "Session Export",
+            "zh": "会话导出"
+          },
+          "body": {
+            "en": "How fixed-snapshot session exports work.",
+            "zh": "固定快照会话导出的工作原理。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/SESSION_EXPORT.md"
+        },
+        {
+          "title": {
+            "en": "Windows Sandbox",
+            "zh": "Windows 沙箱"
+          },
+          "body": {
+            "en": "Windows sandbox retirement and tool-layer boundaries.",
+            "zh": "Windows 沙箱退役与工具层边界。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/WINDOWS_SANDBOX.md"
+        },
+        {
+          "title": {
+            "en": "Attachment Repair",
+            "zh": "附件修复"
+          },
+          "body": {
+            "en": "Image attachment admission, persistence, and export.",
+            "zh": "图片附件的接纳、持久化与导出。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/ec82bb3251550b03b43b83418a716f73fe758ffd/docs/ATTACHMENT_REPAIR_10457.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Historical sessions migrate on demand",
+            "zh": "历史会话按需迁移"
+          },
+          "body": {
+            "en": "Startup no longer replays historical imports. Sessions appear in the sidebar and migrate when opened, with reliable identity and ownership.",
+            "zh": "启动时不再重放历史导入。会话显示在侧边栏中，打开时进行迁移，身份与所有权可靠。"
+          },
+          "refs": [
+            10566
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Cross-client session takeover",
+            "zh": "跨端会话接管"
+          },
+          "body": {
+            "en": "Take over sessions between desktop and CLI with handoff, reclaim, and mirroring. CLI stays alive after desktop reclaims.",
+            "zh": "在桌面端与 CLI 之间通过交接、回收与镜像接管会话。桌面端回收后 CLI 保持存活。"
+          },
+          "refs": [
+            10320
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Windows credential self-lockout resolved",
+            "zh": "Windows 凭据自锁问题已解决"
+          },
+          "body": {
+            "en": "Credential saves no longer depend on ACL repair. The retired sandbox backend is removed, and credential files are protected from self-lockout.",
+            "zh": "凭据保存不再依赖 ACL 修复。已移除退役的沙箱后端，凭据文件受到保护，避免自锁。"
+          },
+          "refs": [
+            10562,
+            10561,
+            10559,
+            10466
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Image attachments in sessions",
+            "zh": "会话中的图片附件"
+          },
+          "body": {
+            "en": "Images are admitted at the session boundary, persisted in drafts, shown in history, and included in exports.",
+            "zh": "图片在会话边界被接纳，持久化在草稿中，显示在历史记录中，并包含在导出中。"
+          },
+          "refs": [
+            10545,
+            10546,
+            10547,
+            10548
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Session export captures complete history",
+            "zh": "会话导出捕获完整历史"
+          },
+          "body": {
+            "en": "Exports now use a fixed authoritative snapshot, so long conversations include all messages and tool results.",
+            "zh": "导出现在使用固定的权威快照，因此长对话包含所有消息和工具结果。"
+          },
+          "refs": [
+            10471
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Approval confirmation no longer freezes",
+            "zh": "授权确认不再卡死"
+          },
+          "body": {
+            "en": "Initial approvals and Stop actions work reliably, with proper cancellation and outcome propagation.",
+            "zh": "初始授权与停止操作可靠工作，具有正确的取消与结果传播。"
+          },
+          "refs": [
+            10552
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Durable local drafts",
+              "zh": "持久化本地草稿"
+            },
+            "body": {
+              "en": "Drafts are saved per workspace without creating sessions, and legacy empty sessions are cleaned up.",
+              "zh": "草稿按工作区保存，无需创建会话，并清理历史空会话。"
+            },
+            "refs": [
+              10469
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Model-scoped reasoning capabilities",
+              "zh": "模型级思考能力"
+            },
+            "body": {
+              "en": "Reasoning settings are resolved per model, fixing legacy connections and session effort binding.",
+              "zh": "思考设置按模型解析，修复旧连接与会话思考强度的绑定。"
+            },
+            "refs": [
+              10500
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session title consistency",
+              "zh": "会话标题一致性"
+            },
+            "body": {
+              "en": "AI renames now update all surfaces, and untitled sessions show their first user turn.",
+              "zh": "AI 重命名现在更新所有界面，未命名会话显示其首条用户消息。"
+            },
+            "refs": [
+              10558
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "New-session draft landing",
+              "zh": "新会话草稿页"
+            },
+            "body": {
+              "en": "Healthy drafts show the welcome composer, and formal sessions are created only after first message.",
+              "zh": "健康草稿显示欢迎输入框，正式会话仅在首条消息后创建。"
+            },
+            "refs": [
+              10551
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Draft model and title alignment",
+              "zh": "草稿模型与标题对齐"
+            },
+            "body": {
+              "en": "New-session drafts follow the live default model and avoid internal route titles.",
+              "zh": "新会话草稿遵循实时默认模型，避免内部路由标题。"
+            },
+            "refs": [
+              10572
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session state ownership",
+              "zh": "会话状态归属"
+            },
+            "body": {
+              "en": "Interactive cards are bound to their originating request, preventing cross-session leaks.",
+              "zh": "交互卡片绑定到其原始请求，防止跨会话泄漏。"
+            },
+            "refs": [
+              10507
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Windows workspace ownership",
+              "zh": "Windows 工作区归属"
+            },
+            "body": {
+              "en": "Duplicate workspace owners are repaired, and navigation is cancellable during shutdown.",
+              "zh": "修复重复工作区所有者，导航在关闭期间可取消。"
+            },
+            "refs": [
+              10554,
+              10570
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Filesystem identity unification",
+              "zh": "文件系统身份统一"
+            },
+            "body": {
+              "en": "Path identity and locks are unified across versions, fixing Windows casing issues.",
+              "zh": "路径身份与锁跨版本统一，修复 Windows 大小写问题。"
+            },
+            "refs": [
+              10518
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Windows shell execution",
+              "zh": "Windows Shell 执行"
+            },
+            "body": {
+              "en": "Shell commands use PowerShell with reliable working-directory and process handling.",
+              "zh": "Shell 命令使用 PowerShell，工作目录与进程处理更加可靠。"
+            },
+            "refs": [
+              10553
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session export identity",
+              "zh": "会话导出身份"
+            },
+            "body": {
+              "en": "Exports are pinned to the captured session identity, preventing conflicts.",
+              "zh": "导出固定到捕获的会话身份，防止冲突。"
+            },
+            "refs": [
+              10580
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Archived sessions stay archived",
+              "zh": "归档会话保持归档"
+            },
+            "body": {
+              "en": "Single-head historical sessions no longer reappear after archiving.",
+              "zh": "单头历史会话归档后不再重新出现。"
+            },
+            "refs": [
+              10490
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Saved tab reconciliation",
+              "zh": "保存会话恢复"
+            },
+            "body": {
+              "en": "Startup reconciles saved tabs without losing valid sessions or unknown fields.",
+              "zh": "启动时协调保存的标签页，不丢失有效会话或未知字段。"
+            },
+            "refs": [
+              10510
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Transcript snapshot identity",
+              "zh": "快照记录身份"
+            },
+            "body": {
+              "en": "Every transcript record gets a stable identity, fixing hydration failures.",
+              "zh": "每条记录获得稳定身份，修复水合失败。"
+            },
+            "refs": [
+              10550
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Shutdown and diagnostics",
+              "zh": "退出与诊断"
+            },
+            "body": {
+              "en": "Quit waits for session persistence, and crash diagnostics are improved.",
+              "zh": "退出等待会话持久化，崩溃诊断得到改进。"
+            },
+            "refs": [
+              10520
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "AI session title budget",
+              "zh": "AI 会话标题预算"
+            },
+            "body": {
+              "en": "The model round trip owns its full timeout, avoiding premature failures.",
+              "zh": "模型调用拥有完整超时，避免过早失败。"
+            },
+            "refs": [
+              10575
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Blank session after archive",
+              "zh": "归档后空白会话"
+            },
+            "body": {
+              "en": "Archiving the last session no longer creates a blank replacement.",
+              "zh": "归档最后一个会话不再创建空白替代。"
+            },
+            "refs": [
+              10560
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Transcript initialization crash",
+              "zh": "Transcript 初始化崩溃"
+            },
+            "body": {
+              "en": "Malformed legacy baselines no longer crash startup; sessions remain repairable.",
+              "zh": "格式错误的旧基线不再导致启动崩溃；会话保持可修复。"
+            },
+            "refs": [
+              10501
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session-id route isolation",
+              "zh": "Session-id 路由隔离"
+            },
+            "body": {
+              "en": "Canonical session routes are separated from legacy file paths, preventing metadata corruption.",
+              "zh": "规范会话路由与旧文件路径分离，防止元数据损坏。"
+            },
+            "refs": [
+              10549
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Windows credential ACL tests",
+              "zh": "Windows 凭据 ACL 测试"
+            },
+            "body": {
+              "en": "Test isolation prevents false failures in credential repair.",
+              "zh": "测试隔离防止凭据修复中的误报。"
+            },
+            "refs": [
+              10514,
+              10517
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "ACP teardown grace",
+              "zh": "ACP 销毁等待"
+            },
+            "body": {
+              "en": "Teardown tests are deterministic, avoiding timing flakiness.",
+              "zh": "销毁测试具有确定性，避免计时波动。"
+            },
+            "refs": [
+              10519
+            ]
+          },
+          {
+            "targets": [
+              "site"
+            ],
+            "title": {
+              "en": "Website follows current stable release",
+              "zh": "官网跟随当前正式版"
+            },
+            "body": {
+              "en": "The download pane now resolves the latest stable version instead of a stale pin.",
+              "zh": "下载面板现在解析最新正式版，而非过时的固定版本。"
+            },
+            "refs": [
+              10487
+            ]
+          }
+        ]
+      },
+      "upgrade": [
+        {
+          "level": "info",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Windows sandbox retired",
+            "zh": "Windows 沙箱已退役"
+          },
+          "body": {
+            "en": "The OS-level sandbox is no longer enforced. Shell commands run as the current user, with tool-layer boundaries still active.",
+            "zh": "操作系统级沙箱不再强制执行。Shell 命令以当前用户身份运行，工具层边界仍然有效。"
+          },
+          "refs": [
+            10559,
+            10561
+          ]
+        },
+        {
+          "level": "info",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Historical sessions migrate on first open",
+            "zh": "历史会话在首次打开时迁移"
+          },
+          "body": {
+            "en": "Startup is faster; historical sessions appear in the sidebar and migrate when you open them.",
+            "zh": "启动更快；历史会话显示在侧边栏中，打开时进行迁移。"
+          },
+          "refs": [
+            10566
+          ]
+        }
+      ],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "XTLine"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.38.11",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.38.10...desktop-v1.38.11",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.38.11",
+      "baseVersion": "1.38.11",
+      "status": "reviewed",
+      "previousRelease": "1.38.10",
+      "builds": {
+        "cli": "v1.38.11",
+        "desktop": "v1.38.11",
+        "npm": "1.38.11"
+      }
+    },
+    {
       "version": "1.38.10",
       "date": "2026-09-17",
       "channel": "stable",

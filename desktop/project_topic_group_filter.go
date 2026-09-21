@@ -87,6 +87,7 @@ func projectTopicCursorBinding(req ProjectTopicPageRequest, filter, groupID stri
 		strings.TrimSpace(groupID),
 		membershipRevision,
 		req.ExcludePinned,
+		req.pinnedOnly,
 	})
 	digest := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", digest[:])

@@ -393,11 +393,13 @@ func startServer(t *testing.T, factory Factory) (*rpcClient, func()) {
 		close(done)
 	}()
 	client := newRPCClient(inW, outR)
-	return client, func() {
+	stop := sync.OnceFunc(func() {
 		_ = inW.Close()
 		<-done
 		_ = outW.Close()
-	}
+	})
+	t.Cleanup(stop)
+	return client, stop
 }
 
 type orderedRPCClient struct {
@@ -452,11 +454,13 @@ func startOrderedServer(t *testing.T, factory Factory) (*orderedRPCClient, func(
 		close(done)
 	}()
 	client := newOrderedRPCClient(inW, outR)
-	return client, func() {
+	stop := sync.OnceFunc(func() {
 		_ = inW.Close()
 		<-done
 		_ = outW.Close()
-	}
+	})
+	t.Cleanup(stop)
+	return client, stop
 }
 
 func requireResponseFrame(t *testing.T, f frame, id int) {
@@ -495,9 +499,18 @@ func requireAvailableCommandsFrame(t *testing.T, f frame) {
 // arrives, then sweeps any notifications still buffered.
 func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, frame) {
 	t.Helper()
+	return drainPromptWithin(t, c, promptCh, 0)
+}
+
+func drainPromptWithin(t *testing.T, c *rpcClient, promptCh chan frame, idleTimeout time.Duration) ([]frame, frame) {
+	t.Helper()
 	var notifs []frame
 	var resp frame
 	for {
+		var idle <-chan time.Time
+		if idleTimeout > 0 {
+			idle = time.After(idleTimeout)
+		}
 		select {
 		case f := <-c.notifs:
 			notifs = append(notifs, f)
@@ -510,11 +523,10 @@ func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, fram
 					return notifs, resp
 				}
 			}
-		// A full prompt crosses the ACP server, controller, agent, and transcript
-		// persistence path. Loaded Windows release runners can leave that
-		// asynchronous pipeline idle for more than two seconds, so keep a
-		// generous but bounded responsiveness limit for the end-to-end helper.
-		case <-time.After(5 * time.Second):
+		// Persistence semantics use the suite deadline; latency tests opt in.
+		case <-t.Context().Done():
+			t.Fatal("session/prompt: test canceled")
+		case <-idle:
 			t.Fatal("session/prompt: timed out")
 		}
 	}

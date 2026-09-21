@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"unicode/utf8"
 
@@ -64,7 +65,13 @@ func byteOffsetBeforeLastRunes(content string, count int) int {
 // pruneToolResultsToProjectionLocked installs a durable, model-visible prune
 // projection. The caller owns compactionRunMu for the whole maintenance run;
 // canonical storage, including RawContent, is never modified.
-func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error) {
+func (a *Agent) pruneToolResultsToProjectionLocked(ctx context.Context, trigger string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	canonical, transcriptVersion := a.sess.conversation.snapshotMessagesVersion()
 	a.sess.compactionMu.Lock()
 	stateSnapshot := a.sess.compactionState
@@ -73,6 +80,9 @@ func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error)
 	projected := append([]provider.Message(nil), visible...)
 	affected := 0
 	for i := range projected {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if projected[i].Role != provider.RoleTool {
 			continue
 		}
@@ -90,7 +100,7 @@ func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error)
 	if affected == 0 {
 		return false, nil
 	}
-	return a.installMaintenanceProjection(maintenanceInstall{
+	return a.installMaintenanceProjection(ctx, maintenanceInstall{
 		trigger: trigger, action: "prune", state: stateSnapshot,
 		canonical: canonical, transcriptVersion: transcriptVersion,
 		visible: visible, projected: projected, affected: affected,

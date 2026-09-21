@@ -119,7 +119,11 @@ export class ServiceSupervisor {
   }
 
   get ready(): boolean {
-    return this.state.phase === "ready" && this.session?.alive === true;
+    return !this.stopping && this.state.phase === "ready" && this.session?.alive === true;
+  }
+
+  get shutdownRequestIdentity(): string {
+    return this.shutdownRequestId;
   }
 
   start(): Promise<HelloResult> {
@@ -161,12 +165,22 @@ export class ServiceSupervisor {
     reason: "user_quit" | "update_restart" | "system_signal" = "user_quit",
     onProgress?: (phase: ShutdownPhase) => void,
   ): Promise<void> {
-    this.stopping = true;
-    this.revision++;
+    if (!this.stopping) {
+      this.stopping = true;
+      this.revision++;
+      this.setState({ phase: "stopping", generation: this.session?.generation ?? "" });
+    }
     if (!this.shutdownPending) {
-      this.shutdownPending = this.finishShutdown(reason, onProgress).finally(() => {
-        this.shutdownPending = null;
-      });
+      this.shutdownPending = this.finishShutdown(reason, onProgress)
+        .catch((error) => {
+          if (this.state.phase !== "exited") {
+            this.setState({ phase: "stopping", generation: this.session?.generation ?? "", error: errorText(error) });
+          }
+          throw error;
+        })
+        .finally(() => {
+          this.shutdownPending = null;
+        });
     }
     return this.shutdownPending;
   }
@@ -242,7 +256,8 @@ export class ServiceSupervisor {
 
   private live(): Session {
     const session = this.session;
-    if (this.stopping || !session?.alive || !session.ready) throw new Error(`desktop service is not running (${this.state.phase})`);
+    if (this.stopping) throw new Error("desktop service is shutting down");
+    if (!session?.alive || !session.ready) throw new Error(`desktop service is not running (${this.state.phase})`);
     return session;
   }
 

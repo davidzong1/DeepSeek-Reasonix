@@ -171,8 +171,8 @@ func validateChatReferencePath(workspaceRoot, resolved, display string) (string,
 // chatReferenceActions lists what the host will actually perform for this file.
 // SVG and HTML are text formats: they preview as images or pages but must still
 // offer the source view, which is the one affordance an extension guess gets
-// wrong. A reference has no built-in browser preview of its own, so no browser
-// action is advertised.
+// wrong. Local media references use the same revalidated browser preview path
+// as workspace and presented files.
 func chatReferenceActions(kind, mime string, local bool) []string {
 	actions := []string{"preview", "reveal-tree", "copy-path", "save-copy"}
 	if kind == "" || mime == "image/svg+xml" || strings.HasPrefix(mime, "text/html") {
@@ -180,6 +180,9 @@ func chatReferenceActions(kind, mime string, local bool) []string {
 	}
 	if local {
 		actions = append(actions, "open-native", "reveal-native")
+		if kind != "" {
+			actions = append(actions, "browser")
+		}
 	}
 	return actions
 }

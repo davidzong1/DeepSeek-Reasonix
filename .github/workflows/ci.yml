@@ -39,6 +39,7 @@ jobs:
       packaging: ${{ steps.filter.outputs.packaging }}
       site: ${{ steps.filter.outputs.site }}
       sdk: ${{ steps.filter.outputs.sdk }}
+      windows_builtin: ${{ steps.filter.outputs.windows_builtin }}
       release_control: ${{ steps.filter.outputs.release_control }}
       notes_only: ${{ steps.filter.outputs.notes_only }}
     steps:
@@ -114,7 +115,8 @@ jobs:
       # crashes Go test binaries mid-syscall (DEP fault at PC=0 in the Windows
       # syscall trampoline, e.g. golang/go#67139) and briefly keeps freshly
       # written test files open, causing flaky sharing violations. Exclude the
-      # ephemeral build/test locations; failures stay non-fatal warnings.
+      # ephemeral build/test locations; fail this lane when the prerequisite
+      # cannot be established so a DEP crash is never treated as product evidence.
       - name: Exclude build dirs from Defender scanning
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows'
         shell: pwsh
@@ -126,7 +128,7 @@ jobs:
               Add-MpPreference -ExclusionPath $p -ErrorAction Stop
               Write-Host "Defender exclusion added: $p"
             } catch {
-              Write-Host "::warning::Defender exclusion failed for ${p}: $($_.Exception.Message)"
+              throw "Defender exclusion failed for ${p}: $($_.Exception.Message)"
             }
           }
 
@@ -188,7 +190,10 @@ jobs:
           REASONIX_RELEASE_CACHE_GUARD: "1"
         run: node scripts/macos-go-tests.mjs darwin
 
-      # Agent, boot and control own isolated Windows runners on PRs and pushes.
+      # ACP, Agent, Bot, boot and control own isolated Windows runners on PRs
+      # and pushes. ACP and Bot previously competed in the residual -p=4 lane:
+      # that hid ACP event ordering behind scheduler delay and made native Bot
+      # crash evidence inseparable from other package processes.
       # The shared selector excludes them here, preserving platform smoke
       # coverage without competing durable-session I/O or duplicate execution.
       - name: test (Windows smoke)
@@ -202,15 +207,6 @@ jobs:
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
         timeout-minutes: 3
         run: go test -timeout=2m -run '^TestCredentialAccessRepairsLegacyCredentialDeny|^TestRepairLegacyCredentialDenyMatchesFileAcrossPathAliases$' ./internal/config ./internal/winaclresidue
-
-      # The general Windows PR smoke list intentionally omits internal/tool.
-      # Keep the session-temp portability contract covered without widening the
-      # leg to every tool test: two real PowerShell launches must share the
-      # injected TMPDIR/TMP/TEMP directory.
-      - name: test (Windows session temp)
-        if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
-        timeout-minutes: 3
-        run: go test -timeout=2m -run '^TestBashSharesSessionTempAcrossCalls$' ./internal/tool/builtin
 
       # The PR smoke selector omits session; exercise native rename, writer-lock
       # release, and interrupted purge recovery before accepting lifecycle fixes.
@@ -226,13 +222,15 @@ jobs:
         timeout-minutes: 5
         run: go test -timeout=2m -run '^TestRuntimeStateHTTP|^TestFileStoreSaveTaskWaitsForTransientSnapshotReader$' ./internal/serve ./internal/taskmonitor
 
-      # Shell execution contract: PowerShell identity, Chinese workspace paths,
-      # UTF-8 output, and ExitCode retention must gate PRs on native Windows.
-      # Keep this focused (not full ./internal/tool) so the smoke budget holds.
-      - name: test (Windows shell execution contract)
+      # Keep the platform contract in one selector with coverage assertions:
+      # primary shell registration, timeout/schema/session temp, unsupported OS
+      # sandbox behavior, ACP ordering, and Bot stop publication all gate PRs.
+      - name: test (Windows shell and lifecycle contract)
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
-        timeout-minutes: 5
-        run: go test -timeout=3m -run '^TestBashPowerShellExecuteDetailedContract$|^TestBashPowerShell51PreflightRejectsAndAndDetailed$|^TestBashPowerShellOutputIsUTF8$|^TestBashPowerShellSurfacesNonZeroExit$|^TestBashPowerShellRejectsChaining$' ./internal/tool/builtin
+        timeout-minutes: 10
+        env:
+          WINDOWS_BUILTIN_FULL: ${{ needs.changes.outputs.windows_builtin }}
+        run: node scripts/windows-pr-contract-tests.mjs
 
       - name: test (Windows persistent PowerShell 7 and 5.1)
         if: env.RUN_STEPS == 'true' && runner.os == 'Windows'
@@ -305,7 +303,8 @@ jobs:
       # crashes Go test binaries mid-syscall (DEP fault at PC=0 in the Windows
       # syscall trampoline, e.g. golang/go#67139) and briefly keeps freshly
       # written test files open, causing flaky sharing violations. Exclude the
-      # ephemeral build/test locations; failures stay non-fatal warnings.
+      # ephemeral build/test locations; fail this lane when the prerequisite
+      # cannot be established so a DEP crash is never treated as product evidence.
       - name: Exclude build dirs from Defender scanning
         shell: pwsh
         run: |
@@ -316,7 +315,7 @@ jobs:
               Add-MpPreference -ExclusionPath $p -ErrorAction Stop
               Write-Host "Defender exclusion added: $p"
             } catch {
-              Write-Host "::warning::Defender exclusion failed for ${p}: $($_.Exception.Message)"
+              throw "Defender exclusion failed for ${p}: $($_.Exception.Message)"
             }
           }
 
@@ -334,7 +333,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [agent, boot, serve, session, worktree]
+        group: [acp, agent, boot, bot, serve, session, worktree]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -345,11 +344,19 @@ jobs:
         with:
           node-version: "22"
 
+      # A hardware exception on a host whose CPU saves a large XSTATE (Intel
+      # AMX) can corrupt the Go heap (golang/go#81238). Record the processor on
+      # the same isolated runner so any remaining native crash is attributable.
+      - name: runner CPU
+        shell: pwsh
+        run: Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name
+
       # Defender real-time scanning on GitHub Windows runners intermittently
       # crashes Go test binaries mid-syscall (DEP fault at PC=0 in the Windows
       # syscall trampoline, e.g. golang/go#67139) and briefly keeps freshly
       # written test files open, causing flaky sharing violations. Exclude the
-      # ephemeral build/test locations; failures stay non-fatal warnings.
+      # ephemeral build/test locations; fail this lane when the prerequisite
+      # cannot be established so a DEP crash is never treated as product evidence.
       - name: Exclude build dirs from Defender scanning
         shell: pwsh
         run: |
@@ -360,7 +367,7 @@ jobs:
               Add-MpPreference -ExclusionPath $p -ErrorAction Stop
               Write-Host "Defender exclusion added: $p"
             } catch {
-              Write-Host "::warning::Defender exclusion failed for ${p}: $($_.Exception.Message)"
+              throw "Defender exclusion failed for ${p}: $($_.Exception.Message)"
             }
           }
       - name: test
@@ -410,7 +417,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           REASONIX_RELEASE_CACHE_GUARD: "1"
-        run: go test -race ./internal/agent/... ./internal/plugin/... ./internal/jobs/... ./internal/proc/... ./internal/sandbox/... ./internal/filelock/... ./internal/eventwire/... ./internal/remote/... ./internal/extension/... ./internal/boot/... ./internal/control/... ./internal/tool/...
+        run: go test -race ./internal/agent/... ./internal/plugin/... ./internal/jobs/... ./internal/proc/... ./internal/sandbox/... ./internal/filelock/... ./internal/eventwire/... ./internal/remote/... ./internal/extension/... ./internal/boot/... ./internal/control/... ./internal/tool/... ./internal/bot/...
 
       - name: test -race (full)
         if: github.event_name != 'pull_request'
@@ -512,10 +519,12 @@ jobs:
   # desktop-windows-go merged. PACKAGE_REQUIRED mirrors desktop-windows-package's
   # own `if:` verbatim rather than testing for `push`, so workflow_dispatch does
   # not expect a skip from a job that runs.
+  # Status functions bypass implicit success(): still aggregate failed children,
+  # but release the concurrency slot when a newer head cancels this whole run.
   desktop:
     needs: [changes, desktop-prepare, desktop-go, desktop-go-race, desktop-frontend, desktop-browser,
             desktop-macos, desktop-windows, desktop-windows-go, desktop-windows-package]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify desktop validation jobs
@@ -683,7 +692,7 @@ jobs:
 
   desktop-browser:
     needs: [changes, desktop-prepare, desktop-browser-group]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify desktop browser groups
@@ -1063,6 +1072,7 @@ jobs:
         env:
           DESKTOP_BUILD_SKIP_DMG: "1"
           REASONIX_PACKAGE_REUSE_FRONTEND: "1"
+          REASONIX_FRONTEND_PRODUCER_ATTEMPT: ${{ needs.desktop-prepare.outputs.producer_attempt }}
         run: |
           REASONIX_FRONTEND_PNPM_VERSION="$(pnpm --version)"
           export REASONIX_FRONTEND_PNPM_VERSION
@@ -1167,6 +1177,7 @@ jobs:
         timeout-minutes: 15
         env:
           REASONIX_PACKAGE_REUSE_FRONTEND: "1"
+          REASONIX_FRONTEND_PRODUCER_ATTEMPT: ${{ needs.desktop-prepare.outputs.producer_attempt }}
         run: |
           REASONIX_FRONTEND_PNPM_VERSION="$(pnpm --version)"
           export REASONIX_FRONTEND_PNPM_VERSION
@@ -1302,7 +1313,7 @@ jobs:
 
   desktop-windows-go:
     needs: [changes, desktop-prepare, desktop-windows-go-group]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify Windows desktop Go groups
@@ -1394,6 +1405,7 @@ jobs:
         timeout-minutes: 20
         env:
           REASONIX_PACKAGE_REUSE_FRONTEND: "1"
+          REASONIX_FRONTEND_PRODUCER_ATTEMPT: ${{ needs.desktop-prepare.outputs.producer_attempt }}
         run: |
           REASONIX_FRONTEND_PNPM_VERSION="$(pnpm --version)"
           export REASONIX_FRONTEND_PNPM_VERSION
@@ -1430,7 +1442,7 @@ jobs:
 
   ci-metrics:
     needs: [desktop, desktop-macos, desktop-windows, desktop-windows-go, desktop-windows-package]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1555,6 +1567,7 @@ jobs:
             .github/workflows/release-candidate-verify.yml \
             .github/workflows/release-promote.yml \
             .github/workflows/release-verify.yml \
+            .github/workflows/release-site-recovery.yml \
             .github/workflows/release.yml \
             .github/workflows/release-npm.yml \
             .github/workflows/release-desktop.yml \
@@ -1576,6 +1589,7 @@ jobs:
           bash scripts/verify-release-push-ci.test.sh
           bash scripts/release-stable.test.sh
           bash scripts/release-candidate-tags.test.sh
+          node --test scripts/verify-release-tag-identity.test.mjs
           bash scripts/verify-release-authorization.test.sh
           bash scripts/release-workflows.test.sh
           node scripts/check-single-release-public-contract.mjs
@@ -1589,7 +1603,7 @@ jobs:
   # `success` even when its steps fail and the assertion would be a tautology.
   root:
     needs: [changes, windows-control, windows-isolated, sdk, site, coverage]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify root validation jobs
@@ -1616,7 +1630,7 @@ jobs:
   # the branch gate.
   lint:
     needs: [changes, lint-code, release-control, desktop-prepare, desktop-frontend]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Verify lint and frontend validation jobs

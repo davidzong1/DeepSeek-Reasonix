@@ -25,6 +25,16 @@ function compareStable(a, b) {
   return 0;
 }
 
+export function ownsPublicSite(version, operation, manifest) {
+  if (!["publish", "recover"].includes(operation)) throw new Error("invalid publication operation");
+  const current = manifest?.version;
+  if (typeof current !== "string" || !current.startsWith("v")) throw new Error("missing or invalid Stable manifest version");
+  const comparison = compareStable(current.slice(1), version);
+  if (comparison === 0) return true;
+  if (comparison > 0 && operation === "recover") return false;
+  throw new Error(`Stable manifest serves ${current}, want v${version}`);
+}
+
 function requireIdentity(version, sourceSHA, operation) {
   if (!VERSION_RE.test(version)) throw new Error("invalid publication ledger version");
   if (!SHA_RE.test(sourceSHA)) throw new Error("invalid publication ledger source SHA");
@@ -126,7 +136,10 @@ function read(file) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const [command, ...args] = process.argv.slice(2);
-  if (command === "core" && args.length === 7) {
+  if (command === "site-owner" && args.length === 3) {
+    const [version, operation, manifestPath] = args;
+    console.log(ownsPublicSite(version, operation, read(manifestPath)));
+  } else if (command === "core" && args.length === 7) {
     const [version, sourceSHA, operation, cliPath, desktopPath, npmPath, output] = args;
     writeFileSync(output, `${JSON.stringify(createCoreLedger({ version, sourceSHA, operation, cliRelease: read(cliPath), desktopRelease: read(desktopPath), npmPackages: read(npmPath) }), null, 2)}\n`);
   } else if (command === "site" && args.length === 5) {

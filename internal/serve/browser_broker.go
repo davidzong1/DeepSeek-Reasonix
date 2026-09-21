@@ -36,6 +36,7 @@ const (
 	capabilityTranscriptOutline       = servecontract.TranscriptOutlineV1
 	capabilityForkTargetsV1           = servecontract.SessionForkTargetsV1
 	capabilityAttachmentsV1           = "attachments-v1"
+	capabilityMaintenanceV1           = "maintenance-v1"
 )
 
 // BrowserBroker is Serve's end of the desktop browser broker: one HTTP
@@ -241,6 +242,7 @@ func (s *Server) capabilities() []string {
 		capabilityPresentFiles,
 		capabilityExecutionV2,
 		capabilitySessionHistory,
+		capabilityMaintenanceV1,
 	}
 	if identity, ok := s.ctl().(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
 		if _, ok := s.ctl().(*control.Controller); ok {

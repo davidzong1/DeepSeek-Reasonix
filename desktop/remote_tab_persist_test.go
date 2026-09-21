@@ -239,6 +239,8 @@ func TestSetActiveRemoteTabPersistsAndUnknownKeepsSelection(t *testing.T) {
 	if err := a.SetActiveTab("remote-1"); err != nil {
 		t.Fatal(err)
 	}
+	// Navigation layout is coalesced; the shutdown barrier owns durability.
+	a.flushTabLayoutWrites()
 	if got := readPersistedTabsFile(t).ActiveTab; got != "remote-1" {
 		t.Fatalf("persisted active tab = %q, want remote-1", got)
 	}

@@ -4566,6 +4566,21 @@
       "inputs": []
     }
   },
+  "OpenFileBrowserPreviewForTab": {
+    "domain": "desktop/file_browser_preview.go",
+    "owner": "App.OpenFileBrowserPreviewForTab",
+    "sources": [
+      "desktop/file_browser_preview.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.OpenFileBrowserPreviewForTab",
+      "inputs": [
+        "tabID",
+        "request"
+      ]
+    }
+  },
   "OpenGlobalTab": {
     "domain": "desktop/tabs.go",
     "owner": "App.OpenGlobalTab",

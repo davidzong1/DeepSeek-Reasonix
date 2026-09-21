@@ -16,6 +16,7 @@ export interface HostBrowserTab {
   title: string;
   loading: boolean;
   temporary: boolean;
+  error?: string;
 }
 
 export interface BrowserHostDeps {
@@ -31,7 +32,7 @@ export interface BrowserHostDeps {
 
 export function hostTab(surfaces: BrowserSurfaceManager, tab: BrowserTab): HostBrowserTab {
   const view = surfaces.view(tab);
-  return { id: view.id, url: view.url, title: view.title, loading: view.loading, temporary: view.temporary };
+  return { id: view.id, url: view.url, title: view.title, loading: view.loading, temporary: view.temporary, error: view.error?.description };
 }
 
 // Every call after grant re-verifies the grant and that the browser tab
@@ -41,7 +42,7 @@ export function buildBrowserHostCalls(deps: BrowserHostDeps): HostCallTable {
   const { surfaces, grants, documents, downloads } = deps;
   const boundTab = (params: Params): BrowserTab => {
     const tab = surfaces.get(str(params, "tabId"));
-    grants.verifyTab(str(params, "grantId"), tab?.taskId);
+    grants.verifyTab(str(params, "grantId"), tab?.taskId, tab?.sessionId);
     return tab as BrowserTab;
   };
   const agentTab = (params: Params): BrowserTab => {
@@ -63,20 +64,22 @@ export function buildBrowserHostCalls(deps: BrowserHostDeps): HostCallTable {
     },
     "host/browser.revoke": (params) => {
       const grant = grants.revoke(str(params, "grantId"));
-      if (grant) for (const tab of surfaces.tabsForTask(grant.taskId)) documents.invalidateTab(tab.id);
+      if (grant) for (const tab of surfaces.tabsForSession(grant.taskId, grant.sessionId)) documents.invalidateTab(tab.id);
       return {};
     },
     "host/browser.tabs.list": (params) => {
       const grant = grants.verify(str(params, "grantId"));
-      return { tabs: surfaces.tabsForTask(grant.taskId).map((tab) => hostTab(surfaces, tab)) };
+      return { tabs: surfaces.tabsForSession(grant.taskId, grant.sessionId).map((tab) => hostTab(surfaces, tab)) };
     },
     "host/browser.tabs.open": async (params) => {
       const grant = grants.verify(str(params, "grantId"));
-      const tab = await surfaces.open(str(params, "url"), { taskId: grant.taskId, temporary: bool(params, "temporary") });
+      const tab = await surfaces.open(str(params, "url"), { taskId: grant.taskId, sessionId: grant.sessionId, temporary: bool(params, "temporary") });
       return hostTab(surfaces, tab);
     },
     "host/browser.tabs.navigate": async (params) => {
-      const tab = agentTab(params);
+      // allowHuman is emitted only by the renderer's explicit file-refresh
+      // RPC. Agent browser tools never set it, so takeover still blocks them.
+      const tab = bool(params, "allowHuman") ? boundTab(params) : agentTab(params);
       const action = str(params, "action");
       const target: BrowserNavigateTarget = action === "back" || action === "forward" || action === "reload" ? { action } : { url: str(params, "url") };
       await surfaces.navigate(tab.id, target);

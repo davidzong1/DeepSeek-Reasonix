@@ -24,6 +24,14 @@ func (c *Controller) CancelWithInboxItems(ids []string, source string) error {
 // A consumed/running item is intentionally absent from the receipt.
 func (c *Controller) CancelWithInboxItemsResult(ids []string, source string) (InboxCancelResult, error) {
 	result := InboxCancelResult{DiscardedItemIDs: []string{}}
+	// Stopping maintenance never withdraws queued messages. Those messages were
+	// not part of the summary input and remain durable for post-maintenance
+	// dispatch.
+	if operationID, present, _ := c.signalMaintenanceCancel(); present {
+		c.recordLifecycle("cancel_requested", source, operationID, 0, "")
+		c.recordLifecycle("cancel_acknowledged", source, operationID, 0, "")
+		return result, nil
+	}
 	c.inbox.admissionMu.Lock()
 	defer c.inbox.admissionMu.Unlock()
 	// Capture and signal the foreground owner before touching the inbox store.

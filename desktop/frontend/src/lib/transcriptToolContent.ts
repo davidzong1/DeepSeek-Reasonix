@@ -1,26 +1,32 @@
 import type { Item } from "./useController";
 import type { HistoryContentRef } from "./types";
 import type { TranscriptBackend, SessionTranscript } from "./transcriptStoreTypes";
-import { itemIdForToolCall } from "./transcriptRecordProjection";
+import { itemIdForToolCall, toolCallKey } from "./transcriptRecordProjection";
 import { fileDiffFromWire } from "./tools";
 type ToolContentOwner = { sessions: Map<string, SessionTranscript>; backend: TranscriptBackend; requestFullContent(tabId: string, entryId: string, field: string): Promise<string | undefined> };
 export async function readTranscriptToolContent(owner: ToolContentOwner, tabId: string, item: Extract<Item, { kind: "tool" }>, value: Record<string, unknown>): Promise<string | undefined> {
     const session = [...owner.sessions.values()].find(session => session.tabId === tabId &&
-      [...session.contributions.values()].some(items => items.some(candidate => candidate.id === item.id)));
+      (item.sourceEntryId ? session.byId.has(item.sourceEntryId)
+        : [...session.contributions.values()].some(items => items.some(candidate => candidate.id === item.id))));
     if (!session) return undefined;
-    const entryId = [...session.contributions].find(([, items]) => items.some(candidate => candidate.id === item.id))?.[0];
+    const entryId = item.sourceEntryId
+      ?? [...session.contributions].find(([, items]) => items.some(candidate => candidate.id === item.id))?.[0];
     const record = entryId && session.byId.get(entryId);
     if (!record) return undefined;
     let calls = record.message.toolCalls ?? [];
-    let callIndex = calls.findIndex((call, index) => itemIdForToolCall(call.id, `he:${record.entryId}:tc${index}`) === item.id);
+    const matchesItem = (call: (typeof calls)[number], index: number) =>
+      session.toolCallDisplayIds.get(toolCallKey(record.entryId, index))
+        === item.id || itemIdForToolCall(call.id, `he:${record.entryId}:tc${index}`) === item.id;
+    let callIndex = calls.findIndex(matchesItem);
     let call = calls[callIndex];
-    const resultId = session.matchTables.get(record.entryId)?.get(callIndex);
+    let resultId = session.matchTables.get(record.entryId)?.get(callIndex);
     let result = resultId ? session.byId.get(resultId) : record.message.role === "tool" ? record : undefined;
     if (record.refs.some(ref => ref.field === "canonicalMessage")) {
       await owner.requestFullContent(tabId, record.entryId, "content");
       calls = record.message.toolCalls ?? [];
-      callIndex = calls.findIndex((candidate, index) => itemIdForToolCall(candidate.id, `he:${record.entryId}:tc${index}`) === item.id);
+      callIndex = calls.findIndex(matchesItem);
       call = calls[callIndex];
+      resultId = session.matchTables.get(record.entryId)?.get(callIndex);
       result = resultId ? session.byId.get(resultId) : record.message.role === "tool" ? record : undefined;
     }
     if (result?.refs.some(ref => ref.field === "canonicalMessage")) {

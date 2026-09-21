@@ -119,6 +119,43 @@ try {
   $body.Current.BoundingRectangle.Width = 200
   $body.Current.Name = 'unrelated body'
   Assert-True (-not (Test-VisibleUpgradeHistory $root $marker)) 'Matching text outside the transcript must not pass.'
+
+  # Exercise the real wait owner with a virtual monotonic clock. Slow import
+  # and lazy body exposure are allowed without slowing this contract test.
+  $script:upgradeWaitNow = 0
+  function Get-UpgradeUITimeMilliseconds { return $script:upgradeWaitNow }
+  function Wait-UpgradeUIPoll { $script:upgradeWaitNow += 250 }
+  $script:upgradeWaitRoot = $root
+  $slowBody = {
+    $script:upgradeWaitRoot.Children = if ($script:clicked -eq 0) { @($pending) } else { @($transcript) }
+    $body.Current.Name = if ($script:upgradeWaitNow -ge 30000) { $marker } else { 'body pending' }
+    return $script:upgradeWaitRoot
+  }
+  $script:clicked = 0
+  $oldBudget = Wait-VisibleUpgradeHistory -ReadRoot $slowBody -Text $marker -PrepareHistoricalSession -TimeoutSeconds 20
+  Assert-True (-not $oldBudget.Found) 'The old fixed budget rejects a correct slow import.'
+  $script:upgradeWaitNow = 0
+  $script:clicked = 0
+  $observed = Wait-VisibleUpgradeHistory -ReadRoot $slowBody -Text $marker -PrepareHistoricalSession
+  Assert-True ($observed.Found -and $observed.ElapsedMilliseconds -eq 30000) 'Functional acceptance must observe the completed slow import.'
+  Assert-True ($script:clicked -eq 1) 'Polling must never execute import twice.'
+
+  $script:upgradeWaitNow = 0
+  $atDeadline = Wait-VisibleUpgradeHistory -Text $marker -TimeoutSeconds 20 -ReadRoot {
+    $script:upgradeWaitRoot.Children = @($transcript)
+    $body.Current.Name = if ($script:upgradeWaitNow -ge 20000) { $marker } else { 'body pending' }
+    return $script:upgradeWaitRoot
+  }
+  Assert-True ($atDeadline.Found -and $atDeadline.ElapsedMilliseconds -eq 20000) 'The deadline must use a final fresh observation, not the previous empty sample.'
+
+  $script:upgradeWaitNow = 0
+  $body.Current.Name = 'never restored'
+  $missing = Wait-VisibleUpgradeHistory -ReadRoot { $script:upgradeWaitRoot } -Text $marker -TimeoutSeconds 1
+  Assert-True (-not $missing.Found -and $missing.ElapsedMilliseconds -eq 1000) 'Missing history still fails within the bounded wait.'
+  $script:upgradeWaitNow = 0
+  $body.Current.Name = $marker
+  $unprepared = Wait-VisibleUpgradeHistory -ReadRoot { $script:upgradeWaitRoot } -Text $marker -PrepareHistoricalSession -TimeoutSeconds 1
+  Assert-True (-not $unprepared.Found -and -not $unprepared.Prepared) 'A matching body cannot bypass explicit preparation.'
   Write-Host 'Windows upgrade orchestration and UI evidence contracts passed (mocked native boundaries).'
 } finally {
   Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

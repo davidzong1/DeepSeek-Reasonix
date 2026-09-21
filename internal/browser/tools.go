@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"reasonix/internal/tool"
 )
@@ -10,7 +11,7 @@ import (
 // Names lists the tool names in the order Tools returns them.
 func Names() []string {
 	return []string{
-		"browser_tabs", "browser_open", "browser_navigate", "browser_snapshot", "browser_screenshot",
+		"browser_tabs", "browser_open", "browser_preview", "browser_navigate", "browser_snapshot", "browser_screenshot",
 		"browser_click", "browser_type", "browser_press", "browser_scroll", "browser_select", "browser_upload",
 		"browser_download", "browser_close",
 	}
@@ -20,10 +21,28 @@ func Names() []string {
 // every tool, each reporting ProviderVisible false so it fails closed.
 func Tools(exec Executor) []tool.Tool {
 	return []tool.Tool{
-		tabsTool(exec), openTool(exec), navigateTool(exec), snapshotTool(exec), screenshotTool(exec),
+		tabsTool(exec), openTool(exec), previewTool(exec), navigateTool(exec), snapshotTool(exec), screenshotTool(exec),
 		clickTool(exec), typeTool(exec), pressTool(exec), scrollTool(exec), selectTool(exec), uploadTool(exec),
 		downloadTool(exec), closeTool(exec),
 	}
+}
+
+type previewFileTool struct {
+	writeTool
+}
+
+func (t previewFileTool) ProviderVisible(ctx context.Context) bool {
+	if _, ok := t.exec.(FilePreviewer); !ok {
+		return false
+	}
+	return t.writeTool.ProviderVisible(ctx)
+}
+
+func (t previewFileTool) UnavailableReason(ctx context.Context) string {
+	if _, ok := t.exec.(FilePreviewer); !ok {
+		return "the attached browser does not support local file previews"
+	}
+	return t.writeTool.UnavailableReason(ctx)
 }
 
 type runFunc func(ctx context.Context, exec Executor, args json.RawMessage) (string, error)
@@ -51,12 +70,24 @@ func (b base) ProviderVisible(ctx context.Context) bool {
 	return true
 }
 
+func (b base) UnavailableReason(ctx context.Context) string {
+	if b.exec == nil {
+		return strings.TrimPrefix(noBrowserText, "blocked: ")
+	}
+	if diagnostic, ok := b.exec.(tool.ContextualAvailabilityReason); ok {
+		if reason := diagnostic.UnavailableReason(ctx); reason != "" {
+			return reason
+		}
+	}
+	return strings.TrimPrefix(noGrantText, "blocked: ")
+}
+
 func (b base) ready(ctx context.Context) error {
 	if b.exec == nil {
 		return tool.Blocked(noBrowserText)
 	}
 	if !b.ProviderVisible(ctx) {
-		return tool.Blocked(noGrantText)
+		return tool.Blocked("blocked: " + b.UnavailableReason(ctx))
 	}
 	return ctx.Err()
 }

@@ -204,12 +204,17 @@ test("an unexpected exit restarts automatically until the budget is exhausted", 
 test("shutdown sends desktop/shutdown, closes stdin and waits for the exit", async () => {
   const h = harness();
   await h.supervisor.start();
-  await h.supervisor.shutdown();
+  const shutdown = h.supervisor.shutdown();
+  assert.equal(h.supervisor.current.phase, "stopping");
+  assert.equal(h.supervisor.ready, false);
+  await assert.rejects(h.supervisor.invoke("CloseMainWindow", []), /shutting down/);
+  await shutdown;
   const child = h.spawned[0] as FakeChild;
   assert.deepEqual(child.requests.map((r) => r.method), ["desktop/hello", "desktop/start", "desktop/shutdown"],);
   assert.equal(child.alive, false);
   assert.equal(h.supervisor.current.phase, "exited");
   assert.equal(h.spawned.length, 1, "a deliberate exit never restarts");
+  assert.deepEqual(h.states.map((state) => state.phase), ["starting", "ready", "stopping", "exited", "exited"]);
 });
 
 test("a service that ignores stdin close is killed after the grace period", async () => {

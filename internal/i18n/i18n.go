@@ -241,11 +241,19 @@ type Messages struct {
 	RuntimeRefreshUnavailable string // current session cannot rebuild after a runtime-affecting setting change
 
 	// context compaction card (CompactionStarted / CompactionDone events).
-	CompactionWorking string // shown while the summarizer runs
-	CompactionTitle   string // card header before "· N messages · <trigger>"
-	CompactionUnit    string // the noun counted, e.g. "messages"
-	CompactionAuto    string // trigger label: reached the window threshold
-	CompactionManual  string // trigger label: user ran /compact
+	CompactionWorking          string // shown while the summarizer runs
+	CompactionTitle            string // card header before "· N messages · <trigger>"
+	CompactionUnit             string // the noun counted, e.g. "messages"
+	CompactionAuto             string // trigger label: reached the window threshold
+	CompactionManual           string // trigger label: user ran /compact
+	CompactionStopping         string // cancellation has been requested
+	CompactionSaving           string // a committed result is being persisted
+	CompactionNoHistory        string // the selected history has nothing to fold
+	CompactionStopped          string // cancelled before applying a projection
+	CompactionStoppedPartial   string // cancelled after at least one applied batch
+	CompactionRecoveryRequired string // persistence/cancellation state needs recovery
+	CompactionInterrupted      string // a previous non-terminal operation was interrupted
+	CompactionEstimatedTokens  string // label for estimated before/after token counts
 
 	// extension structured-UI surfaces (ExtensionSurface / ExtensionStatus events).
 	ExtFormFieldsHint string // form card: field values are collected through the usual prompts

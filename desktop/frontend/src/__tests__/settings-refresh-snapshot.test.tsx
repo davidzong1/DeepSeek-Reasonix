@@ -427,7 +427,7 @@ await act(async () => {
   );
   await flushPromises();
 });
-await waitFor("Windows permission boundary settings", () => document.body.textContent?.includes("Effective write roots") === true);
+await waitFor("Windows permission boundary settings", () => document.body.textContent?.includes("Currently allowed directories") === true);
 
 ok(windowsSandboxRootEl.textContent?.includes("/work") === true, "Windows shows the effective workspace write boundary");
 ok(!windowsSandboxRootEl.textContent?.includes("This setting is fixed to off."), "Windows removes the legacy Bash sandbox mode control");

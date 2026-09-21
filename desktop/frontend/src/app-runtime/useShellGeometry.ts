@@ -1,14 +1,13 @@
 import { useEffect, useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import { createPointerResizeLifecycle, createRafResizeUpdater } from "../lib/resizeDrag";
-import { availableWorkspacePanelWidth, resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement } from "../lib/workspaceLayout";
+import { availableWorkspacePanelWidth, resolveLiveWorkspacePanelWidth, resolveWorkspacePanelPlacement, SIDEBAR_AUTO_COLLAPSE_WIDTH } from "../lib/workspaceLayout";
 import { useOverlayStore } from "../store/overlays";
 import { useWindowChromeStore } from "../store/windowChrome";
 import {
   clampRightDockTreeWidth,
   clampSidebarWidth,
   clampTerminalHeight,
-  RIGHT_DOCK_MIN_RENDER_WIDTH,
   RIGHT_DOCK_TREE_MIN_WIDTH,
   saveRightDockTreeWidth,
   saveSidebarCollapsed,
@@ -19,6 +18,7 @@ import {
   terminalMaxHeight,
   TERMINAL_MIN_HEIGHT,
   useLayoutStore,
+  useSidebarCollapsed,
 } from "../store/layout";
 
 const CHAT_MIN_WIDTH = 400;
@@ -35,7 +35,7 @@ export function useShellGeometry(input: { appRef: RefObject<HTMLDivElement | nul
   const { appRef, layoutRef } = input;
   const viewportWidth = useWindowChromeStore((state) => state.viewportWidth);
   const viewportHeight = useWindowChromeStore((state) => state.viewportHeight);
-  const sidebarCollapsed = useLayoutStore((state) => state.sidebarCollapsed);
+  const sidebarCollapsed = useSidebarCollapsed();
   const sidebarWidth = useLayoutStore((state) => state.sidebarWidth);
   const liveSidebarWidth = useLayoutStore((state) => state.liveSidebarWidth);
   const rightDockTreeWidth = useLayoutStore((state) => state.rightDockTreeWidth);
@@ -68,7 +68,7 @@ export function useShellGeometry(input: { appRef: RefObject<HTMLDivElement | nul
   const preferredWorkspacePanelWidth = rightDockTreeWidth;
   const rightDockTreeMinWidth = RIGHT_DOCK_TREE_MIN_WIDTH;
   const rightDockTreeWidthClamp = clampRightDockTreeWidth;
-  const rightDockMinRenderWidth = RIGHT_DOCK_MIN_RENDER_WIDTH;
+  const rightDockMinRenderWidth = rightDockTreeMinWidth;
   const workspacePanelMinWidth = rightDockTreeMinWidth;
   const chatReservedWidth = CHAT_MIN_WIDTH;
   const workspacePanelAvailableWidth = availableWorkspacePanelWidth({
@@ -150,6 +150,10 @@ export function useShellGeometry(input: { appRef: RefObject<HTMLDivElement | nul
     anchorAppScrollToChat();
     const nextCollapsed = !sidebarCollapsed;
     if (nextCollapsed) setSidebarSearchOpen(false);
+    if (viewportWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH) {
+      useWindowChromeStore.setState({ narrowSidebarExpanded: !nextCollapsed });
+      return;
+    }
     setSidebarCollapsed(nextCollapsed);
     saveSidebarCollapsed(nextCollapsed);
   });
@@ -228,11 +232,7 @@ export function useShellGeometry(input: { appRef: RefObject<HTMLDivElement | nul
   });
 
   const ensureWorkspacePanelWidth = useCommittedCommand((width: number) => {
-    closeTransientOverlays();
-    if (rightDockMode === "context") return;
-    const next = rightDockTreeWidthClamp(width, workspacePanelAvailableWidth);
-    setRightDockTreeWidth(next);
-    saveRightDockTreeWidth(next);
+    if (rightDockMode !== "context") setSavedWorkspacePanelWidth(width);
   });
 
   const startWorkspacePanelResize = useCommittedCommand((event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -361,8 +361,6 @@ export function useShellGeometry(input: { appRef: RefObject<HTMLDivElement | nul
     setSavedTerminalHeight,
     startTerminalResize,
     resizeTerminalWithKeyboard,
-    rightDockTreeMinWidth,
-    rightDockTreeWidthClamp,
     workspacePanelMinWidth,
     chatReservedWidth,
     workspacePanelAvailableWidth,

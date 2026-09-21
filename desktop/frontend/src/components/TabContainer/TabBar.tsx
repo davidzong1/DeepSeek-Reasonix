@@ -17,9 +17,10 @@ interface TabBarProps {
   onMoveTab: (fromId: string, toId: string, side: "left" | "right") => void;
   onAdd: () => void;
   addButtonRef: RefObject<HTMLButtonElement | null>;
+  onClosePanel?: () => void;
 }
 
-export function TabBar({ tabs, activeTabId, onActivate, onClose, onMoveTab, onAdd, addButtonRef }: TabBarProps) {
+export function TabBar({ tabs, activeTabId, onActivate, onClose, onMoveTab, onAdd, addButtonRef, onClosePanel }: TabBarProps) {
   const t = useT();
   const [menuTabId, setMenuTabId] = useState<string | null>(null);
   const [menuPoint, setMenuPoint] = useState<ContextMenuPoint | null>(null);
@@ -163,12 +164,14 @@ export function TabBar({ tabs, activeTabId, onActivate, onClose, onMoveTab, onAd
       <button
         ref={addButtonRef}
         type="button"
-        className="workbench-dock__tab-add"
+        className="workbench-dock__tab-button workbench-dock__tab-add"
         aria-label={t("rightDock.addTab")}
         onClick={onAdd}
       >
         <Plus size={14} />
       </button>
+      {onClosePanel && <button type="button" className="workbench-dock__tab-button workbench-dock__collapse"
+        aria-label={t("workspace.close")} onClick={onClosePanel}><X size={14} /></button>}
       {draggingTabId !== null && (() => {
         const draggedTab = tabs.find((tab) => tab.id === draggingTabId);
         if (!draggedTab) return null;

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   ChevronDown, ChevronUp, Code2, ExternalLink, FileArchive, FileAudio,
-  FileImage, FileText, FileVideo, FolderSearch, Globe, MoreHorizontal, Save,
+  FileImage, FileText, FileVideo, FolderSearch, Globe, Save,
 } from "lucide-react";
 import type { PresentedFileView } from "../lib/chatViewSource";
 import type { TurnFileView } from "../lib/turnFiles";
+import type { WireCompletionSummary } from "../lib/types";
 import { useT } from "../lib/i18n";
 import {
   openResource, performResourceAction, resolveFileResourcePath,
@@ -12,6 +13,7 @@ import {
 } from "../lib/presentedFileNavigation";
 import { fileResourceCapabilities } from "../lib/fileResource";
 import { writeClipboardText } from "../lib/clipboard";
+import { ContextMenu, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import "./PresentedFiles.css";
 
 const basename = (path: string) => path.replaceAll("\\", "/").split("/").filter(Boolean).pop() || path;
@@ -34,7 +36,7 @@ export function PresentedFiles({ files, tabId, hostId }: { files: readonly Prese
   if (!files.length) return null;
   return <section className="presented-files" aria-label={t("present.files")}>
     <div className="presented-files__grid">
-      {shown.map(file => <FileEntry key={file.path} description={file.description}
+      {shown.map(file => <FileEntry key={JSON.stringify([hostId, tabId, file.toolCallId, file.path])} description={file.description}
         refValue={{ source: "presented", hostId: hostId ?? "local", tabId: tabId ?? "", toolCallId: file.toolCallId, path: file.path }} />)}
     </div>
     {files.length > 4 && <button type="button" className="presented-files__toggle" onClick={() => setExpanded(value => !value)}>
@@ -44,62 +46,76 @@ export function PresentedFiles({ files, tabId, hostId }: { files: readonly Prese
   </section>;
 }
 
-export function ModifiedFiles({ files, tabId, hostId }: { files: readonly TurnFileView[]; tabId?: string; hostId?: string }) {
+export function ModifiedFiles({ files, summary, onOpenReview }: {
+  files: readonly TurnFileView[];
+  summary?: WireCompletionSummary;
+  tabId?: string;
+  hostId?: string;
+  onOpenReview?: (summary: WireCompletionSummary, initialPath?: string) => void;
+}) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? files : files.slice(0, 6);
-  if (!files.length) return null;
+  const [error, setError] = useState("");
+  const recorded = summary?.receipt?.diff;
+  // A complete empty receipt means all edits were undone. Never reconstruct
+  // its net inventory from mutation calls or sum per-call preview diffs.
+  const rows = recorded && recorded.coverage !== "unknown" && (recorded.files.length > 0 || recorded.coverage === "complete") ? recorded.files.map(file => ({
+    path: file.path,
+    added: file.added,
+    removed: file.removed,
+    binary: file.binary,
+    uncounted: file.uncounted,
+    modeOnly: file.modeOnly,
+  })) : files.map(file => ({ path: file.path, added: 0, removed: 0, binary: false, modeOnly: false, uncounted: true }));
+  const shown = expanded ? rows : rows.slice(0, 4);
+  if (!rows.length) return null;
+  const added = recorded?.added ?? rows.reduce((total, file) => total + (file.added ?? 0), 0);
+  const removed = recorded?.removed ?? rows.reduce((total, file) => total + (file.removed ?? 0), 0);
+  const countsUnknown = !recorded || recorded.coverage === "unknown" || rows.some(file => file.uncounted);
+  const openReview = async (path: string) => {
+    setError("");
+    try {
+      if (summary && onOpenReview) { onOpenReview(summary, path); return; }
+      setError(t("completion.diffUnavailable"));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
   return <section className="turn-files" aria-label={t("present.modifiedFiles")}>
-    <strong className="turn-files__title">{t("present.modifiedFiles")}</strong>
-    <div className="turn-files__list">
-      {shown.map(file => <FileEntry key={file.path} compact
-        description={t(file.operation === "modified" ? "present.modified" : "present.written")}
-        refValue={{ source: "workspace", hostId: hostId ?? "local", tabId: tabId ?? "", toolCallId: file.toolCallId, path: file.path }} />)}
-    </div>
-    {files.length > 6 && <button type="button" className="presented-files__toggle" onClick={() => setExpanded(value => !value)}>
+    <button type="button" className="turn-files__head" onClick={() => void openReview(rows[0]!.path)}
+      aria-label={t("present.openReview")}>
+      <span className="turn-files__icon"><Code2 size={18} /></span>
+      <span className="turn-files__summary">
+        <strong>{t("present.editedCount", { count: rows.length })}</strong>
+        <span>{countsUnknown ? t("present.linesUnknown") : <><span className="turn-files__added">+{added}</span> <span className="turn-files__removed">−{removed}</span></>}</span>
+        {recorded?.coverage === "partial" && <small>{t("completion.partialStats")}</small>}
+      </span>
+    </button>
+    <ul className="turn-files__list">
+      {shown.map(file => <li key={file.path}>
+        <button type="button" title={file.path} aria-label={t("present.openFileReview", { name: file.path })} onClick={() => void openReview(file.path)}>
+          <span>{file.path}</span>
+          <span>{file.binary ? t("present.binary") : file.modeOnly ? t("completion.modeOnly") : file.uncounted ? t("present.linesUnknown") : <>
+            <span className="turn-files__added">+{file.added ?? 0}</span>{" "}<span className="turn-files__removed">−{file.removed ?? 0}</span>
+          </>}</span>
+        </button>
+      </li>)}
+    </ul>
+    {rows.length > 4 && <button type="button" className="presented-files__toggle" onClick={() => setExpanded(value => !value)}>
       {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-      {t(expanded ? "present.collapse" : "present.showAll", { count: files.length })}
+      {t(expanded ? "present.collapse" : "present.showAll", { count: rows.length })}
     </button>}
+    {error && <p className="turn-files__error" role="status">{error}</p>}
   </section>;
 }
 
-function FileEntry({ refValue, description, compact = false }: { refValue: FileResourceRef; description?: string; compact?: boolean }) {
+function FileEntry({ refValue, description }: { refValue: FileResourceRef; description?: string }) {
   const t = useT();
-  const [menu, setMenu] = useState(false);
+  const [menu, setMenu] = useState<ContextMenuPoint | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const menuRoot = useRef<HTMLDivElement>(null);
-  const menuTrigger = useRef<HTMLButtonElement>(null);
   const Icon = iconFor(refValue.path);
   const capabilities = fileResourceCapabilities(refValue);
-  useEffect(() => {
-    if (!menu) return;
-    menuRoot.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    const onPointerDown = (event: PointerEvent) => {
-      if (!menuRoot.current?.contains(event.target as Node)) setMenu(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault(); setMenu(false); menuTrigger.current?.focus(); return;
-      }
-      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-      const items = Array.from(menuRoot.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
-      if (!items.length) return;
-      event.preventDefault();
-      const current = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement));
-      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
-        : event.key === "ArrowDown" ? (current + 1) % items.length : (current - 1 + items.length) % items.length;
-      items[next]?.focus();
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menu]);
   const run = async (action: PresentedFileAction) => {
-    setMenu(false); setError(""); setBusy(true);
+    setMenu(null); setError(""); setBusy(true);
     try {
       const outcome = action === "preview" || action === "source" || action === "browser"
         ? await openResource(refValue, { view: action })
@@ -112,35 +128,37 @@ function FileEntry({ refValue, description, compact = false }: { refValue: FileR
     finally { setBusy(false); }
   };
   const copyPath = async () => {
-    setMenu(false); setError(""); setBusy(true);
+    setMenu(null); setError(""); setBusy(true);
     try {
       const path = await resolveFileResourcePath(refValue);
       if (!await writeClipboardText(path)) throw new Error(t("present.copyFailed"));
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(false); }
   };
-  return <article className={compact ? "presented-file presented-file--compact" : "presented-file"} title={refValue.path} aria-busy={busy || undefined}>
+  const menuItems: ContextMenuItem[] = [];
+  const addAction = (action: PresentedFileAction, Icon: typeof FileText, label: string) => {
+    menuItems.push({ key: action, icon: <Icon size={14} />, label, onSelect: () => void run(action) });
+  };
+  if (capabilities.browser) addAction("browser", Globe, t("present.browser"));
+  if (capabilities.revealTree) addAction("reveal-tree", FolderSearch, t("present.revealTree"));
+  if (capabilities.source) addAction("source", Code2, t("present.source"));
+  if (capabilities.copyPath) menuItems.push({ key: "copy-path", icon: <FileText size={14} />, label: t("present.copyPath"), onSelect: () => void copyPath() });
+  if (capabilities.openNative) addAction("open-native", ExternalLink, t("present.openNative"));
+  if (capabilities.revealNative) addAction("reveal-native", FolderSearch, t("present.revealNative"));
+  if (capabilities.saveCopy) addAction("save-copy", Save, t("present.saveCopy"));
+  return <article className="presented-file" title={refValue.path} aria-busy={busy || undefined}>
     <button type="button" className="presented-file__main" disabled={busy} onClick={() => void run("preview")}>
-      <span className="presented-file__icon"><Icon size={compact ? 16 : 20} /></span>
+      <span className="presented-file__icon"><Icon size={20} /></span>
       <span className="presented-file__copy"><strong>{basename(refValue.path)}</strong>{description && <small>{description}</small>}</span>
     </button>
-    {!compact && <button type="button" className="presented-file__open" disabled={busy} onClick={() => void run("preview")}>{t(busy ? "chat.loading" : "present.open")}</button>}
-    <div className="presented-file__menu-wrap" ref={menuRoot}>
-      <button ref={menuTrigger} type="button" className="presented-file__more" disabled={busy} aria-label={t("present.more")} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(value => !value)}><MoreHorizontal size={17} /></button>
-      {menu && <div className="presented-file__menu" role="menu">
-        {capabilities.browser && <MenuItem icon={Globe} label={t("present.browser")} onClick={() => void run("browser")} />}
-        {capabilities.revealTree && <MenuItem icon={FolderSearch} label={t("present.revealTree")} onClick={() => void run("reveal-tree")} />}
-        {capabilities.source && <MenuItem icon={Code2} label={t("present.source")} onClick={() => void run("source")} />}
-        {capabilities.copyPath && <MenuItem icon={FileText} label={t("present.copyPath")} onClick={() => void copyPath()} />}
-        {capabilities.openNative && <MenuItem icon={ExternalLink} label={t("present.openNative")} onClick={() => void run("open-native")} />}
-        {capabilities.revealNative && <MenuItem icon={FolderSearch} label={t("present.revealNative")} onClick={() => void run("reveal-native")} />}
-        {capabilities.saveCopy && <MenuItem icon={Save} label={t("present.saveCopy")} onClick={() => void run("save-copy")} />}
-      </div>}
+    <div className="presented-file__split">
+      <button type="button" className="presented-file__open" disabled={busy} onClick={() => void run("preview")}>{t(busy ? "chat.loading" : "present.open")}</button>
+      <button type="button" className="presented-file__more" disabled={busy} aria-label={t("present.more")} aria-haspopup="menu" aria-expanded={menu !== null} onClick={event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setMenu({ left: rect.right - 208, top: rect.bottom + 4, keyboardTarget: event.currentTarget });
+      }}><ChevronDown size={13} /></button>
+      <ContextMenu open={menu !== null} point={menu} items={menuItems} onClose={() => setMenu(null)} minWidth={208} ariaLabel={t("present.more")} />
     </div>
     {error && <p className="presented-file__error" role="status">{error}</p>}
   </article>;
-}
-
-function MenuItem({ icon: Icon, label, onClick }: { icon: typeof FileText; label: string; onClick: () => void }) {
-  return <button type="button" role="menuitem" onClick={onClick}><Icon size={14} /><span>{label}</span></button>;
 }

@@ -69,6 +69,7 @@ type wireTab struct {
 	Title     string `json:"title,omitempty"`
 	Loading   bool   `json:"loading,omitempty"`
 	Temporary bool   `json:"temporary,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func toWireTab(t Tab) wireTab {

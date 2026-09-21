@@ -41,6 +41,8 @@ export function inspectRecord(record, candidateId, recordArtifact, run, now = ne
     throw new Error("candidate record artifact identity mismatch");
   }
   if (record.candidateId !== candidateId) throw new Error("candidate record identity mismatch");
+  if (!/^[0-9a-f]{40}$/.test(record.sourceSHA ?? "")) throw new Error("candidate source SHA is invalid");
+  if (!/^[0-9a-f]{40}$/.test(record.control?.buildSHA ?? "")) throw new Error("candidate control SHA is invalid");
   if (record.source?.runId !== String(run.id) || record.source?.runAttempt !== String(run.run_attempt)) {
     throw new Error("candidate record producer mismatch");
   }
@@ -113,6 +115,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       JSON.parse(readFileSync(artifactPath, "utf8")), JSON.parse(readFileSync(runPath, "utf8")),
       new Date(), command === "inspect-rehearsal" ? "rehearsal" : "release",
     );
-    outputs(Object.fromEntries(Object.entries(result).map(([key, value]) => [key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`), value])));
+    // This is a workflow API, not a case-conversion convention. In particular,
+    // SHA is one field suffix, not three independently underscored letters.
+    outputs({
+      candidate_id: result.candidateId,
+      version: result.version,
+      source_sha: result.sourceSHA,
+      candidate_control_sha: result.candidateControlSHA,
+      signing_fingerprint: result.signingFingerprint,
+      producer_run_id: result.producerRunId,
+      producer_run_attempt: result.producerRunAttempt,
+      desktop_prefix: result.desktopPrefix,
+      payload_artifact_id: result.payloadArtifactId,
+      payload_artifact_name: result.payloadArtifactName,
+      evidence_artifact_id: result.evidenceArtifactId,
+      evidence_artifact_name: result.evidenceArtifactName,
+    });
   } else throw new Error("usage: resolve-release-candidate.mjs active ID | resolve|resolve-optional|resolve-rehearsal ID | inspect|inspect-rehearsal ID RECORD ARTIFACT RUN");
 }

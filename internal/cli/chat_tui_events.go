@@ -135,6 +135,8 @@ func (m *chatTUI) ingestEventOwned(e event.Event, owner ownerKey) {
 		m.ingestCompactionStarted(e)
 	case event.CompactionDone:
 		m.ingestCompactionDone(e)
+	case event.SessionOperation:
+		m.ingestSessionOperation(e)
 	case event.Phase:
 		m.ingestPhase(e)
 	case event.ApprovalRequest:
@@ -360,11 +362,25 @@ func (m *chatTUI) ingestExtensionSurface(e event.Event) {
 }
 
 func (m *chatTUI) ingestCompactionStarted(e event.Event) {
+	// Manual maintenance has one stable SessionOperation card. Keep the legacy
+	// compaction events for automatic passes and older controllers only.
+	if m.maintenance != nil {
+		return
+	}
 	m.finalizeStreamed()
 	m.commitLine(dim("  ⋯ " + i18n.M.CompactionWorking))
 }
 
 func (m *chatTUI) ingestCompactionDone(e event.Event) {
+	if m.maintenance != nil {
+		// A legacy controller can emit CompactionDone without SessionOperation.
+		// The optimistic empty-id placeholder uses that event as its terminal
+		// display; identified operations wait for their authoritative record.
+		if m.maintenance.OperationID != "" {
+			return
+		}
+		m.maintenance = nil
+	}
 	// An aborted pass carries no summary; the accompanying Notice (auto) or
 	// compactDoneMsg error (manual) explains why, so don't draw an empty card.
 	if e.Compaction.Summary == "" {
@@ -374,6 +390,172 @@ func (m *chatTUI) ingestCompactionDone(e event.Event) {
 	for _, ln := range compactionCardLines(e.Compaction) {
 		m.commitLine(ln)
 	}
+}
+
+func (m *chatTUI) ingestSessionOperation(e event.Event) {
+	if e.SessionOperation == nil || e.SessionOperation.OperationID == "" {
+		return
+	}
+	if m.compactCompatibilityPending {
+		m.compactLifecycleObserved = true
+	}
+	incoming := *e.SessionOperation
+	if m.maintenanceTerminal == nil {
+		m.maintenanceTerminal = make(map[string]struct{})
+	}
+	if m.maintenanceLatest == nil {
+		m.maintenanceLatest = make(map[string]event.SessionOperationInfo)
+	}
+	if previous, ok := m.maintenanceLatest[incoming.OperationID]; ok {
+		if previous.RuntimeEpoch != "" && incoming.RuntimeEpoch != "" && previous.RuntimeEpoch != incoming.RuntimeEpoch {
+			return
+		}
+		if previous.OperationRevision > 0 && incoming.OperationRevision > 0 &&
+			incoming.OperationRevision < previous.OperationRevision {
+			return
+		}
+		if sessionOperationTerminal(previous.Status) && !sessionOperationTerminal(incoming.Status) {
+			return
+		}
+		incoming = mergeSessionOperation(previous, incoming)
+	}
+	if _, terminal := m.maintenanceTerminal[incoming.OperationID]; terminal && !sessionOperationTerminal(incoming.Status) {
+		return
+	}
+
+	// One controller admits one maintenance operation at a time. A terminal
+	// event from the prior operation can arrive after the next operation starts;
+	// it may finish its own card but must not replace the active identity.
+	if m.maintenance != nil && m.maintenance.OperationID != "" &&
+		m.maintenance.OperationID != incoming.OperationID {
+		m.maintenanceLatest[incoming.OperationID] = incoming
+		return
+	}
+
+	m.maintenanceLatest[incoming.OperationID] = incoming
+	m.maintenance = &incoming
+	m.renderSessionOperation(&incoming)
+	if sessionOperationTerminal(incoming.Status) {
+		m.maintenanceTerminal[incoming.OperationID] = struct{}{}
+		m.maintenance = nil
+		m.followSessionLease()
+	}
+}
+
+func mergeSessionOperation(previous, incoming event.SessionOperationInfo) event.SessionOperationInfo {
+	merged := previous
+	merged.OperationID = incoming.OperationID
+	if incoming.OperationRevision != 0 {
+		merged.OperationRevision = incoming.OperationRevision
+	}
+	if incoming.RuntimeEpoch != "" {
+		merged.RuntimeEpoch = incoming.RuntimeEpoch
+	}
+	if incoming.Kind != "" {
+		merged.Kind = incoming.Kind
+	}
+	if incoming.Activity != "" {
+		merged.Activity = incoming.Activity
+	}
+	if incoming.Status != "" {
+		merged.Status = incoming.Status
+	}
+	if incoming.ErrorCode != "" {
+		merged.ErrorCode = incoming.ErrorCode
+	}
+	if incoming.Detail != "" {
+		merged.Detail = incoming.Detail
+	}
+	merged.Applied = previous.Applied || incoming.Applied
+	if incoming.InputTokens != 0 {
+		merged.InputTokens = incoming.InputTokens
+	}
+	if incoming.ResultTokens != 0 {
+		merged.ResultTokens = incoming.ResultTokens
+	}
+	if incoming.Messages != 0 {
+		merged.Messages = incoming.Messages
+	}
+	if incoming.Summary != "" {
+		merged.Summary = incoming.Summary
+	}
+	if incoming.Archive != "" {
+		merged.Archive = incoming.Archive
+	}
+	return merged
+}
+
+func sessionOperationTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "noop", "cancelled", "partially_completed", "failed", "interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *chatTUI) renderSessionOperation(op *event.SessionOperationInfo) {
+	if op == nil || op.OperationID == "" {
+		return
+	}
+	m.finalizeStreamed()
+	line := sessionOperationLine(op)
+	if m.nativeScrollback || m.maintenanceTranscriptID != op.OperationID ||
+		m.maintenanceTranscriptIdx < 0 || m.maintenanceTranscriptIdx >= len(m.transcript) {
+		m.commitSpacer()
+		m.maintenanceTranscriptID = op.OperationID
+		m.maintenanceTranscriptIdx = len(m.transcript)
+		m.commitLine(line)
+		return
+	}
+	m.setTranscriptBlock(m.maintenanceTranscriptIdx, line, transcriptSource{kind: transcriptSourceFixed})
+	m.transcriptDirty = true
+}
+
+func sessionOperationLine(op *event.SessionOperationInfo) string {
+	status := strings.ToLower(strings.TrimSpace(op.Status))
+	activity := strings.ToLower(strings.TrimSpace(op.Activity))
+	switch status {
+	case "completed":
+		lines := compactionCardLines(event.Compaction{
+			Trigger: "manual", Messages: op.Messages, Summary: op.Summary, Archive: op.Archive,
+		})
+		if op.InputTokens > 0 || op.ResultTokens > 0 {
+			lines = append(lines, dim(fmt.Sprintf("  │ %s: ~%s → ~%s", i18n.M.CompactionEstimatedTokens,
+				shortTokens(op.InputTokens), shortTokens(op.ResultTokens))))
+		}
+		return strings.Join(lines, "\n")
+	case "noop":
+		return dim("  · " + i18n.M.CompactionNoHistory)
+	case "cancelled":
+		return dim("  ■ " + i18n.M.CompactionStopped)
+	case "partially_completed":
+		return dim("  ■ " + i18n.M.CompactionStoppedPartial)
+	case "failed":
+		return sessionOperationFailureLine(i18n.M.SlashCompactFailed, op.Detail)
+	case "interrupted":
+		return sessionOperationFailureLine(i18n.M.CompactionInterrupted, op.Detail)
+	case "recovery_required":
+		return sessionOperationFailureLine(i18n.M.CompactionRecoveryRequired, op.Detail)
+	}
+	switch activity {
+	case "cancelling":
+		return dim("  ⋯ " + i18n.M.CompactionStopping)
+	case "finalizing":
+		return dim("  ⋯ " + i18n.M.CompactionSaving)
+	case "recovery_required":
+		return sessionOperationFailureLine(i18n.M.CompactionRecoveryRequired, op.Detail)
+	default:
+		return dim("  ⋯ " + i18n.M.CompactionWorking)
+	}
+}
+
+func sessionOperationFailureLine(label, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return "  " + red("!") + " " + label
+	}
+	return "  " + red("!") + " " + label + ": " + detail
 }
 
 func (m *chatTUI) ingestPhase(e event.Event) {

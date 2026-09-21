@@ -184,7 +184,7 @@ PDF stderr 上限测试用同一常量，自动跟随。
 **验收**：`refs_oversized_test.go` 钉住 —— 大文件产出指针而非正文、512 KiB 文件产出有界
 note、小文件逐字不变；`refs_test.go:TestReadFileRef` 同步更新。
 
-### R5 Claude Code leader 的工具面收窄 — 本次落地（三步，已闭环）
+### R5 Claude Code leader 的工具面收窄 — 本次落地（三步 + 三通道，已闭环）
 
 **问题**：MCP `tools/list` 线上载荷 63,555 字节 / **17,459 token**（CJK 感知），
 按前缀分：`leader_*` 39 个 10,317 tok（59%）、`member_*` 19 个 4,560 tok（26%）、
@@ -241,16 +241,41 @@ token**，因为 leader 与成员默认连同一个 endpoint，进程级 env 门
 台账覆盖全部无前缀工具、header 选择与回落、中间件 list 过滤、调用侧复核、
 `--mcp-config` payload 与双 builder 一致。
 
+### R5 三条客户端通道（已全部接线）
+
+角色 header 每个客户端写法不同，都实测过：
+
+| 客户端 | 生效通道 | 落点 |
+|---|---|---|
+| claude | `--mcp-config <json>` | `claude_agent_args(team_role=…)` |
+| codex | `-c mcp_servers.<name>.http_headers={…}` | `codex_role_args(team_role)` |
+| dsh | overlay mcp-client `config.headers` | `build_dsh_mcp_overlay(team_role=…)` |
+
+角色判定只有一个来源（`member_team_role`），三条通道都从它取。
+
+**codex 实测**（codex-cli 0.154.0）：`http_headers` 是 config.toml 既有 schema
+字段（`--strict-config` 接受）；`-c` 只给 header、url 仍来自 config.toml 时两者
+正确合并 —— 探针 server 在 `initialize` 与 `tools/list` 上都收到了 header。
+
+**dsh 实测**：`dsh-mcp-client` 的 schema 有 `headers: z.dict(String).default({})`，
+streamable-http 分支把它交给 `StreamableHTTPClientTransport` 的 `requestInit.headers`。
+
+两者都**不能**把角色写进配置文件 —— `~/.codex/config.toml` 与 overlay profile 都是
+全局/团队级的，leader 与成员共读，写死一个角色等于把所有人钉成同一个面。只有
+codex 的每终端 argv、dsh 的 per-member patch 能区分。
+
 ### R5 已知边界
 
-- **codex 与 dsh 成员拿不到 header**：`--mcp-config` 是 Claude Code 的参数；
-  这两类成员走各自通道，本仓库未接线。
 - **权限预配置若换通道会绕开中间件**：`_write_claude_permissions_internal` 会把
   `allow` 写进**共享** `.claude/settings.json`（leader+成员共读），因此那里刻意
   不放 `member_*`/`leader_*` 规则 —— 中间件的过滤依赖 `--allowedTools` 保持
   per-terminal。这一点原代码注释已写明，本次沿用。
-- **行数假设**：所有 spawn 点都经 `common.tmux_utils`，默认 `team_role="member"`；
-  若将来新增 spawn 路径不走该原语，会静默退回全量面。
+- **未知角色不下发 header**：拼错角色退化成"服务端进程级 scope"（默认全量），
+  而不是静默拿到一个更小的面。
+- **护栏**：`TestEveryProductionSpawnSiteDeclaresARole` 扫描生产源码里所有
+  `claude_agent_args` / `codex_command` 调用点，任何一处没传 `team_role` 就变红
+  —— 已用"摘掉一处再跑"反向验证它会点名具体位置。新增 spawn 路径不会再静默退回
+  全量面。
 
 ### R6 团队 role skill 按需加载 — 待排期
 

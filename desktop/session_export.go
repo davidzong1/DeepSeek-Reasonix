@@ -11,9 +11,11 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"reasonix/internal/control"
@@ -164,13 +166,13 @@ func (a *App) prepareSessionExport(job *sessionExportJob) error {
 			format = "blocks"
 		}
 		request, _ := json.Marshal(map[string]any{"snapshot": job.handle.Snapshot, "format": format})
-		resp, err := serveDoForSession(job.ctx, job.client, http.MethodPost, serveURL(job.base, "/session-export/document"), request, job.route)
+		resp, err := serveDoForSession(job.ctx, job.client, http.MethodPost, sessionExportURL(job.base, "/session-export/document", job.handle.Snapshot.Ref.SessionID, false), request, job.route)
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return errors.New("remote export failed or source changed")
+			return errors.New("remote export failed or source changed; upgrade the remote service if the session was switched or taken over")
 		}
 		job.records, err = strconv.Atoi(resp.Header.Get("X-Reasonix-Export-Records"))
 		if err != nil || job.records < 0 {
@@ -421,13 +423,13 @@ func (a *App) validateSessionExportSource(job *sessionExportJob) error {
 		return job.query.ValidateExportSource(job.handle.Snapshot)
 	}
 	body, _ := json.Marshal(job.handle.Snapshot)
-	response, err := serveDoForSession(job.ctx, job.client, http.MethodPost, serveURL(job.base, "/session-export/validate"), body, job.route)
+	response, err := serveDoForSession(job.ctx, job.client, http.MethodPost, sessionExportURL(job.base, "/session-export/validate", job.handle.Snapshot.Ref.SessionID, false), body, job.route)
 	if err != nil {
 		return err
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
-		return errors.New("export source changed or is unavailable")
+		return errors.New("export source changed or is unavailable; upgrade the remote service if the session was switched or taken over")
 	}
 	return nil
 }
@@ -451,11 +453,11 @@ func (a *App) captureSessionExportSource(job *sessionExportJob, selector Session
 		if job.client == nil || job.route == "" {
 			return errors.New("remote session is unavailable")
 		}
-		endpoint := "/session-export/snapshot"
-		if format == "diagnostic" {
-			endpoint += "?diagnostic=1"
+		sessionID, ok := strings.CutPrefix(job.route, remoteSessionIDRoutePrefix)
+		if !ok || sessionID == "" {
+			return errors.New("remote session has no canonical identity")
 		}
-		resp, err := serveDoForSession(ctx, job.client, http.MethodGet, serveURL(job.base, endpoint), nil, job.route)
+		resp, err := serveDoForSession(ctx, job.client, http.MethodGet, sessionExportURL(job.base, "/session-export/snapshot", sessionID, format == "diagnostic"), nil, job.route)
 		if err != nil {
 			return err
 		}
@@ -505,6 +507,22 @@ func (a *App) captureSessionExportSource(job *sessionExportJob, selector Session
 	}
 
 	return nil
+}
+
+func sessionExportURL(base, path, sessionID string, diagnostic bool) string {
+	endpoint, err := url.Parse(serveURL(base, path))
+	if err != nil {
+		return serveURL(base, path)
+	}
+	query := endpoint.Query()
+	if sessionID != "" {
+		query.Set("sessionId", sessionID)
+	}
+	if diagnostic {
+		query.Set("diagnostic", "1")
+	}
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String()
 }
 
 // Called under remoteTabMu before any remote read or save dialog.

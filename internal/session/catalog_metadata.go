@@ -146,6 +146,10 @@ func readCatalogMetadata(cacheDir string, manifest Manifest, revision logRevisio
 	if err != nil {
 		return catalogMetadata{}, err
 	}
+	return decodeCatalogMetadata(data, manifest, revision)
+}
+
+func decodeCatalogMetadata(data []byte, manifest Manifest, revision logRevision) (catalogMetadata, error) {
 	var metadata catalogMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return catalogMetadata{}, err

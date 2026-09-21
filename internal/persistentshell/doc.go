@@ -1,5 +1,7 @@
 // Package persistentshell runs foreground bash commands in a session-scoped
-// PTY so cwd, exported variables, and shell functions survive across calls.
+// interpreter so cwd, exported variables, and shell functions survive across calls.
+// POSIX hosts use a PTY; Windows Git Bash uses raw pipes to avoid ConPTY screen
+// rendering corrupting Unicode output and completion fences.
 // Command wrappers use ASCII-only byte escapes: interactive line editors must
 // not reinterpret non-ASCII command bytes when the host has no UTF-8 locale.
 //

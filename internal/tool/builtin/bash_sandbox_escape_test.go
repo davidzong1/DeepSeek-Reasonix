@@ -27,6 +27,9 @@ func (f *fakeSandboxEscapeApprover) SandboxEscapeSessionAllowed(ctx context.Cont
 }
 
 func TestBashSandboxUnavailableFailsClosedEvenWithLegacyApprover(t *testing.T) {
+	if !sandbox.OSSandboxSupported() {
+		t.Skip("this host intentionally has no OS shell sandbox")
+	}
 	sh := sandbox.ResolveShell("", "", nil)
 	oldCommand := bashSandboxCommand
 	bashSandboxCommand = func(spec sandbox.Spec, sh sandbox.Shell, command string) ([]string, bool) {
@@ -47,6 +50,9 @@ func TestBashSandboxUnavailableFailsClosedEvenWithLegacyApprover(t *testing.T) {
 }
 
 func TestBashSandboxUnavailableStaysClosedWithoutApprover(t *testing.T) {
+	if !sandbox.OSSandboxSupported() {
+		t.Skip("this host intentionally has no OS shell sandbox")
+	}
 	sh := sandbox.ResolveShell("", "", nil)
 	oldCommand := bashSandboxCommand
 	bashSandboxCommand = func(spec sandbox.Spec, sh sandbox.Shell, command string) ([]string, bool) {
@@ -64,6 +70,9 @@ func TestBashSandboxUnavailableStaysClosedWithoutApprover(t *testing.T) {
 }
 
 func TestBashSandboxUnavailableDoesNotOpenLegacyDenialPrompt(t *testing.T) {
+	if !sandbox.OSSandboxSupported() {
+		t.Skip("this host intentionally has no OS shell sandbox")
+	}
 	sh := sandbox.ResolveShell("", "", nil)
 	oldCommand := bashSandboxCommand
 	bashSandboxCommand = func(spec sandbox.Spec, sh sandbox.Shell, command string) ([]string, bool) {
@@ -82,6 +91,36 @@ func TestBashSandboxUnavailableDoesNotOpenLegacyDenialPrompt(t *testing.T) {
 	}
 	if len(approver.calls) != 0 {
 		t.Fatalf("legacy escape approver was called %d times", len(approver.calls))
+	}
+}
+
+func TestBashUnsupportedOSSandboxUsesToolLayerPermissionBoundary(t *testing.T) {
+	if sandbox.OSSandboxSupported() {
+		t.Skip("this contract applies only to hosts without an OS shell sandbox")
+	}
+	sh := sandbox.ResolveShell("", "", nil)
+	oldCommand := bashSandboxCommand
+	called := false
+	bashSandboxCommand = func(spec sandbox.Spec, sh sandbox.Shell, command string) ([]string, bool) {
+		called = true
+		if spec.Enforce() {
+			t.Fatal("unsupported host passed an enforced spec to the retired sandbox backend")
+		}
+		return unconfinedShellArgv(sh, command), false
+	}
+	defer func() { bashSandboxCommand = oldCommand }()
+
+	approver := &fakeSandboxEscapeApprover{allow: true, sessionAllowed: true}
+	ctx := sandbox.WithPermissionPreset(sandbox.WithEscapeApprover(t.Context(), approver), "workspace-write")
+	out, err := (bash{sb: sandbox.Spec{Mode: "enforce"}, shell: sh}).Execute(ctx, argsJSON(t, map[string]any{"command": echoForShell(sh, "tool-layer-boundary"), "description": "verify unsupported sandbox contract"}))
+	if err != nil || !strings.Contains(out, "tool-layer-boundary") {
+		t.Fatalf("Execute = (%q, %v), want normal tool-layer execution", out, err)
+	}
+	if !called {
+		t.Fatal("shell command was not launched")
+	}
+	if len(approver.calls) != 0 || len(approver.sessionChecks) != 0 {
+		t.Fatalf("legacy sandbox approver was consulted: approvals=%d sessionChecks=%d", len(approver.calls), len(approver.sessionChecks))
 	}
 }
 

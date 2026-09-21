@@ -9,4 +9,7 @@ import type {SettingsTab} from '../src/lib/types';
 import '../src/styles.css';
 import '../src/components/SettingsPanel.css';
 applyTheme('light', 'graphite');
-createRoot(document.getElementById('root')!).render(<LocaleProvider><UpdaterProvider><SettingsPanel desktopPlatform="darwin" initialTab={(new URLSearchParams(location.search).get('page') || 'general') as SettingsTab} onClose={()=>{}} onChanged={()=>{}} onUseSubagent={()=>{}} /></UpdaterProvider></LocaleProvider>);
+const params = new URLSearchParams(location.search);
+const platform = params.get('platform');
+const desktopPlatform = platform === 'windows' || platform === 'linux' ? platform : 'darwin';
+createRoot(document.getElementById('root')!).render(<LocaleProvider><UpdaterProvider><SettingsPanel desktopPlatform={desktopPlatform} initialTab={(params.get('page') || 'general') as SettingsTab} onClose={()=>{}} onChanged={()=>{}} onUseSubagent={()=>{}} /></UpdaterProvider></LocaleProvider>);

@@ -93,25 +93,5 @@ func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan s
 }
 
 func (a *App) runSessionCatalogRefreshLoop(ctx context.Context, catalog *sessioncatalog.Catalog) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Debug("desktop: refresh session catalog metadata", "err", err)
-			}
-			for _, target := range a.sessionCatalogTargets() {
-				if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-					_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
-				}
-				catalog.RequestReconcile(target)
-				// Count sweep rides the periodic reconcile tick; it only moves
-				// provably redundant copies into the recoverable trash.
-				a.sweepExcessRecoveryCopies(catalog, target)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
+	a.watchSessionCatalog(ctx, catalog)
 }

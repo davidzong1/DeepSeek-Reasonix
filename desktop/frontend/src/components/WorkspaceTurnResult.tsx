@@ -35,14 +35,15 @@ export const WorkspaceTurnResult = forwardRef<HTMLElement, {
   tabId: string;
   sessionPath: string;
   initialView?: "changes" | "checks";
+  initialPath?: string;
   onAllChanges(): void;
-}>(function WorkspaceTurnResult({ summary, tabId, sessionPath, initialView = "checks", onAllChanges }, ref) {
+}>(function WorkspaceTurnResult({ summary, tabId, sessionPath, initialView = "checks", initialPath, onAllChanges }, ref) {
   const t = useT();
   const recorded = summary.receipt?.diff;
   const resultId = recorded?.id ?? "";
   const turn = recorded?.turn ?? summary.checkpointTurn;
   const key = `${tabId}\u0000${sessionPath}\u0000${resultId}`;
-  const [selected, setSelected] = useState<{ key: string; path: string }>();
+  const [selected, setSelected] = useState<{ key: string; path: string } | undefined>(initialPath ? { key, path: initialPath } : undefined);
   const [view, setView] = useState(initialView);
   const [resource, setResource] = useState<{ key: string; result?: TurnChanges }>();
   useEffect(() => {

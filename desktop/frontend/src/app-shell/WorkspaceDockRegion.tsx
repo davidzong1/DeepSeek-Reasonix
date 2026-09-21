@@ -110,7 +110,7 @@ export function WorkspaceDockRegion(props: WorkspaceDockRegionProps) {
         <aside className={["workbench-dock", `workbench-dock--${mode}`, overlay ? "workbench-dock--overlay" : ""].join(" ")} aria-label={t("rightDock.workbench")}>
           <div className="workbench-dock__panel">
             <Suspense fallback={null}>
-              <TabContainer key={loadedRoot} renderTab={renderTab} onPickEntry={props.onPickEntry} />
+              <TabContainer key={loadedRoot} renderTab={renderTab} onPickEntry={props.onPickEntry} onClosePanel={props.workspace.onClose} />
             </Suspense>
           </div>
         </aside>

@@ -1,11 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import "./app-memory-workers.test.mjs";
 import { attributeRetention, BASELINE_NOT_SETTLED_REASON, evidenceIntegrity, retainedCohorts, screeningBlockers, summarizeHeap, TRANSIENT_EXCURSION_REASON } from "./app-memory-evidence.mjs";
 
 const sample = (ids, roundTrips) => ({ phase: "full", roundTrips, lifecycle: {
   liveRenderTokenIds: ids, liveRenderTokens: ids.length,
   activeOperations: 0, activeSubscriptions: 6, invariantViolations: 0, overflow: false,
 } });
+test("one measured parser worker is independent of DOM listener retention", () => {
+  const values = [0, 1, 0, 1].map((count, index) => ({
+    ...sample([1, index + 2], index * 32),
+    dom: { nodes: 6750, jsEventListeners: 359 + count * 3 },
+    workers: count ? [["error", "error", "message"]] : [],
+  }));
+  assert.deepEqual(screeningBlockers(attributeRetention(values).reasons), []);
+  values.at(-1).dom.jsEventListeners++;
+  assert.ok(screeningBlockers(attributeRetention(values).reasons).includes("post-gc-dom-or-listener-drift"));
+});
+test("worker accumulation and extra listeners still block screening", () => {
+  const baseline = { ...sample([1, 2], 0), dom: { nodes: 6750, jsEventListeners: 359 }, workers: [] };
+  for (const workers of [[["message"], ["message"]], [["message", "message"]], [["error", "error", "error"]], [["resize"]]]) {
+    const tail = { ...sample([1, 3], 32), dom: { nodes: 6750, jsEventListeners: 365 }, workers };
+    assert.ok(screeningBlockers(attributeRetention([baseline, tail]).reasons).includes("worker-population-drift"));
+  }
+});
 test("deliberately retained cohorts remain detectable even when totals are constant", () => {
   const samples = [sample([1, 2], 0), sample([3, 4], 32), sample([3, 5], 64), sample([3, 6], 96)];
   assert.equal(evidenceIntegrity(samples), true);

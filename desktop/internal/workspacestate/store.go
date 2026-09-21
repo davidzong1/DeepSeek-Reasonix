@@ -72,6 +72,8 @@ type Store struct {
 	path          string
 	mu            sync.Mutex
 	beforeUpgrade func(context.Context) error
+	readBody      []byte
+	readState     State
 }
 
 func NewStore(path string, beforeUpgrade ...func(context.Context) error) *Store {
@@ -90,6 +92,16 @@ func (s *Store) Path() string {
 }
 
 func (s *Store) Load(ctx context.Context) (State, error) {
+	return s.loadSnapshot(ctx, false)
+}
+
+// LoadProjection returns display/ownership metadata only. Recovery and command
+// callers must use Load: operation journals are intentionally absent here.
+func (s *Store) LoadProjection(ctx context.Context) (State, error) {
+	return s.loadSnapshot(ctx, true)
+}
+
+func (s *Store) loadSnapshot(ctx context.Context, projection bool) (State, error) {
 	if s == nil || strings.TrimSpace(s.path) == "" || s.path == "." {
 		return State{}, errors.New("workspace state path is required")
 	}
@@ -98,11 +110,30 @@ func (s *Store) Load(ctx context.Context) (State, error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
 	}
-	state, err := load(s.path)
+	// Compare actual bytes, not timestamps or generation: another supported
+	// writer may replace a file while preserving either of those values.
+	body, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		s.readBody = nil
+		return newState(), nil
+	}
 	if err != nil {
 		return State{}, err
 	}
-	return cloneState(state)
+	if s.readBody == nil || !bytes.Equal(body, s.readBody) {
+		state, err := decodeState(body)
+		if err != nil {
+			return State{}, err
+		}
+		s.readBody, s.readState = body, state
+	}
+	state := s.readState
+	if projection {
+		state = State{Version: state.Version, Generation: state.Generation, Initialized: state.Initialized,
+			WorkspaceIDs: state.WorkspaceIDs, Workspaces: state.Workspaces,
+			SessionStates: state.SessionStates, SourceMappings: state.SourceMappings, Presentation: state.Presentation}
+	}
+	return cloneSnapshot(state), nil
 }
 
 func (s *Store) RenameWorkspace(ctx context.Context, workspaceID, title string) error {
@@ -500,6 +531,10 @@ func load(path string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	return decodeState(body)
+}
+
+func decodeState(body []byte) (State, error) {
 	var state State
 	if err := json.Unmarshal(body, &state); err != nil {
 		return State{}, fmt.Errorf("decode workspace state: %w", err)
@@ -647,19 +682,6 @@ func remove(ids []string, target string) []string {
 
 func contains(ids []string, target string) bool {
 	return slices.Contains(ids, target)
-}
-
-func cloneState(state State) (State, error) {
-	body, err := json.Marshal(state)
-	if err != nil {
-		return State{}, err
-	}
-	var clone State
-	if err := json.Unmarshal(body, &clone); err != nil {
-		return State{}, err
-	}
-	normalize(&clone)
-	return clone, nil
 }
 
 func (s *State) UnmarshalJSON(body []byte) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,6 +204,8 @@ func TestShutdownDoesNotWaitForCancelledControllerBuild(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	app.tabBuildStartHook = func(string) {
 		close(started)
 		<-release
@@ -221,10 +224,11 @@ func TestShutdownDoesNotWaitForCancelledControllerBuild(t *testing.T) {
 	}()
 	select {
 	case <-shutdownDone:
-		close(release)
-	case <-time.After(750 * time.Millisecond):
-		close(release)
-		<-shutdownDone
+		// Completion while the build remains blocked proves non-dependence.
+		// The guard is for deadlocks, not shutdown persistence performance.
+		unblock()
+	case <-time.After(5 * time.Second):
+		unblock()
 		t.Fatal("shutdown waited for a cancelled controller build")
 	}
 	select {
@@ -238,10 +242,14 @@ func TestShutdownCancelsBlockedSessionOpen(t *testing.T) {
 	app, _, target, _, _ := canonicalWorkspaceOpenFixture(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	cancelled := make(chan struct{})
 	app.sessionOpenBuildHook = func(ctx context.Context) {
 		close(started)
 		select {
 		case <-ctx.Done():
+			close(cancelled)
 		case <-release:
 		}
 	}
@@ -259,19 +267,28 @@ func TestShutdownCancelsBlockedSessionOpen(t *testing.T) {
 		shutdownDone <- err
 	}()
 
+	// Observe cancellation itself before waiting for unrelated shutdown work
+	// such as session persistence and window-state writes.
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session open did not observe shutdown cancellation")
+	}
 	select {
 	case err := <-shutdownDone:
 		if err != nil {
-			close(release)
 			t.Fatalf("shutdown after cancelling session open: %v", err)
 		}
-	case <-time.After(750 * time.Millisecond):
-		close(release)
-		<-shutdownDone
-		t.Fatal("shutdown waited for a session open that did not observe cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not complete after session open observed cancellation")
 	}
-	if err := <-openDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled session open = %v, want context canceled", err)
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled session open = %v, want context canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled session open did not return")
 	}
 }
 

@@ -59,6 +59,16 @@ test("grant, list and open are scoped to the grant's task", async () => {
   assert.deepEqual(listed.tabs.map((tab) => tab.id), [opened.id], "another task's tabs are invisible");
 });
 
+test("a new session grant cannot list or control the task's earlier session tabs", async () => {
+  const s = await setup();
+  await s.call("host/browser.grant", { grantId: "old", tabId: "task-1", sessionId: "session-1" });
+  const old = (await s.call("host/browser.tabs.open", { grantId: "old", url: "https://old.test" })) as HostBrowserTab;
+  await s.call("host/browser.grant", { grantId: "next", tabId: "task-1", sessionId: "session-2" });
+  const listed = (await s.call("host/browser.tabs.list", { grantId: "next" })) as { tabs: HostBrowserTab[] };
+  assert.deepEqual(listed.tabs, []);
+  await assert.rejects(s.call("host/browser.snapshot", { grantId: "next", tabId: old.id }), code(BROWSER_ERR_NO_GRANT));
+});
+
 test("tab calls verify the grant and refuse tabs of another task", async () => {
   const s = await setup();
   await s.call("host/browser.grant", { grantId: "g", tabId: "task-1", sessionId: "" });
@@ -76,6 +86,11 @@ test("reads and writes refuse a tab the user has taken over", async () => {
   s.surfaces.takeover(tab.id, "user mousedown");
   await assert.rejects(s.call("host/browser.snapshot", { grantId: "g", tabId: tab.id }), code(BROWSER_ERR_TAKEN_OVER));
   await assert.rejects(s.call("host/browser.tabs.navigate", { grantId: "g", tabId: tab.id, url: "https://c.test" }), code(BROWSER_ERR_TAKEN_OVER));
+  const refreshed = (await s.call("host/browser.tabs.navigate", {
+    grantId: "g", tabId: tab.id, url: "https://refreshed.test", allowHuman: true,
+  })) as HostBrowserTab;
+  assert.equal(refreshed.url, "https://refreshed.test/");
+  assert.equal(s.surfaces.require(tab.id).mode, "human", "an explicit user refresh preserves takeover");
   await assert.rejects(s.call("host/browser.screenshot", { grantId: "g", tabId: tab.id, ref: "", directory: "" }), code(BROWSER_ERR_TAKEN_OVER));
   const closed = await s.call("host/browser.tabs.close", { grantId: "g", tabId: tab.id });
   assert.deepEqual(closed, {}, "closing is still allowed so the task can clean up");

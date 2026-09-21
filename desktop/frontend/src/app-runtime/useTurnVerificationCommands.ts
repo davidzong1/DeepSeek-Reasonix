@@ -23,7 +23,7 @@ export function useTurnVerificationCommands(input: TurnVerificationCommandsInput
   const revealSequenceRef = useRef(0);
   const [verificationRevealRequest, setVerificationRevealRequest] = useState<WorkspaceVerificationRevealRequest | null>(null);
 
-  const openTurnResult = useCommittedCommand((summary: WireCompletionSummary, view: "changes" | "checks") => {
+  const openTurnResult = useCommittedCommand((summary: WireCompletionSummary, view: "changes" | "checks", initialPath?: string) => {
     input.openChangedDock();
     revealSequenceRef.current += 1;
     setVerificationRevealRequest({
@@ -34,12 +34,13 @@ export function useTurnVerificationCommands(input: TurnVerificationCommandsInput
       currentSummary: input.completionSummary,
       sessionPath: input.sessionPath,
       view,
+      ...(initialPath ? { initialPath } : {}),
     });
   });
 
   const openTurnVerification = useCommittedCommand((summary: WireCompletionSummary) => openTurnResult(summary, "checks"));
-  const openTurnChanges = useCommittedCommand((summary?: WireCompletionSummary) => {
-    if (summary) openTurnResult(summary, "changes");
+  const openTurnChanges = useCommittedCommand((summary?: WireCompletionSummary, initialPath?: string) => {
+    if (summary) openTurnResult(summary, "changes", initialPath);
     else { setVerificationRevealRequest(null); input.openChangedDock(); }
   });
   const closeTurnResult = useCommittedCommand(() => setVerificationRevealRequest(null));

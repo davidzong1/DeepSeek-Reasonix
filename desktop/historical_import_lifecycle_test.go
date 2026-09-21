@@ -332,6 +332,148 @@ func TestHistoricalCancelCanRestartDurableImport(t *testing.T) {
 	}
 }
 
+func TestHistoricalLateCancelCannotCancelRetry(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := config.SessionStoreDir()
+	coldV4MigrationFixture(t, root, "late-cancel")
+	app := newHistoricalLifecycleApp(t)
+	id := historicalLifecycleID(t, app, "late-cancel")
+	releaseSource, err := identitylock.Acquire(t.Context(), filepath.Join(root, ".late-cancel.ownership.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := app.prepareHistoricalSession(id, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = waitHistoricalImport(first); err == nil {
+		t.Fatal("occupied source did not block the first preparation")
+	}
+	releaseSource()
+
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(proceed) }) }
+	t.Cleanup(release)
+	app.desktopSessions.beforeMigrationRegistryCommit = func() error {
+		close(entered)
+		<-proceed
+		return nil
+	}
+	second, err := app.prepareHistoricalSession(id, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.operationID == second.operationID {
+		t.Fatalf("retry reused operation id %q", second.operationID)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("retry did not reach publication")
+	}
+	if _, err := app.CancelSessionPreparation(first.operationID); err == nil {
+		t.Fatal("stale operation id remained cancellable after retry")
+	}
+	if err := second.ctx.Err(); err != nil {
+		t.Fatalf("stale cancellation reached retry: %v", err)
+	}
+	release()
+	if result, err := waitHistoricalImport(second); err != nil || result.Session.SessionID == "" {
+		t.Fatalf("retry did not complete after stale cancellation: %+v %v", result, err)
+	}
+}
+
+func TestHistoricalCancelledOperationRetryGetsNewIdentity(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	coldV4MigrationFixture(t, config.SessionStoreDir(), "cancel-retry")
+	app := newHistoricalLifecycleApp(t)
+	id := historicalLifecycleID(t, app, "cancel-retry")
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var hookCalls atomic.Int32
+	app.desktopSessions.beforeMigrationRegistryCommit = func() error {
+		if hookCalls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return nil
+	}
+	first, err := app.prepareHistoricalSession(id, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first preparation did not reach the cancellation point")
+	}
+	if _, err = app.CancelSessionPreparation(first.operationID); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	if _, err = waitHistoricalImport(first); err == nil {
+		t.Fatal("cancelled preparation completed successfully")
+	}
+
+	second, err := app.prepareHistoricalSession(id, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.operationID == first.operationID {
+		t.Fatalf("retry reused cancelled operation id %q", second.operationID)
+	}
+	result, err := waitHistoricalImport(second)
+	if err != nil || result.Session.SessionID == "" {
+		t.Fatalf("retry did not complete: %+v %v", result, err)
+	}
+	if _, err = app.GetSessionPreparation(first.operationID); err == nil {
+		t.Fatal("cancelled operation remained addressable after retry")
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil || len(state.SourceMappings) != 1 || len(state.Workspaces[workspacestate.GlobalWorkspaceID].SessionIDs) != 1 {
+		t.Fatalf("cancel retry duplicated the durable target: %+v %v", state, err)
+	}
+}
+
+func TestHistoricalInteractiveCancelPreservesBatchDemand(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	coldV4MigrationFixture(t, config.SessionStoreDir(), "shared-demand")
+	app := newHistoricalLifecycleApp(t)
+	id := historicalLifecycleID(t, app, "shared-demand")
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(proceed) }) }
+	t.Cleanup(release)
+	app.desktopSessions.beforeMigrationRegistryCommit = func() error {
+		close(entered)
+		<-proceed
+		return nil
+	}
+	interactive, err := app.prepareHistoricalSession(id, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := app.prepareHistoricalSession(id, false, true)
+	if err != nil || batch != interactive {
+		t.Fatalf("interactive and batch demands did not join: %p %p %v", interactive, batch, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shared preparation did not reach publication")
+	}
+	if _, err = app.CancelSessionPreparation(interactive.operationID); err != nil {
+		t.Fatal(err)
+	}
+	if err = interactive.ctx.Err(); err != nil {
+		t.Fatalf("interactive cancellation stopped the batch demand: %v", err)
+	}
+	release()
+	if result, err := waitHistoricalImport(interactive); err != nil || result.Session.SessionID == "" {
+		t.Fatalf("batch demand did not finish: %+v %v", result, err)
+	}
+}
+
 func TestHistoricalImportDoesNotReviveArchivedOrDeletedTarget(t *testing.T) {
 	for _, lifecycle := range []string{workspacestate.Archived, workspacestate.Deleted} {
 		t.Run(lifecycle, func(t *testing.T) {

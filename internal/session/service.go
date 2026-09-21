@@ -190,11 +190,14 @@ func (r *Runtime) activitySnapshot() RuntimeSnapshot {
 // Cancel forwards Stop to the bound turn-loop without taking the runtime
 // mutex. An unbound runtime is already idle.
 func (r *Runtime) Cancel() bool {
+	var binding *executionBinding
+	var revision uint64
 	for {
 		exec := r.loadExecution()
 		if exec == nil || exec.control == nil {
 			return false
 		}
+		revision = r.revision.Load()
 		if !exec.control.Cancel() {
 			// A host cutover may linearize while Cancel is inside the outgoing
 			// loop. Retry only when ownership actually changed; a stable owner
@@ -204,16 +207,26 @@ func (r *Runtime) Cancel() bool {
 			}
 			return false
 		}
+		binding = exec
 		break
 	}
-	r.canceling.Store(true)
-	if r.mu.TryLock() {
-		if r.phase == RuntimeRunning {
+	// The callback may finish its worker and start queued work before it
+	// returns. Never apply its acknowledgement to that successor's activity.
+	update := func() {
+		defer r.mu.Unlock()
+		if r.execution.Load() == binding && r.revision.Load() == revision && r.phase == RuntimeRunning {
+			r.canceling.Store(true)
 			r.phase = RuntimeCancelling
-			r.activity = "cancelling"
+			if r.activity != MaintenanceActivity {
+				r.activity = "cancelling"
+			}
 			r.revision.Add(1)
 		}
-		r.mu.Unlock()
+	}
+	if r.mu.TryLock() {
+		update()
+	} else {
+		go func() { r.mu.Lock(); update() }()
 	}
 	return true
 }

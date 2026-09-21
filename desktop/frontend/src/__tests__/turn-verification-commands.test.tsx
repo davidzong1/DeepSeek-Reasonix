@@ -65,8 +65,9 @@ try {
   await act(async () => { states.openTurnVerification(summary(4)); });
   await paint({ activeTabId: "B", completionSummary: summary(2) });
   assert.equal(states.verificationRevealRequest?.summary.mutations, 4, "a summary refresh preserves the historical reveal");
-  await act(async () => { states.openTurnChanges(historical); });
+  await act(async () => { states.openTurnChanges(historical, "src/app.ts"); });
   assert.equal(states.verificationRevealRequest?.view, "changes");
+  assert.equal(states.verificationRevealRequest?.initialPath, "src/app.ts", "a changed-file row selects its frozen diff");
   await act(async () => { states.closeTurnResult(); });
   assert.equal(states.verificationRevealRequest, null);
 

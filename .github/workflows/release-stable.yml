@@ -47,7 +47,7 @@ on:
         type: boolean
 
 concurrency:
-  group: stable-release-${{ inputs.tag || github.ref_name }}
+  group: stable-release-publication
   cancel-in-progress: false
 
 # Reusable release workflows can only reduce caller permissions, so the
