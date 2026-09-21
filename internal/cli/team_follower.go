@@ -782,5 +782,10 @@ func newMemberFollower(deps memberBackendDeps, ctrl *control.Controller, b team.
 	if err != nil {
 		return nil, bindErr
 	}
+	// Said out loud because it is the one state an operator cannot see from the
+	// window: this window is a reader. Whether its gauges can be filled depends
+	// on another runtime publishing, so the log must name who was refused.
+	slog.Info("team member bound read-only (writer is another runtime)",
+		"team", b.Team, "member", b.MemberID, "reason", bindErr)
 	return follower, nil
 }

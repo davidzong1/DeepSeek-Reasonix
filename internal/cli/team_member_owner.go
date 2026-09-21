@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +14,57 @@ import (
 	"reasonix/internal/session"
 	"reasonix/internal/team"
 )
+
+// ownerSessionTakeover binds the member to the session its owner document names,
+// when the member's own directory holds no transcript to bind.
+//
+// That combination is not a missing history: the owner stem is authoritative
+// (it is what a peer follows and what every later bind compares against), and
+// the session it names is a published v3 identity any runtime may open. The
+// directory has no transcript because an earlier attempt adopted a history into
+// the member slot and then, without publishing, moved the member onto a
+// different session. Without this, every later bind finds no candidate, seeds a
+// brand-new session, and leaves the member permanently read-only.
+//
+// It refuses unless the named session is readable and holds history: an owner
+// pointing at a purged or empty session is a member whose history is gone, and
+// ok=false continues down the historical path unchanged.
+func ownerSessionTakeover(ctrl *control.Controller, owners *team.OwnerStore, b team.MemberBinding, ownerDir string) (bool, error) {
+	if ctrl == nil || owners == nil || !ctrl.UsesExclusiveSession() {
+		return false, nil
+	}
+	service := ctrl.SessionService()
+	if service == nil {
+		return false, nil
+	}
+	// Only when the member's own directory has nothing to bind: a present
+	// transcript is the legacy axis's execution identity and keeps priority.
+	if _, err := os.Stat(filepath.Join(ownerDir, b.SessionFile)); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	fingerprint, err := owners.Fingerprint(team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID})
+	if err != nil || !fingerprint.Present || fingerprint.Corrupt {
+		return false, nil
+	}
+	sessionID, ok := followerStemIdentity(fingerprint.Stem)
+	if !ok || sessionID == "" {
+		return false, nil
+	}
+	ref := session.SessionRef{HostID: service.HostID(), SessionID: sessionID}
+	history, err := service.Query().History(context.Background(), ref)
+	if err != nil || len(history) == 0 {
+		return false, nil // unreadable or empty: nothing to take over
+	}
+	if _, err := ctrl.OpenSession(context.Background(), ref); err != nil {
+		if isMemberWriterContention(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
 
 // memberSessionRoots returns the directories one member's session file is looked
 // for in, in probe order, plus the directory a first-entry file is created under.

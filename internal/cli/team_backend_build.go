@@ -467,6 +467,13 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			ctrl.Close()
 			return nil, err
 		}
+		// Re-publish after the seed: it replaces the transcript the bind resolved,
+		// so the identity published above is stale — and a stale owner document
+		// makes every later bind of this member a refused stale import.
+		if err := recordMemberOwnerHistory(deps.ctx, deps.owners, b, ctrl, false); err != nil {
+			ctrl.Close()
+			return nil, err
+		}
 		// The member's own session must be writable by this controller alone
 		// (members never share the host's lease), so acquire its write-authority
 		// lease before the first submitted task (admission-6 gate).
@@ -509,13 +516,27 @@ func bindMemberOwnerSession(deps memberBackendDeps, ctrl *control.Controller, b 
 	// Canonical owner storage comes first when the host has a team data root:
 	// a history still in a session-directory candidate is adopted into the
 	// member's owner directory once, and every later launch reads it there.
+	ownerDir := ""
 	if deps.owners != nil {
-		ownerDir, err := adoptMemberOwnerHistory(deps.ctx, ctrl, deps.owners, b, roots)
+		dir, err := adoptMemberOwnerHistory(deps.ctx, ctrl, deps.owners, b, roots)
 		if err != nil {
 			ctrl.Close()
 			return "", false, nil, err
 		}
+		ownerDir = dir
 		roots, createRoot = memberSessionRootsWithOwner(ctrl, deps.workspaceRoot, ownerDir)
+	}
+	// The owner document may name a session this directory cannot offer: binding
+	// it IS the member's history (see ownerSessionTakeover).
+	switch took, err := ownerSessionTakeover(ctrl, deps.owners, b, ownerDir); {
+	case err != nil && isMemberWriterContention(err):
+		follower, ferr := newMemberFollower(deps, ctrl, b, err)
+		return "", false, follower, ferr
+	case err != nil:
+		ctrl.Close()
+		return "", false, nil, err
+	case took:
+		return "", false, nil, nil
 	}
 	path, fresh, err := bindMemberSession(ctrl, b.SessionFile, roots, createRoot)
 	if err != nil {

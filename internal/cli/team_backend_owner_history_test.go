@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
+	"reasonix/internal/event"
+	"reasonix/internal/provider"
+	"reasonix/internal/session"
 	"reasonix/internal/team"
 )
 
@@ -110,3 +116,215 @@ func TestRecordMemberOwnerHistoryReportsFailure(t *testing.T) {
 type staticHistoryStamp string
 
 func (s staticHistoryStamp) HistoryStamp() string { return string(s) }
+
+// TestAmbientSeedRepublishesOwnerIdentity pins the identity a fresh member bind
+// must leave behind. A leader's first entry is seeded from the chat's history,
+// which REPLACES the transcript the bind just resolved and advances the session
+// it runs, so the publication made before the seed describes a state the member
+// no longer runs. The owner document is what a peer window compares and what a
+// later bind reads, so it must name the post-seed state.
+//
+// The session id survives the seed (the projection is replaced in place); the
+// generation does not. Publishing before the seed therefore leaves every peer
+// believing the member's history changed the moment it was bound.
+func TestAmbientSeedRepublishesOwnerIdentity(t *testing.T) {
+	root := t.TempDir()
+	owners, err := team.NewOwnerStore(filepath.Join(root, "team"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const teamName, memberID, sessionFile = "alpha", "leader-agent", "team-alpha-leader-agent.json"
+	key := team.OwnerKey{TeamID: teamName, MemberID: memberID}
+	paths, _, err := owners.Init(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewService("local", session.NewFilesystemPersistence(filepath.Join(root, "sessions-v4")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+	dir := t.TempDir()
+	ctrl := control.New(control.Options{
+		Executor:   agent.New(nil, nil, agent.NewSession("member-sys"), agent.Options{}, event.Discard),
+		SessionDir: dir, Label: memberID, SystemPrompt: "member-sys",
+		DisableColdResumePrune: true, Sink: event.Discard,
+		SessionService: store, ExclusiveSession: true,
+	})
+	t.Cleanup(ctrl.Close)
+	if _, err := ctrl.BindFreshSession(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
+	// The builder's pre-seed publication.
+	if err := recordMemberOwnerHistory(context.Background(), owners, binding, ctrl, false); err != nil {
+		t.Fatal(err)
+	}
+	// The seed: the chat's conversation replaces this member's transcript.
+	carry := leaderAmbientCarry([]provider.Message{
+		{Role: provider.RoleSystem, Content: "You are Reasonix, a coding agent."},
+		{Role: provider.RoleUser, Content: "do the thing"},
+		{Role: provider.RoleAssistant, Content: "done"},
+	}, ctrl.History())
+	if len(carry) == 0 {
+		t.Fatal("the fixture must produce a carry, or the seed is a no-op")
+	}
+	ctrl.AdoptHistory(carry, paths.Transcript)
+	if err := ctrl.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	// The builder's post-seed publication.
+	if err := recordMemberOwnerHistory(context.Background(), owners, binding, ctrl, false); err != nil {
+		t.Fatal(err)
+	}
+
+	published, err := owners.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := followerStemIdentity(published.Stem)
+	ref, hasRef := ctrl.SessionRef()
+	if !ok || !hasRef {
+		t.Fatalf("the fixture must publish a real identity (stem=%q ref=%v)", published.Stem, hasRef)
+	}
+	if identity != ref.SessionID {
+		t.Fatalf("owner publishes session %q but the member runs %q", identity, ref.SessionID)
+	}
+	// The generation is the half the pre-seed publication gets wrong: the seed
+	// advanced the session, and the document must say so.
+	if want := ctrl.HistoryStamp(); published.Stem != want {
+		t.Fatalf("owner publishes %q but the member's history identity is %q", published.Stem, want)
+	}
+}
+
+// TestMemberBindTakesOverThePublishedOwnerSession pins plan A at the boundary
+// the host consumes: a member whose owner document names a readable session but
+// whose directory holds no transcript must come back from the bind WRITABLE, on
+// that published identity. Without the takeover the bind takes the first-entry
+// branch, seeds a new session and leaves the owner stale forever — the member is
+// then read-only with no writer anywhere, which is the state this repairs.
+func TestMemberBindTakesOverThePublishedOwnerSession(t *testing.T) {
+	root := t.TempDir()
+	owners, err := team.NewOwnerStore(filepath.Join(root, "team"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const teamName, memberID, sessionFile = "alpha", "leader-agent", "team-alpha-leader-agent.json"
+	key := team.OwnerKey{TeamID: teamName, MemberID: memberID}
+	paths, _, err := owners.Init(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewService("local", session.NewFilesystemPersistence(filepath.Join(root, "sessions-v4")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+	newCtrl := func() *control.Controller {
+		ctrl := control.New(control.Options{
+			Executor:   agent.New(nil, nil, agent.NewSession("member-sys"), agent.Options{}, event.Discard),
+			SessionDir: t.TempDir(), Label: memberID, SystemPrompt: "member-sys",
+			DisableColdResumePrune: true, Sink: event.Discard,
+			SessionService: store, ExclusiveSession: true,
+		})
+		t.Cleanup(ctrl.Close)
+		return ctrl
+	}
+	// A published session holding history, exactly as a previous leader seed left it.
+	seeder := newCtrl()
+	if _, err := seeder.BindFreshSession(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	seeder.AdoptHistory([]provider.Message{
+		{Role: provider.RoleSystem, Content: "You are Reasonix, a coding agent."},
+		{Role: provider.RoleUser, Content: "the task"},
+		{Role: provider.RoleAssistant, Content: "done"},
+	}, paths.Transcript)
+	if err := seeder.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	seeded, ok := seeder.SessionRef()
+	if !ok {
+		t.Fatal("the seeder must publish an identity")
+	}
+	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
+	if err := recordMemberOwnerHistory(context.Background(), owners, binding, seeder, false); err != nil {
+		t.Fatal(err)
+	}
+	// The state under test: the member's own directory holds no transcript.
+	if _, err := os.Stat(paths.Transcript); !os.IsNotExist(err) {
+		t.Fatalf("the fixture must leave the owner directory without a transcript, got %v", err)
+	}
+
+	next := newCtrl()
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, 4)}
+	_, fresh, follower, err := bindMemberOwnerSession(deps, next, binding)
+	if err != nil || follower != nil {
+		t.Fatalf("bind returned a read-only follower (err=%v), want the member bound writable", err)
+	}
+	if fresh {
+		t.Fatal("taking over the published session is not a first entry; the owner already had history")
+	}
+	ref, ok := next.SessionRef()
+	if !ok || ref.SessionID != seeded.SessionID {
+		t.Fatalf("bound session = %v, want the published %v", ref, seeded.SessionID)
+	}
+	if got := next.History(); len(got) == 0 {
+		t.Fatal("the takeover must bring the member's history with it, not an empty session")
+	}
+}
+
+// TestOwnerSessionTakeoverRefusesWithoutAReadableOwner is the refusal half: an
+// owner with no identity published, or naming a session that is gone, is a
+// member whose history is missing. Binding a fresh session under that identity
+// would fabricate a member the operator never had, so the historical first-entry
+// path must stay in charge.
+func TestOwnerSessionTakeoverRefusesWithoutAReadableOwner(t *testing.T) {
+	root := t.TempDir()
+	owners, err := team.NewOwnerStore(filepath.Join(root, "team"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const teamName, memberID, sessionFile = "alpha", "leader-agent", "team-alpha-leader-agent.json"
+	key := team.OwnerKey{TeamID: teamName, MemberID: memberID}
+	paths, _, err := owners.Init(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewService("local", session.NewFilesystemPersistence(filepath.Join(root, "sessions-v4")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+	ctrl := control.New(control.Options{
+		Executor:   agent.New(nil, nil, agent.NewSession("member-sys"), agent.Options{}, event.Discard),
+		SessionDir: t.TempDir(), Label: memberID, SystemPrompt: "member-sys",
+		DisableColdResumePrune: true, Sink: event.Discard,
+		SessionService: store, ExclusiveSession: true,
+	})
+	t.Cleanup(ctrl.Close)
+	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
+
+	for _, tc := range []struct {
+		name string
+		stem string
+	}{
+		{"no owner identity published", ""},
+		{"owner names a session that does not exist", "0123456789abcdef01234567:3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.stem != "" {
+				if err := owners.BumpHistory(context.Background(), key, tc.stem, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			took, err := ownerSessionTakeover(ctrl, owners, binding, paths.Dir)
+			if err != nil {
+				t.Fatalf("refusal must be quiet, got %v", err)
+			}
+			if took {
+				t.Fatal("an owner with no readable history must not be taken over")
+			}
+		})
+	}
+}
