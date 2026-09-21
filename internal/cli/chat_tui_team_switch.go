@@ -289,6 +289,7 @@ func (m *chatTUI) unbindTeamMember() {
 	if m.ambient == nil {
 		return // never bound a member
 	}
+	m.stopAmbientOwnerUsage()
 	ambient := m.ambient
 	m.ambient = nil
 	m.bindBackend(ambient, ownerKey{})

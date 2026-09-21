@@ -146,6 +146,10 @@ type teamPicker struct {
 	session       sessionState           // team session window; active replaces the roster
 	reset         leaderResetState       // k step-down confirmation; owns every key while active
 	teamClear     teamClearState         // c clear-histories confirmation; owns every key while active
+	// ambientUsage publishes the bound member's usage when THIS window's own chat
+	// is that member's writer (the leader's session is its own member slot's
+	// canonical history). Picker-owned: that pointer survives model copies.
+	ambientUsage *memberUsagePublisher
 }
 
 // onTeamButtonClick opens the team overlay on the focused team's leader

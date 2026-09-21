@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/term"
 )
 
 const (
@@ -116,6 +117,16 @@ type tuiDiagnostics struct {
 	killFn     func()
 	logFn      func(format string, args ...any)
 	shutdownFn func(*tuiShutdownCompletion)
+	// Team-agent: terminal-size recovery seams. main-v2 has no periodic geometry
+	// re-check; keep these, checkTerminalSize and its watch-loop call.
+	sizeFn      func() (width, height int, ok bool)
+	requestSize func()
+	// modelSize is the geometry the frame is laid out for, published by the
+	// model; lastSizeRequest is the terminal geometry already asked for, so a
+	// mismatch is not re-asked every tick.
+	modelSize       terminalSize
+	modelSizeKnown  bool
+	lastSizeRequest terminalSize
 
 	// Test observation counters (safe under mu).
 	cancelCalls atomic.Int32
@@ -316,6 +327,14 @@ func (d *tuiDiagnostics) StartWatchdog(p *tea.Program) {
 		if d.killFn == nil && p != nil {
 			d.killFn = p.Kill
 		}
+		if d.requestSize == nil && p != nil {
+			// The program re-measures its own tty (the source the startup and
+			// SIGWINCH paths use), so recovery cannot desync its cached geometry.
+			d.requestSize = func() { p.Send(tea.RequestWindowSize()) }
+		}
+		if d.sizeFn == nil {
+			d.sizeFn = terminalGeometry
+		}
 		if d.shutdownFn == nil && p != nil {
 			d.shutdownFn = func(completion *tuiShutdownCompletion) {
 				p.Send(tuiShutdownMsg{completion: completion})
@@ -349,9 +368,67 @@ func (d *tuiDiagnostics) watch() {
 		case <-d.stopWatch:
 			return
 		case now := <-ticker.C():
+			d.checkTerminalSize()
 			d.onTick(now)
 		}
 	}
+}
+
+// terminalSize is one terminal geometry reading.
+type terminalSize struct {
+	width  int
+	height int
+}
+
+// terminalGeometry reads the real terminal geometry, or reports none to read.
+func terminalGeometry() (width, height int, ok bool) {
+	if !isTTY(os.Stdout) {
+		return 0, 0, false
+	}
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+// NoteTerminalSize records the geometry the frame is laid out for. Publishing it
+// is what lets the check below correct a frame that started out sized for a
+// terminal that never existed, not only one that drifted later.
+func (d *tuiDiagnostics) NoteTerminalSize(width, height int) {
+	if d == nil || width <= 0 || height <= 0 {
+		return
+	}
+	d.mu.Lock()
+	d.modelSize, d.modelSizeKnown = terminalSize{width: width, height: height}, true
+	d.mu.Unlock()
+}
+
+// checkTerminalSize keeps the frame on the terminal it actually runs in: Bubble
+// Tea re-reads the geometry only on SIGWINCH, and a coalesced or raced signal
+// leaves rows past the last line — the bottom status row disappearing.
+func (d *tuiDiagnostics) checkTerminalSize() {
+	if d == nil || d.sizeFn == nil || d.requestSize == nil {
+		return
+	}
+	width, height, ok := d.sizeFn()
+	if !ok || width <= 0 || height <= 0 {
+		return // nothing to measure (piped output, a test host)
+	}
+	real := terminalSize{width: width, height: height}
+	d.mu.Lock()
+	model, known, asked := d.modelSize, d.modelSizeKnown, d.lastSizeRequest
+	d.mu.Unlock()
+	// unknown frame, agreement, or a geometry already asked for: asking again
+	// would only re-deliver the size the program already has.
+	if !known || real == model || real == asked {
+		return
+	}
+	d.mu.Lock()
+	d.lastSizeRequest = real
+	d.logfLocked("terminal_size_recovered terminal=%dx%d frame=%dx%d", real.width, real.height, model.width, model.height)
+	d.mu.Unlock()
+	d.requestSize()
 }
 
 // logHeartbeatLocked records the per-tick heartbeat line in a stable format.

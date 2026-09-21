@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -75,4 +77,35 @@ func newInboxTestChatTUI(t *testing.T) chatTUI {
 	m := newTestChatTUI()
 	m.ctrl = &busyInboxController{SessionAPI: ctrl}
 	return m
+}
+
+// TestQueuedRowsStayInsideTheFrameBudget pins the frame against the durable
+// queue rows. They render above the composer, and while the height budget did
+// not carry them every queued follow-up pushed the frame one row past the
+// terminal — which is what drops the last status row (Git + telemetry: ctx,
+// cache, jobs) off-screen while work is queued, exactly the row an operator
+// watches with items waiting.
+func TestQueuedRowsStayInsideTheFrameBudget(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		m := newInboxTestChatTUI(t)
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = next.(chatTUI)
+		if running {
+			m.state = tuiRunning
+		}
+		m.seedInbox("queued one", "queued two", "queued three")
+		// Any update recomputes the reserved height, as production does.
+		next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = next.(chatTUI)
+
+		queued := ansi.Strip(m.renderQueueIndicator())
+		if queued == "" {
+			t.Fatal("the fixture must actually render queue rows, or this test asserts nothing")
+		}
+		rows := strings.Count(queued, "\n") + 1
+		if got := len(strings.Split(ansi.Strip(m.View().Content), "\n")); got != m.height {
+			t.Fatalf("running=%v: View() rendered %d lines with %d queued row(s), want %d — the last status row must stay on screen",
+				running, got, rows, m.height)
+		}
+	}
 }

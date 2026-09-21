@@ -43,6 +43,24 @@ func (m *chatTUI) inboxQueuedCount() int {
 	return len(m.inboxSnap().Items)
 }
 
+// queueIndicatorRows is the terminal height the durable queue rows occupy above
+// the composer. The frame budget has to carry them: while it did not, every
+// queued follow-up grew the frame one row past the terminal and the last status
+// row (Git + telemetry: ctx, cache, jobs) was written off-screen — the row an
+// operator watches precisely while items are waiting, and the reason a queued
+// team leader lost its context band.
+//
+// Team-agent: added for the team leader's telemetry band. On main-v2 this file
+// has no queueIndicatorRows; merges keep this helper and the one call site in
+// bottomRows (chat_tui.go).
+func (m *chatTUI) queueIndicatorRows() int {
+	qi := m.renderQueueIndicator()
+	if qi == "" {
+		return 0
+	}
+	return strings.Count(qi, "\n") + 1
+}
+
 // enqueueFollowup persists a follow-up and kicks dispatch if the controller is
 // already idle. Only clears the composer on success.
 func (m *chatTUI) enqueueFollowup(display, submit string) (sessioninbox.InboxReceipt, error) {

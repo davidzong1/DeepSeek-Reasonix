@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -614,5 +615,21 @@ func TestStatusBandWithoutControllerKeepsTheHeightBudget(t *testing.T) {
 	}
 	if got := m.transcriptHeight() + m.bottomRows(); got != m.height {
 		t.Fatalf("transcriptHeight + bottomRows = %d, want %d", got, m.height)
+	}
+}
+
+// TestResizePublishesGeometryToDiagnostics pins the other half of the terminal
+// recovery: the watchdog can only compare the real terminal against the frame if
+// the model publishes the geometry it is laid out for.
+func TestResizePublishesGeometryToDiagnostics(t *testing.T) {
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 80)
+	d := newWatchdogForTest(t, &fakeWatchClock{now: time.Unix(1_700_000_000, 0)})
+	m.diagnostics = d
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 132, Height: 44})
+	if got := next.(chatTUI).width; got != 132 {
+		t.Fatalf("the resize must reach the model, width = %d", got)
+	}
+	if !d.modelSizeKnown || d.modelSize != (terminalSize{width: 132, height: 44}) {
+		t.Fatalf("the model must publish its geometry, got %+v (known=%v)", d.modelSize, d.modelSizeKnown)
 	}
 }
