@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func newTestOwnerStore(t *testing.T) *OwnerStore {
@@ -610,5 +611,175 @@ func TestOwnerStoreFingerprintDistinguishesCorruptFromUnnamed(t *testing.T) {
 	}
 	if absent != (OwnerFingerprint{}) {
 		t.Fatalf("an absent owner = %+v, want the zero fingerprint", absent)
+	}
+}
+
+// TestOwnerStoreUsageRoundTripKeepsHistoryIdentityUntouched publishes a usage
+// observation and reads it back field by field, then proves the sibling-file
+// contract that makes telemetry safe to publish at poll rate: the history
+// identity and the CAS revision in .meta.json are byte-identical before and
+// after, so a peer's history sync cannot be perturbed by a usage write (and a
+// malformed usage document can never fail it closed).
+func TestOwnerStoreUsageRoundTripKeepsHistoryIdentityUntouched(t *testing.T) {
+	s := newTestOwnerStore(t)
+	ctx := context.Background()
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+	if _, _, err := s.Init(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BumpHistory(ctx, key, "stem-1:4", true); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaBefore, err := s.Meta(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := OwnerUsage{
+		PublishedAt: "20260921T093000.123456789Z",
+		ContextUsed: 12345, ContextWindow: 128000, CompactRatio: 0.8,
+		LastTurn: &OwnerUsageLastTurn{PromptTokens: 1000, CacheHitTokens: 700, CacheMissTokens: 300},
+		CacheHit: 700, CacheMiss: 300,
+		Jobs: []OwnerUsageJob{{ID: "job-1", Kind: "shell", Label: "build", Status: "running", StartedAt: 42}},
+	}
+	if err := s.WriteUsage(ctx, key, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.ReadUsage(ctx, key)
+	if err != nil || !ok {
+		t.Fatalf("ReadUsage = (%+v, %v, %v), want a published document", got, ok, err)
+	}
+	if got.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", got.SchemaVersion, SchemaVersion)
+	}
+	if got.ContextUsed != want.ContextUsed || got.ContextWindow != want.ContextWindow || got.CompactRatio != want.CompactRatio {
+		t.Fatalf("context fields = %+v, want %+v", got, want)
+	}
+	if got.LastTurn == nil || *got.LastTurn != *want.LastTurn {
+		t.Fatalf("last turn = %+v, want %+v", got.LastTurn, want.LastTurn)
+	}
+	if got.CacheHit != want.CacheHit || got.CacheMiss != want.CacheMiss {
+		t.Fatalf("session cache = (%d,%d), want (%d,%d)", got.CacheHit, got.CacheMiss, want.CacheHit, want.CacheMiss)
+	}
+	if len(got.Jobs) != 1 || got.Jobs[0] != want.Jobs[0] {
+		t.Fatalf("jobs = %+v, want %+v", got.Jobs, want.Jobs)
+	}
+	if stamp, ok := got.Published(); !ok || stamp.UTC().Format("20060102T150405") != "20260921T093000" {
+		t.Fatalf("published stamp = %v ok=%v", stamp, ok)
+	}
+
+	after, err := s.Fingerprint(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaAfter, err := s.Meta(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before || after.Changed(before) {
+		t.Fatalf("publishing usage changed the history identity: %+v -> %+v", before, after)
+	}
+	if metaAfter.Revision != metaBefore.Revision {
+		t.Fatalf("publishing usage bumped the metadata revision: %d -> %d", metaBefore.Revision, metaAfter.Revision)
+	}
+}
+
+// TestOwnerStoreReadUsageNeverFailsClosed pins the reader contract: every
+// "cannot tell" answer is absence, never an error, and it never reaches the
+// metadata document a peer's history sync depends on.
+func TestOwnerStoreReadUsageNeverFailsClosed(t *testing.T) {
+	s := newTestOwnerStore(t)
+	ctx := context.Background()
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+
+	if _, ok, err := s.ReadUsage(ctx, key); ok || err != nil {
+		t.Fatalf("usage before any owner dir = (ok=%v, err=%v), want absent and quiet", ok, err)
+	}
+	if _, _, err := s.Init(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ReadUsage(ctx, key); ok || err != nil {
+		t.Fatalf("usage with no document = (ok=%v, err=%v), want absent and quiet", ok, err)
+	}
+
+	paths, err := s.Paths(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usagePath := filepath.Join(paths.Dir, ownerUsageFile)
+	for _, body := range []string{
+		"{not json",
+		`{"schema_version":99,"published_at":"20260921T093000.000000000Z"}`,
+		strings.Repeat("x", ownerUsageMaxBytes+1),
+	} {
+		writeFile(t, usagePath, body)
+		got, ok, err := s.ReadUsage(ctx, key)
+		if ok || err != nil {
+			t.Fatalf("read of %q = (%+v, ok=%v, err=%v), want absent and quiet", body[:min(len(body), 24)], got, ok, err)
+		}
+		// The metadata document is untouched by a broken usage document.
+		fp, err := s.Fingerprint(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fp.Present || fp.Corrupt {
+			t.Fatalf("a broken usage document corrupted the owner identity: %+v", fp)
+		}
+	}
+}
+
+// TestOwnerStoreWriteUsageRefusesSymlinkedComponents keeps the write path under
+// the same symlink policy as writeMeta: telemetry must not become the one
+// document that can be redirected through a link.
+func TestOwnerStoreWriteUsageRefusesSymlinkedComponents(t *testing.T) {
+	base := t.TempDir()
+	s, err := NewOwnerStore(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(base, "team-a")); err != nil {
+		t.Fatal(err)
+	}
+	key := OwnerKey{TeamID: "team-a", MemberID: "coder-1"}
+	if err := s.WriteUsage(context.Background(), key, OwnerUsage{PublishedAt: "20260921T093000.000000000Z"}); !errors.Is(err, ErrOwnerSymlink) {
+		t.Fatalf("WriteUsage through a symlinked team dir err = %v, want ErrOwnerSymlink", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "coder-1")); !os.IsNotExist(err) {
+		t.Fatalf("usage document leaked through the symlink: %v", err)
+	}
+}
+
+// TestOwnerUsageFresh pins the liveness rule the follower's TTL rests on: a
+// future stamp is clock skew and counts as fresh, an unparsable one never does.
+func TestOwnerUsageFresh(t *testing.T) {
+	now := time.Date(2026, 9, 21, 9, 30, 0, 0, time.UTC)
+	ttl := 30 * time.Second
+	for _, tc := range []struct {
+		name      string
+		stamp     string
+		wantFresh bool
+	}{
+		{"just published", now.Add(-time.Second).Format(time.RFC3339Nano), true},
+		{"at the ttl boundary", now.Add(-ttl).Format(time.RFC3339Nano), true},
+		{"past the ttl", now.Add(-ttl - time.Millisecond).Format(time.RFC3339Nano), false},
+		{"future stamp is skew, not age", now.Add(time.Minute).Format(time.RFC3339Nano), true},
+		{"store clock form", now.Add(-time.Second).UTC().Format("20060102T150405.000000000Z"), true},
+		{"empty stamp", "", false},
+		{"unparsable stamp", "yesterday-ish", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := OwnerUsage{PublishedAt: tc.stamp}
+			if got := u.Fresh(now, ttl); got != tc.wantFresh {
+				t.Fatalf("Fresh(%q) = %v, want %v", tc.stamp, got, tc.wantFresh)
+			}
+			if _, ok := u.Published(); ok != (tc.stamp != "" && tc.stamp != "yesterday-ish") {
+				t.Fatalf("Published(%q) ok = %v", tc.stamp, ok)
+			}
+		})
 	}
 }

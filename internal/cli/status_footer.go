@@ -343,8 +343,10 @@ func (m chatTUI) statusTelemetryGroups() []string {
 		if body, rate, ok := m.cacheStatus(); ok {
 			data = append(data, footerMetric(i18n.M.ChatStatusCacheLabel, themeFg(cacheStatusColor(rate), body)))
 		}
-		used, window := m.ctrl.ContextSnapshot()
-		data = append(data, renderContextStatusGroups(used, window, m.ctrl.CompactRatio())...)
+		// Team-agent: read through the guarded accessors, so a read-only member's
+		// published gauges render here too (this call site had no nil guard).
+		used, window, ratio := m.contextReads()
+		data = append(data, renderContextStatusGroups(used, window, ratio)...)
 		if jt := m.jobsTag(); jt != "" {
 			data = append(data, footerMetric(i18n.M.ChatStatusJobsLabel, footerInfo(ansi.Strip(jt))))
 		}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"log/slog"
 	"slices"
 	"time"
 
@@ -44,8 +45,65 @@ func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 	if msg.sync != nil {
 		m.handleHistorySyncDone(*msg.sync)
 	}
+	m.syncAmbientOwnerUsage()
 	next := m.refreshTeamRosterView()
 	return batchCmds(m.syncBoundHistory(), next)
+}
+
+// syncAmbientOwnerUsage keeps the usage channel of the member this window's own
+// chat writes. The leader's chat is a member's canonical session — the team
+// store records that member's history stem as this session's identity — so the
+// window that shows that member shows a read-only follower whose writer is this
+// very process, and without this its gauges would stay empty forever.
+//
+// The condition is the published identity: while the bound member's owner stem
+// is this window's ambient stamp, the ambient chat is that member's writer. The
+// publisher owns its own cadence, so it survives the team overlay being left
+// (the member backends do too); the condition is re-evaluated every tick and
+// the publisher is stopped the moment it stops holding.
+func (m *chatTUI) syncAmbientOwnerUsage() {
+	if m == nil {
+		return
+	}
+	p := m.teamPick
+	if p == nil || p.owners == nil {
+		return
+	}
+	fingerprint, ok := m.boundOwnerFingerprint()
+	if m.ambient == nil || !ok || !fingerprint.Present || fingerprint.Corrupt ||
+		!sameOwnerIdentity(fingerprint.Stem, m.ambient.HistoryStamp()) {
+		m.stopAmbientOwnerUsage()
+		return
+	}
+	if p.ambientUsage != nil {
+		return
+	}
+	p.ambientUsage = newMemberUsagePublisher(p.owners,
+		team.OwnerKey{TeamID: p.sessionTeamName(), MemberID: p.session.current}, m.ambient)
+	p.ambientUsage.Start()
+	slog.Info("team ambient usage publisher started", "team", p.sessionTeamName(), "member", p.session.current)
+}
+
+// sameOwnerIdentity reports whether two history stamps name the same session.
+// The generation in a stamp is per-writer bookkeeping — the owner document's is
+// bumped by publishes, the controller's by its own history mutations — so the
+// two counters agree only by accident. What identifies the writer is the
+// identity in front of the colon, which is exactly what a follower follows.
+func sameOwnerIdentity(ownerStem, writerStamp string) bool {
+	ownerID, ownerOK := followerStemIdentity(ownerStem)
+	writerID, writerOK := followerStemIdentity(writerStamp)
+	return ownerOK && writerOK && ownerID == writerID
+}
+
+// stopAmbientOwnerUsage stops the ambient writer's publisher, if any: the
+// window no longer writes the member whose channel it was keeping fresh.
+func (m *chatTUI) stopAmbientOwnerUsage() {
+	if m == nil || m.teamPick == nil || m.teamPick.ambientUsage == nil {
+		return
+	}
+	m.teamPick.ambientUsage.Close()
+	m.teamPick.ambientUsage = nil
+	slog.Info("team ambient usage publisher stopped", "team", m.teamPick.sessionTeamName(), "member", m.teamPick.session.current)
 }
 
 // refreshTeamRosterView is the roster half of the tick: reload the registry and
@@ -421,6 +479,7 @@ func (m *chatTUI) exitTeam() {
 	if m.teamPick == nil {
 		return
 	}
+	m.stopAmbientOwnerUsage()
 	m.closeSession()
 	if m.quickPick != nil && m.quickPick.kind == quickPickerMemberAgentUser {
 		m.quickPick = nil // it lists the bound member's models: it leaves with the team

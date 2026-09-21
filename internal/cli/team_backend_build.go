@@ -492,7 +492,12 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		if esc := memberWriteAccessEscalator(deps.escalations, b.Team, b.MemberID, b.Leader); esc != nil {
 			ctrl.SetWriteAccessEscalator(esc)
 		}
-		return memberLeasedBackend{SessionAPI: ctrl, stop: wl}, nil
+		// This is the one place a writable member backend is built (every exit
+		// above returned a follower), so starting the publisher here makes
+		// "only the writer publishes usage" a property of the call graph.
+		publisher := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, ctrl)
+		publisher.Start()
+		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: publisher}, nil
 	}
 }
 
@@ -539,12 +544,21 @@ func bindMemberOwnerSession(deps memberBackendDeps, ctrl *control.Controller, b 
 type memberLeasedBackend struct {
 	control.SessionAPI
 	stop *memberWriteLease
+	// usage publishes this member's gauges for read-only windows elsewhere. It
+	// is non-nil only on the writable path; a zero-valued backend (tests, a
+	// hand-built mirror of the builder) leaves it nil, which Close tolerates.
+	usage *memberUsagePublisher
 }
 
 // Close stops the controller first, then releases the member's session lease —
 // the same order the ambient CLI retires its own controller, so no in-flight
 // save races the release. The history becomes stealable only on retirement.
+//
+// The usage publisher closes first of all: it is stopped and waited for before
+// the controller goes, so no observation can be published after this backend
+// gave its session up.
 func (b memberLeasedBackend) Close() {
+	b.usage.Close()
 	b.SessionAPI.Close()
 	if b.stop != nil {
 		b.stop.Close()

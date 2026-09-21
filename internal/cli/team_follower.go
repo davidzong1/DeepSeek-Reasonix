@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
@@ -139,6 +140,13 @@ type memberFollowerBackend struct {
 	// goroutine while the window may be re-binding on the update goroutine.
 	mu        sync.Mutex
 	lastStamp string
+	// usage is the writer's published telemetry channel (nil without team data).
+	// Its own mutex, because usageMu is taken on the render goroutine while mu is
+	// taken on a Cmd goroutine.
+	usage       followerUsageReader
+	usageMu     sync.Mutex
+	usageDoc    *team.OwnerUsage
+	usageReadAt time.Time
 }
 
 // Compile-time proof the follower is bindable as a member backend.
@@ -147,13 +155,13 @@ var _ control.SessionAPI = (*memberFollowerBackend)(nil)
 // newMemberFollowerBackend builds the follower for one member. A missing read
 // source or an empty identity is an error: a follower that cannot read is not a
 // follower, and the caller must keep the member visibly unavailable.
-func newMemberFollowerBackend(source followerReadSource, sink event.Sink, label, ref, dir, path, root, prompt string) (*memberFollowerBackend, error) {
+func newMemberFollowerBackend(source followerReadSource, sink event.Sink, label, ref, dir, path, root, prompt string, usage followerUsageReader) (*memberFollowerBackend, error) {
 	if source == nil || strings.TrimSpace(source.Stamp()) == "" {
 		return nil, errors.New("cli: team member follower has no readable history identity")
 	}
 	return &memberFollowerBackend{
 		source: source, sink: sink, label: label, ref: ref,
-		dir: dir, path: path, root: root, prompt: prompt,
+		dir: dir, path: path, root: root, prompt: prompt, usage: usage,
 	}, nil
 }
 
@@ -255,12 +263,43 @@ func (b *memberFollowerBackend) QualityFloor() string   { return "" }
 func (b *memberFollowerBackend) GoalRuntime() control.GoalRuntimeView {
 	return control.GoalRuntimeView{}
 }
-func (b *memberFollowerBackend) ContextSnapshot() (int, int)               { return 0, 0 }
-func (b *memberFollowerBackend) LastUsage() *provider.Usage                { return nil }
-func (b *memberFollowerBackend) Jobs() []jobs.View                         { return nil }
-func (b *memberFollowerBackend) Todos() []evidence.TodoItem                { return nil }
-func (b *memberFollowerBackend) BoundShell() sandbox.Shell                 { return sandbox.Shell{} }
-func (b *memberFollowerBackend) SessionCache() (int, int)                  { return 0, 0 }
+
+// The usage surfaces read the writer's published observation: a follower owns no
+// provider and no context of its own, so it reports the writer's last published
+// numbers and nothing once they age past the TTL (see usageSnapshot).
+
+func (b *memberFollowerBackend) ContextSnapshot() (int, int) {
+	usage, ok := b.usageSnapshot()
+	if !ok {
+		return 0, 0
+	}
+	return usage.ContextUsed, usage.ContextWindow
+}
+
+func (b *memberFollowerBackend) LastUsage() *provider.Usage {
+	usage, ok := b.usageSnapshot()
+	if !ok {
+		return nil
+	}
+	return providerUsageFromLastTurn(usage.LastTurn)
+}
+
+func (b *memberFollowerBackend) Jobs() []jobs.View {
+	usage, ok := b.usageSnapshot()
+	if !ok {
+		return nil
+	}
+	return jobViewsFromOwnerUsage(usage.Jobs)
+}
+func (b *memberFollowerBackend) Todos() []evidence.TodoItem { return nil }
+func (b *memberFollowerBackend) BoundShell() sandbox.Shell  { return sandbox.Shell{} }
+func (b *memberFollowerBackend) SessionCache() (int, int) {
+	usage, ok := b.usageSnapshot()
+	if !ok {
+		return 0, 0
+	}
+	return usage.CacheHit, usage.CacheMiss
+}
 func (b *memberFollowerBackend) SessionHasUnsavedChanges() bool            { return false }
 func (b *memberFollowerBackend) IsDestroyingSession(string) bool           { return false }
 func (b *memberFollowerBackend) ToolResult(string) *control.ToolResultData { return nil }
@@ -294,21 +333,27 @@ func (b *memberFollowerBackend) SessionHead() (agent.HeadRef, bool)             
 func (b *memberFollowerBackend) Branches() ([]agent.BranchInfo, error)             { return nil, nil }
 func (b *memberFollowerBackend) BranchTreeText() string                            { return "" }
 func (b *memberFollowerBackend) CurrentBranchID() string                           { return "" }
-func (b *memberFollowerBackend) CompactRatio() float64                             { return 0 }
-func (b *memberFollowerBackend) ContextReport() (string, string)                   { return "", "" }
-func (b *memberFollowerBackend) MCPCapabilityViews() []plugin.CapabilityView       { return nil }
-func (b *memberFollowerBackend) ConfiguredMCPNames() []string                      { return nil }
-func (b *memberFollowerBackend) DisconnectedMCPNames() []string                    { return nil }
-func (b *memberFollowerBackend) ExtensionActions() []control.ExtensionActionView   { return nil }
-func (b *memberFollowerBackend) ProviderCatalog() []provider.Descriptor            { return nil }
-func (b *memberFollowerBackend) LoadSkill(string) (skill.Skill, bool)              { return skill.Skill{}, false }
-func (b *memberFollowerBackend) SkillEnabled(string) bool                          { return false }
-func (b *memberFollowerBackend) CustomCommand(string) (string, bool)               { return "", false }
-func (b *memberFollowerBackend) RunSkill(string) (string, bool)                    { return "", false }
-func (b *memberFollowerBackend) Compose(text string) string                        { return text }
-func (b *memberFollowerBackend) ComposeSynthetic(text string) string               { return text }
-func (b *memberFollowerBackend) HasRefs(string) bool                               { return false }
-func (b *memberFollowerBackend) ImageInputEnabled() bool                           { return false }
+func (b *memberFollowerBackend) CompactRatio() float64 {
+	usage, ok := b.usageSnapshot()
+	if !ok {
+		return 0
+	}
+	return usage.CompactRatio
+}
+func (b *memberFollowerBackend) ContextReport() (string, string)                 { return "", "" }
+func (b *memberFollowerBackend) MCPCapabilityViews() []plugin.CapabilityView     { return nil }
+func (b *memberFollowerBackend) ConfiguredMCPNames() []string                    { return nil }
+func (b *memberFollowerBackend) DisconnectedMCPNames() []string                  { return nil }
+func (b *memberFollowerBackend) ExtensionActions() []control.ExtensionActionView { return nil }
+func (b *memberFollowerBackend) ProviderCatalog() []provider.Descriptor          { return nil }
+func (b *memberFollowerBackend) LoadSkill(string) (skill.Skill, bool)            { return skill.Skill{}, false }
+func (b *memberFollowerBackend) SkillEnabled(string) bool                        { return false }
+func (b *memberFollowerBackend) CustomCommand(string) (string, bool)             { return "", false }
+func (b *memberFollowerBackend) RunSkill(string) (string, bool)                  { return "", false }
+func (b *memberFollowerBackend) Compose(text string) string                      { return text }
+func (b *memberFollowerBackend) ComposeSynthetic(text string) string             { return text }
+func (b *memberFollowerBackend) HasRefs(string) bool                             { return false }
+func (b *memberFollowerBackend) ImageInputEnabled() bool                         { return false }
 func (b *memberFollowerBackend) ResolveRefs(context.Context, string) (string, []string) {
 	return "", nil
 }
@@ -731,6 +776,7 @@ func newMemberFollower(deps memberBackendDeps, ctrl *control.Controller, b team.
 	follower, err := newMemberFollowerBackend(
 		source, memberSink(b.MemberID, deps.events),
 		b.MemberID, ctrl.ModelRef(), ctrl.SessionDir(), path, ctrl.WorkspaceRoot(), ctrl.SystemPrompt(),
+		newFollowerUsageReader(deps.owners, key),
 	)
 	ctrl.Close()
 	if err != nil {
