@@ -10,14 +10,17 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/hook"
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
@@ -114,12 +117,14 @@ type followerReadSource interface {
 // every mutation reached by submit, clear, approve or branch refuses with
 // errFollowerReadOnly instead of touching the session.
 //
-// control.SessionAPI is embedded to satisfy the port without re-declaring it.
-// The paths the team session window reaches are overridden below; a call the
-// follower does not override panics on the nil interface rather than silently
-// returning a zero value. That is the same loud-failure convention the member
-// backend stubs use, and it is a deliberate trade: an unoverridden read is a
-// bug to fix by adding an override, not a wrong answer to render.
+// The embedded port stays nil and is only a compile-time filler, so a method
+// that is not overridden does not return a zero value: it dereferences the nil
+// interface and panics. That loud failure is right for a test stub, not for the
+// host — two reads reach it with no user action behind them (the roster tick's
+// history poll and the turn-end balance refresh), both inside a bubbletea Cmd
+// goroutine, where the panic is recovered as a program-level failure and takes
+// the whole TUI down. A read-only member must answer quietly instead; see
+// TestFollowerHostReadsDoNotPanic.
 type memberFollowerBackend struct {
 	control.SessionAPI
 	source followerReadSource
@@ -130,6 +135,10 @@ type memberFollowerBackend struct {
 	path   string
 	root   string
 	prompt string
+	// mu guards lastStamp: the roster tick's history poll arrives on a Cmd
+	// goroutine while the window may be re-binding on the update goroutine.
+	mu        sync.Mutex
+	lastStamp string
 }
 
 // Compile-time proof the follower is bindable as a member backend.
@@ -186,6 +195,38 @@ func (b *memberFollowerBackend) History() []provider.Message {
 // HistoryStamp is the identity being read, so a peer's change is visible here
 // exactly as it is to any other window.
 func (b *memberFollowerBackend) HistoryStamp() string { return b.source.Stamp() }
+
+// ReloadHistoryIfChanged reports whether the caller must re-render, mirroring
+// the controller's own stamp bookkeeping (internal/control/history_sync.go).
+// A follower owns no in-memory transcript to adopt — History re-reads the
+// durable source on every call — so the only state is the stamp already served,
+// and the first poll for a stamp answers "re-read" (the window rebuilds from
+// the live read, which is how a follower observes the writer appending). A
+// repeat answers false, which also stops the once-a-second tick from reading
+// the same history again.
+func (b *memberFollowerBackend) ReloadHistoryIfChanged(_ context.Context, stamp string) (bool, error) {
+	if b == nil || strings.TrimSpace(stamp) == "" {
+		return false, nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lastStamp == stamp {
+		return false, nil
+	}
+	b.lastStamp = stamp
+	return true, nil
+}
+
+// Balance reports no wallet: the follower drives no provider of its own, so it
+// has no balance to show. Nil is the quiet answer the balance readout already
+// understands, and it keeps a read-only member from blanking the status line of
+// the window that shows it.
+func (b *memberFollowerBackend) Balance(context.Context) (*billing.Balance, error) { return nil, nil }
+
+// HookRunner returns no runner: the follower runs no hooks. *hook.Runner is
+// nil-receiver-safe, so the /hooks viewer renders an empty list instead of
+// dispatching anything through the nil port.
+func (b *memberFollowerBackend) HookRunner() *hook.Runner { return nil }
 
 // RuntimeStatus is always idle: the follower drives no turn of its own, and
 // reporting the writer's activity would make the roster show this window as
@@ -327,6 +368,14 @@ func (b *memberFollowerBackend) RunFinalReadinessRecovery(context.Context, strin
 // Clear and new refuse: both rotate the member's session, which the writer owns.
 func (b *memberFollowerBackend) ClearSession() error { return errFollowerReadOnly }
 func (b *memberFollowerBackend) NewSession() error   { return errFollowerReadOnly }
+
+// ImportMCPEntries refuses: it installs MCP servers into the session's config,
+// which is a write the writer's own window must make. The refusal names itself
+// instead of returning zeros, so the importer cannot report a successful import
+// that never happened.
+func (b *memberFollowerBackend) ImportMCPEntries([]config.PluginEntry) (total, added, updated, connected, failed, skipped int, err error) {
+	return 0, 0, 0, 0, 0, 0, errFollowerReadOnly
+}
 
 // Approvals refuse: the prompt belongs to the writer's run goroutine, and an id
 // this process never minted cannot be answered here.
