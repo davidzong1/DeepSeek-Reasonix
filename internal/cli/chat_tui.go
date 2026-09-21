@@ -1890,8 +1890,9 @@ func (m chatTUI) View() tea.View {
 	} else {
 		background := statusAutoColor
 		foreground := modeTagDark
+		_, _, autoApprove := m.modeReads()
 		switch {
-		case m.ctrl.AutoApproveTools():
+		case autoApprove:
 			background = statusYoloColor
 			foreground = modeTagLight
 		case m.planMode:
