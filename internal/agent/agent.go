@@ -411,12 +411,13 @@ func (a *Agent) SetTools(tools *tool.Registry) {
 }
 
 // SetReasoningLanguage updates the visible reasoning language preference for
-// subsequent user-role messages emitted by this agent.
+// subsequent user-role messages. A change clears the injected-block memory.
 func (a *Agent) SetReasoningLanguage(lang string) {
 	if a == nil {
 		return
 	}
 	a.reasoningLanguage.Store(NormalizeReasoningLanguage(lang))
+	a.noteReasoningLanguageCarried("")
 }
 
 // SetResponseLanguage updates the final-answer language preference for
@@ -499,8 +500,7 @@ func (a *Agent) withTurnPreferences(input string) string {
 			lang = s
 		}
 	}
-	input = WithReasoningLanguage(input, lang)
-	return input
+	return a.WithReasoningLanguageOnce(input, lang, input)
 }
 
 // SetAsker installs the asker the `ask` tool uses to question the user.

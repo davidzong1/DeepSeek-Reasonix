@@ -237,9 +237,9 @@ func TestReadFileRef(t *testing.T) {
 		t.Errorf("unscoped image file = (%q, %v), want a non-attached image note", got, err)
 	}
 
-	// Large file: truncated with a marker.
-	if got, _, err := readFileRef(bigPath, ""); err != nil || !strings.Contains(got, "truncated") {
-		t.Errorf("big file should be truncated, got len=%d err=%v", len(got), err)
+	// Large file: a bounded preview plus a pointer, never the whole body.
+	if got, _, err := readFileRef(bigPath, ""); err != nil || !strings.Contains(got, "not inlined in full") {
+		t.Errorf("big file should resolve to a pointer note, got len=%d err=%v", len(got), err)
 	}
 
 	// Directory: recursive listing with relative paths including a trailing slash for subdirs.

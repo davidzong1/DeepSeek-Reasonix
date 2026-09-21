@@ -119,9 +119,3 @@ Before declaring success, confirm the checkpoint is still current, every
 delegated task has a received or deliberately cancelled report, focused tests
 and formatting checks pass, and no new lint debt was hidden by a baseline update.
 
-## Addition
-
-After completing all task assignments, verifications, and confirming the closed loop, 
-use the `/compact` command to compress the context to maintain conversation efficiency 
-and avoid redundancy of historical information. This operation should be performed after 
-passing the "completion gate" check and before reporting the final result to the user.

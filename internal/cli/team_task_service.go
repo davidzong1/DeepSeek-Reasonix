@@ -45,6 +45,11 @@ type teamTaskService struct {
 	discussionDataDir string
 	discussionMu      sync.Mutex
 	dstore            *team.DiscussionStore
+	// statusPoll throttles the leader's status reads; see team_status_poll.go.
+	statusPoll statusPollState
+	// now is the clock for the poll interval. Nil uses time.Now; tests replace
+	// it so no test sleeps for the real interval.
+	now func() time.Time
 }
 
 // wakeLeader delivers one leader wakeup into the durable board wake stream.
@@ -134,6 +139,9 @@ func (s *teamTaskService) forTeam(teamName string) *teamTaskService {
 	child := newTeamTaskService(s.teamStore, s.board, teamName, s.bind)
 	child.kbDataRoot = s.kbDataRoot
 	child.discussionDataDir = s.discussionDataDir
+	// The clock is inherited so a test that pins time for one team sees the same
+	// pinned time through every per-team child the overlay opens.
+	child.now = s.now
 	s.teams[teamName] = child
 	return child
 }
@@ -568,50 +576,6 @@ func (s *teamTaskService) authzLog(limit int) (string, error) {
 		lines = append(lines, line)
 	}
 	return "authorization log for team " + s.teamName + " (newest first):\n" + strings.Join(lines, "\n"), nil
-}
-
-func (s *teamTaskService) checkStatus(memberID string) (string, error) {
-	if s == nil || s.teamStore == nil || s.board == nil {
-		return "", fmt.Errorf("team task runtime is unavailable")
-	}
-	doc, _, err := s.teamStore.Load()
-	if err != nil {
-		return "", err
-	}
-	tasks, err := s.board.LoadLiveTasks(context.Background())
-	if err != nil {
-		return "", err
-	}
-	taskByMember := map[string][]team.Task{}
-	for _, task := range tasks {
-		taskByMember[task.AssignedMember] = append(taskByMember[task.AssignedMember], task)
-	}
-	var lines []string
-	for _, t := range doc.Teams {
-		if t.Name != s.teamName {
-			continue
-		}
-		for _, slot := range t.Template {
-			if !slot.IsLeader() && memberID != "" && slot.MemberID != memberID {
-				continue
-			}
-			state := "idle"
-			if owned := taskByMember[slot.MemberID]; len(owned) > 0 {
-				states := make([]string, 0, len(owned))
-				for _, task := range owned {
-					states = append(states, memberTaskState(task, s.driving(task.ID)))
-				}
-				state = strings.Join(states, "; ")
-			}
-			role := string(slot.Role)
-			if role == "" {
-				role = "unconfigured"
-			}
-			lines = append(lines, fmt.Sprintf("%s: role=%s state=%s", slot.MemberID, role, state))
-		}
-		return strings.Join(lines, "\n"), nil
-	}
-	return "", team.ErrTeamNotFound
 }
 
 // driving asks the runtime whether anything is actually executing the task, so

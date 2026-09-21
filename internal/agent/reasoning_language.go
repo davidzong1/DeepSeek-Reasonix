@@ -204,6 +204,59 @@ func WithReasoningLanguageForSource(content, lang, source string) string {
 	return block + "\n\n" + content
 }
 
+// WithReasoningLanguageOnce is WithReasoningLanguageForSource with a
+// conversation-scoped memory: the block states a session constant, so injecting
+// it on every user turn repeats bytes the model has already read in every
+// request prefix. The first turn that resolves to zh (or en) carries it; later
+// turns in the same conversation do not. A caller that supplies the block
+// itself counts as carrying it, so an explicit injection is never followed by a
+// second one.
+//
+// lang is the caller's preference rather than the agent's own atomic: hosts
+// that compose the turn outside the agent hold the authoritative value, so the
+// two can never disagree about what was injected. A language change between
+// turns clears the memory, so the new preference re-injects exactly once.
+func (a *Agent) WithReasoningLanguageOnce(content, lang, source string) string {
+	if a == nil {
+		return WithReasoningLanguageForSource(content, lang, source)
+	}
+	resolved := ResolveReasoningLanguage(lang, source)
+	carried := hasLeadingInjectedBlock(content, "reasoning-language")
+	if resolved == "auto" {
+		// Auto on an English or ambiguous turn carries no block at all; an
+		// explicit one the caller supplied is still remembered, so a later turn
+		// that resolves to zh injects on its own merits.
+		if carried {
+			a.noteReasoningLanguageCarried("")
+		}
+		return content
+	}
+	if carried || a.reasoningLanguageCarried() == resolved {
+		a.noteReasoningLanguageCarried(resolved)
+		return content
+	}
+	block := ReasoningLanguageBlock(resolved)
+	if block == "" {
+		return content
+	}
+	a.noteReasoningLanguageCarried(resolved)
+	return block + "\n\n" + content
+}
+
+// reasoningLanguageCarried reports which concrete block this conversation
+// already carries ("" when none).
+func (a *Agent) reasoningLanguageCarried() string {
+	a.sess.mu.Lock()
+	defer a.sess.mu.Unlock()
+	return a.sess.reasoningLanguageInjected
+}
+
+func (a *Agent) noteReasoningLanguageCarried(mode string) {
+	a.sess.mu.Lock()
+	a.sess.reasoningLanguageInjected = mode
+	a.sess.mu.Unlock()
+}
+
 // hasLeadingInjectedBlock reports whether target is already among the transient
 // blocks leading content, skipping past any other injected block on the way.
 // It walks TransientUserBlockTags rather than a list of its own: when the two

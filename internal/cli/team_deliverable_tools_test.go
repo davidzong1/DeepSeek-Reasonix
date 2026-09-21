@@ -111,15 +111,20 @@ func TestDeliverableToolSetsSeparatePublishFromRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("member read: %v", err)
 	}
-	if read != "# route\nbody" {
-		t.Fatalf("read = %q", read)
+	// The default read is an outline: it identifies the document without
+	// carrying the body into every later request prefix.
+	if !strings.Contains(read, "outline only") || strings.Contains(read, "# route\nbody") {
+		t.Fatalf("default read must be an outline, got %q", read)
 	}
-	leaderRead, err := executeTool(t, leader[readDeliverableName], `{"id":"`+id+`"}`)
+	if !strings.Contains(read, "route") {
+		t.Fatalf("the outline must list the document's sections, got %q", read)
+	}
+	leaderRead, err := executeTool(t, leader[readDeliverableName], `{"id":"`+id+`","mode":"full"}`)
 	if err != nil {
 		t.Fatalf("leader read: %v", err)
 	}
-	if leaderRead != read {
-		t.Fatalf("leader read = %q, want the member's bytes %q", leaderRead, read)
+	if leaderRead != "# route\nbody" {
+		t.Fatalf("full read = %q, want the published bytes", leaderRead)
 	}
 	listed, err := executeTool(t, leader[listDeliverableName], `{}`)
 	if err != nil {
