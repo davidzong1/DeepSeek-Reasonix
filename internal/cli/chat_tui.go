@@ -614,6 +614,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.followComposerCursor()
 		m.width = msg.Width
 		m.height = msg.Height
+		m.noteTerminalSize()
 		m.input.SetWidth(max(msg.Width-4, 1))
 		// Commit the banner — and a resumed session's transcript — once, now
 		// that the width is known.
@@ -1662,7 +1663,7 @@ func (m chatTUI) bottomRows() int {
 		rows += strings.Count(footer, "\n") + 1
 	}
 	if !m.hideComposer() {
-		rows += m.input.Height() + 2
+		rows += m.input.Height() + 2 + m.queueIndicatorRows()
 	}
 	if m.statusLineCount > 0 {
 		return rows + m.statusLineCount

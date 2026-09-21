@@ -575,6 +575,59 @@ func TestElapsedTickFeedsTheArmedGeneration(t *testing.T) {
 	}
 }
 
+// TestTerminalSizeRecoveryFollowsTheTerminalUnderTheFrame pins the missed-resize
+// recovery: Bubble Tea re-reads the geometry only on SIGWINCH, so a coalesced
+// signal leaves rows past the last line — the bottom status row disappearing.
+// The comparison is against the geometry the model published, so a frame that
+// started out wrong is corrected too.
+func TestTerminalSizeRecoveryFollowsTheTerminalUnderTheFrame(t *testing.T) {
+	clock := &fakeWatchClock{now: time.Unix(1_700_000_000, 0)}
+	d := newWatchdogForTest(t, clock)
+	var logged []string
+	d.logFn = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	size := terminalSize{width: 120, height: 40}
+	readable := true
+	requests := 0
+	d.sizeFn = func() (int, int, bool) { return size.width, size.height, readable }
+	d.requestSize = func() { requests++ }
+
+	d.checkTerminalSize() // no frame geometry published yet: nothing to compare
+	d.NoteTerminalSize(120, 40)
+	d.checkTerminalSize() // agreement
+	if requests != 0 {
+		t.Fatalf("requests = %d for a frame that matches its terminal, want 0", requests)
+	}
+	size = terminalSize{width: 100, height: 30}
+	d.checkTerminalSize()
+	if requests != 1 {
+		t.Fatalf("requests = %d after the terminal moved, want 1", requests)
+	}
+	if len(logged) == 0 || !strings.Contains(logged[len(logged)-1], "terminal_size_recovered terminal=100x30 frame=120x40") {
+		t.Fatalf("the recovery must be visible in the diagnostic log, got %q", logged)
+	}
+	d.checkTerminalSize() // the same mismatch: never re-ask every tick
+	if requests != 1 {
+		t.Fatalf("requests = %d while the same geometry is unresolved, want 1", requests)
+	}
+	d.NoteTerminalSize(100, 30) // the frame adopted it
+	d.checkTerminalSize()
+	readable = false
+	d.checkTerminalSize() // unreadable is not a mismatch
+	if requests != 1 {
+		t.Fatalf("requests = %d after the frame caught up, want 1", requests)
+	}
+
+	// Wired into the loop that runs in production, not only reachable here.
+	ticker := &fakeWatchTicker{ticks: make(chan time.Time)}
+	d.newTicker = func(time.Duration) watchdogTicker { return ticker }
+	d.StartWatchdog(nil)
+	d.NoteBooted()
+	readable, size = true, terminalSize{width: 90, height: 24}
+	clock.now = clock.now.Add(time.Second)
+	ticker.ticks <- clock.now
+	waitForCondition(t, func() bool { return requests == 2 })
+}
+
 // TestWatchdogClockJumpAfterSuspendDoesNotKill pins the #9233 path: after a
 // suspend/resume (or scheduler starvation) the first ticks see a stale
 // heartbeat age, but the >=stall gap between consecutive ~1s ticks proves the

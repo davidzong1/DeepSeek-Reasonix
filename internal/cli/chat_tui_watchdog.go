@@ -57,6 +57,20 @@ func (m *chatTUI) elapsedTickProgress() {
 	m.tickSubagentProgress()
 }
 
+// noteTerminalSize publishes the geometry this frame is laid out for, so the
+// watchdog can compare it with the real terminal and tell a frame sized for the
+// wrong terminal from a healthy one.
+//
+// Team-agent: main-v2 has no terminal-size recovery; keep this and its caller on
+// merge.
+func (m *chatTUI) noteTerminalSize() {
+	if m == nil || m.diagnostics == nil {
+		return
+	}
+	m.diagnostics.NoteTerminalSize(m.width, m.height)
+}
+
+// noteWatchdogHeartbeat records work progress for the stall watchdog.
 func (m *chatTUI) noteWatchdogHeartbeat(source string) {
 	if m == nil || m.diagnostics == nil {
 		return
