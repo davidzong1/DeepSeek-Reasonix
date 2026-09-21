@@ -1589,13 +1589,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case elapsedTickMsg:
-		if m.state == tuiRunning && msg.generation == m.elapsedTickGeneration {
-			// elapsedTick is the primary active-turn heartbeat: long turns that
-			// emit no agent events still prove the Bubble Tea loop is alive.
+		// The chain follows the armed generation, not the footer's state: see
+		// elapsedTickLive for why a member switch must not stop the heartbeat.
+		if msg.generation == m.elapsedTickGeneration && m.elapsedTickLive() {
 			m.noteWatchdogHeartbeat("elapsed_tick")
-			m.elapsed = int(time.Since(m.runStart).Seconds())
-			m.tickToolRunning()
-			m.tickSubagentProgress()
+			m.elapsedTickProgress()
 			cmds = append(cmds, elapsedTick(msg.generation))
 		}
 

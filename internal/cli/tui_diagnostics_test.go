@@ -502,6 +502,79 @@ func TestChatTUIWatchdogLifecycleHelpers(t *testing.T) {
 	}
 }
 
+// TestMemberBindDisarmsTheWatchdogForTheTurnItLeaves pins the false kill that
+// took a team leader's turn down mid-flight: bindBackend resets the footer to
+// idle while the turn it switched away from keeps running, and once the elapsed
+// tick chain died with that reset the turn's only remaining heartbeat source was
+// its own agent events. Ten quiet seconds — a slow model, a long tool call —
+// then read as a stall, and the watchdog cancelled a healthy turn, which the
+// window recorded as "interrupted" (§4.5: a switch never interrupts a turn).
+func TestMemberBindDisarmsTheWatchdogForTheTurnItLeaves(t *testing.T) {
+	clock := &fakeWatchClock{now: time.Unix(1_700_000_000, 0)}
+	d := newWatchdogForTest(t, clock)
+	d.NoteBooted()
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 60)
+	m.diagnostics = d
+
+	m.noteControllerTurnStarted()
+	if !d.Running() {
+		t.Fatal("a started turn must arm the watchdog")
+	}
+	// The member switch: another backend becomes the window's own.
+	m.bindBackend(newOwnedTestController(t, control.Options{}), ownerKey{})
+	if d.Running() {
+		t.Fatal("switching members must disarm the generation of the turn this window no longer services")
+	}
+	// A disarmed window is never cancelled, however quiet its tick stream is.
+	for range 20 {
+		clock.now = clock.now.Add(time.Second)
+		d.onTick(clock.now)
+	}
+	if got := d.cancelCalls.Load(); got != 0 {
+		t.Fatalf("cancelCalls = %d after a member switch, want 0", got)
+	}
+}
+
+// TestElapsedTickFeedsTheArmedGeneration pins the chain's lifetime to the armed
+// watchdog generation rather than to the footer's state. Any path that resets
+// m.state without ending the turn (the shape a member bind had before it
+// disarmed the watchdog explicitly) used to stop the chain, and a generation
+// with no heartbeat source is one quiet stretch away from cancelling a turn the
+// user is still watching.
+func TestElapsedTickFeedsTheArmedGeneration(t *testing.T) {
+	clock := &fakeWatchClock{now: time.Unix(1_700_000_000, 0)}
+	d := newWatchdogForTest(t, clock)
+	d.NoteBooted()
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 60)
+	m.diagnostics = d
+	m.noteControllerTurnStarted()
+	generation := m.elapsedTickGeneration
+
+	// The footer resets without the turn ending.
+	m.state = tuiIdle
+	if !d.Running() {
+		t.Fatal("the reset under test must leave the generation armed")
+	}
+	// One second at a time, as the loop really runs: the tick must keep feeding
+	// the armed generation for well past the stall threshold.
+	for range int(tuiWatchdogStall/time.Second) + 2 {
+		clock.now = clock.now.Add(time.Second)
+		if _, cmd := m.Update(elapsedTickMsg{generation: generation}); cmd == nil {
+			t.Fatal("a tick must re-arm the chain while a generation is armed")
+		}
+		d.onTick(clock.now)
+	}
+	if got := d.cancelCalls.Load(); got != 0 {
+		t.Fatalf("cancelCalls = %d while the tick stream was healthy, want 0", got)
+	}
+	if !d.Running() {
+		t.Fatalf("phase = %s, want running", d.phaseForTest())
+	}
+	if got := d.lastHeartbeatSource; got != "elapsed_tick" {
+		t.Fatalf("last heartbeat source = %q, want elapsed_tick", got)
+	}
+}
+
 // TestWatchdogClockJumpAfterSuspendDoesNotKill pins the #9233 path: after a
 // suspend/resume (or scheduler starvation) the first ticks see a stale
 // heartbeat age, but the >=stall gap between consecutive ~1s ticks proves the
