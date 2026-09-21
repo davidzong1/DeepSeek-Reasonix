@@ -100,10 +100,20 @@ type chatTUI struct {
 	nextPasteID          int
 	usedPasteIDs         map[int]struct{}
 
-	state                 tuiState
-	runStart              time.Time
-	elapsed               int
-	elapsedTickGeneration uint64
+	state tuiState
+	// maintenance is the active controller-owned compaction lifecycle. It is
+	// deliberately separate from state: maintenance keeps the composer usable
+	// for durable queueing and must not start ordinary turn timers or metrics.
+	maintenance                 *event.SessionOperationInfo
+	maintenanceTranscriptID     string
+	maintenanceTranscriptIdx    int
+	maintenanceTerminal         map[string]struct{}
+	maintenanceLatest           map[string]event.SessionOperationInfo
+	compactCompatibilityPending bool
+	compactLifecycleObserved    bool
+	runStart                    time.Time
+	elapsed                     int
+	elapsedTickGeneration       uint64
 	// Recovery state is cleared by progress or completion.
 	retryAttempt int
 	retryMax     int
@@ -1095,6 +1105,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// here. Scrollback is the terminal's now, so there's no viewport to
 			// dismiss.
 			switch {
+			case m.maintenanceCancellable():
+				m.stopMaintenance()
+			case m.maintenance != nil:
+				// A projection already being saved cannot be rolled back. Keep
+				// the draft intact while the authoritative operation settles.
 			case m.state == tuiRunning && m.bubblePending:
 				m.unsendPending()
 			case m.state == tuiRunning:
@@ -1438,12 +1453,16 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gitStatus = msg.status
 
 	case compactDoneMsg:
-		if msg.err != nil {
+		if m.maintenance != nil && m.maintenance.OperationID == "" {
+			m.maintenance = nil
+		}
+		if msg.err != nil && !m.compactLifecycleObserved {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, msg.err))
-		} else {
-			_ = m.ctrl.Snapshot()
+		} else if msg.err == nil {
 			m.followSessionLease()
 		}
+		m.compactLifecycleObserved = false
+		m.compactCompatibilityPending = false
 
 	case tuiShutdownMsg:
 		return m.shutdownAndQuit(msg)
@@ -1570,13 +1589,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case elapsedTickMsg:
-		if m.state == tuiRunning && msg.generation == m.elapsedTickGeneration {
-			// elapsedTick is the primary active-turn heartbeat: long turns that
-			// emit no agent events still prove the Bubble Tea loop is alive.
+		// The chain follows the armed generation, not the footer's state: see
+		// elapsedTickLive for why a member switch must not stop the heartbeat.
+		if msg.generation == m.elapsedTickGeneration && m.elapsedTickLive() {
 			m.noteWatchdogHeartbeat("elapsed_tick")
-			m.elapsed = int(time.Since(m.runStart).Seconds())
-			m.tickToolRunning()
-			m.tickSubagentProgress()
+			m.elapsedTickProgress()
 			cmds = append(cmds, elapsedTick(msg.generation))
 		}
 
@@ -1873,8 +1890,9 @@ func (m chatTUI) View() tea.View {
 	} else {
 		background := statusAutoColor
 		foreground := modeTagDark
+		_, _, autoApprove := m.modeReads()
 		switch {
-		case m.ctrl.AutoApproveTools():
+		case autoApprove:
 			background = statusYoloColor
 			foreground = modeTagLight
 		case m.planMode:
@@ -2046,12 +2064,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			ctrl.SubmitFinalReadinessRecovery(input, prompt)
 		})
 	case "/compact":
-		m.echoLocalCommand(input)
-		// Compaction makes a (network) summarizer call, so it runs off the Update
-		// loop and its card renders from CompactionStarted/Done; compactDoneMsg
-		// handles the terminal error/snapshot. Trailing text is focus guidance.
-		focus := strings.TrimSpace(strings.TrimPrefix(input, typedCmd))
-		return func() tea.Msg { return compactDoneMsg{err: m.ctrl.Compact(context.Background(), focus)} }
+		return m.runCompactCommand(input, typedCmd)
 	case "/context":
 		return m.showContextReport(input)
 	case "/new":

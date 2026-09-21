@@ -7,6 +7,7 @@
 // without prop drilling and without duplicating listeners per region.
 
 import { create } from "zustand";
+import { SIDEBAR_AUTO_COLLAPSE_WIDTH } from "../lib/workspaceLayout";
 import { detectBrowserPlatform } from "../lib/desktopPlatform";
 import type { DesktopPlatform } from "../lib/desktopPlatform";
 
@@ -20,6 +21,7 @@ type WindowChromeState = {
   viewportWidth: number;
   viewportHeight: number;
   mainWindowMaximised: boolean;
+  narrowSidebarExpanded: boolean;
 };
 
 export const useWindowChromeStore = create<WindowChromeState>(() => {
@@ -29,6 +31,7 @@ export const useWindowChromeStore = create<WindowChromeState>(() => {
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
     mainWindowMaximised: false,
+    narrowSidebarExpanded: false,
   };
 });
 
@@ -38,7 +41,11 @@ export const setDesktopPlatform = (platform: DesktopPlatform): void => {
 
 export const setViewportSize = (width: number, height: number): void => {
   useWindowChromeStore.setState((current) =>
-    current.viewportWidth === width && current.viewportHeight === height ? current : { viewportWidth: width, viewportHeight: height },
+    current.viewportWidth === width && current.viewportHeight === height ? current : {
+      viewportWidth: width, viewportHeight: height,
+      narrowSidebarExpanded: (current.viewportWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH) === (width < SIDEBAR_AUTO_COLLAPSE_WIDTH)
+        ? current.narrowSidebarExpanded : false,
+    },
   );
 };
 

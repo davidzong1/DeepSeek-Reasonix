@@ -32,8 +32,8 @@ export function SessionRecoveryBanner({ availability, onRetry }: {
     }
   };
   // Runtime setup errors already have their own startup/lease recovery controls.
-  if (availability.kind === "ready" || availability.source === "runtime") return null;
-  const loading = busy || availability.kind === "loading";
+  if (availability.kind !== "error" || availability.source === "runtime") return null;
+  const loading = busy;
   const connection = availability.source === "connection";
   const detail = actionError || availability.detail;
   const Icon = loading ? Loader2 : connection ? CloudOff : TriangleAlert;
@@ -43,7 +43,7 @@ export function SessionRecoveryBanner({ availability, onRetry }: {
       <div className="session-recovery__copy">
         <strong>{t(loading ? connection ? "remoteSurface.connecting" : "sessionRecovery.loadingHistory"
           : connection ? "sessionRecovery.connectionLost" : "sessionRecovery.historyFailed")}</strong>
-        <span>{t(actionError ? "sessionRecovery.retryFailed" : connection ? "sessionRecovery.connectionHint" : "sessionRecovery.historyHint")}</span>
+        {!loading && <span>{t(actionError ? "sessionRecovery.retryFailed" : connection ? "sessionRecovery.connectionHint" : "sessionRecovery.historyHint")}</span>}
       </div>
       {onRetry && <button type="button" className="btn btn--primary btn--small" disabled={loading} onClick={() => void retry()}>
         {t(loading ? "common.loading" : connection ? "remoteSurface.reconnect" : "sessionRecovery.retryHistory")}
@@ -58,11 +58,10 @@ export function SessionRecoveryBanner({ availability, onRetry }: {
 
 export function SessionRecoveryPlaceholder({ availability }: { availability: SessionAvailability }) {
   const t = useT();
-  if (availability.kind === "pending") return null;
-  const loading = availability.kind === "loading";
-  const Icon = loading ? Loader2 : availability.source === "connection" ? CloudOff : TriangleAlert;
+  if (availability.kind !== "error") return null;
+  const Icon = availability.source === "connection" ? CloudOff : TriangleAlert;
   return <div className="session-recovery-placeholder">
-    <Icon size={30} aria-hidden="true" className={loading ? "session-recovery__spinner" : undefined} />
-    <span>{t(loading ? "common.loading" : "sessionRecovery.contentAfterRecovery")}</span>
+    <Icon size={30} aria-hidden="true" />
+    <span>{t("sessionRecovery.contentAfterRecovery")}</span>
   </div>;
 }

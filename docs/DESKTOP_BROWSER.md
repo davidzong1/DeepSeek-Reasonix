@@ -45,6 +45,22 @@ no form state, credentials or replayable submissions are persisted. Tab
 metadata and the operation log are new versioned files under the desktop
 state directory (`browser/tabs-v1.json`, `browser/operations-v1.json`).
 
+Local `.html` and `.htm` files run in this panel by default. Chat file links,
+present cards, the file tree and on-demand agent preview share one path: the
+desktop re-authorises the original file source, creates a random-token loopback
+HTTP URL, and binds it to a tab owned by the current task and session. **View
+source** still opens the file panel, while **Open in external browser** is an
+explicit user action. Reload re-authorises and replaces the token; closing the
+tab, destroying the session or navigating away releases the binding. A taken
+over tab cannot be refreshed or duplicated by the agent. An explicit user
+reload updates the page while leaving the tab in `human` mode.
+
+This file path serves single files and resources allowed by the existing
+static-preview policy. Projects that need a module build, client routing or a
+local API still use the terminal to start or reuse the project's declared
+development server, then open its confirmed address with `browser_open`. SSH
+files retain their existing file preview in the first release.
+
 ## Browser control settings
 
 The Settings Centre page "Browser control" owns the switches below, all stored
@@ -83,6 +99,7 @@ system.
 | --- | --- | --- |
 | `browser_tabs` | read | list the task's tabs with URL, title, loading state |
 | `browser_open` | write | open a tab (shared or temporary partition) at a URL |
+| `browser_preview` | write | authorise a local task file and run or refresh it in a task-bound tab |
 | `browser_navigate` | write | navigate the bound tab (URL, back, forward, reload) |
 | `browser_snapshot` | read | structural snapshot with element references |
 | `browser_screenshot` | read | PNG of the viewport or an element, returned as an image |
@@ -94,6 +111,11 @@ system.
 | `browser_upload` | write | attach task files to a file input |
 | `browser_download` | read | wait for or list downloads of the tab |
 | `browser_close` | write | close a tab |
+
+`browser_preview` is discoverable through `use_capability` only when a local
+desktop executor provides the shared file-preview service. It does not enter
+the always-on tool schema or inject URLs, ports or tab state into the system
+prompt.
 
 Snapshot format: an accessibility-style tree (`role "name" [state] ref=e12`)
 produced in an isolated world of the main frame and each reachable frame.
@@ -179,6 +201,30 @@ read paths local to them. A Serve started with a broker advertises `browser`
 in the `X-Reasonix-Serve-Capabilities` header of the `/auth/token` handshake.
 
 ## Acceptance
+
+### Right panel sizing
+
+Without an existing width preference, the first opening targets 45% of the
+window width. Normal split layout uses a 300px minimum and a 70% window cap,
+protects 400px for chat, and falls back to an overlay when there is insufficient
+room. Pointer and keyboard resizing retain the existing local preference
+format across closing, reopening, and restarting. Responsive compression never
+writes back to that preference.
+
+Below 1024px the navigation sidebar collapses automatically, with a temporary
+manual expansion override cleared on crossing the breakpoint. Wide-window
+preferences are preserved. Below 768px the right panel fills the app content
+area while keeping window chrome and a panel-close action reachable. Closing
+returns to chat; widening restores the split. Files, Overview, and Browser use
+the same rules. HTML reflow still depends on the document's CSS; the panel does
+not scale or rewrite fixed-width pages.
+
+Run `pnpm exec tsx src/__tests__/responsive-dock.test.ts` and
+`pnpm test:dock-responsive-browser`. The browser regression uses actual app
+components with mock sessions to verify geometry, dragging, reopening, and
+reload restoration. Add `--electron` to `node bench/responsive-dock.mjs` to run
+the same checks against actual native window resizing with an isolated profile.
+These geometry checks do not validate agent-driven HTML page execution.
 
 Iframes, dynamic DOM, controlled inputs, popups, upload and download,
 navigation history, temporary partitions, shared and isolated logins;

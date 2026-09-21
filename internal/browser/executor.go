@@ -20,6 +20,13 @@ type Executor interface {
 	Close(ctx context.Context, req CloseRequest) error
 }
 
+// FilePreviewer is an optional desktop-only capability. It turns a file that
+// the current task is already allowed to read into a task-owned browser tab.
+// CLI/CDP executors intentionally need not implement it.
+type FilePreviewer interface {
+	PreviewFile(ctx context.Context, req FilePreviewRequest) (Tab, error)
+}
+
 // Availability is an optional Executor capability: a host whose grant can
 // lapse (session switch, connection generation change) reports it here so the
 // tools fail closed before any call is dispatched.
@@ -73,12 +80,20 @@ type Tab struct {
 	Title     string
 	Loading   bool
 	Temporary bool
+	Error     string
 }
 
 type OpenRequest struct {
 	OperationID string
 	URL         string
 	Temporary   bool
+}
+
+type FilePreviewRequest struct {
+	OperationID string
+	Source      string
+	Path        string
+	ToolCallID  string
 }
 
 // NavigateRequest moves a bound tab; URL is consulted only for NavigateURL.

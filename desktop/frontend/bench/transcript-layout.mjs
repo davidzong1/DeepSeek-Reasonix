@@ -241,9 +241,25 @@ try {
       engine: electronEngine ? "electron" : "chromium", platform: process.platform,
       versions: electronApp ? await electronApp.evaluate(() => process.versions) : { chromium: browser.version() },
       sourceCommit: JSON.parse(config.define.__BUILD_COMMIT__),
+      screenshot: "layout.png",
     }, null, 2));
   }
-  if (evidence) { await mkdir(evidence, { recursive: true }); await page.screenshot({ path: path.join(evidence, "layout.png") }); }
+  if (evidence) {
+    const screenshotPath = path.join(evidence, "layout.png");
+    if (electronApp) {
+      // CDP screenshots can wait indefinitely for a frame from a hidden native
+      // window on Windows. Electron owns capture visibility and requests that
+      // frame without showing or focusing the developer's fixture window.
+      const png = await electronApp.evaluate(async ({ BrowserWindow }) => {
+        const image = await BrowserWindow.getAllWindows()[0].webContents.capturePage();
+        if (image.isEmpty()) throw new Error("native layout capture returned an empty image");
+        return image.toPNG().toString("base64");
+      });
+      await writeFile(screenshotPath, Buffer.from(png, "base64"));
+    } else {
+      await page.screenshot({ path: screenshotPath });
+    }
+  }
 } finally {
   if (evidence) { await mkdir(evidence, { recursive: true }); await writeFile(path.join(evidence, "layout.json"), JSON.stringify(samples, null, 2)); }
   await browser?.close();

@@ -19,6 +19,55 @@ func openTool(exec Executor) tool.Tool {
 	}, run: runOpen}
 }
 
+func previewTool(exec Executor) tool.Tool {
+	return previewFileTool{writeTool{base: base{exec: exec, name: "browser_preview",
+		description: "Open or refresh a local file in this task's built-in browser and return its tabId. Use workspace for ordinary project files, presented only when a present toolCallId is available, and reference only for a path verified from the answer. Follow with browser_snapshot before acting on the page.",
+		schema: objectSchema([]string{"operationId", "path"}, operationIDProp(),
+			enum("source", "Authorization source for the file.", "workspace", "presented", "reference"),
+			str("path", "Workspace-relative, presented, or verified reference path."),
+			str("toolCallId", "Required only when source is presented.")),
+		snip: shortSnip,
+	}, run: runPreviewFile}}
+}
+
+func runPreviewFile(ctx context.Context, exec Executor, args json.RawMessage) (string, error) {
+	var p struct {
+		OperationID string `json:"operationId"`
+		Source      string `json:"source"`
+		Path        string `json:"path"`
+		ToolCallID  string `json:"toolCallId"`
+	}
+	if err := decode(args, &p); err != nil {
+		return "", err
+	}
+	if err := requireOperationID(p.OperationID); err != nil {
+		return "", err
+	}
+	if p.Source == "" {
+		p.Source = "workspace"
+	}
+	if p.Source != "workspace" && p.Source != "presented" && p.Source != "reference" {
+		return "", fmt.Errorf("source must be workspace, presented, or reference")
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if p.Source == "presented" && strings.TrimSpace(p.ToolCallID) == "" {
+		return "", fmt.Errorf("toolCallId is required when source is presented")
+	}
+	previewer, ok := exec.(FilePreviewer)
+	if !ok {
+		return "", tool.Blocked("the current browser cannot preview local files")
+	}
+	tab, err := previewer.PreviewFile(ctx, FilePreviewRequest{
+		OperationID: p.OperationID, Source: p.Source, Path: p.Path, ToolCallID: p.ToolCallID,
+	})
+	if err != nil {
+		return "", translate(err, "browser_preview "+p.Path)
+	}
+	return "opened " + formatTab(tab) + "\nTake a browser_snapshot before acting on it.", nil
+}
+
 func runOpen(ctx context.Context, exec Executor, args json.RawMessage) (string, error) {
 	var p struct {
 		OperationID string `json:"operationId"`

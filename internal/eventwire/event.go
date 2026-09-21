@@ -39,6 +39,7 @@ type Event struct {
 	MCPInteraction   *MCPInteraction                  `json:"mcpInteraction,omitempty"`
 	Compaction       *Compaction                      `json:"compaction,omitempty"`
 	Maintenance      *ContextMaintenance              `json:"maintenance,omitempty"`
+	SessionOperation *event.SessionOperationInfo      `json:"sessionOperation,omitempty"`
 	Guardian         *Guardian                        `json:"guardian,omitempty"`
 	DecisionReceipt  *DecisionReceipt                 `json:"decisionReceipt,omitempty"`
 	Extension        *ExtensionSurface                `json:"extension,omitempty"`

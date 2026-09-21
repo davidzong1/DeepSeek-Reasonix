@@ -230,6 +230,9 @@ func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
 }
 
 func (a *Agent) summarizeAtProjectionBoundary(ctx context.Context, canonicalIndex int, direction string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	snap := a.snapshotExplicitCompression()
 	if canonicalIndex < 0 || canonicalIndex >= len(snap.canonical) {
 		return nil
@@ -262,6 +265,9 @@ func (a *Agent) summarizeAtProjectionBoundary(ctx context.Context, canonicalInde
 		return err
 	}
 	if result.Status != "ok" {
+		if result.Status == "noop" && noCompressionHistory(result.Reason) && result.SourceTokens < a.hardInputCeiling() {
+			return ctx.Err()
+		}
 		reason := strings.TrimSpace(result.Reason)
 		if reason == "" {
 			reason = "selected range did not reduce the model context"

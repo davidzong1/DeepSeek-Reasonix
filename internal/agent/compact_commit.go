@@ -25,9 +25,22 @@ type summaryProjectionCommit struct {
 // transcript version/hash, projection version, and generation must still match.
 // The maintenance event is emitted only after the lock is released so a sink
 // that re-enters ContextMaintenanceSnapshot cannot deadlock.
-func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (CompactionState, error) {
+func (a *Agent) commitSummaryProjection(ctx context.Context, commit summaryProjectionCommit) (CompactionState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return CompactionState{}, err
+	}
 	state := a.summaryProjectionState(commit)
 	a.sess.compactionMu.Lock()
+	// This is the shared commit boundary for ordinary, positional, and fallback
+	// summary projection installs. Cancellation that wins before this point
+	// prevents every variant from publishing a late summary.
+	if err := ctx.Err(); err != nil {
+		a.sess.compactionMu.Unlock()
+		return CompactionState{}, err
+	}
 	current, currentVersion := a.sess.conversation.snapshotMessagesVersion()
 	if currentVersion != commit.transcriptVersion ||
 		len(current) != len(commit.canonical) ||
@@ -39,6 +52,8 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	}
 	prev := a.sess.compactionState
 	a.sess.compactionState = state
+	// After installation begins we finish its consistency and durability work;
+	// cancellation may prevent a later batch but cannot tear this batch in half.
 	accepted, err := a.persistInstalledProjectionLocked(context.Background(), state, current)
 	if err != nil {
 		if accepted {

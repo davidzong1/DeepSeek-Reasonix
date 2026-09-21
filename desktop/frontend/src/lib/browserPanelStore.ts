@@ -24,7 +24,8 @@ export type BrowserPanelState = Projection & {
   clearDraft(tabId: string | null): void;
   clearDownloads(): void;
   activate(tabId: string): void;
-  open(url: string, temporary?: boolean, signal?: AbortSignal): Promise<void>;
+  open(url: string, temporary?: boolean, signal?: AbortSignal, taskId?: string): Promise<BrowserTabView>;
+  refreshAndActivate(tabId: string): Promise<void>;
   submitAddress(): Promise<void>;
   openDraft(): Promise<boolean>;
   close(tabId: string): Promise<void>;
@@ -130,17 +131,25 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
     clearDraft: (tabId) => clearDraft(draftKey(tabId)),
     clearDownloads: () => set((state) => ({ downloads: state.downloads.filter((entry) => entry.state === "progressing") })),
     activate: (tabId) => project({ activeTabId: tabId }),
-    async open(url, temporary = false, signal) {
+    async open(url, temporary = false, signal, taskId = USER_TASK_ID) {
       const { host } = get();
-      if (!host || signal?.aborted) return;
-      await call(host.open(url, { taskId: USER_TASK_ID, temporary }).then(async (tab) => {
-        if (signal?.aborted || get().host !== host) {
-          await host.close(tab.id);
-          return;
-        }
-        const tabs = get().tabs;
-        project({ tabs: tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab], activeTabId: tab.id });
-      }));
+      if (!host) throw new Error("Built-in browser is not ready");
+      if (signal?.aborted) throw new DOMException("Browser preview was cancelled", "AbortError");
+      const tab = await host.open(url, { taskId, temporary });
+      if (signal?.aborted || get().host !== host) {
+        await host.close(tab.id);
+        throw new DOMException("Browser preview was cancelled", "AbortError");
+      }
+      const tabs = get().tabs;
+      project({ tabs: tabs.some((entry) => entry.id === tab.id) ? tabs : [...tabs, tab], activeTabId: tab.id });
+      return tab;
+    },
+    async refreshAndActivate(tabId) {
+      const { host } = get();
+      if (!host) throw new Error("Built-in browser is not ready");
+      const tabs = await host.list();
+      if (!tabs.some((tab) => tab.id === tabId)) throw new Error("Built-in browser did not publish the preview tab");
+      project({ tabs, activeTabId: tabId });
     },
     async submitAddress() {
       const state = get();
@@ -149,7 +158,7 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
       if (!url) return;
       clearDraft(key);
       if (state.activeTabId && state.host) await call(state.host.navigate(state.activeTabId, { url }));
-      else await get().open(url);
+      else await call(get().open(url));
     },
     async openDraft() {
       const state = get();
@@ -157,7 +166,7 @@ export const useBrowserPanelStore = create<BrowserPanelState>((set, get) => {
       const url = normalizeAddress(state.drafts[key] ?? "");
       if (!url) return false;
       clearDraft(key);
-      await get().open(url);
+      await call(get().open(url));
       return true;
     },
     async close(tabId) {

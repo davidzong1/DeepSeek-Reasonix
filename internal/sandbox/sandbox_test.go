@@ -190,10 +190,10 @@ func TestResolveShellPrefer(t *testing.T) {
 		t.Errorf(`prefer="powershell": kind = %s, want powershell`, got.Kind)
 	}
 
-	// Legacy Bash preferences retain their stored value but resolve natively.
+	// Explicit Bash preferences select the discovered Windows Bash runtime.
 	got = resolveShell("bash", "", nil, "windows", onPath("bash", "powershell"), never, gitBash, nil, always, noWSL)
-	if got.Kind != ShellPowerShell {
-		t.Errorf(`prefer="bash": kind = %s, want powershell`, got.Kind)
+	if got.Kind != ShellBash {
+		t.Errorf(`prefer="bash": kind = %s, want bash`, got.Kind)
 	}
 
 	// An explicit path is honoured for the forced kind.
@@ -227,13 +227,13 @@ func TestResolveShellPrefer(t *testing.T) {
 		t.Errorf("unknown prefer should use native Windows auto-selection, got %s", got.Kind)
 	}
 
-	// A saved Git Bash path must not override the Windows Agent dialect.
+	// A Git Bash launcher resolves to the console binary, never MinTTY.
 	existsWithBash := func(p string) bool {
 		return strings.EqualFold(p, `C:\Git\bin\bash.exe`)
 	}
 	got = resolveShell("bash", `C:\Git\git-bash.exe`, nil, "windows", onPath(), existsWithBash, nil, nil, always, noWSL)
-	if got.Kind != ShellPowerShell || got.Path != "pwsh" {
-		t.Errorf("git-bash.exe should resolve to native PowerShell, got %+v", got)
+	if got.Kind != ShellBash || got.Path != `C:\Git\bin\bash.exe` {
+		t.Errorf("git-bash.exe should resolve to console Bash, got %+v", got)
 	}
 }
 

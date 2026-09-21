@@ -20,17 +20,15 @@ function deferred<T>() {
 const bridgeCalls: string[] = [];
 let maximisedValue = false;
 let maximisedGate: ReturnType<typeof deferred<boolean>> | null = null;
-installDesktopHostStub(({
-  main: {
-    App: {
-      IsMainWindowMaximised: async () => {
-        bridgeCalls.push("query");
-        if (maximisedGate) return maximisedGate.promise;
-        return maximisedValue;
-      },
+installDesktopHostStub({}, {
+  window: {
+    isMaximised: async () => {
+      bridgeCalls.push("query");
+      if (maximisedGate) return maximisedGate.promise;
+      return maximisedValue;
     },
   },
-}).main.App);
+});
 
 function Probe({ enabled }: { enabled: boolean }) {
   useWindowsMaximisedSync(enabled);
@@ -46,7 +44,7 @@ try {
   maximisedValue = true;
   await act(async () => root.render(<Probe enabled={true} />));
   assert.equal(maximised(), true, "the enabling lifecycle syncs the native flag into the store");
-  assert.deepEqual(bridgeCalls, ["query"], "the initial sync queries the bridge once");
+  assert.deepEqual(bridgeCalls, ["query"], "the initial sync queries the native host once");
 
   maximisedValue = false;
   await act(async () => { window.dispatchEvent(new window.Event("resize")); });

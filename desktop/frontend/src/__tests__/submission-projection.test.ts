@@ -7,7 +7,9 @@ import { ChatSource } from "../lib/chatViewSource";
 const record = entryToRecord({ entryId: "m:backend-user", turn: 1, order: 0, refs: [], message: {
   role: "user", content: "same input", messageId: "backend-user", submissionId: "submit-1",
 } });
-const converted = convertRecord(record, { records: [record], indexOf: new Map([[record.entryId, 0]]), toolResultOwners: new Map() }, new Set());
+const converted = convertRecord(record, { records: [record], indexOf: new Map([[record.entryId, 0]]),
+  toolResultOwners: new Map(), toolCallOwners: new Map(), toolCallDisplayIds: new Map(), toolDisplayIds: new Map(),
+  toolIdentityConflicts: new Set(), suppressedToolResults: new Set(), claimedToolResults: new Set() }, new Set());
 const projection = { items: converted.items, removeIds: [], startTurn: 0, endTurn: 1, totalTurns: 1,
   hasOlder: false, hasNewer: false, revision: 1, revisionKnown: true, digest: "cut" };
 for (const eventFirst of [true, false]) {

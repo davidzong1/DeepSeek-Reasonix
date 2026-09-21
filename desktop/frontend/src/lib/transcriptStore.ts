@@ -9,11 +9,14 @@ import { TranscriptMarkdownCache, type ParsedMarkdownValue } from "./transcriptM
 export type { ParsedMarkdownValue } from "./transcriptMarkdownCache";
 import type { Item, State } from "./useController";
 import { resolveTranscriptEntryAlias, TranscriptContentResolverRegistry } from "./transcriptContentResolver";
-import { convertRecord, entryToRecord, type RecordConversion, type TranscriptRecord } from "./transcriptRecordProjection";
+import { convertRecord, entryToRecord, type RecordConversion, type ToolProjectionView, type TranscriptRecord } from "./transcriptRecordProjection";
+import { buildToolProjectionView } from "./transcriptToolAssociation";
 import { readTranscriptContent } from "./transcriptContentRead";
 import { appendLivePageEntries, type TranscriptWindowPage } from "./transcriptLiveWindow";
 import { RESOURCE_BUDGETS } from "./resourceBudgets";
+import { reclaimInvisibleBodies } from "./transcriptMemory";
 import { bindTranscriptSession, boundSessionKey, detachTranscriptTab, type TranscriptTabBinding } from "./transcriptSessionBinding";
+import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 import type {
   HistoryEntry,
   HistorySlice,
@@ -106,8 +109,6 @@ export class TranscriptStore {
     this.markdown = new TranscriptMarkdownCache(Math.max(0, options.markdownBudgetBytes ?? DEFAULT_MARKDOWN_BUDGET));
   }
 
-  // ── session identity / LRU ────────────────────────────────────────────────
-
   private sessionKeyFor(tabId: string, sessionPath: string): string {
     return boundSessionKey(this.tabBindings, tabId, sessionPath);
   }
@@ -130,6 +131,10 @@ export class TranscriptStore {
       records: [],
       byId: new Map(),
       toolResultOwners: new Map(),
+      toolCallOwners: new Map(),
+      toolCallDisplayIds: new Map(),
+      toolDisplayIds: new Map(),
+      toolIdentityConflicts: new Set(),
       contributions: new Map(),
       consumed: new Set(),
       consumedBy: new Map(),
@@ -177,6 +182,7 @@ export class TranscriptStore {
     const pins = this.tabPins.get(tabId) ?? { live: false, active: false };
     if (pins.live === pinned) return;
     this.tabPins.set(tabId, { ...pins, live: pinned });
+    if (!pinned) this.enforceBudgets();
   }
 
   /**
@@ -195,6 +201,7 @@ export class TranscriptStore {
       const pins = this.tabPins.get(tabId) ?? { live: false, active: false };
       if (!pins.active) this.tabPins.set(tabId, { ...pins, active: true });
     }
+    this.enforceBudgets();
   }
 
   /** Detach a tab. Canonical sessions remain LRU-resident across tab IDs. */
@@ -207,6 +214,11 @@ export class TranscriptStore {
     session.generation += 1; // in-flight responses discard against a missing/stale session
     this.sessions.delete(session.key);
     this.historyEvictions += 1;
+    if (!this.isPinned(session)) {
+      for (const listener of this.listeners.get(session.tabId) ?? []) {
+        listener({ tabId: session.tabId, patches: {}, evictedPath: session.sessionPath });
+      }
+    }
   }
 
   private enforceBudgets(): void {
@@ -227,6 +239,8 @@ export class TranscriptStore {
     }
     let total = 0;
     for (const session of this.sessions.values()) total += session.bodyBytes;
+    total = reclaimInvisibleBodies(this.sessions.values(), tabId => Boolean(this.tabPins.get(tabId)?.active),
+      this.historyBodyBudgetBytes, total, (session, rec) => this.reconvertAndNotify(session, rec, rec.refs.some(ref => ref.field === "canonicalMessage")));
     candidates = evictable();
     while (total > this.historyBodyBudgetBytes && candidates.length > 0) {
       const victim = candidates.shift();
@@ -342,21 +356,6 @@ export class TranscriptStore {
 
   // ── record merge ops ──────────────────────────────────────────────────────
 
-  private viewOf(records: TranscriptRecord[]): {
-    records: TranscriptRecord[];
-    indexOf: Map<string, number>;
-    toolResultOwners: Map<string, string>;
-  } {
-    const indexOf = new Map<string, number>();
-    const toolResultOwners = new Map<string, string>();
-    records.forEach((rec, index) => {
-      indexOf.set(rec.entryId, index);
-      const toolCallId = rec.message.role === "tool" ? rec.message.toolCallId : undefined;
-      if (toolCallId && !toolResultOwners.has(toolCallId)) toolResultOwners.set(toolCallId, rec.entryId);
-    });
-    return { records, indexOf, toolResultOwners };
-  }
-
   private trackConversion(session: SessionTranscript, rec: TranscriptRecord, conversion: RecordConversion): void {
     session.contributions.set(rec.entryId, conversion.items);
     session.matchTables.set(rec.entryId, conversion.matches);
@@ -368,25 +367,7 @@ export class TranscriptStore {
 
   private replaceRecords(session: SessionTranscript, entries: HistoryEntry[]): void {
     const records = entries.map(entryToRecord);
-    const view = this.viewOf(records);
-    const consumed = new Set<string>();
-    session.records = records;
-    session.byId = new Map(records.map((rec) => [rec.entryId, rec]));
-    session.toolResultOwners = view.toolResultOwners;
-    session.contributions = new Map();
-    session.consumed = consumed;
-    session.consumedBy = new Map();
-    session.unresolvedCalls = new Map();
-    session.pendingPositional = new Map();
-    session.matchTables = new Map();
-    session.bodyBytes = 0;
-    for (const rec of records) {
-      session.bodyBytes += rec.bytes;
-      const conversion = convertRecord(rec, view, consumed);
-      this.trackConversion(session, rec, conversion);
-    }
-    session.itemsCache = null;
-    this.rebuildProjection(session);
+    this.rebuildFromRecords(session, records);
   }
 
   /**
@@ -406,34 +387,16 @@ export class TranscriptStore {
       // back to one full sort rather than corrupting the order.
       combined.sort(compareRecords);
     }
-    const view = this.viewOf(combined);
-    const consumed = new Set(session.consumed);
-    const removeIds: string[] = [];
-    const prependItems: Item[] = [];
-    for (const rec of fresh) {
-      const before = new Set(consumed);
-      const conversion = convertRecord(rec, view, consumed);
-      for (const claimed of conversion.claims) {
-        if (before.has(claimed)) continue;
-        const existing = session.contributions.get(claimed);
-        if (existing && existing.length > 0) {
-          // An existing standalone tool row is now folded into this call.
-          for (const item of existing) removeIds.push(item.id);
-          session.contributions.set(claimed, []);
-        }
-      }
-      this.trackConversion(session, rec, conversion);
-      prependItems.push(...conversion.items);
-      session.bodyBytes += rec.bytes;
-    }
-    session.records = combined;
-    session.byId = new Map(combined.map((rec) => [rec.entryId, rec]));
-    session.toolResultOwners = view.toolResultOwners;
-    session.consumed = consumed;
-    const removeSet = new Set(removeIds);
-    const base = session.itemsCache ?? this.rebuildProjection(session);
-    session.itemsCache = removeSet.size > 0 ? [...prependItems, ...base.filter((item) => !removeSet.has(item.id))] : [...prependItems, ...base];
-    return { items: prependItems, removeIds };
+    const before = new Set((session.itemsCache ?? this.rebuildProjection(session)).map(item => item.id));
+    const beforeOwners = new Map<string, string>();
+    for (const [entryId, items] of session.contributions) for (const item of items) beforeOwners.set(item.id, entryId);
+    this.rebuildFromRecords(session, combined);
+    const after = new Set((session.itemsCache ?? []).map(item => item.id));
+    const freshIds = new Set(fresh.map(record => record.entryId));
+    const prependItems = combined.flatMap(record => freshIds.has(record.entryId) ? session.contributions.get(record.entryId) ?? [] : []);
+    const afterOwners = new Map<string, string>();
+    for (const [entryId, items] of session.contributions) for (const item of items) afterOwners.set(item.id, entryId);
+    return { items: prependItems, removeIds: [...before].filter(id => !after.has(id) || beforeOwners.get(id) !== afterOwners.get(id)) };
   }
 
   /**
@@ -454,7 +417,7 @@ export class TranscriptStore {
     }
     const removeIds = this.trimWindow(session, "newer");
     this.enforceBudgets();
-    return this.sessions.get(session.key) === session ? { ...this.projectionOf(session), removeIds } : undefined;
+    return this.sessions.get(session.key) === session ? { ...this.projectionOf(session), mutation: "append", removeIds } : undefined;
   }
 
   upsertEntries(tabId: string, sessionPath: string, entries: HistoryEntry[], commitSeq?: number): AppendEntriesResult | undefined {
@@ -475,7 +438,7 @@ export class TranscriptStore {
     appendLivePageEntries(session.pages, fresh.map(entry => entry.entryId), this.windowPageEntries);
     const removeIds = this.trimWindow(session, "newer");
     this.enforceBudgets();
-    return { ...this.projectionOf(session), removeIds };
+    return { ...this.projectionOf(session), mutation: "patch", removeIds };
   }
 
   isReadingHistory(tabId: string, sessionPath: string): boolean {
@@ -494,42 +457,9 @@ export class TranscriptStore {
     if (session.records.length > 0 && compareRecords(session.records[session.records.length - 1], fresh[0]) > 0) {
       combined.sort(compareRecords);
     }
-    const view = this.viewOf(combined);
-    const consumed = new Set(session.consumed);
-    const appendedItems: Item[] = [];
-    let dirty = false;
-
-    session.records = combined;
-    session.byId = new Map(combined.map((rec) => [rec.entryId, rec]));
-    session.toolResultOwners = view.toolResultOwners;
-
-    // Resolve existing calls whose results only arrive now (a page cut between
-    // a call and its result, or a live tail landing after the call).
-    for (const rec of fresh) {
-      const toolCallId = rec.message.role === "tool" ? rec.message.toolCallId : undefined;
-      if (!toolCallId) continue;
-      const owner = session.unresolvedCalls.get(toolCallId);
-      if (!owner) continue;
-      const ownerRec = session.byId.get(owner);
-      if (!ownerRec) continue;
-      session.unresolvedCalls.delete(toolCallId);
-      const reconverted = convertRecord(ownerRec, view, consumed, session.matchTables.get(owner));
-      this.trackConversion(session, ownerRec, reconverted);
-      dirty = true;
-    }
-    for (const rec of fresh) {
-      const conversion = convertRecord(rec, view, consumed);
-      this.trackConversion(session, rec, conversion);
-      appendedItems.push(...conversion.items);
-      session.bodyBytes += rec.bytes;
-    }
-    session.consumed = consumed;
-    if (dirty || session.itemsCache === null) {
-      this.rebuildProjection(session);
-    } else {
-      session.itemsCache = [...session.itemsCache, ...appendedItems];
-    }
-    return appendedItems;
+    this.rebuildFromRecords(session, combined);
+    const freshIds = new Set(fresh.map(record => record.entryId));
+    return combined.flatMap(record => freshIds.has(record.entryId) ? session.contributions.get(record.entryId) ?? [] : []);
   }
 
   // ── bounded window ────────────────────────────────────────────────────────
@@ -538,10 +468,19 @@ export class TranscriptStore {
    * Reclaiming changes tool-call ownership, so the maps cannot be spliced.
    */
   private rebuildFromRecords(session: SessionTranscript, records: TranscriptRecord[]): void {
-    const view = this.viewOf(records);
+    const view = buildToolProjectionView(records, session.toolDisplayIds, session.toolCallDisplayIds);
+    if (view.toolIdentityConflicts.size > 0) {
+      recordFrontendDiagnostic("transcript", "tool.identity-conflict", {
+        affectedNodes: view.toolIdentityConflicts.size, residentRecords: records.length,
+      });
+    }
     session.records = records;
     session.byId = new Map(records.map((rec) => [rec.entryId, rec]));
     session.toolResultOwners = view.toolResultOwners;
+    session.toolCallOwners = view.toolCallOwners;
+    session.toolCallDisplayIds = view.toolCallDisplayIds;
+    session.toolDisplayIds = view.toolDisplayIds;
+    session.toolIdentityConflicts = view.toolIdentityConflicts;
     session.contributions = new Map();
     session.consumed = new Set();
     session.consumedBy = new Map();
@@ -651,7 +590,7 @@ export class TranscriptStore {
     if (options.preferResident && existing && existing.records.length > 0 &&
       this.matchesExpectedFingerprint(existing, options.expectedRevision, options.expectedDigest)) {
       this.touch(existing);
-      return this.projectionOf(existing);
+      return { ...this.projectionOf(existing), mutation: "replace" };
     }
     const session = existing ?? this.newSession(key, tabId, sessionPath);
     session.tabId = tabId;
@@ -693,7 +632,7 @@ export class TranscriptStore {
       session.digest = slice.digest ?? "";
       this.enforceBudgets();
       if (this.sessions.get(key) !== session) return undefined; // evicted by the budget
-      return this.projectionOf(session);
+      return { ...this.projectionOf(session), mutation: "replace" };
     } finally {
       settleGeneration();
       if (session.generationSettlement?.generation === generation) {
@@ -743,7 +682,7 @@ export class TranscriptStore {
         session.digest = slice.digest ?? "";
         this.enforceBudgets();
         if (this.sessions.get(key) !== session) return undefined;
-        return { ...this.projectionOf(session), kind: "reload", prependItems: [], removeIds: [] };
+        return { ...this.projectionOf(session), mutation: "replace", kind: "reload", prependItems: [], removeIds: [] };
       }
       if (!this.sameFingerprint(session, slice)) {
         if (session.canonicalV2) throw new Error("history identity changed");
@@ -770,7 +709,7 @@ export class TranscriptStore {
       this.enforceBudgets();
       const projection = this.projectionOf(session);
       if (this.sessions.get(key) !== session) return undefined;
-      return { ...projection, kind: "prepend", prependItems: items, removeIds: reclaimed.length > 0 ? [...removeIds, ...reclaimed] : removeIds };
+      return { ...projection, mutation: "prepend", kind: "prepend", prependItems: items, removeIds: reclaimed.length > 0 ? [...removeIds, ...reclaimed] : removeIds };
     } finally {
       session.olderInFlight = false;
     }
@@ -798,7 +737,7 @@ export class TranscriptStore {
         // A newer page from a rebuilt projection cannot be appended to the
         // window the reader is holding; the window keeps its position and the
         // caller reports the reload instead of mixing two canonical states.
-        return { ...this.projectionOf(session), kind: "stale", appendItems: [], removeIds: [] };
+        return { ...this.projectionOf(session), mutation: "patch", kind: "stale", appendItems: [], removeIds: [] };
       }
       const pageEntries = asArray<HistoryEntry>(slice.entries);
       const appendItems = this.appendRecords(session, pageEntries);
@@ -818,7 +757,7 @@ export class TranscriptStore {
       this.enforceBudgets();
       const projection = this.projectionOf(session);
       if (this.sessions.get(key) !== session) return undefined;
-      return { ...projection, kind: "append", appendItems, removeIds: reclaimed };
+      return { ...projection, mutation: "append", kind: "append", appendItems, removeIds: reclaimed };
     } finally {
       session.newerInFlight = false;
     }
@@ -884,7 +823,8 @@ export class TranscriptStore {
    * cache key shared by several calls. Full bodies belong to the drawer. */
   async requestToolContent(tabId: string, item: Extract<Item, { kind: "tool" }>, value: Record<string, unknown>): Promise<string | undefined> {
     const source = [...this.sessions.values()].find(session => session.tabId === tabId &&
-      [...session.contributions.values()].some(items => items.some(candidate => candidate.id === item.id)));
+      (item.sourceEntryId ? session.byId.has(item.sourceEntryId)
+        : [...session.contributions.values()].some(items => items.some(candidate => candidate.id === item.id))));
     if (!source) return undefined;
     const generation = source.generation;
     const { readTranscriptToolContent } = await import("./transcriptToolContent");
@@ -903,33 +843,53 @@ export class TranscriptStore {
       },
       resident: session => this.sessions.get(session.key) === session,
       read: (ref, index) => this.backend.HistoryContentForTab(tabId, ref, index),
-      publish: (session, record) => {
-        this.reconvertAndNotify(session, record);
+      publish: (session, record, ref) => {
+        this.reconvertAndNotify(session, record, ref.field === "canonicalMessage");
         this.enforceBudgets();
       },
     }, entryId, field);
   }
 
-  private reconvertAndNotify(session: SessionTranscript, rec: TranscriptRecord): void {
-    // A resolved field on a CONSUMED tool-result row shows up in the claiming
-    // call's tool item, so re-convert the claimer instead of the row.
-    const targetId = session.consumedBy.get(rec.entryId) ?? rec.entryId;
-    const target = session.byId.get(targetId);
-    if (!target) return;
-    // Re-convert with the record's established claims so tool results stay put.
-    const view = this.viewOf(session.records);
-    const consumed = new Set(session.consumed);
-    for (const claimed of session.matchTables.get(targetId)?.values() ?? []) consumed.delete(claimed);
-    const conversion = convertRecord(target, view, consumed, session.matchTables.get(targetId));
-    session.consumed = consumed;
-    this.trackConversion(session, target, conversion);
-    session.itemsCache = null;
-    this.rebuildProjection(session);
+  private reconvertAndNotify(session: SessionTranscript, rec: TranscriptRecord, structural: boolean): void {
+    if (!session.byId.has(rec.entryId)) return;
+    if (!structural) {
+      const targetId = session.consumedBy.get(rec.entryId) ?? rec.entryId;
+      const target = session.byId.get(targetId);
+      if (!target) return;
+      const view: ToolProjectionView = {
+        records: session.records,
+        indexOf: new Map(session.records.map((record, index) => [record.entryId, index])),
+        toolResultOwners: session.toolResultOwners,
+        toolCallOwners: session.toolCallOwners,
+        toolCallDisplayIds: session.toolCallDisplayIds,
+        toolDisplayIds: session.toolDisplayIds,
+        toolIdentityConflicts: session.toolIdentityConflicts,
+        suppressedToolResults: new Set(),
+        claimedToolResults: session.consumed,
+      };
+      const consumed = new Set(session.consumed);
+      for (const claimed of session.matchTables.get(targetId)?.values() ?? []) consumed.delete(claimed);
+      const conversion = convertRecord(target, view, consumed, session.matchTables.get(targetId));
+      session.consumed = consumed;
+      this.trackConversion(session, target, conversion);
+      session.itemsCache = null;
+      this.rebuildProjection(session);
+      const patches: Record<string, Item> = {};
+      for (const item of conversion.items) patches[item.id] = item;
+      for (const listener of this.listeners.get(session.tabId) ?? []) listener({ tabId: session.tabId, patches });
+      return;
+    }
+    const before = new Set((session.itemsCache ?? this.rebuildProjection(session)).map(item => item.id));
+    // canonicalMessage may reveal calls, observations, or formal identity.
+    // Replay the bounded resident window so claims, removals and ordering are
+    // published as one authoritative projection instead of a field-only patch.
+    this.rebuildFromRecords(session, session.records);
     const listeners = this.listeners.get(session.tabId);
     if (!listeners || listeners.size === 0) return;
-    const patches: Record<string, Item> = {};
-    for (const item of conversion.items) patches[item.id] = item;
-    const change: TranscriptContentChange = { tabId: session.tabId, patches };
+    const projection = this.projectionOf(session);
+    const after = new Set(projection.items.map(item => item.id));
+    const removeIds = [...before].filter(id => !after.has(id));
+    const change: TranscriptContentChange = { tabId: session.tabId, patches: {}, projection: { ...projection, mutation: "patch", removeIds } };
     for (const listener of listeners) listener(change);
   }
 

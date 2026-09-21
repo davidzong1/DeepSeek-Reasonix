@@ -47,7 +47,7 @@ func (c *Controller) Running() bool {
 	if c.turns.phase == session.RuntimeRecoveryRequired && c.turns.done != nil {
 		return true
 	}
-	return c.bodyActiveLocked() || c.finalizingLocked()
+	return c.bodyActiveLocked() || c.finalizingLocked() || c.maintenance != nil
 }
 
 // TurnIdleDone returns a boundary that closes when the currently admitted turn

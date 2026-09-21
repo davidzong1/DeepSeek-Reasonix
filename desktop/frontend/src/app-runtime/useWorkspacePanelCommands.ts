@@ -13,8 +13,6 @@ type Input = {
   visible: boolean;
   closeOverlays: () => void;
   clearLiveWidth: (width: null) => void;
-  availableWidth: number;
-  clampTreeWidth: (width: number, availableWidth: number) => number;
   setTreeWidth: (width: number) => void;
   /** True while the dock column occupies grid space: the card then overlays
    *  the transcript instead of taking layout space from it. */
@@ -163,10 +161,8 @@ export function useWorkspacePanelCommands(input: Input) {
     if (hostId) remote.openExplorer(hostId);
   });
   const restoreWorkspaceDockWidths = useCommittedCommand((treeWidth: number, _previewWidth: number) => {
-    // Single-width dock: only the tree width is meaningful; clamp it to the
-    // dynamic available width (chat keeps its 400px floor), never a fixed
-    // 560 ceiling, so the user's remembered width is preserved when reopened.
-    input.setTreeWidth(input.clampTreeWidth(treeWidth, input.availableWidth));
+    // Restore the preference, not its temporary narrow-window rendering.
+    input.setTreeWidth(treeWidth);
   });
   useLayoutEffect(() => {
     useLayoutStore.getState().setWorkspacePanelOpen(loadWorkspacePanelOpen(input.workspaceRoot));

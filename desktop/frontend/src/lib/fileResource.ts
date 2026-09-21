@@ -4,7 +4,7 @@ import { pathExtension } from "./filePaths";
 /** Where a file reference came from: an agent presentation, the workspace, or verified answer text. */
 export type FileResourceSource = "presented" | "workspace" | "reference";
 
-type ResourceBase = { hostId: string; tabId: string; path: string };
+type ResourceBase = { hostId: string; tabId: string; path: string; sessionGeneration?: number };
 
 /** What a caller knows about a file: host, session, path, origin and tool call. */
 export type FileResourceRef =

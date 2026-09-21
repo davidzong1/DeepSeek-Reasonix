@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 
 export const FRONTEND_ARTIFACT_SCHEMA = 1;
 
+export function frontendProducerAttempt(env = process.env) {
+  return env.REASONIX_FRONTEND_PRODUCER_ATTEMPT || env.GITHUB_RUN_ATTEMPT || undefined;
+}
+
 function sha256(parts) {
   const hash = createHash("sha256");
   for (const part of parts) hash.update(part);

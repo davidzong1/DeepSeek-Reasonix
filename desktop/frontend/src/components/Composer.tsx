@@ -748,6 +748,8 @@ export function Composer({
 	const bridgeTargetKey = `${bridgeTarget.kind}:${bridgeTarget.draftId}:${bridgeTarget.tabId}:${bridgeTarget.generation ?? 0}`;
   const runtimeState = useRuntimeSession(tabId, inboxSessionPath);
   const finishing = runtimeState.finishing;
+  const maintenanceActive = Boolean(runtimeState.state?.maintenance);
+  const queueOnly = finishing || maintenanceActive;
   if (runtimeState.known) running = runtimeState.running ?? running;
   if (runtimeState.unknown) disabled = true;
   const pendingKey = followupSessionKey(inboxSessionPath, inboxHostId, inboxWorkspace);
@@ -2166,8 +2168,8 @@ export function Composer({
       submissionCapture = onCaptureSubmit?.(persistentSnapshot(snapshotComposerDraft()));
       if (onCaptureSubmit && !submissionCapture) return;
       await onPrepareSubmit?.(submissionCapture);
-      if (finishing && !submitPendingKey) throw new Error("reasonix_error:inbox_not_submitted");
-      const target = finishing && app.CaptureInboxTarget
+      if (queueOnly && !submitPendingKey) throw new Error("reasonix_error:inbox_not_submitted");
+      const target = queueOnly && app.CaptureInboxTarget
         ? await app.CaptureInboxTarget(submitTabId || "", inboxSessionPath || "") : undefined;
       const orderedAttachments = sortComposerAttachments(currentAttachments);
       const refs = [
@@ -2212,7 +2214,7 @@ export function Composer({
         const guidanceText = displayText.trim() || (structured?.display.trim() ?? "");
         const guidanceSubmitText = submitText.trim();
         if (guidanceText) {
-          if (!finishing && !localDurableGuidance && onSteer) {
+          if (!queueOnly && !localDurableGuidance && onSteer) {
             try {
               await onSteer(guidanceSubmitText, submitTabId);
               clearSubmittedDraft(submitDraftKey);
@@ -2229,11 +2231,11 @@ export function Composer({
             const { enqueueInboxGuidance, enqueueInboxGuidanceForActiveTurn } = await import("../lib/inboxGuidanceSubmit");
             const request: PendingFollowup = { key: `followup-${crypto.randomUUID()}`, target,
               tabId: submitTabId || "", display: guidanceText, submit: guidanceSubmitText, structured, draft: submittedDraft };
-            if (finishing) {
+            if (queueOnly) {
               unresolvedRequest = request;
               pendingFollowups.set(submitPendingKey, request);
             }
-            const receipt = finishing
+            const receipt = queueOnly
               ? target && app.EnqueueInboxFollowupForTarget
                 ? await app.EnqueueInboxFollowupForTarget(target, guidanceText, guidanceSubmitText, structured?.invocations ?? [], request.key)
                 : await enqueueInboxGuidance(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, { idempotency: request.key })
@@ -2241,7 +2243,7 @@ export function Composer({
             if (receipt?.error) throw new Error(receipt.error);
             if (!receipt?.itemId) throw new Error("Follow-up receipt unconfirmed");
             const consumedBeforeReceipt = receiptTracker?.takeConsumed(submitDraftKey, receipt.itemId) ?? false;
-            if (!consumedBeforeReceipt && !finishing) {
+            if (!consumedBeforeReceipt && !queueOnly) {
               updatePendingGuidanceForDraft(submitDraftKey, (items) => {
                 const next = items.map((item) => receipt.paused ? { ...item, paused: true } : item);
                 if (next.some((item) => item.id === receipt.itemId)) return next;
@@ -2257,12 +2259,12 @@ export function Composer({
                 }];
               });
             }
-            if (ownsDraft() && (!finishing || pendingFollowups.get(submitPendingKey) === request) && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
-            if (finishing) {
+            if (ownsDraft() && (!queueOnly || pendingFollowups.get(submitPendingKey) === request) && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
+            if (queueOnly) {
               pendingFollowups.clear(submitPendingKey, request);
               setGuidanceRetryNonce(value => value + 1);
             }
-            if (finishing) showToast(t("runtime.queued"), "info");
+            if (queueOnly) showToast(t("runtime.queued"), "info");
           } catch (error) {
             if (unresolvedRequest && followupNotSubmitted(error)) pendingFollowups.clear(submitPendingKey, unresolvedRequest);
             showToast(formatInboxError(error, locale), "warn");
@@ -3004,14 +3006,14 @@ export function Composer({
     cancelSettlingDraftsRef.current.add(targetDraftKey);
     setCancelSettlingRevision((value) => value + 1);
     const ownedGuidance = pendingGuidanceRef.current.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
-    const durableItemIDs = ownedGuidance
+    const durableItemIDs = maintenanceActive ? [] : ownedGuidance
       .map((item) => item.id)
       .filter((id) => !id.startsWith("local-"));
-    if (goalModeOn && activeGoal) onClearGoal();
+    if (!maintenanceActive && goalModeOn && activeGoal) onClearGoal();
     try {
       const outcome = (await onCancel(durableItemIDs)) ?? { discardedItemIds: [] };
       const discarded = new Set(outcome.discardedItemIds);
-      const restorable = ownedGuidance.filter((item) => item.id.startsWith("local-") || discarded.has(item.id));
+      const restorable = maintenanceActive ? [] : ownedGuidance.filter((item) => item.id.startsWith("local-") || discarded.has(item.id));
       const queued = restorable
         .map((item) => item.structured?.display ?? item.text)
         .filter((part) => part.trim() !== "");
@@ -3981,7 +3983,7 @@ export function Composer({
   );
   const turnPhaseLabel = turnPhaseStatusLabel(turnPhase, t);
   const readStatusText = readStatusLabel(readStatuses, t);
-  const runStateText = runtimeState.unknown ? t("runtime.unknown") : finishing ? t("runtime.finishing") : runtimeState.kind === "cancelling" ? t("status.jobStopping") : runtimeState.kind === "background_job" ? t("runtime.background", { count: runtimeState.state?.backgroundJobs ?? 0 }) : retry
+  const runStateText = runtimeState.unknown ? t("runtime.unknown") : runtimeState.kind === "maintenance_finalizing" ? t("compaction.saving") : runtimeState.kind === "maintenance_cancelling" ? t("compaction.stopping") : runtimeState.kind === "maintenance_running" ? t("compaction.working") : finishing ? t("runtime.finishing") : runtimeState.kind === "cancelling" ? t("status.jobStopping") : runtimeState.kind === "background_job" ? t("runtime.background", { count: runtimeState.state?.backgroundJobs ?? 0 }) : retry
     ? recoveryStatusText(t, retry, now)
     : waitingPrompt === "approval"
       ? t("composer.runWaitingApproval", { tool: pendingApprovalLabel ?? "" })
@@ -3995,7 +3997,7 @@ export function Composer({
   const metricsTick = Math.floor(now / 1000);
   const runMetrics = useMemo(() => {
     const metrics = turnMetrics({
-      now, turnStartAt, turnDoneAt, running, waitAccumMs, lastTurnWaitAccumMs,
+      now, turnStartAt, turnDoneAt, running: running && !maintenanceActive, waitAccumMs, lastTurnWaitAccumMs,
       turnTokens, turnOutputTokens, lastTurnOutputTokens, turnOutputCharsAtUsage,
       turnArgChars, turnModelActiveMs, turnModelActiveAt, liveModelActiveAt,
       live: liveOutput, turnOutputEstimated, lastTurnOutputEstimated,
@@ -4028,7 +4030,7 @@ export function Composer({
       stripParts,
       stripSpeed,
     };
-  }, [metricsTick, running, turnStartAt, turnDoneAt, waitAccumMs, lastTurnWaitAccumMs,
+  }, [metricsTick, running, maintenanceActive, turnStartAt, turnDoneAt, waitAccumMs, lastTurnWaitAccumMs,
     turnTokens, turnOutputTokens, lastTurnOutputTokens, turnOutputCharsAtUsage, turnArgChars,
     turnModelActiveMs, turnModelActiveAt, liveModelActiveAt, liveOutput, turnOutputEstimated,
     lastTurnOutputEstimated, t]);

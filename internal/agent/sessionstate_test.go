@@ -32,6 +32,9 @@ var sessionReset = map[string]bool{
 	"todoMu":                                true,
 	"todoState":                             true,
 	"todoWritten":                           true,
+	// The injected reasoning-language block describes the replaced
+	// conversation, so the new one must inject its own on the first turn.
+	"reasoningLanguageInjected": true,
 }
 
 // sessionCarryOver names the fields reset deliberately leaves alone, each with

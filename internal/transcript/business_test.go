@@ -6,6 +6,7 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
+	"reasonix/internal/provider"
 	"reasonix/internal/turnevent"
 )
 
@@ -42,6 +43,59 @@ func TestBusinessSettlementUpdatesStreamingRowWithoutDuplicateOrPendingState(t *
 	}
 	if len(cut.ActiveAttempts) != 0 || len(cut.ActiveRecords) != 0 {
 		t.Fatalf("settlement retains active state: attempts=%d records=%d", len(cut.ActiveAttempts), len(cut.ActiveRecords))
+	}
+}
+
+func TestToolResultCompletionPreservesCanonicalIdentityAndMetadata(t *testing.T) {
+	p, err := NewProjection(testIdentity, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &provider.ToolExecution{Kind: "shell", State: "completed", DurationMs: 23}
+	readCompletion := &provider.ReadCompletion{ID: "read-1", Omitted: 2}
+	p.AcceptBusiness([]Message{{
+		RecordID: "tool:call-1", MessageID: "result-1", Role: "tool", ToolCallID: "call-1", ToolName: "PowerShell",
+		Content: "persisted", Source: "history", TurnID: "turn-1", HistoryTurn: 4, CreatedAt: 123,
+		Execution: execution, ToolResultArchived: true, ReadCompletion: readCompletion,
+	}}, 1, "turn-1", false)
+	businessFrame(t, p, 1, event.Event{Kind: event.ToolResult, MessageID: "assistant-owner", Tool: event.Tool{
+		ID: "call-1", Name: "PowerShell", Output: "completed", PresentedFiles: []provider.PresentedFile{{Path: "report.txt"}},
+	}})
+
+	cut := snapshot(t, p)
+	if len(cut.Records) != 1 {
+		t.Fatalf("tool completion duplicated canonical row: records=%d", len(cut.Records))
+	}
+	got := cut.Records[0].Message
+	if got.RecordID != "tool:call-1" || got.MessageID != "result-1" || got.Source != "history" || got.TurnID != "turn-1" || got.HistoryTurn != 4 || got.CreatedAt != 123 {
+		t.Fatalf("tool completion lost canonical identity/location: %+v", got)
+	}
+	if got.Execution == nil || got.Execution.Kind != execution.Kind || got.Execution.State != execution.State || got.Execution.DurationMs != execution.DurationMs ||
+		!got.ToolResultArchived || got.ReadCompletion == nil || got.ReadCompletion.ID != readCompletion.ID || got.ReadCompletion.Omitted != readCompletion.Omitted {
+		t.Fatalf("tool completion lost canonical metadata: %+v", got)
+	}
+	if got.Content != "completed" || len(got.PresentedFiles) != 1 || got.PresentedFiles[0].Path != "report.txt" {
+		t.Fatalf("tool completion did not update event-owned fields: %+v", got)
+	}
+}
+
+func TestToolResultEventThenCanonicalRecordKeepsOneStableRow(t *testing.T) {
+	p, err := NewProjection(testIdentity, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	businessFrame(t, p, 0, event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "call-1", Name: "edit_file", Output: "event result"}})
+	p.AcceptBusiness([]Message{{RecordID: "tool:call-1", MessageID: "result-1", Role: "tool", ToolCallID: "call-1",
+		ToolName: "edit_file", Content: "canonical result", HistoryTurn: 2, Execution: &provider.ToolExecution{State: "completed"}}}, 1, "turn-1", false)
+	businessFrame(t, p, 1, event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "call-1", Name: "edit_file", Output: "event result"}})
+
+	cut := snapshot(t, p)
+	if len(cut.Records) != 1 {
+		t.Fatalf("event/formal handoff duplicated row: records=%d", len(cut.Records))
+	}
+	got := cut.Records[0].Message
+	if got.RecordID != "tool:call-1" || got.MessageID != "result-1" || got.HistoryTurn != 2 || got.Execution == nil {
+		t.Fatalf("event/formal handoff degraded canonical row: %+v", got)
 	}
 }
 

@@ -19,8 +19,8 @@ var readOnlyTools = map[string]bool{
 
 func TestNamesMatchTools(t *testing.T) {
 	names := Names()
-	if len(names) != 13 {
-		t.Fatalf("Names() = %d entries, want 13", len(names))
+	if len(names) != 14 {
+		t.Fatalf("Names() = %d entries, want 14", len(names))
 	}
 	tools := Tools(nil)
 	if len(tools) != len(names) {
@@ -271,6 +271,10 @@ func TestTabWrites(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fake.opens, []OpenRequest{{OperationID: "op-1", URL: "https://c.example", Temporary: true}}) {
 		t.Fatalf("open requests = %+v", fake.opens)
+	}
+	out, err = run(t, fake, "browser_preview", `{"operationId":"op-preview","source":"workspace","path":"dist/index.html"}`)
+	if err != nil || !strings.Contains(out, "tab t-preview") || !reflect.DeepEqual(fake.previews, []FilePreviewRequest{{OperationID: "op-preview", Source: "workspace", Path: "dist/index.html"}}) {
+		t.Fatalf("preview out = %q, err = %v, requests = %+v", out, err, fake.previews)
 	}
 	out, err = run(t, fake, "browser_navigate", `{"operationId":"op-2","tabId":"t1","action":"reload"}`)
 	if err != nil || !strings.Contains(out, "navigated (reload)") || !strings.Contains(out, "now invalid") {

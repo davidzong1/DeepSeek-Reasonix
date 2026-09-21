@@ -12,7 +12,7 @@ import {
 } from "../shared/ipc.js";
 import { isAllowedCommand, type LoadedContract } from "./contract.js";
 import { errorText, type Logger } from "./log.js";
-import { bool, finite, record, str } from "./params.js";
+import { bool, finite, record, str, type Params } from "./params.js";
 import { RpcError } from "./rpc.js";
 import type { GraphicsSettingsStore } from "./graphics.js";
 import type { BrowserControlApi } from "./browserControlHost.js";
@@ -72,6 +72,66 @@ function diagnosticRequestId(value: unknown): string | undefined {
   return value;
 }
 
+const TRANSCRIPT_DIAGNOSTIC_EVENTS = new Set(["failure", "summary", "recovered", "stopped"]);
+const TRANSCRIPT_DIAGNOSTIC_STAGES = new Set(["none", "baseline_read", "baseline_validate", "snapshot_install", "delta_read", "delta_validate", "delta_apply"]);
+const TRANSCRIPT_DIAGNOSTIC_REASONS = new Set([
+  "transport_rejected", "protocol_version", "snapshot_missing", "history_not_ready", "revision_regressed",
+  "revision_gap", "business_gap", "frame_cut_mismatch", "sampling_identity_missing", "sampling_gap",
+  "settlement_not_committed", "settlement_identity_mismatch", "resync_required", "consumer_error",
+  "service_stopping", "unknown",
+]);
+const TRANSCRIPT_DIAGNOSTIC_TRANSPORTS = new Set(["local", "remote"]);
+const TRANSCRIPT_DIAGNOSTIC_ERROR_TYPES = new Set(["classified", "error", "string", "object", "unknown"]);
+const TRANSCRIPT_DIAGNOSTIC_KEYS = new Set([
+  "kind", "event", "stage", "reason", "transport", "errorType", "revision", "commit", "attempts", "failures", "durationMs",
+]);
+
+type RendererTranscriptDiagnostic = {
+  kind: "transcript";
+  event: string;
+  stage: string;
+  reason: string;
+  transport: string;
+  errorType: string;
+  revision: number;
+  commit: number;
+  attempts: number;
+  failures: number;
+  durationMs: number;
+};
+
+function diagnosticCount(input: Params, key: string): number {
+  const value = input[key];
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 1_000_000_000_000) {
+    throw new Error(`invalid renderer diagnostic ${key}`);
+  }
+  return value as number;
+}
+
+export function parseRendererDiagnostic(value: unknown): RendererTranscriptDiagnostic {
+  let encoded: string | undefined;
+  try { encoded = JSON.stringify(value); } catch { throw new Error("invalid renderer diagnostic payload"); }
+  if (typeof encoded !== "string") throw new Error("invalid renderer diagnostic payload");
+  if (Buffer.byteLength(encoded, "utf8") > 2048) throw new Error("renderer diagnostic payload too large");
+  const input = record(value);
+  if (Object.keys(input).some(key => !TRANSCRIPT_DIAGNOSTIC_KEYS.has(key))) throw new Error("invalid renderer diagnostic field");
+  const event = str(input, "event"), stage = str(input, "stage"), reason = str(input, "reason"), transport = str(input, "transport");
+  const errorType = str(input, "errorType");
+  if (input.kind !== "transcript" || !TRANSCRIPT_DIAGNOSTIC_EVENTS.has(event) || !TRANSCRIPT_DIAGNOSTIC_STAGES.has(stage)
+    || !TRANSCRIPT_DIAGNOSTIC_REASONS.has(reason) || !TRANSCRIPT_DIAGNOSTIC_TRANSPORTS.has(transport)
+    || !TRANSCRIPT_DIAGNOSTIC_ERROR_TYPES.has(errorType)) {
+    throw new Error("invalid renderer diagnostic value");
+  }
+  return {
+    kind: "transcript", event, stage, reason, transport, errorType,
+    revision: diagnosticCount(input, "revision"),
+    commit: diagnosticCount(input, "commit"),
+    attempts: diagnosticCount(input, "attempts"),
+    failures: diagnosticCount(input, "failures"),
+    durationMs: diagnosticCount(input, "durationMs"),
+  };
+}
+
 export function parseNavigateTarget(value: unknown): BrowserNavigateTarget {
   const target = record(value);
   const action = str(target, "action");
@@ -112,6 +172,15 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
       }
     });
   };
+  let diagnosticWindowStartedAt = 0;
+  let diagnosticWindowCount = 0;
+  let diagnosticDropped = 0;
+  let diagnosticDropTimer: ReturnType<typeof setTimeout> | undefined;
+  const reportDiagnosticDrops = () => {
+    if (diagnosticDropped > 0) deps.log.warn(`renderer diagnostics rate limited dropped=${diagnosticDropped}`);
+    diagnosticDropped = 0;
+    diagnosticDropTimer = undefined;
+  };
 
   deps.ipcMain.on(IPC.contract, (event) => {
     event.returnValue = trusted(event)
@@ -123,6 +192,14 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
     if (!isAllowedCommand(deps.contract, method)) {
       throw new RpcError(-32601, `-32601 method not found: ${typeof method === "string" ? method : typeof method}`);
     }
+    // Older renderers reached native title-bar controls through generated Go
+    // bindings. Keep those command names compatible while the Electron shell
+    // owns window lifetime and can accept repeated close requests after the Go
+    // service has begun shutting down.
+    if (method === "MinimiseMainWindow") return deps.window.minimise();
+    if (method === "ToggleMaximiseMainWindow") return deps.window.toggleMaximise();
+    if (method === "IsMainWindowMaximised") return deps.window.isMaximised();
+    if (method === "CloseMainWindow") return deps.window.close();
     return deps.invoke(method, Array.isArray(args) ? args : []);
   });
   handle(IPC.serviceStateGet, () => deps.serviceState());
@@ -133,6 +210,29 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
     if (requestId) deps.performance?.cancelRendererProfile(requestId);
   });
   handle(IPC.exportHeapSnapshot, () => deps.performance?.exportHeapSnapshot() ?? { status: "unavailable" });
+  handle(IPC.rendererDiagnostic, (value) => {
+    const diagnostic = parseRendererDiagnostic(value);
+    const now = Date.now();
+    if (now - diagnosticWindowStartedAt >= 1000) {
+      if (diagnosticDropTimer) clearTimeout(diagnosticDropTimer);
+      reportDiagnosticDrops();
+      diagnosticWindowStartedAt = now;
+      diagnosticWindowCount = 0;
+    }
+    if (diagnosticWindowCount >= 10) {
+      diagnosticDropped++;
+      if (!diagnosticDropTimer) {
+        diagnosticDropTimer = setTimeout(reportDiagnosticDrops, 1000);
+        diagnosticDropTimer.unref();
+      }
+      return;
+    }
+    diagnosticWindowCount++;
+    const service = deps.serviceState();
+    deps.log.info(
+      `renderer transcript event=${diagnostic.event} stage=${diagnostic.stage} reason=${diagnostic.reason} type=${diagnostic.errorType} transport=${diagnostic.transport} revision=${diagnostic.revision} commit=${diagnostic.commit} attempts=${diagnostic.attempts} failures=${diagnostic.failures} duration_ms=${diagnostic.durationMs} service=${service.phase} generation=${service.generation}`,
+    );
+  });
   handle(IPC.openExternal, (url) => {
     if (!isOpenableExternalURL(url)) throw new Error(`refusing to open ${typeof url === "string" ? url : typeof url}`);
     return deps.openExternal(url);

@@ -129,6 +129,10 @@ func readSessionHeader(dir, sessionID string) (SessionHeader, bool, error) {
 	if err != nil {
 		return SessionHeader{}, false, err
 	}
+	return decodeSessionHeader(body, sessionID)
+}
+
+func decodeSessionHeader(body []byte, sessionID string) (SessionHeader, bool, error) {
 	var header SessionHeader
 	if err := json.Unmarshal(body, &header); err != nil {
 		return SessionHeader{}, true, fmt.Errorf("%w: decode session header: %w", ErrDamagedStore, err)

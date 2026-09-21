@@ -45,6 +45,24 @@ func TestListDoesNotOpenSessionHistoryForReadyMetadata(t *testing.T) {
 	}
 }
 
+func TestResolveSessionIDReturnsCatalogOwnedIdentity(t *testing.T) {
+	persistence := &catalogOnlyPersistence{}
+	query := newQuery("local", persistence, nil)
+	ref, err := query.ResolveSessionID(t.Context(), "listed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != (SessionRef{HostID: "local", SessionID: "listed"}) {
+		t.Fatalf("resolved ref = %+v", ref)
+	}
+	if _, err = query.ResolveSessionID(t.Context(), "../listed"); err == nil {
+		t.Fatal("path-like session identity was accepted")
+	}
+	if _, err = query.ResolveSessionID(t.Context(), "missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("missing identity error = %v", err)
+	}
+}
+
 func TestCatalogMetadataIsBoundToSessionIncarnation(t *testing.T) {
 	cacheDir := t.TempDir()
 	first := Manifest{SessionID: "same-id", CreatedAt: time.Unix(1, 0).UTC()}

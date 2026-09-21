@@ -199,7 +199,7 @@ func (c *Controller) composeWithGoal(
 		text = PlanModeMarker + "\n\n" + text
 	}
 	text = agent.WithResponseLanguage(text, responseLanguage)
-	text = agent.WithReasoningLanguageForSource(text, reasoningLanguage, source)
+	text = c.withReasoningLanguageOnce(text, reasoningLanguage, source)
 
 	// Memory added mid-session rides the turn (never the cached system prefix),
 	// so it takes effect now without invalidating the prompt cache. It folds into
@@ -320,13 +320,26 @@ func reasoningLanguageBlock(lang string) string {
 	return agent.ReasoningLanguageBlock(lang)
 }
 
+// withReasoningLanguageOnce injects the transient reasoning-language block at
+// most once per conversation. The block is a session constant, so repeating it
+// on every turn costs its bytes in every request prefix while telling the model
+// nothing new. The memory lives on the executor's conversation; a controller
+// with no executor (pure runner) keeps the historical per-turn behaviour,
+// because there is no conversation to scope it to.
+func (c *Controller) withReasoningLanguageOnce(text, lang, source string) string {
+	if c.executor == nil {
+		return agent.WithReasoningLanguageForSource(text, lang, source)
+	}
+	return c.executor.WithReasoningLanguageOnce(text, lang, source)
+}
+
 func (c *Controller) ComposeSynthetic(text string) string {
 	c.mu.Lock()
 	responseLang := c.responseLanguage
 	lang := c.reasoningLanguage
 	c.mu.Unlock()
 	text = agent.WithResponseLanguage(text, responseLang)
-	return agent.WithReasoningLanguageForSource(text, lang, text)
+	return c.withReasoningLanguageOnce(text, lang, text)
 }
 
 func activeGoalBlock(goal string) string {

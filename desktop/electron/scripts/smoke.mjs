@@ -28,6 +28,13 @@ if (!existsSync(resolve(root, "dist/main.cjs"))) {
 }
 
 const home = mkdtempSync(join(tmpdir(), "reasonix-electron-smoke-"));
+const previewProject = join(home, "preview-project");
+mkdirSync(previewProject, { recursive: true });
+const previewFile = join(previewProject, "index.html");
+const previewDocument = (version) => `<!doctype html><meta charset="utf-8"><title>Preview ${version}</title>
+<button id="action">Run ${version}</button><output id="result">idle</output>
+<script>document.querySelector('#action').onclick=()=>document.querySelector('#result').textContent='${version}'</script>`;
+writeFileSync(previewFile, previewDocument("v1"));
 const checks = [];
 const check = (name, ok, detail = "") => {
   checks.push({ name, ok: Boolean(ok), detail });
@@ -164,6 +171,52 @@ try {
   await page.evaluate((tabId) => window.reasonixDesktop.browser.close(tabId), tab.id);
   const remaining = await page.evaluate(() => window.reasonixDesktop.browser.list());
   check("browser tab closes cleanly", remaining.every((entry) => entry.id !== tab.id), `${remaining.length} tabs left`);
+
+  await app.evaluate(({ shell }) => {
+    globalThis.__reasonixSmokeOpenExternal = { calls: [], original: shell.openExternal };
+    shell.openExternal = async (url) => { globalThis.__reasonixSmokeOpenExternal.calls.push(url); };
+  });
+  const projectTab = await page.evaluate((rootPath) => window.reasonixDesktop.invoke("EnsureBlankTab", ["project", rootPath]), previewProject);
+  const openPreview = async (operationId) => {
+    try {
+      return await page.evaluate(({ tabId, generation, operation }) => window.reasonixDesktop.invoke("OpenFileBrowserPreviewForTab", [tabId, {
+        source: "workspace", path: "index.html", operationId: operation,
+        expectedSessionGeneration: generation, userInitiated: true,
+      }]), { tabId: projectTab.id, generation: projectTab.sessionGeneration, operation: operationId });
+    } catch (error) {
+      if (!String(error).includes("Execution context was destroyed")) throw error;
+      page = await mainRenderer(app);
+      const owned = await page.evaluate((taskId) => window.reasonixDesktop.browser.list().then((tabs) => tabs.find((entry) => entry.taskId === taskId)), projectTab.id);
+      if (!owned) throw error;
+      return { tabId: owned.id, url: owned.url, status: "opened", sessionGeneration: projectTab.sessionGeneration ?? 0 };
+    }
+  };
+  const executeInPreview = async (url, expression) => app.evaluate(async ({ webContents }, input) => {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const target = webContents.getAllWebContents().find((contents) => contents.getURL() === input.url);
+      if (target && !target.isLoading()) return target.executeJavaScript(input.expression, true);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    throw new Error(`preview WebContents did not load ${input.url}`);
+  }, { url, expression });
+
+  const previewV1 = await openPreview("smoke-preview-v1");
+  const firstInteraction = await executeInPreview(previewV1.url, "document.querySelector('#action').click(); document.querySelector('#result').textContent");
+  check("workspace HTML runs in the built-in browser", ["opened", "loading"].includes(previewV1.status) && firstInteraction === "v1", `${previewV1.tabId} ${firstInteraction}`);
+
+  writeFileSync(previewFile, previewDocument("v2"));
+  const previewV2 = await openPreview("smoke-preview-v2");
+  const secondInteraction = await executeInPreview(previewV2.url, "document.querySelector('#action').click(); document.querySelector('#result').textContent");
+  check("updated HTML reuses and reloads the preview tab", previewV2.tabId === previewV1.tabId && previewV2.url !== previewV1.url && secondInteraction === "v2", `${previewV2.tabId} ${secondInteraction}`);
+  const previewTabs = await page.evaluate((taskId) => window.reasonixDesktop.browser.list().then((tabs) => tabs.filter((entry) => entry.taskId === taskId)), projectTab.id);
+  check("file preview keeps one task-owned browser tab", previewTabs.length === 1 && previewTabs[0].id === previewV1.tabId, `${previewTabs.length} tab(s)`);
+  const externalOpens = await app.evaluate(({ shell }) => {
+    const state = globalThis.__reasonixSmokeOpenExternal;
+    shell.openExternal = state.original;
+    return state.calls;
+  });
+  check("HTML preview never invokes the external browser", externalOpens.length === 0, `${externalOpens.length} calls`);
+  await page.evaluate((tabId) => window.reasonixDesktop.browser.close(tabId), previewV1.tabId);
 
   await page.screenshot({ path: join(artifacts, "main-window.png") });
   const tree = processTree(shellPid);

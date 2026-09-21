@@ -1,7 +1,7 @@
 import type { Item, LiveStream } from "./useController";
 import { canonicalUserConfirmations, matchLocalSubmissions, type LocalSubmission } from "./localSubmissionState";
-import type { PresentedFile } from "./types";
-import { deriveTurnFiles, fileIdentity, type TurnFileView } from "./turnFiles";
+import type { PresentedFile, WireCompletionSummary } from "./types";
+import { deriveTurnFiles, type TurnFileView } from "./turnFiles";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 
 export type PresentedFileView = PresentedFile & { toolCallId: string };
@@ -12,7 +12,7 @@ type ItemNode = { [K in Item["kind"]]: { kind: K; key: string; turnKey: string; 
 export type ChatNode = ItemNode
   | { kind: "reasoning"; key: string; turnKey: string; item: Extract<Item, { kind: "assistant" }> }
   | { kind: "process"; key: string; turnKey: string; members: readonly string[]; collapsed: boolean; foldable: boolean; toolCallCount: number; messageCount: number; subagentCount: number; failureCount: number }
-  | { kind: "tail"; key: string; turnKey: string; answerKey?: string; turn?: number; latest: boolean; presentedFiles: readonly PresentedFileView[]; modifiedFiles: readonly TurnFileView[] };
+  | { kind: "tail"; key: string; turnKey: string; answerKey?: string; turn?: number; latest: boolean; completionSummary?: WireCompletionSummary; presentedFiles: readonly PresentedFileView[]; modifiedFiles: readonly TurnFileView[] };
 export interface ChatStatus { running: boolean; hydrating: boolean; hasOlder: boolean; loadingOlder: boolean; error?: string; startedAt?: number }
 export interface ChatInput extends ChatStatus {
   items: readonly Item[];
@@ -190,7 +190,7 @@ export class ChatSource implements ChatViewSource {
         const call = proxyAuditCall(item);
         return call && current.items.some(tool => tool.kind === "tool" && tool.id === call);
       }).map(item => item.id));
-      const members = current.items.flatMap(item => mergedAudits.has(item.id) ? [] : item.kind === "assistant"
+      const members = current.items.flatMap(item => mergedAudits.has(item.id) || item.kind === "compaction" ? [] : item.kind === "assistant"
         ? [...(item !== answer ? [item.id] : []), `${item.id}:reasoning`]
         : item.kind === "notice" && (item.level === "warn" || item.action === "recover_context")
           || item.kind === "extension" && item.card.actions?.length ? [] : [item.id]);
@@ -218,8 +218,11 @@ export class ChatSource implements ChatViewSource {
         for (const file of call.presentedFiles ?? []) latestByPath.set(file.path, { ...file, toolCallId: call.id });
       }
       const nextPresented = [...latestByPath.values()];
-      const presentedPaths = new Set(nextPresented.map(file => fileIdentity(file.path)));
-      const nextModified = deriveTurnFiles(allCalls).filter(file => !presentedPaths.has(fileIdentity(file.path)));
+      const nextModified = deriveTurnFiles(allCalls);
+      let completionSummary: WireCompletionSummary | undefined;
+      for (const item of current.items) {
+        if (item.kind === "notice" && item.completionSummary) completionSummary = item.completionSummary;
+      }
       const tailKey = `${turnKey}:tail`;
       const oldTail = this.nodes.get(tailKey);
       const stablePresented = oldTail?.kind === "tail"
@@ -228,10 +231,11 @@ export class ChatSource implements ChatViewSource {
         ? oldTail.presentedFiles : nextPresented;
       const stableModified = oldTail?.kind === "tail"
         && oldTail.modifiedFiles.length === nextModified.length
-        && oldTail.modifiedFiles.every((file, index) => file.path === nextModified[index]?.path && file.operation === nextModified[index]?.operation && file.toolCallId === nextModified[index]?.toolCallId)
+        && oldTail.modifiedFiles.every((file, index) => file.path === nextModified[index]?.path && file.operation === nextModified[index]?.operation
+          && file.toolCallId === nextModified[index]?.toolCallId)
         ? oldTail.modifiedFiles : nextModified;
       add({ kind: "tail", key: tailKey, turnKey, answerKey: answer?.id, turn: current.turn,
-        latest, presentedFiles: stablePresented, modifiedFiles: stableModified });
+        latest, completionSummary, presentedFiles: stablePresented, modifiedFiles: stableModified });
       this.projectedGroups.set(turnKey, {
         user: current.user, items: current.items, active, latest, present: groupPresent, order: order.slice(groupOrderStart),
       });

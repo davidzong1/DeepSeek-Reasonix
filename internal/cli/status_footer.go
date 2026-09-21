@@ -206,6 +206,8 @@ func (m chatTUI) primaryStatusLine(modeTag string, shellMode, cancelRequested bo
 		status += " · " + yellow(i18n.M.ClipboardImagePastingHint)
 	case m.copyNoticeText != "":
 		status += " · " + green(m.copyNoticeText)
+	case m.maintenance != nil:
+		status += " · " + footerValue(i18n.M.CompactionWorking)
 	case cancelRequested:
 		status += " · " + i18n.M.CtrlCQuitHint
 	case shellMode:

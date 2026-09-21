@@ -8,7 +8,7 @@ interface ContentReadOwner {
   locate(entryId: string): { session: SessionTranscript; entryId: string } | undefined;
   resident(session: SessionTranscript): boolean;
   read(ref: HistoryContentRef, index: number): Promise<HistoryContentChunk>;
-  publish(session: SessionTranscript, record: TranscriptRecord): void;
+  publish(session: SessionTranscript, record: TranscriptRecord, ref: HistoryContentRef): void;
 }
 
 /** Resolve against one resident owner, with one handoff to its replacement cut. */
@@ -48,14 +48,16 @@ export async function readTranscriptContent(
       data += chunk.data ?? "";
       if (chunk.done) break;
     }
+    const preview = rec.previewMessage ?? rec.message;
     if (!applyResolvedField(rec, ref, data)) return undefined;
+    rec.previewMessage = preview;
     const previousBytes = rec.bytes;
-    rec.bytes = recordBytes(rec.message);
+    rec.bytes = recordBytes(rec.message) + recordBytes(preview);
     session.bodyBytes += rec.bytes - previousBytes;
     const value = ref.field === "canonicalMessage" ? resolvedHistoryField(rec.message, field) : data;
     if (value === undefined) return undefined;
     rec.resolved = { ...rec.resolved, [field]: value };
-    owner.publish(session, rec);
+    owner.publish(session, rec, ref);
     return value;
   })();
   const entry = { generation, promise: request };

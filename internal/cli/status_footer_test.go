@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/charmbracelet/x/ansi"
@@ -590,5 +591,28 @@ func TestStatusFooterHeightCountUsesRenderedLayout(t *testing.T) {
 	want := strings.Count(m.renderStatusBlock(primary, m.width), "\n") + 1
 	if got := m.computeStatusLineCount(m.width); got != want {
 		t.Fatalf("computed status rows = %d, rendered rows = %d", got, want)
+	}
+}
+
+// TestStatusBandWithoutControllerKeepsTheHeightBudget pins the band's
+// no-controller state. A degraded team overlay opens with no assembled backend —
+// turn_lifecycle treats submission there as a recoverable refusal — so the frame
+// must render, and reserve, the same rows without one. The reserve path already
+// answered for that state while View dereferenced the nil controller on the way
+// to a height it had already accounted for, so the first frame of such a session
+// took the process down instead of drawing an empty band.
+func TestStatusBandWithoutControllerKeepsTheHeightBudget(t *testing.T) {
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 46)
+	m.ctrl = nil
+	m0, _ := m.Update(tea.WindowSizeMsg{Width: 46, Height: 12})
+	m = m0.(chatTUI)
+
+	view := ansi.Strip(m.View().Content)
+	if got := len(strings.Split(view, "\n")); got != m.height {
+		t.Fatalf("View() rendered %d lines, want %d: bottomRows must reserve exactly what the status band renders",
+			got, m.height)
+	}
+	if got := m.transcriptHeight() + m.bottomRows(); got != m.height {
+		t.Fatalf("transcriptHeight + bottomRows = %d, want %d", got, m.height)
 	}
 }

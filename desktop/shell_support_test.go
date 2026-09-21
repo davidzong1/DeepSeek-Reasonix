@@ -100,6 +100,13 @@ func TestSetShellPreferencePreservesOtherFields(t *testing.T) {
 	if !got.Sandbox.Network || got.Sandbox.WorkspaceRoot != `D:\work` || !reflect.DeepEqual(got.Sandbox.AllowWrite, []string{`E:\extra`}) {
 		t.Fatalf("sandbox fields were rewritten: %+v", got.Sandbox)
 	}
+	if err := app.SetShellPreference("bash"); err != nil {
+		t.Fatalf("restore Bash preference: %v", err)
+	}
+	got = config.LoadForEditWithoutCredentials(config.UserConfigPath())
+	if got.Tools.Shell.Prefer != "bash" || got.Tools.Shell.Path != `C:\Custom\bin\bash.exe` {
+		t.Fatalf("Bash preference did not round-trip with its configured path: %+v", got.Tools.Shell)
+	}
 
 	if err := app.SetShellPreference("fish"); err == nil {
 		t.Fatal("invalid preference must be rejected as a Go error")
@@ -158,15 +165,20 @@ func TestSettingsSandboxViewShellContract(t *testing.T) {
 			t.Fatalf("available capability %q without a path", cap.ID)
 		}
 	}
-	if sb.ShellInstallAction != nil {
-		t.Fatalf("install action on %s = %+v, want nil in current settings views", runtime.GOOS, sb.ShellInstallAction)
+	if runtime.GOOS != "windows" && sb.ShellInstallAction != nil {
+		t.Fatalf("install action on %s = %+v, want nil", runtime.GOOS, sb.ShellInstallAction)
 	}
 	switch runtime.GOOS {
 	case "windows":
+		foundGitBash := false
 		for _, cap := range sb.ShellCapabilities {
-			if cap.ID == sandbox.ShellCapabilityGitBash || cap.ID == sandbox.ShellCapabilityBash {
-				t.Fatalf("Windows settings advertised a Bash runtime: %+v", sb.ShellCapabilities)
-			}
+			foundGitBash = foundGitBash || cap.ID == sandbox.ShellCapabilityGitBash
+		}
+		if !foundGitBash {
+			t.Fatalf("Windows settings omitted Git Bash: %+v", sb.ShellCapabilities)
+		}
+		if sb.ShellInstallAction == nil || sb.ShellInstallAction.ManualURL != GitForWindowsManualURL {
+			t.Fatalf("Windows settings omitted manual Git Bash repair: %+v", sb.ShellInstallAction)
 		}
 		if sb.ShellRepairGuidance != nil {
 			t.Fatalf("repair guidance on Windows = %+v, want native PowerShell discovery only", sb.ShellRepairGuidance)

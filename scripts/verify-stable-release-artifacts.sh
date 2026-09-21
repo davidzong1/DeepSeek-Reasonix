@@ -32,6 +32,10 @@ if [ -z "$cli_sha" ] || [ "$cli_sha" != "$npm_sha" ] || [ "$cli_sha" != "$deskto
 	echo "::error::release tags are missing or do not identify one immutable commit" >&2
 	exit 1
 fi
+if [ -n "${RELEASE_EXPECTED_SHA:-}" ] && [ "$cli_sha" != "$RELEASE_EXPECTED_SHA" ]; then
+	echo "::error::public release identity differs from the verified source SHA" >&2
+	exit 1
+fi
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-release-postflight.XXXXXX")"
 cleanup() {
@@ -173,19 +177,16 @@ for attempt in $(seq 1 "$attempts"); do
 		if node "$script_dir/release-publication-ledger.mjs" core "$version" "$cli_sha" "$operation" \
 			"$tmp_dir/cli.json" "$tmp_dir/desktop.json" "$tmp_dir/npm.json" "$tmp_dir/core-ledger.json"; then
 			if [ "$verify_homepage" = "true" ]; then
-				pointer_version="$(curl -fsSL https://dl.reasonix.io/latest/latest.json | jq -r .version)"
-				if [ "$pointer_version" = "v$version" ]; then
+				owns_site="$(bash "$script_dir/observe-release-site.sh" "$version" "$operation")"
+				if [ "$owns_site" = true ]; then
 					verify_site
 					node "$script_dir/release-publication-ledger.mjs" site "$version" "$cli_sha" "$operation" \
 						"$tmp_dir/desktop-pointer.json" "$tmp_dir/site-ledger.json"
 					node "$script_dir/release-publication-ledger.mjs" merge "$tmp_dir/core-ledger.json" \
 						"$tmp_dir/site-ledger.json" "${ledger_output:-$tmp_dir/publication-ledger.json}"
-				elif [ "$operation" = "recover" ]; then
-					echo "Stable site remains on newer version $pointer_version; recovered immutable v$version files only."
-					[ -z "$ledger_output" ] || cp "$tmp_dir/core-ledger.json" "$ledger_output"
 				else
-					echo "::error::Stable manifest serves $pointer_version, want v$version" >&2
-					exit 1
+					echo "A verified newer Stable release owns the site; recovered immutable v$version files only."
+					[ -z "$ledger_output" ] || cp "$tmp_dir/core-ledger.json" "$ledger_output"
 				fi
 			elif [ -n "$ledger_output" ]; then
 				cp "$tmp_dir/core-ledger.json" "$ledger_output"

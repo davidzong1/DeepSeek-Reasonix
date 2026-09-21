@@ -101,6 +101,12 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
 超时只代表结果未知，壳会查询 `shutdownStatus`；可重试失败时保留窗口。stdin EOF
 进入同一个协调器并记录 `connection_lost`，已完成正常退出后不会再启动第二次收尾。
 
+壳在发送 shutdown RPC 前发布服务 `stopping` 阶段。该阶段公开 readiness 为 false，新的
+业务调用会被拒绝，但 shutdown 与 shutdown-status 继续复用现有服务会话。正常退出会删除
+`diagnostics/lifecycle` 下当前运行对应的临时文件，因此退出后 lifecycle 目录为空属于预期行为；
+退出后的长期证据以轮转的 `logs/shell.log` 为准。详见
+[Windows 关闭与 transcript 诊断验收说明](WINDOWS_CLOSE_TRANSCRIPT_VALIDATION.zh-CN.md)。
+
 ## 业务命令
 
 ```jsonc

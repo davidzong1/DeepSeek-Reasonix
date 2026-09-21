@@ -117,21 +117,57 @@ func (t *deliverableTool) publishDeliverable(store *team.DeliverableStore, args 
 }
 
 func (t *deliverableTool) readDeliverable(store *team.DeliverableStore, args json.RawMessage) (string, error) {
-	var p struct {
-		ID string `json:"id"`
-	}
+	var p deliverableReadArgs
 	if err := json.Unmarshal(args, &p); err != nil {
 		t.logLine("tool=%s kind=bad-args team=%q", t.name, t.teamName)
 		return "", fmt.Errorf("%s: invalid arguments: %w", t.name, err)
 	}
-	body, err := store.Read(t.teamName, strings.TrimSpace(p.ID))
+	id := strings.TrimSpace(p.ID)
+	body, err := store.Read(t.teamName, id)
 	if err != nil {
 		return "", err
 	}
 	if len(body) == 0 {
 		return fmt.Sprintf("deliverable %s is an empty document", p.ID), nil
 	}
-	return string(body), nil
+	mode, err := deliverableReadMode(p)
+	if err != nil {
+		return "", err
+	}
+	if mode == deliverableModeFull {
+		return deliverablePage(id, body, p.Offset, p.Limit), nil
+	}
+	return deliverableOutline(id, body), nil
+}
+
+// deliverableMode names the two read projections. The outline is the default
+// because the body is what costs the prefix: a caller that wants it says so.
+type deliverableMode string
+
+const (
+	deliverableModeOutline deliverableMode = "outline"
+	deliverableModeFull    deliverableMode = "full"
+)
+
+// deliverableReadMode resolves the requested projection. An unknown mode is
+// refused rather than silently downgraded, so a typo never looks like a
+// deliberately small read. Paging arguments imply the full mode, because they
+// are meaningless against an outline.
+func deliverableReadMode(p deliverableReadArgs) (deliverableMode, error) {
+	raw := strings.ToLower(strings.TrimSpace(p.Mode))
+	if p.Offset > 0 || p.Limit > 0 {
+		if raw == "" || raw == string(deliverableModeFull) {
+			return deliverableModeFull, nil
+		}
+	}
+	switch raw {
+	case "", string(deliverableModeOutline), "summary":
+		return deliverableModeOutline, nil
+	case string(deliverableModeFull), "body", "page":
+		return deliverableModeFull, nil
+	default:
+		return "", fmt.Errorf("member_read_deliverable: unknown mode %q (want outline or full)", p.Mode)
+	}
 }
 
 func (t *deliverableTool) listDeliverables(store *team.DeliverableStore) (string, error) {
@@ -180,8 +216,8 @@ func newLeaderDeliverableTools(teamName, memberID string, warn io.Writer) []tool
 func readDeliverable(teamName, memberID string, warn io.Writer) tool.Tool {
 	return &deliverableTool{
 		name:     readDeliverableName,
-		desc:     "Read one deliverable document of this team by its id. Read-only.",
-		schema:   json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}`),
+		desc:     "Read one deliverable document of this team. Returns an outline (headings, size, opening excerpt) by default; pass mode=\"full\" for the body, optionally paged with offset/limit. Read-only.",
+		schema:   json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"mode":{"type":"string","enum":["outline","full"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}`),
 		teamName: teamName, memberID: memberID, warn: warn,
 	}
 }

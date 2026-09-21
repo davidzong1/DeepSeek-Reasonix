@@ -27,7 +27,8 @@ export type HistoryWindowAction =
   | { type: "history_newer_error"; error?: string }
   | ({ type: "history_replace"; items: TranscriptProjection["items"] } & HistoryWindowProjection)
   | ({ type: "history_prepend"; items: TranscriptProjection["items"]; removeIds: string[] } & HistoryWindowProjection)
-  | ({ type: "history_append"; items: TranscriptProjection["items"] } & HistoryWindowProjection);
+  | ({ type: "history_append"; items: TranscriptProjection["items"] } & HistoryWindowProjection)
+  | { type: "transcript_records"; projection: import("./transcriptStore").AppendEntriesResult; confirmedUsers: [] };
 
 type HistoryWindowProjection = {
   startTurn: number;
@@ -104,7 +105,8 @@ export async function loadHistoryWindow(input: LoadInput): Promise<HistoryWindow
         input.dispatch({ type: "history_older_error", error: "history identity changed" });
         return "empty";
       }
-      if (result.kind === "reload") input.dispatch({ type: "history_replace", items: result.items, ...projectionFields(result) });
+      if (state.transcriptProtocol === 2) input.dispatch({ type: "transcript_records", projection: result, confirmedUsers: [] });
+      else if (result.kind === "reload") input.dispatch({ type: "history_replace", items: result.items, ...projectionFields(result) });
       else input.dispatch({ type: "history_prepend", items: result.prependItems, removeIds: result.removeIds, ...projectionFields(result) });
       addBreadcrumb("tab.hydrate", `history older ${tabId} trigger=${input.trigger} turns=${result.startTurn}-${result.endTurn}/${result.totalTurns} ms=${Date.now() - startedAt}`);
       return "loaded";
@@ -128,7 +130,8 @@ export async function loadHistoryWindow(input: LoadInput): Promise<HistoryWindow
         input.dispatch({ type: "history_newer_error", error: "history snapshot expired" });
         return "stale";
       }
-      input.dispatch({ type: "history_append", items: result.items, ...projectionFields(result) });
+      if (state.transcriptProtocol === 2) input.dispatch({ type: "transcript_records", projection: result, confirmedUsers: [] });
+      else input.dispatch({ type: "history_append", items: result.items, ...projectionFields(result) });
       addBreadcrumb("tab.hydrate", `history newer ${tabId} trigger=${input.trigger} turns=${result.startTurn}-${result.endTurn}/${result.totalTurns} ms=${Date.now() - startedAt}`);
       return "loaded";
     }

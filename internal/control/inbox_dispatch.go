@@ -97,7 +97,7 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 		return inboxDispatchIdle
 	}
 	c.mu.Lock()
-	busy := c.bodyActiveLocked() || c.finalizingLocked() || c.rotating || c.closed
+	busy := c.bodyActiveLocked() || c.finalizingLocked() || c.maintenance != nil || c.rotating || c.closed
 	c.mu.Unlock()
 	if busy {
 		return inboxDispatchIdle

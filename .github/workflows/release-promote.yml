@@ -27,12 +27,14 @@ permissions:
 jobs:
   preflight:
     name: verify sealed candidate before approval
+    if: github.repository == 'esengine/DeepSeek-Reasonix' && github.ref == 'refs/heads/main-v2' && github.ref_protected
     runs-on: ubuntu-latest
     permissions:
       actions: read
       attestations: read
       contents: read
     outputs:
+      tag_actor_id: ${{ steps.identity.outputs.actor_id }}
       candidate_id: ${{ steps.record.outputs.candidate_id }}
       version: ${{ steps.record.outputs.version }}
       source_sha: ${{ steps.record.outputs.source_sha }}
@@ -50,6 +52,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Validate executable contracts and public access before payload or approval
+        run: |
+          bash scripts/validate-release-control-plane.sh
+          bash scripts/check-release-public-access.sh
       - name: Resolve candidate record artifact
         id: artifact
         env:
@@ -80,6 +86,12 @@ jobs:
             --signer-digest "$signer_sha" --source-ref refs/heads/main-v2 --deny-self-hosted-runners
           node scripts/resolve-release-candidate.mjs inspect "${{ inputs.candidate_id }}" \
             record/record.json /tmp/record-artifact.json /tmp/producer-run.json
+      - name: Check the configured tag publisher before approval
+        id: identity
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
+          RELEASE_TAG_ACTOR: ${{ vars.RELEASE_TAG_ACTOR }}
+        run: node scripts/verify-release-tag-identity.mjs "${{ steps.record.outputs.version }}"
       - name: Download exact candidate payload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -199,14 +211,18 @@ jobs:
     needs: [preflight, authorize]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Create or verify all implementation tags
         env:
+          GH_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
+          RELEASE_TAG_ACTOR: ${{ vars.RELEASE_TAG_ACTOR }}
+          RELEASE_TAG_ACTOR_ID: ${{ needs.preflight.outputs.tag_actor_id }}
           OPERATION: ${{ inputs.operation }}
           VERSION: ${{ needs.preflight.outputs.version }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -214,6 +230,8 @@ jobs:
           RELEASE_REVOKED_CANDIDATES: ${{ vars.RELEASE_REVOKED_CANDIDATES }}
         run: |
           set -euo pipefail
+          node scripts/verify-release-tag-identity.mjs "$VERSION"
+          gh auth setup-git --hostname github.com
           node scripts/resolve-release-candidate.mjs active "$CANDIDATE_ID"
           git fetch origin main-v2 --tags
           bash scripts/release-candidate-tags.sh activate "$OPERATION" "$VERSION" "$SOURCE_SHA"
@@ -274,6 +292,7 @@ jobs:
 
   postflight:
     name: verify every public Stable surface
+    timeout-minutes: 45
     needs: [preflight, cli, npm, desktop]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
@@ -294,108 +313,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Verify public artifacts
-        id: immutable
+      - name: Reconcile public artifacts, owned Pages deployment, and durable ledger
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
           RELEASE_OPERATION: ${{ inputs.operation }}
-          RELEASE_LEDGER_OUTPUT: /tmp/publication-ledger-core.json
-          CLI_TAG: v${{ needs.preflight.outputs.version }}
-          DESKTOP_TAG: desktop-v${{ needs.preflight.outputs.version }}
-        run: bash scripts/verify-stable-release-artifacts.sh
-      - name: Publish exact Stable release record
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-          CLI_TAG: v${{ needs.preflight.outputs.version }}
-          RELEASE_SHA: ${{ needs.preflight.outputs.source_sha }}
-        run: |
-          node scripts/release-event.mjs generate --version "$VERSION" --sha "$RELEASE_SHA" \
-            --published-at "$(gh api "repos/${{ github.repository }}/releases/tags/$CLI_TAG" --jq .published_at)" \
-            --output /tmp/release-event.json
-          if ! gh release download "$CLI_TAG" --pattern release-event.json --output /tmp/existing-release-event.json 2>/dev/null; then
-            gh release upload "$CLI_TAG" /tmp/release-event.json
-          else
-            cmp -s /tmp/release-event.json /tmp/existing-release-event.json
-          fi
-      - name: Decide whether this candidate owns the current public site
-        id: site
-        env:
-          OPERATION: ${{ inputs.operation }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          current="$(curl -fsSL https://dl.reasonix.io/latest/latest.json | jq -r .version)"
-          if [ "$current" = "v$VERSION" ]; then
-            echo "update=true" >> "$GITHUB_OUTPUT"
-          elif [ "$OPERATION" = recover ]; then
-            echo "update=false" >> "$GITHUB_OUTPUT"
-            echo "Stable pointers remain on $current; website deployment is preserved." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::Stable manifest serves $current after publishing v$VERSION"
-            exit 1
-          fi
-      - name: Dispatch and wait for the owned Pages deployment
-        id: pages
-        if: steps.site.outputs.update == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          set -euo pipefail
-          baseline="$(gh run list --workflow pages.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-          gh workflow run pages.yml --ref main-v2 -f "release_version=$VERSION"
-          pages_run=""
-          for _ in $(seq 1 30); do
-            pages_run="$(gh run list --workflow pages.yml --event workflow_dispatch --branch main-v2 --limit 20 \
-              --json databaseId,displayTitle \
-              --jq "map(select(.databaseId > $baseline and .displayTitle == \"Deploy site v$VERSION\")) | sort_by(.databaseId) | last | .databaseId // empty")"
-            [ -z "$pages_run" ] || break
-            sleep 2
-          done
-          if [ -z "$pages_run" ]; then
-            echo "::error::public-sync-pending: the owned Pages deployment was not created"
-            exit 1
-          fi
-          echo "Waiting for Pages run $pages_run." >> "$GITHUB_STEP_SUMMARY"
-          gh run watch "$pages_run" --exit-status
-      - name: Verify hydrated-site inputs and public download routes
-        id: public_site
-        if: steps.site.outputs.update == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REPOSITORY: ${{ github.repository }}
-          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          CLI_TAG: v${{ needs.preflight.outputs.version }}
-          DESKTOP_TAG: desktop-v${{ needs.preflight.outputs.version }}
-          RELEASE_OPERATION: ${{ inputs.operation }}
-          RELEASE_LEDGER_OUTPUT: /tmp/publication-ledger-site.json
-          VERIFY_HOMEPAGE: "true"
-          VERIFY_PUBLIC_SITE_ONLY: "true"
-        run: bash scripts/verify-stable-release-artifacts.sh
-      - name: Finalize observed publication ledger
-        if: ${{ always() && steps.immutable.outcome == 'success' }}
-        env:
-          UPDATE_SITE: ${{ steps.site.outputs.update }}
-        run: |
-          if [ -s /tmp/publication-ledger-site.json ]; then
-            node scripts/release-publication-ledger.mjs merge \
-              /tmp/publication-ledger-core.json /tmp/publication-ledger-site.json \
-              /tmp/publication-ledger.json
-            state=complete
-          elif [ "$UPDATE_SITE" = false ]; then
-            cp /tmp/publication-ledger-core.json /tmp/publication-ledger.json
-            state=immutable-complete-newer-pointer-preserved
-          else
-            cp /tmp/publication-ledger-core.json /tmp/publication-ledger.json
-            state=public-sync-pending
-          fi
-          jq --arg state "$state" '. + {completionState: $state}' \
-            /tmp/publication-ledger.json > /tmp/publication-ledger.final.json
-          mv /tmp/publication-ledger.final.json /tmp/publication-ledger.json
+          RELEASE_EXPECTED_SHA: ${{ needs.preflight.outputs.source_sha }}
+          RELEASE_LEDGER_OUTPUT: /tmp/publication-ledger.json
+        run: bash scripts/sync-release-site.sh
       - name: Upload publication ledger
-        if: ${{ always() && steps.immutable.outcome == 'success' }}
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: release-publication-ledger-${{ needs.preflight.outputs.candidate_id }}-${{ github.run_attempt }}

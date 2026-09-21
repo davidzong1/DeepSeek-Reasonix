@@ -1,6 +1,5 @@
 // Last-resort crash surface: a React render error with no boundary unmounts the
 // whole tree (blank window), and global errors/rejections leave no trace either.
-
 import { addBreadcrumb, dumpBreadcrumbs, snapshotBreadcrumbs, type Breadcrumb } from "./breadcrumbs";
 import { writeClipboardText } from "./clipboard";
 import { desktopHost } from "./desktopHost";
@@ -127,7 +126,6 @@ let lastPerformancePromptAt = 0;
 let heapSnapshotInProgress = false;
 let diagnosticQuietUntil = 0;
 let activeCaptureId: string | undefined;
-
 function cancelCapture(requestId = activeCaptureId): void {
   if (!requestId || activeCaptureId !== requestId) return;
   void desktopHost().native.cancelRendererProfile?.(requestId).catch(() => {});
@@ -250,10 +248,11 @@ function sourceForLabel(label: string): CrashPayload["source"] {
 function formatText(label: string, normalized: NormalizedError, extra?: string): string {
   const detail = normalized.stack || normalized.errorMessage;
   const crumbs = dumpBreadcrumbs();
-  const buildCommit = typeof __BUILD_COMMIT__ === "string" ? __BUILD_COMMIT__ : "dev";
-  return [`[${label}]`, detail, extra?.trim(), crumbs && `--- breadcrumbs ---\n${crumbs}`, `build ${buildCommit}`]
-    .filter(Boolean)
-    .join("\n\n");
+  const buildCommit = currentBuildCommit();
+  const transcriptText = (globalThis as { __reasonixTranscriptDiagnostics?: string }).__reasonixTranscriptDiagnostics ?? "";
+  return [`[${label}]`, detail, extra?.trim(), transcriptText && `--- transcript failures ---\n${transcriptText}`,
+    crumbs && `--- breadcrumbs ---\n${crumbs}`, `occurred ${new Date().toISOString()}`, `build ${buildCommit}`]
+    .filter(Boolean).join("\n\n");
 }
 
 export function crashErrorFamily(errorMessage: string): string | undefined { return /maximum update depth exceeded|too many re-renders/i.test(errorMessage) ? "react.maximum_update_depth" : undefined; }
@@ -420,7 +419,7 @@ export function shouldRecordEventLoopLagSample(
 }
 
 export function buildPerformancePayload(snapshot: PerformanceSnapshot): CrashPayload {
-  const buildCommit = typeof __BUILD_COMMIT__ === "string" ? __BUILD_COMMIT__ : "dev";
+  const buildCommit = currentBuildCommit();
   const context = formatPerformanceContext(snapshot);
   const crumbs = dumpBreadcrumbs();
   const label = performanceLabelForReason(snapshot.reason);
@@ -456,7 +455,7 @@ export function buildPerformancePayload(snapshot: PerformanceSnapshot): CrashPay
 
 export function buildCrashPayload(label: string, err: unknown, extra?: string): CrashPayload {
   const normalized = normalizeCrashError(err);
-  const buildCommit = typeof __BUILD_COMMIT__ === "string" ? __BUILD_COMMIT__ : "dev";
+  const buildCommit = currentBuildCommit();
   return {
     schemaVersion: 2,
     source: sourceForLabel(label),

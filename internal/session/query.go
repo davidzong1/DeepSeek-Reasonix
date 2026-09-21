@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -206,6 +207,38 @@ func (q *Query) Stat(ctx context.Context, ref SessionRef) (SessionInfo, error) {
 	}
 	q.enrichInfo(&info)
 	return info, nil
+}
+
+// ResolveSessionID turns a caller-selected opaque ID into a server-observed
+// SessionRef. The requested value is used only for equality; every identity
+// returned to filesystem-backed readers comes from the persistence catalog.
+func (q *Query) ResolveSessionID(ctx context.Context, requested string) (SessionRef, error) {
+	if q == nil || q.persistence == nil {
+		return SessionRef{}, fmt.Errorf("session: nil session query")
+	}
+	candidate := strings.TrimSpace(requested)
+	if err := validateSessionID(candidate); err != nil {
+		return SessionRef{}, err
+	}
+	cursor := ""
+	for {
+		page, err := q.persistence.List(ctx, cursor, 100)
+		if err != nil {
+			return SessionRef{}, err
+		}
+		for _, info := range page.Sessions {
+			if info.SessionID == candidate {
+				return SessionRef{HostID: q.hostID, SessionID: info.SessionID}, nil
+			}
+		}
+		if page.NextCursor == "" {
+			return SessionRef{}, fmt.Errorf("%w: %s", ErrSessionNotFound, candidate)
+		}
+		if page.NextCursor <= cursor {
+			return SessionRef{}, fmt.Errorf("%w: catalog cursor did not advance", ErrDamagedStore)
+		}
+		cursor = page.NextCursor
+	}
 }
 
 func (q *Query) List(ctx context.Context, cursor string, limit int) (SessionPage, error) {

@@ -71,11 +71,17 @@ func (a *App) startDesktopSessionMigration(ctx context.Context) {
 	}
 	ctx = c.ctx
 	c.catalogEnabled = true
+	c.discoveryPending = true
 	c.workers.Add(1)
 	c.mu.Unlock()
 	go func() {
 		defer c.workers.Done()
 		defer close(a.desktopMigrationDone)
+		defer func() {
+			c.mu.Lock()
+			c.discoveryPending = false
+			c.mu.Unlock()
+		}()
 		_, _ = a.listHistoricalSessions(ctx)
 		if err := a.recoverDesktopPendingCreateSnapshot(ctx, startupState.PendingCreates); err != nil {
 			a.desktopMigrationFailed.Store(true)

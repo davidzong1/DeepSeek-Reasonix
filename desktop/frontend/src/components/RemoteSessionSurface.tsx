@@ -7,6 +7,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { ExtensionFormDialog } from "./ExtensionFormDialog";
 import { MCPInteractionCard } from "./MCPInteractionCard";
 import { SessionRecoveryBanner, SessionRecoveryPlaceholder } from "./SessionRecoveryBanner";
+import { SessionLoadingIndicator } from "./SessionLoadingIndicator";
 import { projectSessionAvailability } from "../lib/sessionAvailability";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
 export { hydrateRemoteTelemetry, loadRemoteStatusSnapshot } from "../lib/remoteTelemetry";
@@ -120,7 +121,9 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
       if (outcome.status === "failed") throw outcome.error;
     }} />
     <main className="main">
-    <div className="remote-surface remote-surface--ready">
+    <div className="remote-surface remote-surface--ready" aria-busy={availability.kind === "loading"}>
+      <SessionLoadingIndicator active={availability.kind === "loading"}
+        identity={`${tab.id}:${session.surfaceGeneration}`} source={availability.source} />
       {!ready && !hasContent ? <SessionRecoveryPlaceholder availability={availability} /> : <Transcript
         items={session.transcript.items}
         localSubmissions={localSubmissions}
@@ -132,9 +135,10 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
         hostId={tab.remote.hostId}
         geometrySessionKey={`${tab.id}:${session.surfaceGeneration}`}
         hydrating={!session.hydrated && !hasContent}
+        showLoadingFeedback={false}
         surfaceCommitToken={surfaceCommitToken}
         onSurfacePaintReady={onSurfacePaintReady}
-        running={session.transcript.running}
+        running={session.transcript.running && !session.transcript.runtimeStateSnapshot?.maintenance}
         hasOlderHistory={session.transcript.historyHasOlder}
         hasNewerHistory={session.transcript.historyHasNewer}
         loadingNewerHistory={session.transcript.historyNewerLoading}

@@ -2,6 +2,7 @@ import type { HistoryMessage, WireEvent } from "./types";
 import type { Item, State } from "./useController";
 import type { TranscriptRecord, TranscriptSnapshot } from "./transcriptProtocol";
 import { canonicalUserConfirmations, settleLocalSubmissions, settleRebasedSubmissions } from "./localSubmissionState";
+import { mergeSessionOperationItem, reconcileSessionOperationItems } from "./sessionMaintenanceOperation";
 
 export function snapshotRecords(snapshot: TranscriptSnapshot): TranscriptRecord[] {
   if (!Number.isSafeInteger(snapshot.totalRecords) || snapshot.totalRecords < 0) {
@@ -85,6 +86,8 @@ export function transcriptPageState(state: State, page: TranscriptSnapshot, conv
       prefix.push({ ...prior, args: prior.args || item.args, messageId: prior.messageId || item.messageId,
         name: prior.name === "tool" ? item.name : prior.name, subject: prior.subject ?? item.subject,
         summary: prior.summary ?? item.summary, fileDiff: prior.fileDiff ?? item.fileDiff });
+    } else if (prior.kind === "compaction" && item.kind === "compaction") {
+      prefix.push(mergeSessionOperationItem(prior, item));
     } else prefix.push(prior.id === item.id ? prior : { ...prior, ...item, id: item.id } as Item);
   }
   const prefixIDs = new Set(prefix.map((item) => item.id));
@@ -110,7 +113,11 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
   }
   const records = snapshotRecords(snapshot);
   const messages = records.map((record) => ({ ...record.message, recordId: record.id }));
-  const converted = projectedItems ? { items: projectedItems, seq: state.seq } : convert(messages, "snapshot:");
+  const convertedRaw = projectedItems ? { items: projectedItems, seq: state.seq } : convert(messages, "snapshot:");
+  const converted = {
+    ...convertedRaw,
+    items: reconcileSessionOperationItems(convertedRaw.items, state.items),
+  };
   state = settleLocalSubmissions(state, converted.items, canonicalUserConfirmations(messages.map(message => ({
     kind: message.role, messageId: message.messageId, submissionId: message.submissionId, turnId: message.turnId,
   }))));

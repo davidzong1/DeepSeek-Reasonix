@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { app } from "../lib/bridge";
+import { desktopHost } from "../lib/desktopHost";
 import { setMainWindowMaximised } from "../store/windowChrome";
 
 // Module-owned sync state for the single AppRuntime host: the enabled gate
@@ -17,7 +17,7 @@ let syncGeneration = 0;
 export function syncMainWindowMaximised(): void {
   if (!syncEnabled) return;
   const generation = ++syncGeneration;
-  void app.IsMainWindowMaximised()
+  void desktopHost().native.isWindowMaximised()
     .then((value) => { if (generation === syncGeneration) setMainWindowMaximised(value); })
     .catch(() => { if (generation === syncGeneration) setMainWindowMaximised(false); });
 }
@@ -49,7 +49,7 @@ export function useWindowsMaximisedSync(enabled: boolean): void {
 }
 
 export const nativeWindowCommands = {
-  minimize: () => app.MinimiseMainWindow(),
-  toggleMaximize: () => app.ToggleMaximiseMainWindow(),
-  close: () => app.CloseMainWindow(),
+  minimize: () => desktopHost().native.minimiseWindow(),
+  toggleMaximize: () => desktopHost().native.toggleMaximiseWindow(),
+  close: () => desktopHost().native.closeWindow(),
 };

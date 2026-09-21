@@ -12,6 +12,32 @@ type ExecutionControl interface {
 	Cancel() bool
 }
 
+const MaintenanceActivity = "maintenance"
+
+// FinishMaintenanceExecution releases a settled maintenance worker into the
+// finalizing handoff barrier. Only its exact owner may clear a cancellation
+// timeout; durable business recovery and failed persistence remain fenced.
+func (r *Runtime) FinishMaintenanceExecution(generation uint64) bool {
+	if r == nil || generation == 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	owner := r.execution.Load()
+	if owner == nil || owner.generation != generation || r.activity != MaintenanceActivity || r.phase == RuntimeClosed {
+		return false
+	}
+	state := r.session.StateSnapshot()
+	if state.PersistenceStatus == PersistenceFailed || state.PersistenceStatus == PersistenceUncertain ||
+		state.Projection.Recovery != nil && state.Projection.Recovery.State == "recovery_required" {
+		return false
+	}
+	r.phase = RuntimeFinalizing
+	r.canceling.Store(false)
+	r.revision.Add(1)
+	return true
+}
+
 type executionBinding struct {
 	generation uint64
 	control    ExecutionControl

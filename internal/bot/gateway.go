@@ -1977,16 +1977,10 @@ func botSessionHasActiveWork(state *sessionState) bool {
 	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
 }
 
-func safeBotControllerRuntimeStatus(ctrl botController) (status control.RuntimeStatus, ok bool) {
+func safeBotControllerRuntimeStatus(ctrl botController) (control.RuntimeStatus, bool) {
 	if ctrl == nil {
 		return control.RuntimeStatus{}, false
 	}
-	defer func() {
-		if recover() != nil {
-			status = control.RuntimeStatus{}
-			ok = false
-		}
-	}()
 	return ctrl.RuntimeStatus(), true
 }
 
@@ -2322,30 +2316,18 @@ func (gw *BotGateway) inputTextWithMedia(ctx context.Context, adapter Adapter, m
 
 func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg InboundMessage) *sessionState {
 	profile := gw.sessionProfileForMessage(msg)
-	var stale *sessionState
-	gw.mu.Lock()
-	if state, ok := gw.controllers[key]; ok {
-		if !sessionStateMatchesRuntime(state, profile) {
-			if botSessionHasActiveWork(state) {
-				gw.mu.Unlock()
-				safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
-				gw.logger.Warn("bot session runtime change deferred while work is active", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
-				return state
-			}
-			delete(gw.controllers, key)
-			stale = state
-			gw.mu.Unlock()
-			gw.closeSessionState(stale)
-			gw.logger.Warn("bot session runtime changed; rebuilding", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "old_workspace_set", strings.TrimSpace(stale.workspaceRoot) != "", "new_workspace_set", profile.workspaceRoot != "", "old_model", stale.model, "new_model", profile.model)
-		} else {
-			updateSessionStateRuntime(state, msg, profile)
-			gw.mu.Unlock()
-			safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
-			gw.logger.Info("bot session reused", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
-			return state
-		}
-	} else {
-		gw.mu.Unlock()
+	switch state, claim := gw.claimSession(key, msg, profile); claim {
+	case sessionReused:
+		safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
+		gw.logger.Info("bot session reused", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
+		return state
+	case sessionChangeDeferred:
+		safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
+		gw.logger.Warn("bot session runtime change deferred while work is active", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
+		return state
+	case sessionRetired:
+		gw.closeSessionState(state)
+		gw.logger.Warn("bot session runtime changed; rebuilding", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "old_workspace_set", strings.TrimSpace(state.workspaceRoot) != "", "new_workspace_set", profile.workspaceRoot != "", "old_model", state.model, "new_model", profile.model)
 	}
 
 	// Create the lease owner first so recovery or intentional transitions can
@@ -2645,16 +2627,10 @@ func sessionStateMatchesRuntime(state *sessionState, profile sessionRuntimeProfi
 	return true
 }
 
-func safeBotControllerWorkspaceRoot(ctrl botController) (root string, ok bool) {
+func safeBotControllerWorkspaceRoot(ctrl botController) (string, bool) {
 	if ctrl == nil {
 		return "", false
 	}
-	defer func() {
-		if recover() != nil {
-			root = ""
-			ok = false
-		}
-	}()
 	return ctrl.WorkspaceRoot(), true
 }
 
@@ -2662,9 +2638,6 @@ func safeBotSetToolApprovalMode(ctrl botController, mode string) {
 	if ctrl == nil {
 		return
 	}
-	defer func() {
-		_ = recover()
-	}()
 	ctrl.SetToolApprovalMode(mode)
 }
 

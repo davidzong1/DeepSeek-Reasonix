@@ -23,10 +23,19 @@ type maintenanceInstall struct {
 // installMaintenanceProjection CAS-installs a free projection under
 // compactionMu. The caller owns compactionRunMu for the whole maintenance run;
 // canonical storage, including RawContent, is never modified.
-func (a *Agent) installMaintenanceProjection(in maintenanceInstall) (bool, error) {
+func (a *Agent) installMaintenanceProjection(ctx context.Context, in maintenanceInstall) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	projected := projectionMessagesPreservingPinnedContext(in.projected)
 	projected, _, err := rebasePinnedContextProjection(projected, in.canonical, len(in.canonical))
 	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	sourceTokens := a.estimatedVisibleRequestTokens(in.visible)
@@ -58,6 +67,13 @@ func (a *Agent) installMaintenanceProjection(in maintenanceInstall) (bool, error
 	next.UpdatedAt = now
 
 	a.sess.compactionMu.Lock()
+	// Cancellation and the projection compare-and-swap share this lock boundary.
+	// Once the state is installed, persistence finishes atomically with respect
+	// to this batch; cancellation can only prevent a later batch.
+	if err := ctx.Err(); err != nil {
+		a.sess.compactionMu.Unlock()
+		return false, err
+	}
 	current, currentVersion := a.sess.conversation.snapshotMessagesVersion()
 	if currentVersion != in.transcriptVersion || len(current) != len(in.canonical) ||
 		coveredPrefixHash(current, len(current)) != coveredHash ||

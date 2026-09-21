@@ -245,8 +245,8 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   const { invocationMetadataByTab, handleInvocationMetadataChange } = useInvocationMetadata();
   const shellGeometry = useShellGeometry({ appRef, layoutRef });
   const {
-    rightDockTreeWidthClamp, chatReservedWidth,
-    workspacePanelAvailableWidth, workspacePanelRenderWidth, workspacePanelOverlay, workspacePanelRenderable,
+    chatReservedWidth,
+    workspacePanelRenderWidth, workspacePanelOverlay, workspacePanelRenderable,
     workspacePanelGridOpen, sidebarRenderWidth, terminalRenderHeight,
   } = shellGeometry;
 
@@ -613,7 +613,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
     workspaceRoot: activeTab?.workspaceRoot ?? state.meta?.cwd ?? "",
     visible: surfaceWorkspacePanelRenderable,
     closeOverlays: closeTransientOverlays, clearLiveWidth: setLiveWorkspacePanelRenderWidth,
-    availableWidth: workspacePanelAvailableWidth, clampTreeWidth: rightDockTreeWidthClamp, setTreeWidth: setRightDockTreeWidth,
+    setTreeWidth: setRightDockTreeWidth,
     gridOpen: surfaceWorkspacePanelGridOpen,
     t,
   });

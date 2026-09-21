@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -137,8 +138,6 @@ func resolveShell(prefer, path string, warn io.Writer, goos string, lookPath fun
 		return Shell{}, false
 	}
 	auto := func() Shell { return autoDetectedShell(goos, findBash, findPOSIX, findPowerShell) }
-	prefer = effectiveShellPreference(goos, prefer, warn)
-
 	switch strings.ToLower(strings.TrimSpace(prefer)) {
 	case "", "auto":
 		return autoShellWithConfiguredPath(goos, path, exists, probe, isWSL, auto)
@@ -153,7 +152,7 @@ func resolveShell(prefer, path string, warn io.Writer, goos string, lookPath fun
 		warnMissingShell(warn, prefer)
 		return auto()
 	case "powershell", "pwsh":
-		path = configuredShellPath(goos, ShellPowerShell, path, exists, isWSL)
+		path = configuredShellPathForPreference(goos, prefer, path, exists, isWSL)
 		if path != "" && exists(path) {
 			return Shell{Kind: ShellPowerShell, Path: path}
 		}
@@ -172,17 +171,6 @@ func resolveShell(prefer, path string, warn io.Writer, goos string, lookPath fun
 		}
 		return auto()
 	}
-}
-
-func effectiveShellPreference(goos, prefer string, warn io.Writer) string {
-	legacy := goos == "windows" && strings.EqualFold(strings.TrimSpace(prefer), "bash")
-	if legacy && warn != nil {
-		fmt.Fprintln(warn, "Windows Agent now uses native PowerShell; the saved Bash preference is retained for older versions.")
-	}
-	if legacy {
-		return "auto"
-	}
-	return prefer
 }
 
 // Auto accepts native PowerShell paths on Windows. A persisted Git Bash path
@@ -231,11 +219,9 @@ func warnMissingShell(warn io.Writer, prefer string) {
 	}
 }
 
-// isWindowsWSLBash reports whether a resolved bash path is the WSL launcher
-// Windows ships under %SystemRoot% (e.g. C:\Windows\System32\bash.exe). With WSL
-// installed it runs commands inside the Linux VM — where the Windows workspace is
-// a /mnt/<drive> path — so it must never be chosen for a native Windows workspace;
-// the only bash.exe Microsoft places under the Windows dir is that launcher.
+// isWindowsWSLBash excludes the system WSL launcher and WindowsApps execution
+// aliases. They can pass the health probe but run in a Linux distro, whose path
+// and environment contracts do not match a native Windows workspace.
 func isWindowsWSLBash(path string) bool {
 	if runtime.GOOS != "windows" || path == "" {
 		return false
@@ -244,12 +230,28 @@ func isWindowsWSLBash(path string) bool {
 	if win == "" {
 		win = os.Getenv("windir")
 	}
-	if win == "" {
+	return isWindowsWSLBashPath(path, win)
+}
+
+// Compare Windows paths independently of the host so alias exclusion is also
+// covered on non-Windows builders. WindowsApps aliases can launch a working WSL
+// distro and pass the health probe; successful execution does not make them Git Bash.
+func isWindowsWSLBashPath(path, windowsRoot string) bool {
+	normalize := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		p = strings.TrimPrefix(strings.ReplaceAll(p, `\`, "/"), "//?/")
+		return strings.TrimSuffix(strings.ToLower(pathpkg.Clean(p)), "/")
+	}
+	p := normalize(path)
+	if p == "" {
 		return false
 	}
-	p := strings.ToLower(filepath.Clean(path))
-	root := strings.ToLower(filepath.Clean(win)) + string(filepath.Separator)
-	return strings.HasPrefix(p, root)
+	if root := normalize(windowsRoot); root != "" && strings.HasPrefix(p, root+"/") {
+		return true
+	}
+	return strings.Contains(p, "/microsoft/windowsapps/") && strings.HasSuffix(p, "/bash.exe")
 }
 
 // Windows ships a bash.exe launcher stub in %SystemRoot% that opens the WSL
@@ -292,16 +294,26 @@ func pathDir(p string) string {
 // custom setting while runtime consumers avoid launching it with the wrong
 // argv contract.
 func ConfiguredShellPathForPreference(prefer, path string) string {
+	return configuredShellPathForPreference(runtime.GOOS, prefer, path, fileExists, isWindowsWSLBash)
+}
+
+func configuredShellPathForPreference(goos, prefer, path string, exists func(string) bool, isWSL func(string) bool) string {
 	var kind ShellKind
 	switch strings.ToLower(strings.TrimSpace(prefer)) {
 	case "bash":
 		kind = ShellBash
 	case "powershell", "pwsh":
 		kind = ShellPowerShell
+		// Both versions share an argv dialect, but are distinct user choices.
+		// Preserve the stored path while ignoring a known opposite version.
+		base := strings.TrimSuffix(strings.ToLower(pathBase(strings.TrimSpace(path))), ".exe")
+		if goos == "windows" && (base == "powershell" || base == "pwsh") && !strings.EqualFold(base, strings.TrimSpace(prefer)) {
+			return ""
+		}
 	default:
 		return ""
 	}
-	return configuredShellPath(runtime.GOOS, kind, path, fileExists, isWindowsWSLBash)
+	return configuredShellPath(goos, kind, path, exists, isWSL)
 }
 
 // configuredShellPath is the shared safety boundary for every consumer of

@@ -65,6 +65,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	if ctrl.Running() {
 		s.bindMu.Unlock()
+		if _, err := control.MaintenanceCommandConflict(ctrl, trimmed); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "session is busy; use POST /inbox/items for durable follow-up", http.StatusConflict)
 		return
 	}

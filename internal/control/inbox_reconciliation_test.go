@@ -51,11 +51,7 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 		c.autosaveWG.Wait()
 	})
 	c.Submit("initial turn")
-	select {
-	case <-prov.started:
-	case <-time.After(time.Second):
-		t.Fatal("initial provider turn did not start")
-	}
+	prov.awaitStarted(t, c)
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "durable steer"})
 	if err != nil {
 		t.Fatal(err)

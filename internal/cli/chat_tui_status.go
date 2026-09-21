@@ -7,6 +7,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
+	"reasonix/internal/provider"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -59,17 +60,86 @@ func compactionCardLines(c event.Compaction) []string {
 	return lines
 }
 
+// The status band's controller reads are guarded per tag rather than once for
+// the whole band. The band has two consumers that must agree — View() renders
+// it, computeStatusLineCount reserves its height for bottomRows() — and a window
+// with no usable controller is a real state: a team overlay opens degraded when
+// a member backend fails to assemble, and the submit path treats that as a
+// recoverable refusal (turn_lifecycle). So these answer zero values instead of
+// letting View dereference a nil or typed-nil SessionAPI on a frame it still has
+// to draw.
+//
+// One guard per tag, not one for the band: a backend that answers some reads and
+// not others (a partial host, a typed-nil getter) must blank only the tag it
+// broke, and the recover must not hide which read was broken behind three
+// unrelated tags going empty together. The recover mirrors controllerRunning,
+// which exists for the same malformed-host state.
+func (m chatTUI) contextReads() (used, window int, ratio float64) {
+	if m.ctrl == nil {
+		return 0, 0, 0
+	}
+	defer func() {
+		if recover() != nil {
+			used, window, ratio = 0, 0, 0
+		}
+	}()
+	used, window = m.ctrl.ContextSnapshot()
+	return used, window, m.ctrl.CompactRatio()
+}
+
+// cacheReads returns the provider usage the cache tags report.
+func (m chatTUI) cacheReads() (usage *provider.Usage, hit, miss int) {
+	if m.ctrl == nil {
+		return nil, 0, 0
+	}
+	defer func() {
+		if recover() != nil {
+			usage, hit, miss = nil, 0, 0
+		}
+	}()
+	usage = m.ctrl.LastUsage()
+	hit, miss = m.ctrl.SessionCache()
+	return usage, hit, miss
+}
+
+// jobsRead counts the background jobs the jobs tag reports.
+func (m chatTUI) jobsRead() (n int) {
+	if m.ctrl == nil {
+		return 0
+	}
+	defer func() {
+		if recover() != nil {
+			n = 0
+		}
+	}()
+	return len(m.ctrl.Jobs())
+}
+
+// modeReads reads the state the mode tag renders: the goal badge, the approval
+// preset, and the auto-approve colour View() picks from.
+func (m chatTUI) modeReads() (goalRunning bool, toolApprovalMode string, autoApprove bool) {
+	if m.ctrl == nil {
+		return false, "", false
+	}
+	defer func() {
+		if recover() != nil {
+			goalRunning, toolApprovalMode, autoApprove = false, "", false
+		}
+	}()
+	goalRunning = strings.TrimSpace(m.ctrl.Goal()) != "" && m.ctrl.GoalStatus() == control.GoalStatusRunning
+	return goalRunning, m.ctrl.ToolApprovalMode(), m.ctrl.AutoApproveTools()
+}
+
 // contextTag renders the prompt-vs-context-window gauge for the status line,
 // framed around the auto-compaction threshold: it shows how much headroom is
 // left until the next compaction, and colours by proximity to that point rather
 // than the raw window. Falls back to a plain percentage when compaction is disabled.
 func (m chatTUI) contextTag() string {
-	used, window := m.ctrl.ContextSnapshot()
+	used, window, ratio := m.contextReads()
 	if used == 0 || window == 0 {
 		return ""
 	}
 	pct := used * 100 / window
-	ratio := m.ctrl.CompactRatio()
 	if ratio <= 0 || ratio >= 1 {
 		// Compaction disabled: just the raw gauge, coloured on window fill.
 		body := fmt.Sprintf("%s / %s ctx (%d%%)", shortTokens(used), shortTokens(window), pct)
@@ -109,9 +179,10 @@ func cacheRateLabel(format string, hit, denom int) string {
 // Σhit/Σ(hit+miss) (the steadier, cost-oriented number that matches the legacy
 // dashboard). "" before any cache tokens have been reported.
 func (m chatTUI) cacheStatus() (body string, rate float64, ok bool) {
+	usage, hit, miss := m.cacheReads()
 	now := ""
 	nowRate := 0.0
-	if u := m.ctrl.LastUsage(); u != nil {
+	if u := usage; u != nil {
 		// Only render when the provider actually reports cache token fields:
 		// falling back to PromptTokens as the denominator painted a bogus
 		// "turn hit 0.00%" for providers with no prompt-cache support.
@@ -122,7 +193,7 @@ func (m chatTUI) cacheStatus() (body string, rate float64, ok bool) {
 	}
 	avg := ""
 	avgRate := 0.0
-	if hit, miss := m.ctrl.SessionCache(); hit+miss > 0 {
+	if hit+miss > 0 {
 		avg = cacheRateLabel(i18n.M.ChatStatusCacheAvgFmt, hit, hit+miss)
 		avgRate = float64(hit) * 100 / float64(hit+miss)
 	}
@@ -149,7 +220,7 @@ func (m chatTUI) cacheTag() string {
 // start/finish emit Notices that arrive on eventCh and re-render the frame, so
 // the count stays current without a dedicated tick.
 func (m chatTUI) jobsTag() string {
-	n := len(m.ctrl.Jobs())
+	n := m.jobsRead()
 	if n == 0 {
 		return ""
 	}
@@ -278,12 +349,13 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 	primaryStatus := m.appendTeamButton(m.primaryStatusLine(modeTag, shellMode, cancelRequested))
 	statusBlock := m.renderStatusBlock(primaryStatus, width)
 
-	// Replicate the working (spinner) line from View(), shown only while a turn runs.
+	// Replicate the working (spinner) line from View(), shown only while a turn
+	// runs or a controller-owned maintenance operation is active.
 	working := m.runningWorkingLine(cancelRequested, false)
 
 	// Count wrapped rows for every piece that View() renders as wrapped.
 	var lines int
-	if m.state == tuiRunning {
+	if working != "" {
 		// working (spinner) line — wraps independently of the status block below.
 		lines += strings.Count(wrapStatusLine(working, width), "\n") + 1
 	}
@@ -292,8 +364,7 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 }
 
 func (m chatTUI) modeTagText() string {
-	goalMode := strings.TrimSpace(m.ctrl.Goal()) != "" && m.ctrl.GoalStatus() == control.GoalStatusRunning
-	toolApprovalMode := m.ctrl.ToolApprovalMode()
+	goalMode, toolApprovalMode, _ := m.modeReads()
 	if m.desktopShortcutLayout() {
 		switch {
 		case m.planMode && toolApprovalMode == control.ToolApprovalDangerFullAccess:

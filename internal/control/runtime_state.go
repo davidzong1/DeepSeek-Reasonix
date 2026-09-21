@@ -64,6 +64,10 @@ func cloneRuntimeState(in event.RuntimeStateSnapshot) event.RuntimeStateSnapshot
 		recovery := *in.Recovery
 		out.Recovery = &recovery
 	}
+	if in.Maintenance != nil {
+		maintenance := *in.Maintenance
+		out.Maintenance = &maintenance
+	}
 	if in.Goal != nil {
 		goal := *in.Goal
 		if in.Goal.MaxGoalRounds != nil {
@@ -119,6 +123,7 @@ func (c *Controller) refreshRuntimeStateAttempt(e event.Event, attempt int) {
 	} // construction has not finished
 	c.mu.Lock()
 	running, finishing, closed, cancelling, path := c.bodyActiveLocked(), c.finalizingLocked(), c.closed, c.cancelRequestedLocked(), c.sessionPath
+	maintenance := c.maintenanceSnapshotLocked()
 	c.mu.Unlock()
 	_, v3Runtime, exclusiveSession := c.v3Binding()
 	var v3RuntimeSnapshot session.RuntimeSnapshot
@@ -175,12 +180,7 @@ func (c *Controller) refreshRuntimeStateAttempt(e event.Event, attempt int) {
 		next.Todos = []event.Todo{}
 	}
 	setRuntimePhase(&next, exclusiveSession, v3Runtime, v3RuntimeSnapshot, running, finishing, closed, cancelling)
-	// Close is immediately authoritative for the public controller view even
-	// while the session runtime remains in its private finalizing barrier. The
-	// latter keeps commit authority alive until TurnDone is durable; exposing it
-	// here would make a closed controller look runnable again.
-	next.Running = (running || finishing) && !closed
-	next.CancelRequested = cancelling && !closed
+	applyMaintenanceRuntimeState(&next, maintenance, running, finishing, closed, cancelling)
 	identities, promptRevision := c.promptOwner.IdentitiesRevision()
 	next.PendingPrompt = len(identities) > 0
 	next.Interactions = make([]event.PendingInteraction, len(identities))
@@ -192,13 +192,16 @@ func (c *Controller) refreshRuntimeStateAttempt(e event.Event, attempt int) {
 	// worker crossing into the finishing window cannot make an accepted cancel
 	// briefly look unavailable.
 	next.Cancellable = next.Phase == "executing" || next.Phase == "cancelling" || next.PendingPrompt
+	if maintenance != nil && (maintenance.Activity == "finalizing" || maintenance.Activity == "recovery_required") {
+		next.Cancellable = false
+	}
 	next.BackgroundJobs = 0
 	if c.jobs != nil {
 		next.BackgroundJobs = len(c.jobs.RunningForSession(agent.BranchID(path)))
 	}
 	// Sampling owners is off their locks. Do not commit a mixture if the
 	// admission/close/binding boundary advanced while another owner was read.
-	stable := c.runtimeBoundaryStable(running, finishing, closed, cancelling, path)
+	stable := c.runtimeBoundaryStable(running, finishing, closed, cancelling, path, maintenance)
 	currentGoal, currentGoalErr := c.goalLifecycleView()
 	stable = stable && reflect.DeepEqual(goalView, currentGoal)
 	stable = stable && ((goalErr == nil && currentGoalErr == nil) || (goalErr != nil && currentGoalErr != nil && goalErr.Error() == currentGoalErr.Error()))
@@ -265,6 +268,18 @@ func (c *Controller) publishRuntimeState() {
 }
 
 func runtimeActivity(state event.RuntimeStateSnapshot, e event.Event, activity string) string {
+	if state.Maintenance != nil {
+		switch state.Maintenance.Activity {
+		case "cancelling":
+			return "stopping_compaction"
+		case "finalizing":
+			return "saving_compaction"
+		case "recovery_required":
+			return "maintenance_recovery_required"
+		default:
+			return "compacting"
+		}
+	}
 	if state.PendingPrompt {
 		return "waiting_input"
 	}
@@ -367,8 +382,30 @@ func setRuntimeRecovery(next *event.RuntimeStateSnapshot, v3Snapshot session.Sna
 	}
 }
 
-func (c *Controller) runtimeBoundaryStable(running, finishing, closed, cancelling bool, path string) bool {
+func (c *Controller) runtimeBoundaryStable(running, finishing, closed, cancelling bool, path string, maintenance *event.MaintenanceState) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return running == c.bodyActiveLocked() && finishing == c.finalizingLocked() && closed == c.closed && cancelling == c.cancelRequestedLocked() && path == c.sessionPath
+	return running == c.bodyActiveLocked() && finishing == c.finalizingLocked() && closed == c.closed && cancelling == c.cancelRequestedLocked() && path == c.sessionPath && reflect.DeepEqual(maintenance, c.maintenanceSnapshotLocked())
+}
+
+func applyMaintenanceRuntimeState(next *event.RuntimeStateSnapshot, maintenance *event.MaintenanceState, running, finishing, closed, cancelling bool) {
+	next.Maintenance = maintenance
+	if maintenance != nil && !closed {
+		switch maintenance.Activity {
+		case "cancelling":
+			next.Phase = "cancelling"
+		case "finalizing":
+			next.Phase = "finishing"
+		case "recovery_required":
+			next.Phase = "recovery_required"
+		default:
+			next.Phase = "executing"
+		}
+	}
+	// Close is immediately authoritative for the public controller view even
+	// while the session runtime remains in its private finalizing barrier. The
+	// latter keeps commit authority alive until TurnDone is durable; exposing it
+	// here would make a closed controller look runnable again.
+	next.Running = (running || finishing || maintenance != nil) && !closed
+	next.CancelRequested = (cancelling || maintenance != nil && maintenance.Activity == "cancelling") && !closed
 }

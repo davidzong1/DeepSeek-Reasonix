@@ -1,5 +1,5 @@
 name: Deploy site
-run-name: Deploy site ${{ inputs.release_version && format('v{0}', inputs.release_version) || github.sha }}
+run-name: Deploy site ${{ inputs.release_version && format('v{0}', inputs.release_version) || github.sha }}${{ inputs.release_request && format(' [{0}]', inputs.release_request) || '' }}
 
 on:
   push:
@@ -9,6 +9,11 @@ on:
     inputs:
       release_version:
         description: "Optional release version that owns this deployment"
+        required: false
+        default: ""
+        type: string
+      release_request:
+        description: "Release workflow correlation ID (optional)"
         required: false
         default: ""
         type: string
@@ -24,6 +29,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main-v2' && github.ref_protected
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,5 +56,19 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v7
+        if: inputs.release_version != ''
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        if: inputs.release_version != ''
+        with:
+          node-version: "22"
+      - name: Recheck release ownership immediately before deployment
+        if: inputs.release_version != ''
+        env:
+          VERSION: ${{ inputs.release_version }}
+        run: test "$(bash scripts/observe-release-site.sh "$VERSION" recover)" = true
       - id: deploy
         uses: actions/deploy-pages@v5

@@ -57,12 +57,18 @@ func (e controllerExecution) Snapshot() session.RuntimeSnapshot {
 	}
 	e.c.mu.Lock()
 	defer e.c.mu.Unlock()
+	if op := e.c.maintenance; op != nil {
+		return session.RuntimeSnapshot{Phase: maintenanceRuntimePhase(op.activity), Activity: session.MaintenanceActivity}
+	}
 	return session.RuntimeSnapshot{Phase: e.c.turns.phase, Activity: e.c.turns.activityNameLocked()}
 }
 
 func (e controllerExecution) Cancel() bool {
 	if e.c == nil {
 		return false
+	}
+	if _, present, cancelled := e.c.signalMaintenanceCancel(); present {
+		return cancelled
 	}
 	return e.c.signalTurnCancel()
 }

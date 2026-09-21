@@ -21,6 +21,9 @@ func (b bootBrowserExecutor) Tabs(context.Context) ([]browser.Tab, error) { retu
 func (bootBrowserExecutor) Open(context.Context, browser.OpenRequest) (browser.Tab, error) {
 	return browser.Tab{}, browser.ErrNoGrant
 }
+func (bootBrowserExecutor) PreviewFile(context.Context, browser.FilePreviewRequest) (browser.Tab, error) {
+	return browser.Tab{}, browser.ErrNoGrant
+}
 func (bootBrowserExecutor) Navigate(context.Context, browser.NavigateRequest) (browser.Tab, error) {
 	return browser.Tab{}, browser.ErrNoGrant
 }

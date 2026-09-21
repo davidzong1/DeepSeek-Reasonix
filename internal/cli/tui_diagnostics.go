@@ -281,8 +281,21 @@ func (d *tuiDiagnostics) NoteActiveHeartbeat(source string) {
 	}
 }
 
+// Running reports whether a turn's generation is currently armed. The TUI's
+// elapsed-tick chain asks this: that chain exists to keep the armed generation
+// fed with heartbeats, so it must live exactly as long as the phase does rather
+// than as long as any one footer flag happens to say.
+func (d *tuiDiagnostics) Running() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.phase == watchdogRunning
+}
+
 // SetStatusProvider installs an optional Controller RuntimeStatus snapshot for
-// structured stall dumps. Safe to call at any time.
+// structured stall dumps. Safe to call at any time, nil included.
 func (d *tuiDiagnostics) SetStatusProvider(fn func() string) {
 	if d == nil {
 		return

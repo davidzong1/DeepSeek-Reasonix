@@ -97,6 +97,7 @@ fi
 
 # Delete only generated installers so a stale first-pass package cannot be
 # mistaken for the rebuilt payload-signed installer.
+mkdir -p "$BIN_DIR"
 find "$BIN_DIR" -maxdepth 1 -type f -name '*installer*.exe' -delete
 binary_define="ARG_REASONIX_AMD64_BINARY"
 [ "$arch" = arm64 ] && binary_define="ARG_REASONIX_ARM64_BINARY"

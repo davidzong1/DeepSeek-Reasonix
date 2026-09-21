@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,8 +94,12 @@ func TestBashSchemaUnchangedWithSessionTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 	req, _ := schema["required"].([]any)
-	if len(req) != 1 || req[0] != "command" {
-		t.Fatalf("required = %v", req)
+	want := []any{"command"}
+	if (bash{}).resolved().Kind == sandbox.ShellPowerShell {
+		want = []any{"command", "description"}
+	}
+	if !slices.Equal(req, want) {
+		t.Fatalf("required = %v, want %v for the current platform shell", req, want)
 	}
 }
 

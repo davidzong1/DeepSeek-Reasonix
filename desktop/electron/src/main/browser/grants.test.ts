@@ -14,8 +14,9 @@ test("grants are verified against the task and the service generation", () => {
   const grant = grants.install({ grantId: "grant-a", taskId: "task-a", sessionId: "s" });
   assert.deepEqual(grant, { grantId: "grant-a", taskId: "task-a", sessionId: "s", generation: "g-1", createdAt: 5 });
   assert.equal(grants.verify("grant-a").taskId, "task-a");
-  assert.equal(grants.verifyTab("grant-a", "task-a").grantId, "grant-a");
+  assert.equal(grants.verifyTab("grant-a", "task-a", "s").grantId, "grant-a");
   assert.throws(() => grants.verifyTab("grant-a", "task-b"), noGrant);
+  assert.throws(() => grants.verifyTab("grant-a", "task-a", "other"), noGrant);
   assert.throws(() => grants.verifyTab("grant-a", undefined), noGrant);
   assert.throws(() => grants.install({ grantId: "", taskId: "t", sessionId: "" }), noGrant);
 

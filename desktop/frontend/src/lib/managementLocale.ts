@@ -49,6 +49,7 @@ const messages = {
   historicalSourceBusy: ["其他实例正在使用此会话，关闭后可重试。", "其他實例正在使用此對話，關閉後可重試。", "In use by another instance. Close it and retry."],
   historicalImportFailed: ["导入失败，原件已保留。可重试或查看恢复详情。", "匯入失敗，原件已保留。可重試或檢視恢復詳情。", "Import failed. Original files are preserved; retry or review recovery details."],
   historicalAvailable: ["尚未导入", "尚未匯入", "Not imported"],
+  historicalSourceUpdated: ["旧来源有更新，可导入为独立分支", "舊來源有更新，可匯入為獨立分支", "Historical source changed. Import as a separate branch."],
   historicalQueued: ["排队中", "排隊中", "Queued"],
   historicalImporting: ["正在导入", "正在匯入", "Importing"],
   historicalImported: ["已导入", "已匯入", "Imported"],

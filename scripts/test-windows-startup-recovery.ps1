@@ -65,19 +65,16 @@ function Assert-Ready {
 function Assert-VisibleContentAndCapture($process, [string]$text, [string]$outputPath) {
   Add-Type -AssemblyName UIAutomationClient
   Add-Type -AssemblyName System.Drawing
-  $deadline = [DateTime]::UtcNow.AddSeconds(20)
-  $found = $false
-  $prepared = -not $PrepareHistoricalSession
-  $root = $null
-  while ([DateTime]::UtcNow -lt $deadline -and -not $found) {
+  $observation = Wait-VisibleUpgradeHistory -Text $text -PrepareHistoricalSession:$PrepareHistoricalSession -ReadRoot {
     $process.Refresh()
     if ($process.MainWindowHandle -ne 0) {
-      $root = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
-      if (-not $prepared) { $prepared = Invoke-PendingHistoricalSession $root }
-      $found = $prepared -and (Test-VisibleUpgradeHistory $root $text)
+      return [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
     }
-    if (-not $found) { Start-Sleep -Milliseconds 250 }
   }
+  $root = $observation.Root
+  $found = $observation.Found
+  $observation | Select-Object Found, Prepared, ElapsedMilliseconds, Polls, TimeoutSeconds |
+    ConvertTo-Json | Set-Content -LiteralPath ($outputPath + '.wait.json') -Encoding utf8
   if ($null -eq $root) { throw 'The packaged shell did not expose a native window for upgrade evidence.' }
   @(Get-UpgradeUIDescendants $root | Select-Object -First 5000 | ForEach-Object {
     @{name=$_.Current.Name; id=$_.Current.AutomationId; offscreen=$_.Current.IsOffscreen}

@@ -596,7 +596,7 @@ Composer shortcuts:
 | `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | Uses the platform-native editing history. |
 | `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. On official DeepSeek, `deepseek-flash` and `deepseek-v4-flash` accept images natively; V4 Pro stays text-only. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
-| `Esc` while a turn is running | Cancels the running turn | If the turn has not produced a response yet, the draft is restored. |
+| `Esc` while a turn or compaction is running | Cancels the cancellable foreground operation | A compaction stop preserves the draft and queued messages; an unanswered turn restores its draft. |
 
 Menus and controls:
 
@@ -994,6 +994,34 @@ Markdown files under `.reasonix/commands/` (project) or `~/.reasonix/commands/`
 (user) — `review.md` becomes `/review`, a subdirectory namespaces it
 (`git/commit.md` → `/git:commit`). The body is a prompt template; invoking the
 command sends it as a turn.
+
+`/compact [focus]` runs as a session maintenance operation. Desktop and remote
+clients show one recoverable progress card and keep Stop available while the
+summary request can still be cancelled. Messages sent during compaction remain
+in the existing session inbox and run in order after compaction finishes or
+stops. Stopping compaction does not withdraw those queued messages. If a
+summary adapter does not stop within the cancellation grace period, or the
+result cannot be saved safely, the session enters an explicit recovery state
+instead of accepting a late summary or reporting idle.
+
+Compaction and ordinary turns share one foreground admission gate, including
+direct CLI, ACP, Bot, inbox, desktop, and remote entry points. In the terminal
+UI, `Esc` stops a cancellable compaction without clearing the current draft.
+An empty history or empty selected range completes as “No history to compact”
+without calling the summary model. The operation card keeps its error, applied
+result, and estimated token change across refreshes and reconnects; a persisted
+progress record is marked interrupted only after runtime synchronization proves
+that no matching operation is active.
+
+Maintenance owns the shared session runtime as well as the controller, so a
+controller replacement cannot take over during compaction. Start and terminal
+operation records are durably checkpointed independently of ordinary turns.
+If either checkpoint fails, queued work stays behind the recovery barrier.
+An older idle snapshot cannot interrupt a newer live operation; inferred
+interruptions can be corrected by fresh runtime evidence. Unknown operation
+states display an unavailable-record message instead of success. Empty selected
+ranges are no-ops only below the hard context limit; an oversized context still
+requires safe recovery.
 
 ### Subagent profiles
 

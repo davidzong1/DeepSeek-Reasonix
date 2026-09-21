@@ -27,7 +27,7 @@ export function prepareTranscriptInstall(previous: SessionTranscript | undefined
     totalTurns: slice.totalTurns ?? 0, startTurn: slice.startTurn ?? 0, endTurn: slice.endTurn ?? 0,
     revision: slice.revision ?? 0, revisionKnown: true, digest: slice.digest ?? "",
   });
-  const projection = projectionOf(session);
+  const projection = { ...projectionOf(session), mutation: "replace" as const };
   let committed = false;
   return { projection, commit: () => {
     if (committed) return;

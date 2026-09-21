@@ -13,6 +13,7 @@ import { basename, join, resolve } from "node:path";
 import { isDirectory, PRODUCT } from "./lib.mjs";
 import { closeAndVerify, processAlive, sleep, waitForProcessesToExit } from "./smoke-lifecycle.mjs";
 import { packagedSmokeEnv } from "./smoke-env.mjs";
+import { parseServiceReady } from "./smoke-poll.mjs";
 
 // Playwright belongs to the Electron workspace, not the shipped application.
 const require = createRequire(new URL("../electron/package.json", import.meta.url));
@@ -116,9 +117,8 @@ try {
     const log = readLog("shell.log");
     const failed = /desktop service failed: .*/.exec(log);
     if (failed) throw new Error(failed[0]);
-    const line = /desktop service ready: generation (\S+), pid (\d+)/.exec(log);
-    if (line) ready = { generation: line[1], pid: Number(line[2]), line: line[0] };
-    else await sleep(250);
+    ready = parseServiceReady(log);
+    if (!ready) await sleep(250);
   }
   console.log(`PASS  handshake ready after ${((Date.now() - started) / 1000).toFixed(1)}s: ${ready.line}`);
   // MainWindow.prepareApp replaces the starting-page window with a fresh

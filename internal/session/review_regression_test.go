@@ -91,6 +91,9 @@ func TestSessionIdentityRejectsSymlinkOutsideRoot(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	persistence := NewFilesystemPersistence(root)
+	if _, err := persistence.Stat(t.Context(), "escape"); err == nil {
+		t.Fatal("metadata lookup followed a session symlink outside the store root")
+	}
 	if _, err := persistence.Open("escape", ReadOnly); err == nil {
 		t.Fatal("read-only open followed a session symlink outside the store root")
 	}

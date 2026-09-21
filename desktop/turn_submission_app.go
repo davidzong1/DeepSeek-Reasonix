@@ -349,6 +349,9 @@ func (a *App) submitToTabResult(tabID, input string, fromBridge, classifyManagem
 			managementRoute = classifier.ClassifySubmitRoute(input) == control.SubmitManagementHandled
 		}
 		if managementRoute {
+			if result, err := control.MaintenanceCommandConflict(ctrl, trimmed); err != nil {
+				return result, err
+			}
 			// Management commands still take the tab admission lock so they cannot
 			// race an active turn or a controller replacement.
 			admission, admittedCtrl, err := a.beginTabTurn(tabID, !fromBridge, submissionID...)

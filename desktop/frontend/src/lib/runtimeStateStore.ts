@@ -30,6 +30,20 @@ export interface RuntimeState {
   backgroundJobs: number;
   activity: string;
   recovery?: RecoveryStatus | null;
+  maintenance?: {
+    operationId: string;
+    kind: string;
+    activity: "running" | "cancelling" | "finalizing" | "recovery_required" | string;
+    status?: string;
+    operationRevision?: number;
+    runtimeEpoch?: string;
+    errorCode?: string;
+    detail?: string;
+    applied?: boolean;
+    inputTokens?: number;
+    resultTokens?: number;
+    messages?: number;
+  };
 }
 
 export function acceptSessionRuntimeSnapshot(current: RuntimeState | undefined, next: RuntimeState, allowProducerBaseline = false): RuntimeState {
@@ -79,7 +93,10 @@ export function selectRuntime(session?: RuntimeSession, failed = false) {
   const known = state?.schemaVersion === 1;
   const unknown = Boolean(session && (failed || session.freshness !== "synced"));
   const finishing = known && state.phase === "finishing";
-  const kind = unknown ? "unknown" : !known ? "legacy" : finishing ? "finishing"
+  const kind = unknown ? "unknown" : !known ? "legacy" : state.maintenance?.activity === "finalizing" ? "maintenance_finalizing"
+    : state.maintenance?.activity === "cancelling" ? "maintenance_cancelling"
+    : state.maintenance?.activity === "recovery_required" ? "recovery_required"
+    : state.maintenance ? "maintenance_running" : finishing ? "finishing"
     : state.phase === "recovery_required" ? "recovery_required"
     : state.cancelRequested || state.phase === "cancelling" ? "cancelling" : state.pendingPrompt ? "waiting_confirmation"
     : state.phase === "executing" ? state.activity === "streaming" ? "streaming" : "thinking"
@@ -87,7 +104,7 @@ export function selectRuntime(session?: RuntimeSession, failed = false) {
   return { kind, known, unknown, finishing, state,
     running: known ? state.running : undefined,
     cancellable: known ? !unknown && !finishing && state.cancellable && !state.cancelRequested : undefined,
-    spinning: !unknown && (kind === "thinking" || kind === "streaming" || kind === "cancelling" || kind === "background_job"),
+    spinning: !unknown && (kind === "thinking" || kind === "streaming" || kind === "cancelling" || kind === "maintenance_running" || kind === "maintenance_cancelling" || kind === "maintenance_finalizing" || kind === "background_job"),
   };
 }
 

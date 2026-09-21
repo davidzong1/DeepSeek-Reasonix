@@ -1,8 +1,8 @@
 // Run: tsx src/__tests__/shell-support-install.test.tsx
 //
-// Sandbox settings shell support contract: Windows exposes native PowerShell
-// runtimes only, while macOS/Linux expose Bash with copy-only native repair
-// guidance. Diagnostics stay available without crowding the primary settings.
+// Sandbox settings shell support contract: Windows exposes Git Bash and native
+// PowerShell runtimes, while macOS/Linux expose Bash with copy-only native repair
+// guidance. The 1.38.10 layout keeps diagnostics and write roots inline.
 
 import { JSDOM } from "jsdom";
 import React from "react";
@@ -103,18 +103,17 @@ function windowsSettings(overrides: {
   shell?: string;
   reloadRequired?: boolean;
   manualUrl?: string;
+  gitBashAvailable?: boolean;
 }): SettingsView {
   const settings = baseSettings("standard");
   settings.sandbox = {
     ...settings.sandbox,
     shell: overrides.shell ?? "auto",
     effectiveShell: "powershell",
-    resolvedShell: overrides.reloadRequired ? "pwsh" : "powershell",
+    resolvedShell: overrides.shell === "bash" ? "git-bash" : overrides.reloadRequired ? "pwsh" : "powershell",
     shellReloadRequired: overrides.reloadRequired ?? false,
     shellCapabilities: [
-      // Legacy data may still be replayed from an older backend. The current UI
-      // must filter it rather than presenting Bash as a Windows Agent runtime.
-      { id: "git-bash", variant: "git-for-windows", available: true, path: "C:\\Program Files\\Git\\bin\\bash.exe", source: "standard-path" },
+      { id: "git-bash", variant: "git-for-windows", available: overrides.gitBashAvailable ?? true, path: overrides.gitBashAvailable === false ? undefined : "C:\\Program Files\\Git\\bin\\bash.exe", source: "standard-path" },
       { id: "powershell", available: true, path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", source: "standard-path" },
       { id: "pwsh", available: true, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", source: "standard-path" },
     ],
@@ -124,8 +123,8 @@ function windowsSettings(overrides: {
   return settings;
 }
 
-// Scenario 1: Windows presents only the two native PowerShell runtimes. Legacy
-// Bash capabilities and install actions never leak into the settings surface.
+// Scenario 1: Windows detects Git Bash and can explicitly select its existing
+// persisted "bash" preference without changing the PowerShell auto default.
 {
   const rootEl = document.createElement("div");
   document.body.appendChild(rootEl);
@@ -135,14 +134,15 @@ function windowsSettings(overrides: {
   let reloadCalls = 0;
   let settingsCalls = 0;
   const shellPreferenceCalls: string[] = [];
+  let selectedShell = "auto";
   const desktopStub = installDesktopHostStub(({
     main: {
       App: {
         Settings: async () => {
           settingsCalls += 1;
-          return windowsSettings({ shell: "bash", reloadRequired: true, manualUrl: "https://evil.example/?next=https://git-scm.com/download/win" });
+          return windowsSettings({ shell: selectedShell, reloadRequired: true });
         },
-        SetShellPreference: async (value: string) => { shellPreferenceCalls.push(value); },
+        SetShellPreference: async (value: string) => { shellPreferenceCalls.push(value); selectedShell = value; },
         InstallShellSupport: async () => {
           installCalls += 1;
           return { status: "manual_required", manualUrl: "https://git-scm.com/download/win" };
@@ -160,22 +160,33 @@ function windowsSettings(overrides: {
     );
     await flushPromises();
   });
-  await waitFor("Windows PowerShell runtime", () => rootEl.textContent?.includes("PowerShell runtime") === true);
+  await waitFor("Windows Shell interpreter", () => rootEl.textContent?.includes("Shell interpreter") === true);
   const optionValues = await shellOptionValues(rootEl);
-  eq(optionValues, ["auto", "pwsh", "powershell"], "Windows selector contains only native PowerShell runtimes");
+  eq(optionValues, ["auto", "bash", "pwsh", "powershell"], "Windows selector restores Git Bash alongside PowerShell");
   const shellTrigger = rootEl.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
   await act(async () => {
     shellTrigger?.click();
     await flushPromises();
-    document.querySelector<HTMLElement>('[role="option"][data-value="auto"]')?.click();
+    document.querySelector<HTMLElement>('[role="option"][data-value="bash"]')?.click();
     await flushPromises();
   });
-  eq(shellPreferenceCalls, ["auto"], "selecting the visible auto option migrates a retained legacy Bash preference");
-  ok(rootEl.textContent?.includes("Git Bash") !== true, "Windows hides replayed Git Bash capability data");
-  ok(rootEl.textContent?.includes("Git for Windows") !== true, "Windows hides legacy Git for Windows repair actions");
+  eq(shellPreferenceCalls, ["bash"], "Git Bash selection persists the backward-compatible bash preference");
+  eq(rootEl.querySelector('[aria-haspopup="listbox"]')?.textContent, "Git Bash", "saved Bash preference remains selected after settings refresh");
+  ok(rootEl.textContent?.includes("C:\\Program Files\\Git\\bin\\bash.exe") === true, "Windows displays the detected Git Bash executable");
+  ok(rootEl.textContent?.includes("Git for Windows") !== true, "installed Git Bash needs no repair card");
   ok(rootEl.textContent?.includes("C:\\Windows\\System32\\WindowsPowerShell") === true,
-    "current Windows runtime includes its resolved executable path");
-  ok(rootEl.textContent?.includes("Runtime details") === true, "diagnostics are grouped under runtime details");
+    "Windows shell detection includes its resolved executable path");
+  ok(rootEl.querySelector(".runtime-details") === null, "diagnostics remain inline in the restored layout");
+  const sandboxSection = rootEl.querySelector(".settings-page--sandbox .settings-section");
+  const headerApplyButton = sandboxSection?.querySelector<HTMLButtonElement>(".settings-section__actions button");
+  eq(headerApplyButton?.textContent, "Reload configuration", "manual configuration action stays in the section header");
+  ok(sandboxSection!.textContent!.indexOf("Runtime environment") < sandboxSection!.textContent!.indexOf("Workspace root")
+    && sandboxSection!.textContent!.indexOf("Currently allowed directories") > sandboxSection!.textContent!.indexOf("Workspace root"),
+    "runtime diagnostics precede the grouped file write settings");
+  ok(!sandboxSection!.querySelector('input[type="checkbox"]'), "Windows network access is a status, not a disabled toggle");
+  ok(sandboxSection!.textContent!.includes("shell commands are not restricted"), "Windows file-tool scope is explicit");
+  await act(async () => { rootEl.querySelector<HTMLButtonElement>('[aria-label="Copy Git Bash path"]')!.click(); await flushPromises(); });
+  eq(copiedCommands.at(-1), "C:\\Program Files\\Git\\bin\\bash.exe", "detected executable paths can be copied in full");
   eq(openedURLs.length, 0, "rendering Windows settings opens no external installer page");
   eq(installCalls, 0, "rendering Windows repair never calls InstallShellSupport");
   eq(cancelCalls, 0, "manual-only Windows repair never calls CancelShellInstall");
@@ -187,8 +198,45 @@ function windowsSettings(overrides: {
     await flushPromises();
   });
   eq(reloadCalls, 1, "Windows reloads only after the user requests it");
-  eq(settingsCalls, 3, "preference migration and reload each refresh the Settings snapshot once");
+  eq(settingsCalls, 3, "preference selection and reload each refresh the Settings snapshot once");
+  await act(async () => {
+    headerApplyButton!.click();
+    await flushPromises();
+  });
+  eq(reloadCalls, 2, "restored header action applies manual configuration changes");
   eq(installCalls, 0, "reload never calls the legacy install binding");
+  await act(async () => { root.unmount(); });
+}
+
+// Missing Git Bash has a manual, fixed official download target, including
+// when an old backend supplies an untrusted URL in its compatibility fields.
+{
+  const rootEl = document.createElement("div");
+  document.body.appendChild(rootEl);
+  const root = createRoot(rootEl);
+  let reloadCalls = 0;
+  let installCalls = 0;
+  installDesktopHostStub({
+    Settings: async () => windowsSettings({ gitBashAvailable: false, manualUrl: "https://evil.example/installer" }),
+    ReloadSettings: async () => { reloadCalls += 1; },
+    InstallShellSupport: async () => { installCalls += 1; return { status: "manual_required" }; },
+  } as Partial<AppBindings> as AppBindings, { externalOpens: openedURLs });
+  await act(async () => {
+    root.render(<LocaleProvider><SettingsPanel initialTab="sandbox" desktopPlatform="windows" onClose={() => {}} onChanged={() => {}} /></LocaleProvider>);
+    await flushPromises();
+  });
+  await waitFor("manual Git Bash repair", () => rootEl.textContent?.includes("Git Bash was not detected") === true);
+  const download = Array.from(rootEl.querySelectorAll("button")).find(button => button.textContent?.includes("Download from git-scm.com"));
+  const reload = Array.from(rootEl.querySelectorAll("button")).find(button => button.textContent?.includes("Re-detect and reload session"));
+  ok(Boolean(download && reload), "missing Git Bash offers manual download and re-detection");
+  await act(async () => {
+    download!.click();
+    reload!.click();
+    await flushPromises();
+  });
+  eq(openedURLs.at(-1), "https://git-scm.com/download/win", "manual repair only opens the fixed official download page");
+  eq(reloadCalls, 1, "manual repair re-detects and reloads once on request");
+  eq(installCalls, 0, "manual repair never launches an installer");
   await act(async () => { root.unmount(); });
 }
 
@@ -306,8 +354,8 @@ function windowsSettings(overrides: {
     "macOS native zsh fallback does not request a Bash install");
   ok(rootEl.textContent?.includes("Git") === true && rootEl.textContent?.includes("brew install git") === true,
     "macOS missing Git shows an independent Homebrew Git repair command");
-  ok(rootEl.textContent?.includes("Shell after reload") !== true,
-    "unchanged runtime does not render a duplicate after-reload row");
+  ok(rootEl.textContent?.includes("Shell after reload") === false,
+    "identical current and resolved shells do not produce duplicate status rows");
   const gitCopyButton = Array.from(rootEl.querySelectorAll("button")).find((button) => button.textContent?.includes("Copy command"));
   await act(async () => {
     gitCopyButton!.click();
@@ -317,6 +365,96 @@ function windowsSettings(overrides: {
   ok(!Array.from(rootEl.querySelectorAll("button")).some((button) => button.textContent?.includes("Install Git for Windows")),
     "macOS never renders the Windows install entry");
   await act(async () => { root.unmount(); });
+}
+
+// Drafts survive failed saves, a pending write cannot be submitted twice, and
+// a newly loaded authoritative root replaces the previous displayed value.
+{
+  const rootEl = document.createElement("div");
+  document.body.appendChild(rootEl);
+  const root = createRoot(rootEl);
+  const settings = windowsSettings({});
+  let writes = 0;
+  let failSave = true;
+  let release: (() => void) | undefined;
+  installDesktopHostStub({
+    Settings: async () => structuredClone(settings),
+    ReloadSettings: async () => { settings.sandbox.workspaceRoot = "C:\\Reloaded"; },
+    SetSandbox: async (_bash: string, _network: boolean, workspaceRoot: string, allowWrite: string[]) => {
+      writes++;
+      if (failSave) { await new Promise<void>(resolve => { release = resolve; }); throw new Error("save rejected"); }
+      settings.sandbox.workspaceRoot = workspaceRoot.trim();
+      settings.sandbox.allowWrite = allowWrite;
+    },
+  } as Partial<AppBindings> as AppBindings);
+  await act(async () => { root.render(<LocaleProvider><SettingsPanel initialTab="sandbox" desktopPlatform="windows" onClose={() => {}} onChanged={() => {}} /></LocaleProvider>); await flushPromises(); });
+  const input = () => rootEl.querySelector<HTMLInputElement>('[aria-label="Additional writable directories"]')!;
+  const rootInput = () => rootEl.querySelector<HTMLInputElement>('[aria-label="Workspace root"]')!;
+  const change = async (element: HTMLInputElement, value: string) => {
+    await act(async () => {
+      element.focus();
+      const previous = element.value;
+      element.value = value;
+      (element as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent("keyup", { key: "a", bubbles: true }));
+      await flushPromises();
+    });
+  };
+  const enter = (element: HTMLInputElement) => element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await change(input(), "C:\\Extra");
+  await act(async () => { enter(input()); enter(input()); await flushPromises(); });
+  eq(writes, 1, "rapid Enter submits a rule only once");
+  ok(input().disabled, "rule draft is disabled while saving");
+  await act(async () => { release!(); await flushPromises(); });
+  eq(input().value, "C:\\Extra", "failed rule save preserves the entered directory");
+  failSave = false;
+  await act(async () => { enter(input()); await flushPromises(); });
+  eq(input().value, "", "successful retry clears the directory draft");
+  eq(settings.sandbox.allowWrite, ["C:\\Extra"], "successful retry stores exactly one directory");
+  const reload = Array.from(rootEl.querySelectorAll("button")).find(b => b.textContent === "Reload configuration")!;
+  await act(async () => { reload.click(); await flushPromises(); });
+  eq(rootInput().value, "C:\\Reloaded", "reloaded configuration updates the root field without remounting");
+  failSave = true;
+  await change(rootInput(), "C:\\Edited");
+  await act(async () => { enter(rootInput()); await flushPromises(); });
+  eq(writes, 3, "root Enter starts a distinct save of the edited value");
+  await act(async () => { release!(); await flushPromises(); });
+  eq(rootInput().value, "C:\\Edited", "failed root save retains the editable draft");
+  await waitFor("failed root save settles", () => !rootInput().disabled);
+  eq(rootEl.querySelector(".sandbox-save-status")?.textContent, "Save failed. Please retry.", "failed saves never show saved status");
+  failSave = false;
+  await act(async () => { enter(rootInput()); await flushPromises(); });
+  eq(settings.sandbox.workspaceRoot, "C:\\Edited", "root draft can be retried successfully");
+  await change(rootInput(), "");
+  await act(async () => { enter(rootInput()); await flushPromises(); });
+  eq(settings.sandbox.workspaceRoot, "", "an empty root restores the current-workspace default");
+  eq(rootInput().value, "", "saved empty root stays empty after refresh");
+  await act(async () => { root.unmount(); });
+
+  // The same RuleList owns permission rules; its failure behavior must agree.
+  const permissionsRoot = createRoot(rootEl);
+  let permissionWrites = 0;
+  failSave = true;
+  installDesktopHostStub({
+    Settings: async () => structuredClone(settings),
+    AddPermissionRule: async (list: "allow" | "ask" | "deny", rule: string) => {
+      permissionWrites++;
+      if (failSave) throw new Error("permission save rejected");
+      settings.permissions[list].push(rule);
+    },
+  } as Partial<AppBindings> as AppBindings);
+  await act(async () => { permissionsRoot.render(<LocaleProvider><SettingsPanel initialTab="permissions" desktopPlatform="windows" onClose={() => {}} onChanged={() => {}} /></LocaleProvider>); await flushPromises(); });
+  const permissionInput = rootEl.querySelector<HTMLInputElement>('.set-rules input')!;
+  await change(permissionInput, "Bash(rm:*)");
+  await act(async () => { enter(permissionInput); enter(permissionInput); await flushPromises(); });
+  eq(permissionWrites, 1, "permission rules also reject duplicate concurrent Enter");
+  eq(permissionInput.value, "Bash(rm:*)", "failed permission rules preserve their draft too");
+  failSave = false;
+  await act(async () => { enter(permissionInput); await flushPromises(); });
+  eq(permissionInput.value, "", "successful permission retry clears the shared rule draft");
+  await act(async () => { permissionsRoot.unmount(); });
 }
 
 if (failed > 0) {

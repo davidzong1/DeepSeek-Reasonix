@@ -645,6 +645,10 @@ console.log("\nmermaid rendering");
   eq(split?.lang, "js", "the open fence split keeps the info-string language");
   eq(split?.code, "const a = 1;\nconst b", "the open fence split drops the opener line from the code body");
   eq(splitStreamingTailFence("para\n\n```\nx")?.head, "para\n\n", "text before the open fence stays plain");
+  eq(splitStreamingTailFence("```type"), null, "a partial opening line does not hide the language being streamed");
+  eq(splitStreamingTailFence("```ts title=demo\nx")?.lang, "ts", "fence metadata does not become the grammar name");
+  eq(splitStreamingTailFence("```ts\nx\n```", true)?.code, "x\n", "a just-closed tail keeps its code surface until parser handoff");
+  eq(splitStreamingTailFence("~~~python\nx = 1", true)?.lang, "python", "tilde fences share the streaming viewer");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

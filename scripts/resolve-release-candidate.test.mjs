@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { inspectRecord, requireNotRevoked, selectRecordArtifact, validateCandidateRun } from "./resolve-release-candidate.mjs";
 
@@ -6,6 +11,50 @@ const id = `v1.2.3-${"a".repeat(12)}-${"b".repeat(12)}`;
 const artifact = { id: 22, name: `release-candidate-record-${id}`, expired: false, workflow_run: { id: 11 } };
 const run = { id: 11, run_attempt: 2, repository: { full_name: "esengine/DeepSeek-Reasonix" }, path: ".github/workflows/release-candidate.yml", head_branch: "main-v2", head_sha: "c".repeat(40), event: "workflow_dispatch", status: "completed", conclusion: "success" };
 const record = { candidateId: id, version: "1.2.3", sourceSHA: "a".repeat(40), control: { buildSHA: run.head_sha }, signing: { desktopFingerprint: "v1:example" }, validity: { createdAt: "2026-01-01T00:00:00Z", expiresAt: "2027-01-01T00:00:00Z", revoked: false }, source: { runId: "11", runAttempt: "2", desktopPrefix: "desktop-11-2-preflight", payloadArtifactId: "33", payloadArtifactName: `release-candidate-payload-${id}`, evidenceArtifactId: "34", evidenceArtifactName: `release-candidate-evidence-${id}` } };
+
+for (const purpose of ["release", "rehearsal"]) {
+  test(`${purpose} CLI writes the exact workflow output contract`, t => {
+    const root = mkdtempSync(path.join(tmpdir(), "reasonix-candidate-outputs-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const namespace = purpose === "release" ? "release-candidate" : "release-candidate-rehearsal";
+    const payloadName = `${namespace}-payload-${id}`;
+    const evidenceName = `${namespace}-evidence-${id}`;
+    const sealed = { ...record, purpose,
+      validity: { ...record.validity, expiresAt: "2099-01-01T00:00:00Z" },
+      source: { ...record.source, payloadArtifactName: payloadName, evidenceArtifactName: evidenceName },
+    };
+    const inputs = [sealed, { ...artifact, name: `${namespace}-record-${id}` }, run].map((value, index) => {
+      const file = path.join(root, `${index}.json`);
+      writeFileSync(file, JSON.stringify(value));
+      return file;
+    });
+    const output = path.join(root, "outputs");
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./resolve-release-candidate.mjs", import.meta.url)),
+      purpose === "release" ? "inspect" : "inspect-rehearsal", id, ...inputs],
+    { encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: output } });
+    assert.equal(result.status, 0, result.stderr);
+    const values = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map(line => {
+      const separator = line.indexOf("=");
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }));
+    assert.deepEqual(values, {
+      candidate_id: id, version: "1.2.3", source_sha: record.sourceSHA,
+      candidate_control_sha: run.head_sha, signing_fingerprint: "v1:example",
+      producer_run_id: "11", producer_run_attempt: "2", desktop_prefix: "desktop-11-2-preflight",
+      payload_artifact_id: "33", payload_artifact_name: payloadName,
+      evidence_artifact_id: "34", evidence_artifact_name: evidenceName,
+    });
+  });
+}
+
+test("rejects missing or malformed source/control identities before emitting outputs", () => {
+  for (const sourceSHA of [undefined, "", "main-v2"]) {
+    assert.throws(() => inspectRecord({ ...record, sourceSHA }, id, artifact, run), /source SHA/);
+  }
+  for (const buildSHA of [undefined, "", "main-v2"]) {
+    assert.throws(() => inspectRecord({ ...record, control: { buildSHA } }, id, artifact, run), /control SHA/);
+  }
+});
 
 test("selects the newest active exact-name record", () => {
   assert.equal(selectRecordArtifact([{ ...artifact, id: 20 }, artifact, { ...artifact, id: 30, expired: true }], id).id, 22);

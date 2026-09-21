@@ -12,6 +12,8 @@ import type {
   HistoryWindowPage,
   HistoryWindowRequest,
   LegacyEmptySessionCleanupStatus,
+  FileBrowserPreviewRequest,
+  FileBrowserPreviewResult,
   MarkdownSVGView,
   MessageFieldPage,
   MessageHistoryPage,
@@ -35,6 +37,7 @@ import type {
   WorkspaceSessionPage,
   WorkspaceSnapshot,
 } from "../generated/desktopContract.generated";
+export type { FileBrowserPreviewRequest, FileBrowserPreviewResult } from "../generated/desktopContract.generated";
 import type { ExactInteractionBindings } from "./exactInteractionBindings";
 import type { InvocationRequest } from "./invocationDisplay";
 import type { FollowupBindings } from "./pendingFollowup";
@@ -197,7 +200,7 @@ import type {
   SessionClearResult,
 } from "./types";
 import { editMockGoalTab } from "./mockGoalLifecycle";
-import { browserPreviewShellSupport } from "./shellSupportPreview";
+import { browserPreviewShellSupport, reloadBrowserPreviewShell } from "./shellSupportPreview";
 import { desktopHost } from "./desktopHost";
 export * from "./remoteTabEvents";
 export const COMPACT_RATIO_MIN_PERCENT = 30, COMPACT_RATIO_MAX_PERCENT = 85;
@@ -317,7 +320,7 @@ export interface AppBindings extends AttachmentBindings, SessionExportBindings, 
   Submit(input: string): Promise<void>;
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitToTabWithID(tabID: string, input: string, submissionID: string): Promise<void>;
-  StartTurnForTab?(tabID: string, input: string, submissionID: string): Promise<{ turnId: string; status: string; disposition?: "turn_started" | "management_handled"; runtimeEpoch?: string; submissionId?: string }>;
+  StartTurnForTab?(tabID: string, input: string, submissionID: string): Promise<{ turnId: string; status: string; disposition?: "turn_started" | "management_handled"; operationId?: string; runtimeEpoch?: string; submissionId?: string }>;
   SubmitDisplay(display: string, input: string): Promise<void>;
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitDisplayToTabWithID(tabID: string, display: string, input: string, submissionID: string): Promise<void>;
@@ -599,6 +602,7 @@ export interface AppBindings extends AttachmentBindings, SessionExportBindings, 
   SanitizeMarkdownSVG(content: string): Promise<MarkdownSVGView>;
   CreateWorkspaceBrowserPreviewForTab(tabID: string, rel: string): Promise<string>;
   CreatePresentedBrowserPreviewForTab(tabID: string, toolCallID: string, path: string): Promise<string>;
+  OpenFileBrowserPreviewForTab?(tabID: string, request: FileBrowserPreviewRequest): Promise<FileBrowserPreviewResult>;
   RevokeWorkspaceBrowserPreview(url: string): Promise<void>;
   RevokeWorkspaceMediaPreview(url: string): Promise<void>;
   ResolveMarkdownImageForTab(tabID: string, source: string): Promise<MarkdownImageView>;
@@ -1459,7 +1463,7 @@ function makeMockApp(): MockAppBindings {
   // escape prompts stay pending and visible.
   let pendingApprovalPreviewPrompt: { id: string; tool: string } | undefined;
   const globalWorkspaceRoot = "~/Library/Application Support/reasonix/global-workspace";
-  let cwd = freshMock ? globalWorkspaceRoot : "~/projects/joyquant-db"; // mutable so PickWorkspace is visible in dev
+  let cwd = freshMock ? globalWorkspaceRoot : browserPlatformOverride() === "windows" ? "C:\\Projects\\joyquant-db" : "~/projects/joyquant-db"; // mutable so PickWorkspace is visible in dev
   let workspaces = freshMock ? [] : ["~/projects/joyquant-db", "~/projects/joyquant-sys", "~/projects/reasonix", "~/projects/blade"];
   let mockEffort = "auto";
   let mockDesktopZoomFactor = 1.0;
@@ -4998,13 +5002,13 @@ function makeMockApp(): MockAppBindings {
       const k = list as "allow" | "ask" | "deny";
       settings.permissions[k] = settings.permissions[k].filter((r) => r !== rule);
     },
-        async ReloadSettings() {},
+        async ReloadSettings() { reloadBrowserPreviewShell(settings.sandbox); },
         async SetShellPreference(prefer: string) {
           const sb = settings.sandbox;
           if (!sb) return;
           sb.shell = prefer;
           sb.resolvedShell = browserPreviewEffectiveShell(prefer);
-          sb.shellReloadRequired = sb.resolvedShell !== sb.effectiveShell;
+          reloadBrowserPreviewShell(sb);
         },
         async InstallShellSupport(id: string): Promise<ShellInstallResult> {
           if (id !== "git-for-windows") throw new Error(`unknown shell support action ${id}`);

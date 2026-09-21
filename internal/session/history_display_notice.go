@@ -27,15 +27,16 @@ func indexDisplayNotice(ctx context.Context, content *sessioncontent.Store, stat
 	if err := json.Unmarshal(payload, &body); err != nil {
 		return err
 	}
-	if body.Type != "display-notice-v1" {
+	if body.Type != "display-notice-v1" && body.Type != "session-maintenance-v1" {
 		return nil
 	}
 	var message provider.Message
 	if err := json.Unmarshal(body.DisplayRecord, &message); err != nil {
 		return err
 	}
-	if message.Role != "notice" || message.ID == "" {
+	validRole := body.Type == "display-notice-v1" && message.Role == "notice" || body.Type == "session-maintenance-v1" && message.Role == "compaction"
+	if !validRole || message.ID == "" {
 		return errors.New("invalid persisted display notice")
 	}
-	return indexOneMessageBody(ctx, content, state, message, event.Sequence, false, body.DisplayRecord)
+	return indexOneMessageBody(ctx, content, state, message, event.Sequence, body.Type == "session-maintenance-v1", body.DisplayRecord)
 }

@@ -8,7 +8,6 @@ import { forkBlockReason, forkReasonKey, type ForkBlockReason, type ForkTargetVi
 import { useT } from "../lib/i18n";
 import { AssistantMessage, UserMessage } from "./Message";
 import { CopyButton } from "./CopyButton";
-import { Markdown } from "./Markdown";
 import { ExtensionCard } from "./ExtensionCard";
 import { Tooltip } from "./Tooltip";
 import { formatMessageClock, TurnTimePanel, TurnUsagePanel } from "./TurnStats";
@@ -16,9 +15,11 @@ import { ReasoningRow } from "./harness-chat/ReasoningRow";
 import { TurnProcessNodeView } from "./harness-chat/TurnProcessNodeView";
 import { ContextInjectionRow } from "./harness-chat/ContextInjectionRow";
 import { ToolRow } from "./harness-chat/ToolRow";
+import { CompactionCard } from "./TranscriptCards";
 import { subjectOf, summarizeFileDiff } from "../lib/tools";
 import { classifyTool, shellDisplayName, toolPresentation } from "../lib/chatToolPresentation";
 import { RESOURCE_BUDGETS } from "../lib/resourceBudgets";
+import type { WireCompletionSummary } from "../lib/types";
 const ChatToolBody = lazy(() => import("./ChatToolBody"));
 const ToolPayload = lazy(() => import("./ChatToolBody").then(module => ({ default: module.ToolPayload })));
 const PresentedFiles = lazy(() => import("./PresentedFiles").then(module => ({ default: module.PresentedFiles })));
@@ -51,6 +52,7 @@ export type ChatActions = {
   /** Absent on surfaces that cannot fork at all; those render no branch entry. */
   fork?: ChatForkAction;
   recover: (id: string) => void;
+  openTurnChanges?: (summary: WireCompletionSummary, initialPath?: string) => void;
 };
 type SeatProps = { source: ChatSource; nodeKey: string; loader: ChatContentLoader; scroll: ChatScrollController; actions: ChatActions; tabId?: string; hostId?: string };
 
@@ -107,7 +109,7 @@ const ChatNodeSeat = memo(function ChatNodeSeat({ source, nodeKey, loader, scrol
     case "tool": body = <ChatTool node={node} loader={loader} actions={actions} scroll={scroll} />; break;
     case "phase": body = <ContextInjectionRow title={t("chat.activity")} summary={node.item.text} beforeToggle={scroll.beforeChange}>{node.item.text}</ContextInjectionRow>; break;
     case "notice": body = <ChatNotice node={node} actions={actions} scroll={scroll} />; break;
-    case "compaction": body = <ChatDisclosure label={t("chat.compaction")}><Markdown text={node.item.summary} /></ChatDisclosure>; break;
+    case "compaction": body = <ChatCompaction node={node} loader={loader} />; break;
     case "extension": body = node.item.card.actions?.length ? <ExtensionCard item={node.item} tabId={tabId} /> :
       <ChatDisclosure label={node.item.card.title || node.item.pluginId}><ExtensionCard item={node.item} tabId={tabId} /></ChatDisclosure>; break;
     case "tail": body = <ChatTurnTail node={node} source={source} actions={actions} loader={loader} tabId={tabId} hostId={hostId} />; break;
@@ -133,6 +135,20 @@ function ChatNotice({ node, actions, scroll }: { node: Extract<ChatNode, { kind:
     summary={item.decisionReceipt ? undefined : item.text.split("\n")[0]} beforeToggle={scroll.beforeChange}>
     <pre>{item.text}{item.detail ? `\n${item.detail}` : ""}{summary ? `\n${JSON.stringify(summary, null, 2)}` : ""}</pre>
   </ContextInjectionRow>;
+}
+
+function ChatCompaction({ node, loader }: { node: Extract<ChatNode, { kind: "compaction" }>; loader: ChatContentLoader }) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  const needsContent = loader.needsFullContent(node.item, "summary");
+  useEffect(() => {
+    if (!needsContent || loadFailed) return;
+    let alive = true;
+    void loader.load(node.item, "summary").catch(() => { if (alive) setLoadFailed(true); });
+    return () => { alive = false; };
+  }, [loader, node.item, needsContent, loadFailed]);
+  return <CompactionCard item={loadFailed && node.item.status === "loading"
+    ? { ...node.item, pending: false, status: "unavailable", errorCode: "record_incomplete" }
+    : node.item} />;
 }
 
 function ChatTool({ node, loader, actions, scroll }: { node: Extract<ChatNode, { kind: "tool" }>; loader: ChatContentLoader; actions: ChatActions; scroll: ChatScrollController }) {
@@ -229,7 +245,8 @@ function ChatTurnTail({ node, source, actions, loader, tabId, hostId }: { node: 
   const answer = useChatNode(source, node.answerKey ?? "");
   const t = useT();
   const hasAnswer = answer?.kind === "assistant" && Boolean(answer.item.text.trim());
-  if (!hasAnswer && !node.presentedFiles.length && !node.modifiedFiles.length) return null;
+  const hasRecordedChanges = Boolean(node.completionSummary?.receipt?.diff?.files.length);
+  if (!hasAnswer && !node.presentedFiles.length && !node.modifiedFiles.length && !hasRecordedChanges) return null;
   const fork = actions.fork;
   // A tail with no answer has no message identity, so it can name no boundary.
   const target = hasAnswer ? fork?.targetFor(node.answerKey) : undefined;
@@ -237,11 +254,12 @@ function ChatTurnTail({ node, source, actions, loader, tabId, hostId }: { node: 
   const reasonText = reason ? t(forkReasonKey(reason)) : "";
   const create = fork?.create;
   return <div className="chat-turn-tail">
+    {(node.modifiedFiles.length > 0 || hasRecordedChanges) && <Suspense fallback={null}>
+      <ModifiedFiles files={node.modifiedFiles} summary={node.completionSummary} tabId={tabId} hostId={hostId}
+        onOpenReview={actions.openTurnChanges} />
+    </Suspense>}
     {node.presentedFiles.length > 0 && <Suspense fallback={null}>
       <PresentedFiles files={node.presentedFiles} tabId={tabId} hostId={hostId} />
-    </Suspense>}
-    {node.modifiedFiles.length > 0 && <Suspense fallback={null}>
-      <ModifiedFiles files={node.modifiedFiles} tabId={tabId} hostId={hostId} />
     </Suspense>}
     {hasAnswer && <div className="chat-actions" data-actions-reveal={node.latest ? "always" : "hover"}><CopyButton getText={async () => {
     const text = answer.item.streaming ? answer.item.text : await loader.load(answer.item, "content");

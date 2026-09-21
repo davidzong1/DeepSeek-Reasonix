@@ -10,6 +10,7 @@ import { startPreviewServer } from "./vite-preview-server.mjs";
 import { readActiveSessionLabel, selectSession } from "./app-page-actions.mjs";
 import { attributeRetention, buildIdentity, evidenceIntegrity, retainedCohorts, screeningBlockers, summarizeHeap } from "./app-memory-evidence.mjs";
 import { completeShard, memoryProtocol, protocolSamples, verifyIdentity, MEMORY_FIXTURES } from "./app-memory-shards.mjs";
+import { domListenerCount, workerListeners } from "./app-memory-workers.mjs";
 
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.env.PLAYWRIGHT_BROWSERS_PATH = !process.env.PLAYWRIGHT_BROWSERS_PATH || process.env.PLAYWRIGHT_BROWSERS_PATH === ".pw-browsers"
@@ -91,7 +92,8 @@ async function forceGc(cdp, page) {
     page.evaluate(() => ({ entries: window.performance.getEntries().length, attachedElements: document.querySelectorAll("*").length })),
   ]);
   if (!lifecycle) throw new Error("App lifecycle probe was not published by the production build");
-  return { heap, dom, lifecycle, performance };
+  const workers = await workerListeners(cdp);
+  return { heap, dom, lifecycle, performance, workers };
 }
 
 async function enterSafety(page) {
@@ -173,9 +175,9 @@ async function runProcess(index) {
     for (let attempt = 1; attempt <= BASELINE_ATTEMPTS; attempt++) {
       await settleFrames(page, 12);
       const reading = await forceGc(cdp, page);
-      baselineReadings.push({ nodes: reading.dom.nodes, jsEventListeners: reading.dom.jsEventListeners });
+      baselineReadings.push({ nodes: reading.dom.nodes, jsEventListeners: reading.dom.jsEventListeners, domListeners: domListenerCount(reading), workers: reading.workers });
       const previous = baselineReadings.at(-2);
-      const stable = previous && previous.nodes === reading.dom.nodes && previous.jsEventListeners === reading.dom.jsEventListeners;
+      const stable = previous && previous.nodes === reading.dom.nodes && previous.domListeners === domListenerCount(reading);
       if (stable || attempt === BASELINE_ATTEMPTS) {
         samples.push({ phase: "baseline", roundTrips: 0, baselineStable: Boolean(stable), baselineReadings, ...reading });
         process.stdout.write(`[app-memory] process=${index} phase=baseline stable=${Boolean(stable)} readings=${JSON.stringify(baselineReadings)}\n`);

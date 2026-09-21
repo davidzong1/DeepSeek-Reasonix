@@ -31,7 +31,7 @@ export class TranscriptSessionFollowerRuntime {
       const read = remote ? app.RemoteTranscriptFollowForTab : app.TranscriptFollowForTab;
       if (!read) return Promise.reject(new Error("Transcript v2 is required. Upgrade Desktop and Serve together."));
       return read(tabId, request);
-    });
+    }, { transport: remote ? "remote" : "local" });
   }
 
   async start(): Promise<void> {
@@ -70,7 +70,7 @@ export class TranscriptSessionFollowerRuntime {
     });
   }
 
-  stop(): void { noteSessionObservation(this.path, { action: "unsubscribe", tabId: this.tabId, generation: this.generation, sequence: this.coverage }); this.generation++; this.confirmationReads.clear(); this.submissionCoverage.clear(); this.releaseContentRecovery?.(); this.releaseContentRecovery = undefined; this.client.stop(); }
+  stop(closeSubscription = true, reason?: "service_stopping"): void { noteSessionObservation(this.path, { action: "unsubscribe", tabId: this.tabId, generation: this.generation, sequence: this.coverage }); this.generation++; this.confirmationReads.clear(); this.submissionCoverage.clear(); this.releaseContentRecovery?.(); this.releaseContentRecovery = undefined; this.client.stop(closeSubscription, reason); }
 
   private observeSubmissions(): void {
     const pending = new Set(this.state()?.localSubmissionOrder ?? []);
@@ -116,7 +116,7 @@ export class TranscriptSessionFollowerRuntime {
     });
   }
 
-  private entry(message: Message | HistoryMessage, outerRecordId?: string): HistoryEntry {
+  private entry(message: Message | HistoryMessage, outerRecordId?: string, snapshotOrder?: number): HistoryEntry {
     // Canonical history addresses every persisted message as m:<messageId>,
     // including tool results. A snapshot may instead carry its projection
     // identity (for example tool:<toolCallId>); that explicit identity is
@@ -131,7 +131,9 @@ export class TranscriptSessionFollowerRuntime {
     const normalized = message.recordId === entryId ? message : { ...message, recordId: entryId };
     let order = this.orders.get(entryId);
     if (order === undefined) {
-      order = this.nextOrder++; this.orders.set(entryId, order);
+      order = snapshotOrder ?? this.nextOrder;
+      this.nextOrder = Math.max(this.nextOrder, order + 1);
+      this.orders.set(entryId, order);
       if (message.role === "user") this.turn++;
       // Only the resident tail needs an order index. Older pages carry their
       // canonical positions and are owned by the bounded transcript store.
@@ -181,7 +183,7 @@ export class TranscriptSessionFollowerRuntime {
     this.nextOrder = Math.max(0, ...entries.map(entry => entry.order + 1));
     const merged = new Map(entries.map(entry => [entry.entryId, entry]));
     for (const record of records) {
-      const entry = this.entry(record.message, record.id);
+      const entry = this.entry(record.message, record.id, record.order);
       // Durable canonical refs remain loadable after a view snapshot expires.
       const canonical = merged.get(entry.entryId);
       if (canonical && !snapshot.activeAttempts.some(attempt => attempt.messageId === record.message.messageId)) continue;
@@ -193,7 +195,7 @@ export class TranscriptSessionFollowerRuntime {
     this.metrics = { entries: all.length, inlineBytes: all.reduce((bytes, entry) => bytes + entry.message.content.length + (entry.message.reasoning?.length ?? 0), 0) };
     const prepared = getTranscriptStore().prepareInstallSlice(this.tabId, this.path, {
       entries: all, nextCursor: page?.olderCursor ?? "", newerCursor: page?.newerCursor ?? "",
-      hasOlder: Boolean(page?.hasOlder), hasNewer: false, totalTurns: this.turn,
+      hasOlder: Boolean(page?.hasOlder), hasNewer: Boolean(page?.hasNewer), totalTurns: this.turn,
       startTurn: Math.min(this.turn, ...all.map(entry => entry.turn)), endTurn: this.turn,
       revision: page?.snapshotSequence ?? snapshot.coveredThroughSeq, revisionKnown: true, digest: page?.generation ?? "", stale: false,
     });

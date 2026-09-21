@@ -18,15 +18,25 @@ type fakeExecutor struct {
 	act        ActResult
 	downloads  []Download
 
-	calls  []string
-	opens  []OpenRequest
-	navs   []NavigateRequest
-	snaps  []SnapshotRequest
-	shots  []ScreenshotRequest
-	acts   []ActRequest
-	dls    []DownloadsRequest
-	closed []string
-	closes []CloseRequest
+	calls    []string
+	opens    []OpenRequest
+	previews []FilePreviewRequest
+	navs     []NavigateRequest
+	snaps    []SnapshotRequest
+	shots    []ScreenshotRequest
+	acts     []ActRequest
+	dls      []DownloadsRequest
+	closed   []string
+	closes   []CloseRequest
+}
+
+func (f *fakeExecutor) PreviewFile(_ context.Context, req FilePreviewRequest) (Tab, error) {
+	f.calls = append(f.calls, "preview")
+	f.previews = append(f.previews, req)
+	if f.err != nil {
+		return Tab{}, f.err
+	}
+	return Tab{ID: "t-preview", URL: "http://127.0.0.1/preview"}, nil
 }
 
 func (f *fakeExecutor) Tabs(context.Context) ([]Tab, error) {

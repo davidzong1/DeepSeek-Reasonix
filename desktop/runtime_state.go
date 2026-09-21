@@ -33,8 +33,21 @@ type RuntimeStateProjection struct {
 }
 
 type desktopRuntimeProjection struct {
-	mu       sync.Mutex
-	snapshot RuntimeStateProjection
+	mu                sync.Mutex
+	snapshot          RuntimeStateProjection
+	bindings          map[localRuntimeBindingKey]localRuntimeBinding
+	publishedEpoch    string
+	publishedRevision uint64
+	events            runtimeProjectionEvents
+}
+
+type localRuntimeUpdate struct {
+	tab        *WorkspaceTab
+	ctrl       control.SessionAPI
+	state      event.RuntimeStateSnapshot
+	generation uint64
+	path       string
+	sessionID  string
 }
 
 type localRuntimeBindingKey struct {
@@ -43,6 +56,7 @@ type localRuntimeBindingKey struct {
 }
 
 type localRuntimeBinding struct {
+	key     localRuntimeBindingKey
 	tab     *WorkspaceTab
 	view    RuntimeSessionState
 	ctrl    control.SessionAPI
@@ -57,7 +71,7 @@ func (a *App) localRuntimeBindingsLocked() map[localRuntimeBindingKey]localRunti
 		if tab == nil {
 			return
 		}
-		bindings[localRuntimeBindingKey{key, open}] = localRuntimeBinding{tab: tab, ctrl: tab.Ctrl,
+		bindings[localRuntimeBindingKey{key, open}] = localRuntimeBinding{key: localRuntimeBindingKey{key, open}, tab: tab, ctrl: tab.Ctrl,
 			view: RuntimeSessionState{TabID: tab.ID, Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot,
 				TopicID: tab.TopicID, SessionID: tab.SessionID, SessionPath: tab.SessionPath, SessionGeneration: tab.SessionGeneration, Open: open, Freshness: "synced"},
 			catalog: catalogRuntimeSnapshot{tabID: tab.ID, scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
@@ -77,13 +91,38 @@ func (a *App) localRuntimeBindingsLocked() map[localRuntimeBindingKey]localRunti
 	return bindings
 }
 
-func (a *App) sampleLocalRuntimeBindings() []localRuntimeBinding {
+func (a *App) sampleLocalRuntimeBindingsWithUpdate(update *localRuntimeUpdate) []localRuntimeBinding {
+	updates := map[*WorkspaceTab]localRuntimeUpdate{}
+	if update != nil {
+		updates[update.tab] = *update
+	}
+	return a.sampleLocalRuntimeBindingsWithUpdates(updates, update != nil)
+}
+
+func (a *App) sampleLocalRuntimeBindingsWithUpdates(updates map[*WorkspaceTab]localRuntimeUpdate, incremental bool) []localRuntimeBinding {
 	for {
 		a.mu.RLock()
 		bindings := a.localRuntimeBindingsLocked()
 		a.mu.RUnlock()
 		states := make(map[localRuntimeBindingKey]event.RuntimeStateSnapshot, len(bindings))
+		r := &a.runtimeStateProjection
+		r.mu.Lock()
+		cached := r.bindings
+		r.mu.Unlock()
 		for key, binding := range bindings {
+			if incremental {
+				update, exists := updates[binding.tab]
+				if exists && sameSessionAPI(binding.ctrl, update.ctrl) &&
+					binding.view.SessionGeneration == update.generation && binding.view.SessionPath == update.path && binding.view.SessionID == update.sessionID &&
+					(update.state.SessionID == "" || update.state.SessionID == binding.view.SessionID) {
+					states[key] = update.state
+					continue
+				}
+				if previous, ok := cached[key]; ok && sameLocalRuntimeBinding(previous, binding) {
+					states[key] = previous.view.State
+					continue
+				}
+			}
 			states[key] = controllerRuntimeState(binding.ctrl)
 		}
 		// A controller can rotate its session, be replaced, or move between
@@ -211,17 +250,35 @@ func catalogStateStatus(state event.RuntimeStateSnapshot, activity string) (stri
 // projection mutex: archive and runtime-state callbacks also enter here, and
 // holding that mutex across a controller read deadlocks a running turn.
 func (a *App) GetRuntimeStateSnapshot() RuntimeStateProjection {
-	bindings := a.sampleLocalRuntimeBindings()
+	return a.runtimeStateSnapshotWithUpdate(nil)
+}
+
+func (a *App) runtimeStateSnapshotWithUpdate(update *localRuntimeUpdate) RuntimeStateProjection {
+	bindings := a.sampleLocalRuntimeBindingsWithUpdate(update)
+	return a.projectRuntimeBindings(bindings)
+}
+
+func (a *App) projectRuntimeBindings(bindings []localRuntimeBinding) RuntimeStateProjection {
 	remote := a.sampleRemoteRuntimeSessions()
 	r := &a.runtimeStateProjection
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	nextBindings := make(map[localRuntimeBindingKey]localRuntimeBinding, len(bindings))
 	next := RuntimeStateProjection{Epoch: r.snapshot.Epoch, Sessions: []RuntimeSessionState{}}
 	catalog := []catalogRuntimeSnapshot{}
 	if next.Epoch == "" {
 		next.Epoch = newSessionRuntimeID("projection")
 	}
 	for _, binding := range bindings {
+		key := binding.key
+		// Another publisher may have committed after this off-lock sample.
+		// Never regress a state within the same binding and runtime epoch.
+		if previous, ok := r.bindings[key]; ok && sameLocalRuntimeBinding(previous, binding) &&
+			previous.view.State.RuntimeEpoch == binding.view.State.RuntimeEpoch &&
+			previous.view.State.Revision > binding.view.State.Revision {
+			binding.view.State = previous.view.State
+		}
+		nextBindings[key] = binding
 		view := binding.view
 		next.Sessions = append(next.Sessions, view)
 		if binding.catalog.topicID != "" {
@@ -230,6 +287,7 @@ func (a *App) GetRuntimeStateSnapshot() RuntimeStateProjection {
 			catalog = append(catalog, entry)
 		}
 	}
+	r.bindings = nextBindings
 	next.Topics = a.projectTreeRuntimeTopics(catalog)
 	next.Sessions = append(next.Sessions, remote...)
 	sort.Slice(next.Sessions, func(i, j int) bool {
@@ -314,8 +372,11 @@ func (s *tabEventSink) RuntimeStateChanged(snapshot event.RuntimeStateSnapshot) 
 	app.mu.RLock()
 	tab := app.tabByEventSinkIDLocked(id)
 	var ctrl control.SessionAPI
+	var generation uint64
+	var path, sessionID string
 	if tab != nil {
 		ctrl = tab.Ctrl
+		generation, path, sessionID = tab.SessionGeneration, tab.SessionPath, tab.SessionID
 	}
 	app.mu.RUnlock()
 	if ctrl == nil {
@@ -325,5 +386,5 @@ func (s *tabEventSink) RuntimeStateChanged(snapshot event.RuntimeStateSnapshot) 
 	if current.RuntimeEpoch != snapshot.RuntimeEpoch || current.Revision > snapshot.Revision {
 		return
 	}
-	app.emitProjectTreeRuntimeChangedWithLegacy()
+	app.queueRuntimeProjection(localRuntimeUpdate{tab: tab, ctrl: ctrl, state: current, generation: generation, path: path, sessionID: sessionID})
 }

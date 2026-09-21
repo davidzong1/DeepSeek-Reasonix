@@ -340,6 +340,10 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey) {
 	// without clearing them a switch to an idle member keeps showing the
 	// outgoing one's status. Replay restores the incoming member's real phase.
 	m.state = tuiIdle
+	// The turn being switched away from is no longer the one this window
+	// services, so the watchdog disarms with the footer (§4.5: a switch never
+	// interrupts a turn).
+	m.noteWatchdogIdle()
 	m.turnPhase = ""
 	m.elapsed = 0
 	m.turnTokens = 0

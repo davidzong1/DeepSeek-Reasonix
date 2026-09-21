@@ -85,7 +85,7 @@ func (a *App) SetActiveTab(tabID string) error {
 			// not remain on an inferred connecting placeholder.
 			a.emitRemoteTabState(tabID, terminalState, terminalErr)
 		}
-		a.saveTabsFromRemote()
+		a.queueCurrentTabLayout()
 		return nil
 	}
 	a.remoteTabMu.Unlock()
@@ -100,7 +100,7 @@ func (a *App) SetActiveTab(tabID string) error {
 		a.remoteTabMu.Lock()
 		a.remoteTabLayout.activeID = ""
 		a.remoteTabMu.Unlock()
-		a.saveTabsFromRemote()
+		a.queueCurrentTabLayout()
 		return nil
 	}
 	a.mu.RLock()
@@ -120,7 +120,7 @@ func (a *App) SetActiveTab(tabID string) error {
 		a.remoteTabMu.Lock()
 		a.remoteTabLayout.activeID = ""
 		a.remoteTabMu.Unlock()
-		a.saveTabsFromRemote()
+		a.queueCurrentTabLayout()
 		return nil
 	}
 	a.activeTabID = tabID
@@ -139,7 +139,7 @@ func (a *App) SetActiveTab(tabID string) error {
 
 	// I/O outside the lock — disk writes can block for hundreds of ms on
 	// Windows when antivirus or the search indexer briefly locks the file.
-	a.saveTabsWrite(dir, entries, activeID, version)
+	a.queueTabLayoutSave(dir, entries, activeID, version)
 	if dormant {
 		a.startTabControllerBuild(next)
 	}

@@ -174,10 +174,11 @@ console.log("\nworkspace turn verification");
 {
   const current = summary(0);
   const historical = { ...summary(9), turnId: "turn-old", receipt: { verdict: "complete", diff: { id: "0:42", turn: 0, coverage: "complete" as const, files: [{ path: "src/old.ts", kind: "modify", added: 2, removed: 1 }], added: 2, removed: 1, reasons: [] }, verifications: [] } };
-  const request = { id: 2, summary: historical, tabId: "tab-a", turnStartAt: 300, currentSummary: current, sessionPath: "/history.json", view: "changes" as const };
+  const request = { id: 2, summary: historical, tabId: "tab-a", turnStartAt: 300, currentSummary: current, sessionPath: "/history.json", view: "changes" as const, initialPath: "src/old.ts" };
   const { dom, root, rerender } = await createHarness({ initialViewMode: "changed", completionSummary: current, verificationRevealRequest: request, sessionPath: "/history.json", turnStartAt: 300 });
   await waitFor("frozen result", () => document.body.textContent?.includes("src/old.ts") === true);
   ok(document.body.textContent?.includes("+2"), "historical counts come from the frozen receipt");
+  ok(document.querySelector<HTMLButtonElement>('.turn-file-list__entry')?.getAttribute("aria-pressed") === "true", "a chat changed-file row opens its selected frozen diff");
   await rerender({ completionSummary: summary(42) });
   ok(document.body.textContent?.includes("src/old.ts"), "a current summary refresh preserves the selected historical result");
   await rerender({ turnStartAt: 301 });

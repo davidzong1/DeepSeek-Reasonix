@@ -74,7 +74,15 @@ func TestRemoteResumeTransportFailureReattachAcceptsCommands(t *testing.T) {
 		{Name: "old", Path: oldPath, Current: true},
 		{Name: "target", Path: targetPath},
 	})
+	events := &eventLog{}
+	a.remoteEventHook = events.add
 	meta := openReadyRemoteTab(t, a, RemoteTabOpenOptions{SessionName: "old", SessionPath: oldPath})
+	statePrefix := "remote-tab:" + meta.ID + ":state "
+	readyPrefix := statePrefix + `{"state":"ready"`
+	waitForRemoteEventCount(t, events, readyPrefix, 1)
+	a.remoteTabMu.Lock()
+	initialGeneration := a.remoteTabs[meta.ID].gen
+	a.remoteTabMu.Unlock()
 	fs.mu.Lock()
 	fs.resumeDropCount = 1
 	fs.sessionsFailCount = 1
@@ -83,12 +91,31 @@ func TestRemoteResumeTransportFailureReattachAcceptsCommands(t *testing.T) {
 	if _, err := a.OpenRemoteProjectTab("box", "~/app", RemoteTabOpenOptions{SessionName: "target", SessionPath: targetPath}); err != nil {
 		t.Fatal(err)
 	}
-	waitForTabState(t, a, meta.ID, "reconnecting")
-	waitForTabState(t, a, meta.ID, "ready")
+	// Reattach has no artificial delay in this fixture. The whole reconnect can
+	// finish between polls, so observe its retained publication sequence, not a
+	// transient state value. Wait for recovery first to exercise a late observer.
+	waitForRemoteEventCount(t, events, readyPrefix, 2)
+	if events.count(statePrefix+`{"state":"reconnecting"`) != 1 {
+		t.Fatalf("expected one published reconnect before recovery: %v", events.recorded())
+	}
+	sawReconnect, sawRecovered := false, false
+	for _, event := range events.recorded() {
+		if strings.HasPrefix(event, statePrefix+`{"state":"reconnecting"`) {
+			sawReconnect = true
+		} else if sawReconnect && strings.HasPrefix(event, readyPrefix) {
+			sawRecovered = true
+		}
+	}
+	if !sawRecovered {
+		t.Fatalf("ready was not published after reconnect: %v", events.recorded())
+	}
 	a.remoteTabMu.Lock()
 	tab := a.remoteTabs[meta.ID]
-	gate, route := tab.routing.rehydratingPath, tab.routing.currentPath
+	gate, route, state, generation := tab.routing.rehydratingPath, tab.routing.currentPath, tab.state, tab.gen
 	a.remoteTabMu.Unlock()
+	if state != "ready" || generation <= initialGeneration {
+		t.Fatalf("recovery state/generation = %q/%d, want ready after generation %d", state, generation, initialGeneration)
+	}
 	if gate != "" {
 		t.Fatalf("recovered tab still gated on %q", gate)
 	}

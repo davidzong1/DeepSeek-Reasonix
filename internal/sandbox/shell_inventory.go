@@ -61,6 +61,8 @@ type shellSnapshot struct {
 	key          string
 	builtAt      time.Time
 	goos         string
+	prefer       string
+	configPath   string
 	lookPath     func(string) (string, error)
 	exists       func(string) bool
 	isWSL        func(string) bool
@@ -165,7 +167,11 @@ func (inv *shellInventory) snapshot(goos, prefer, configPath string) *shellSnaps
 }
 
 func shellInventoryKey(goos, prefer, configPath string) string {
-	return goos + "\x00" + strings.ToLower(strings.TrimSpace(prefer)) + "\x00" + strings.ToLower(filepath.Clean(strings.TrimSpace(configPath)))
+	path := filepath.Clean(strings.TrimSpace(configPath))
+	if goos == "windows" {
+		path = strings.ToLower(path)
+	}
+	return goos + "\x00" + strings.ToLower(strings.TrimSpace(prefer)) + "\x00" + path
 }
 
 // buildShellSnapshot performs one discovery pass. Windows candidate priority:
@@ -173,12 +179,14 @@ func shellInventoryKey(goos, prefer, configPath string) string {
 // resolveShell before any candidate), then bash.exe derived from the installed
 // git.exe / git-bash.exe, then the Git for Windows registry InstallPath, then
 // the standard install roots. Auto selection prefers native PowerShell; this
-// ordering applies when Bash is explicitly requested or no native shell exists.
+// ordering applies when Bash is explicitly requested.
 func buildShellSnapshot(goos, prefer, configPath string) *shellSnapshot {
 	snap := &shellSnapshot{
 		key:          shellInventoryKey(goos, prefer, configPath),
 		builtAt:      time.Now(),
 		goos:         goos,
+		prefer:       prefer,
+		configPath:   configPath,
 		lookPath:     exec.LookPath,
 		exists:       fileExists,
 		isWSL:        isWindowsWSLBash,
@@ -209,8 +217,7 @@ func ShellCapabilitiesForConfig(prefer, configPath string) []ShellCapability {
 }
 
 // ShellCapabilitiesForPath is the legacy path-scoped inventory entry point.
-// Windows keeps the path in the shared snapshot for Git discovery, while the
-// returned Agent runtime list remains limited to native PowerShell.
+// Windows keeps the path in the shared snapshot for Git Bash discovery.
 func ShellCapabilitiesForPath(configPath string) []ShellCapability {
 	return ShellCapabilitiesForConfig("bash", configPath)
 }
@@ -246,8 +253,7 @@ type shellCandidate struct {
 
 // windowsBashCandidateSources lists Git-for-Windows bash.exe candidates in
 // discovery priority order with their sources, deduplicated case-insensitively
-// and with the WSL launcher excluded: the only bash.exe under %SystemRoot% is
-// the WSL bootstrapper, and a native Windows workspace must never be routed
+// and with WSL launchers and execution aliases excluded: a native Windows workspace must never be routed
 // into the Linux VM's /mnt/* view of itself. lookPath and exists are injected
 // so the ordering is testable on any host.
 func windowsBashCandidateSources(prefer, configPath string, lookPath func(string) (string, error), exists func(string) bool) ([]string, map[string]string) {
@@ -373,11 +379,43 @@ func windowsStandardGitRoots() []string {
 	return append(withGitSubdir, atGitRoot...)
 }
 
-// windowsShellCapabilities reports the native runtimes available to the Windows
-// Agent. Git Bash discovery is retained for Git compatibility, but it is not an
-// Agent shell capability now that the Windows provider always exposes pwsh.
+// windowsShellCapabilities reports Git Bash and both native PowerShell runtimes.
+// Bash discovery follows the explicit preference's configured-path, PATH, and
+// install-location order; automatic selection still prefers PowerShell.
 func windowsShellCapabilities(snap *shellSnapshot) []ShellCapability {
-	caps := make([]ShellCapability, 0, 2)
+	caps := make([]ShellCapability, 0, 3)
+	gitBash := ShellCapability{ID: ShellCapabilityGitBash, Variant: "git-for-windows"}
+	acceptCandidate := func(path, source string) bool {
+		if path == "" || !snap.exists(path) || snap.isWSL(path) || !snap.probe(path) {
+			return false
+		}
+		gitBash.Available = true
+		gitBash.Path = path
+		gitBash.Source = source
+		return true
+	}
+	for _, path := range snap.bashCands {
+		if snap.sources[strings.ToLower(path)] == ShellSourceConfig && acceptCandidate(path, ShellSourceConfig) {
+			break
+		}
+	}
+	if !gitBash.Available {
+		if path, err := snap.lookPath("bash"); err == nil {
+			acceptCandidate(path, ShellSourcePath)
+		}
+	}
+	if !gitBash.Available {
+		for _, path := range snap.bashCands {
+			source := snap.sources[strings.ToLower(path)]
+			if source != ShellSourceConfig && acceptCandidate(path, source) {
+				break
+			}
+		}
+	}
+	if !gitBash.Available {
+		gitBash.Reason = "not-installed"
+	}
+	caps = append(caps, gitBash)
 	caps = append(caps, windowsPowerShellCapability(snap, ShellCapabilityPwsh, []string{"pwsh", "pwsh.exe"}, "pwsh"))
 	caps = append(caps, windowsPowerShellCapability(snap, ShellCapabilityPowerShell, []string{"powershell", "powershell.exe"}, "powershell"))
 	return caps
@@ -385,6 +423,19 @@ func windowsShellCapabilities(snap *shellSnapshot) []ShellCapability {
 
 func windowsPowerShellCapability(snap *shellSnapshot, id string, names []string, base string) ShellCapability {
 	cap := ShellCapability{ID: id}
+	prefer := strings.ToLower(strings.TrimSpace(snap.prefer))
+	if prefer == "" || prefer == "auto" {
+		// Auto honors only named native PowerShell paths, just as resolution does.
+		prefer = strings.TrimSuffix(strings.ToLower(pathBase(strings.TrimSpace(snap.configPath))), ".exe")
+	}
+	if prefer == "powershell" || prefer == "pwsh" {
+		p := configuredShellPathForPreference("windows", prefer, snap.configPath, snap.exists, snap.isWSL)
+		sh := Shell{Kind: ShellPowerShell, Path: p}
+		if p != "" && snap.exists(p) && sh.SupportsChaining() == (id == ShellCapabilityPwsh) {
+			cap.Available, cap.Path, cap.Source = true, p, ShellSourceConfig
+			return cap
+		}
+	}
 	for _, p := range snap.psCands {
 		fileBase := strings.ToLower(pathBase(p))
 		fileBase = strings.TrimSuffix(fileBase, ".exe")

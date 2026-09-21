@@ -214,6 +214,11 @@ func TestEmitProjectTreeChangedDoesNotBlockOnRuntimeEventsEmit(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("first project tree runtime emit did not start")
 	}
+	// Unchanged snapshots are intentionally deduplicated. A real binding
+	// change must still publish without waiting for the blocked transport.
+	app.mu.Lock()
+	app.tabs = map[string]*WorkspaceTab{"second": {ID: "second", Scope: "global"}}
+	app.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {

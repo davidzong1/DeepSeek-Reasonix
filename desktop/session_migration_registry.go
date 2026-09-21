@@ -96,7 +96,7 @@ func (a *App) resolveRegisteredMigrationTarget(ctx context.Context, source deskt
 	if err != nil {
 		return "", false, err
 	}
-	return a.resolveDesktopImportTarget(ctx, a.desktopSessionService("").Query(), preferredID, cp.key, digest, path, fingerprint, source.headID)
+	return a.resolveDesktopImportTarget(ctx, a.desktopSessionService("").Query(), preferredID, cp.key, source.mappingKey(path), digest, path, fingerprint, source.headID)
 }
 
 func (a *App) quarantineChangedMigration(ctx context.Context, source desktopMigrationSource, cp desktopMigrationCheckpoint, digest string) (bool, error) {

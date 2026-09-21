@@ -17,7 +17,9 @@ import { Eye, EyeOff, Files } from "lucide-react";
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowRight, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
-import { ShellEnvironmentDetails, ShellInterpreterFields } from "./SettingsShellSupport";
+import { ShellInterpreterFields } from "./SettingsShellSupport";
+import { RuleList } from "./SettingsRuleList";
+import { CopyButton } from "./CopyButton";
 import { CHANNEL_ICONS } from "./channelIcons";
 import { botAccessEntryCount, botAccessReady, botConnectionCredentialSummary, botConnectionLabel, botConnectionScopeLabel, botConnectionSecretEnv, botConnectionSecretPatch, botInstallTargetForConnection, botInstallTargetMatchesConnection, botTargetHint, botTargetLabel, diagnosticMessage, diagnosticReportDetail, firstConnectionRemote, formatInstallTimeLeft, formatInstallUserCode, qqBotAdded, type BotInstallTarget, type BotOfficialInstallTarget } from "./botConnectionSettings";
 import { app, COMPACT_RATIO_MAX_PERCENT, COMPACT_RATIO_MIN_PERCENT, onRuntimeRebuilt, openExternal } from "../lib/bridge";
@@ -6550,100 +6552,13 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
             list={list}
             rules={s.permissions[list]}
             busy={busy}
-            onAdd={async (rule) => { await apply(() => app.AddPermissionRule(list, rule)); }}
+            onAdd={(rule) => apply(() => app.AddPermissionRule(list, rule))}
             onRemove={async (rule) => { await apply(() => app.RemovePermissionRule(list, rule)); }}
           />
         ))}
       </div>
     </SettingsSection>
   );
-}
-
-function RuleList({
-  list,
-  rules,
-  busy,
-  onAdd,
-  onRemove,
-}: {
-  list: string;
-  rules: string[];
-  busy: boolean;
-  onAdd: (rule: string) => Promise<void>;
-  onRemove: (rule: string) => Promise<void>;
-}) {
-  const t = useT();
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const r = draft.trim();
-    if (r) {
-      void onAdd(r);
-      setDraft("");
-    }
-  };
-  return (
-    <div className="set-rules">
-      <div className="set-rules__head">
-        <div className="set-rules__label">{ruleListLabel(list, t)}</div>
-        {ruleListHint(list, t) && <div className="set-rules__hint">{ruleListHint(list, t)}</div>}
-      </div>
-      <div className="set-rules__chips">
-        {rules.length === 0 && <span className="mem-empty">{t("common.none")}</span>}
-        {rules.map((r) => (
-          <span className="set-rule" key={r}>
-            <span className="set-rule__text" title={r}>{r}</span>
-            <Tooltip label={t("common.delete")}>
-              <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)}>
-                ✕
-              </button>
-            </Tooltip>
-          </span>
-        ))}
-      </div>
-      <div className="set-rules__add">
-        <input
-          className="mem-input"
-          placeholder={t("settings.addRule", { list })}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") add();
-          }}
-        />
-        <button className="btn btn--small" disabled={busy || !draft.trim()} onClick={add}>
-          {t("common.add")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ruleListLabel(list: string, t: ReturnType<typeof useT>): string {
-  switch (list) {
-    case "deny":
-      return t("settings.ruleDeny");
-    case "ask":
-      return t("settings.ruleAsk");
-    case "allow":
-      return t("settings.ruleAllow");
-    case "allow_write":
-      return t("settings.ruleAllowWrite");
-    default:
-      return list;
-  }
-}
-
-function ruleListHint(list: string, t: ReturnType<typeof useT>): string {
-  switch (list) {
-    case "deny":
-      return t("settings.ruleDenyHint");
-    case "ask":
-      return t("settings.ruleAskHint");
-    case "allow":
-      return t("settings.ruleAllowHint");
-    default:
-      return "";
-  }
 }
 
 type HookScope = "global" | "project";
@@ -6930,48 +6845,90 @@ function normalizeHookConfig(h: HookConfigView): HookConfigView {
 function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: boolean }) {
   const t = useT();
   const sb = s.sandbox;
-  const [root, setRoot] = useState(sb.workspaceRoot);
+  // A draft belongs to the snapshot it was edited against. A fresh authoritative
+  // root wins immediately; a failed save of the same snapshot retains the draft.
+  const [rootDraft, setRootDraft] = useState<{ base: string; value: string } | null>(null);
+  const root = rootDraft?.base === sb.workspaceRoot ? rootDraft.value : sb.workspaceRoot;
+  const rootSaving = useRef(false);
+  const [saveResult, setSaveResult] = useState<boolean | null>(null);
   const effectiveWriteRoots = asArray(sb.effectiveWriteRoots).filter((path) => String(path).trim());
-  const set = (next: Partial<typeof sb>) =>
-    apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite, next.shell ?? sb.shell));
-  const reloadSession = () => apply(() => app.ReloadSettings());
+  const set = async (next: Partial<typeof sb>) => {
+    const result = await apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite, next.shell ?? sb.shell));
+    setSaveResult(result);
+    return result;
+  };
+  const saveRoot = async () => {
+    if (busy || rootSaving.current || root === sb.workspaceRoot) return;
+    rootSaving.current = true;
+    try {
+      if (await set({ workspaceRoot: root })) {
+        setRootDraft(current => current?.base === sb.workspaceRoot && current.value === root ? null : current);
+      }
+    }
+    finally { rootSaving.current = false; }
+  };
+  const reloadSession = async () => {
+    if (await apply(() => app.ReloadSettings())) { setRootDraft(null); setSaveResult(null); }
+  };
 
   return (
     <SettingsSection
+      className="sandbox-settings"
       title={t("settings.sandboxTitle")}
-      description={t(windows ? "settings.sandboxBoundaryHintWindows" : "settings.sandboxBoundaryHint")}
+      description={t("settings.sandboxSaveScope")}
+      actions={
+        <Tooltip label={t("settings.reloadSessionConfigHint")}>
+          <button type="button" className="btn btn--small" disabled={busy} onClick={() => void reloadSession()}>
+            <RefreshCw size={14} aria-hidden="true" />
+            <span>{t("settings.reloadSessionConfig")}</span>
+          </button>
+        </Tooltip>
+      }
     >
       <ShellInterpreterFields sb={sb} windows={windows} busy={busy} setShell={(prefer) => void apply(() => app.SetShellPreference(prefer))} reloadSession={() => void reloadSession()} />
-      <SettingsField label={t("settings.allowNetwork")} hint={windows ? t("settings.allowNetworkWindowsHint") : undefined}>
+      <SettingsField className="sandbox-network" label={t(windows ? "settings.shellNetworkAccess" : "settings.allowNetwork")}>
+        {windows ? <div className="sandbox-network__status"><span>{t("settings.shellNetworkUnrestricted")}</span><p className="sandbox-group__hint">{t("settings.shellNetworkUnrestrictedHint")}</p></div> :
         <label className="set-check set-check--inline">
-          <input type="checkbox" checked={sb.network} disabled={busy || windows} onChange={(e) => void set({ network: e.target.checked })} />
+          <input type="checkbox" checked={sb.network} disabled={busy} onChange={(e) => void set({ network: e.target.checked })} />
           {t("settings.allowNetwork")}
-        </label>
+        </label>}
       </SettingsField>
+      <div className="sandbox-group sandbox-group--files">
+        <div className="sandbox-group__heading"><h3>{t(windows ? "settings.fileToolWriteScope" : "settings.writeScope")}</h3>
+          <span className="sandbox-save-status" role="status">{busy ? t("settings.sandboxSaving") : saveResult === false ? t("settings.sandboxSaveFailed") : root !== sb.workspaceRoot ? t("settings.models.unsaved") : saveResult === true ? <><CheckCircle2 size={14} aria-hidden="true" />{t("settings.sandboxSaved")}</> : null}</span>
+        </div>
+        <p className="sandbox-group__hint">{t(windows ? "settings.fileToolWriteScopeHint" : "settings.writeScopeHint")}</p>
       <SettingsField label={t("settings.workspaceRoot")}>
+        <div className="sandbox-root-control">
         <input
           className="mem-input set-grow"
           placeholder={t("settings.workspaceDefault")}
+          aria-label={t("settings.workspaceRoot")}
           value={root}
           disabled={busy}
-          onChange={(e) => setRoot(e.target.value)}
-          onBlur={() => root !== sb.workspaceRoot && void set({ workspaceRoot: root })}
+          onChange={(e) => { setRootDraft({ base: sb.workspaceRoot, value: e.target.value }); setSaveResult(null); }}
+          onBlur={() => void saveRoot()}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void saveRoot(); } }}
         />
+          <div className="sandbox-write-roots">
+            <span>{t("settings.effectiveWriteRoots")}</span>
+            {effectiveWriteRoots.length === 0 && <span className="mem-empty">{t("settings.noEffectiveWriteRoots")}</span>}
+            {effectiveWriteRoots.map((path, index) => (
+              <span className="set-rule set-rule--path" key={`${path}-${index}`}>
+                <span>{path}</span><CopyButton text={path} showInlineLabel={false} label={t("settings.copyDirectory")} />
+              </span>
+            ))}
+          </div>
+        </div>
       </SettingsField>
       <RuleList
         list="allow_write"
         rules={sb.allowWrite}
         busy={busy}
-        onAdd={async (d) => { await set({ allowWrite: [...sb.allowWrite, d] }); }}
-        onRemove={async (d) => { await set({ allowWrite: sb.allowWrite.filter((x) => x !== d) }); }}
+        onAdd={(d) => set({ allowWrite: [...sb.allowWrite, d] })}
+        onRemove={(d) => set({ allowWrite: sb.allowWrite.filter((x) => x !== d) })}
       />
-      <ShellEnvironmentDetails
-        sb={sb}
-        windows={windows}
-        busy={busy}
-        effectiveWriteRoots={effectiveWriteRoots}
-        reloadSession={() => void reloadSession()}
-      />
+      </div>
     </SettingsSection>
   );
 }

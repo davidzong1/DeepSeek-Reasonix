@@ -354,7 +354,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         }
       }
     };
-    const offContent = getTranscriptStore().subscribe(tabId, change => dispatch({ type: "history_items_patch", patches: change.patches, expected: change.expected }));
+    const offContent = getTranscriptStore().subscribe(tabId, change => change.projection
+      ? dispatch({ type: "transcript_records", projection: change.projection, confirmedUsers: [] })
+      : dispatch({ type: "history_items_patch", patches: change.patches, expected: change.expected }));
     olderRef.current = async () => {
       if (transcriptRef.current.historyOlderLoading) return "empty";
       dispatch({ type: "history_older_start" });
@@ -362,7 +364,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         const page = await getTranscriptStore().loadOlder(tabId, sessionPath ?? "");
         if (!page || cancelled) return "empty";
         if (page.kind === "reload") { await hydrate(); return "loaded"; }
-        dispatch({ type: "history_prepend", items: page.prependItems, removeIds: page.removeIds,
+        if (transcriptRef.current.transcriptProtocol === 2) dispatch({ type: "transcript_records", projection: page, confirmedUsers: [] });
+        else dispatch({ type: "history_prepend", items: page.prependItems, removeIds: page.removeIds,
           startTurn: page.startTurn, endTurn: page.endTurn, totalTurns: page.totalTurns,
           hasOlder: page.hasOlder, hasNewer: page.hasNewer, revision: page.revision, digest: page.digest });
         return "loaded";
@@ -379,7 +382,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
         const page = await getTranscriptStore().loadNewer(tabId, sessionPath ?? "");
         if (!page || cancelled) { dispatch({ type: "history_newer_error", error: "" }); return "empty"; }
         if (page.kind === "stale") { await hydrate(); return "loaded"; }
-        dispatch({ type: "history_append", items: page.items,
+        if (transcriptRef.current.transcriptProtocol === 2) dispatch({ type: "transcript_records", projection: page, confirmedUsers: [] });
+        else dispatch({ type: "history_append", items: page.items,
           startTurn: page.startTurn, endTurn: page.endTurn, totalTurns: page.totalTurns,
           hasOlder: page.hasOlder, hasNewer: page.hasNewer, revision: page.revision, digest: page.digest });
         return "loaded";

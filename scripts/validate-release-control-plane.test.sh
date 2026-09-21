@@ -30,4 +30,16 @@ for helper in scripts/sign-certum.ps1 scripts/windows-acceptance-environment.ps1
 	cp "$repo_root/$helper" "$fixture/$helper"
 done
 
+# The static fixture has valid helper syntax. Prove that executable-contract
+# failure propagates, rather than merely finding and parsing the test runner.
+cat > "$fixture/scripts/test-release-control-contracts.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'contract-regression-fixture' >&2
+exit 23
+EOF
+status=0
+"$repo_root/scripts/validate-release-control-plane.sh" "$fixture" > "$fixture/contracts.log" 2>&1 || status=$?
+test "$status" = 23
+grep -Fq 'contract-regression-fixture' "$fixture/contracts.log"
+
 echo "release control preflight tests: PASS"

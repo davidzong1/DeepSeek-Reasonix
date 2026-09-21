@@ -44,7 +44,7 @@ func (a *App) sessionOpenBootOptions(
 		EffortOverride:           cloneStringPtr(snap.effort),
 		EffortModel:              snap.model,
 		SharedHost:               sharedHost,
-		BrowserExecutor:          a.browserExecutorForTab(tab),
+		BrowserExecutor:          a.browserExecutorForRuntime(tab.ID, snap.sink),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildInputIdentity, createFrontendArtifact, verifyFrontendArtifact } from "./artifact-identity.mjs";
+import { buildInputIdentity, createFrontendArtifact, frontendProducerAttempt, verifyFrontendArtifact } from "./artifact-identity.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "reasonix-frontend-artifact-"));
@@ -62,6 +62,10 @@ test("consumer retries verify the producer attempt while rebuilt producers advan
   // A consumer may be on run attempt 2 while its successful producer remains
   // on attempt 1. Verification must use the producer output, not consumer state.
   const consumerAttempt = "2";
+  const env = { GITHUB_RUN_ATTEMPT: consumerAttempt, REASONIX_FRONTEND_PRODUCER_ATTEMPT: "1" };
+  assert.equal(verifyFrontendArtifact({ ...options, attempt: frontendProducerAttempt(env) }).workflow.attempt, "1");
+  assert.throws(() => verifyFrontendArtifact({ ...options, attempt: frontendProducerAttempt({ GITHUB_RUN_ATTEMPT: consumerAttempt }) }), /attempt mismatch/);
+  assert.equal(frontendProducerAttempt({}), undefined);
   assert.notEqual(consumerAttempt, firstProducer.attempt);
   assert.equal(verifyFrontendArtifact(firstProducer).workflow.attempt, "1");
   const rebuiltProducer = { ...options, attempt: "2" };

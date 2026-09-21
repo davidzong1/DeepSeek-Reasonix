@@ -3410,20 +3410,6 @@ a[href] {
   user-select: none;
   cursor: progress;
 }
-.transcript-navigation-overlay__spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid color-mix(in srgb, var(--fg) 24%, transparent);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: transcript-navigation-spin 0.8s linear infinite;
-}
-@keyframes transcript-navigation-spin {
-  to { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .transcript-navigation-overlay__spinner { animation: none; }
-}
 .transcript__live-status {
   display: flex;
   align-items: center;
@@ -5200,6 +5186,7 @@ button.reasoning-summary:focus-visible {
 .code-block__wrap {
   position: relative;
 }
+
 
 /* ── line-numbered code viewer ─────────────────────────────────────────── */
 .code--lines {
@@ -10252,71 +10239,6 @@ body > .mermaid-diagram--fullscreen {
   line-height: 1.5;
 }
 
-/* ── highlight.js token theme (mapped to palette) ────────────────────────── */
-.hljs-comment,
-.hljs-quote {
-  color: var(--hl-comment);
-  font-style: italic;
-}
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-literal,
-.hljs-section,
-.hljs-doctag,
-.hljs-type,
-.hljs-name,
-.hljs-strong {
-  color: var(--hl-keyword);
-}
-.hljs-string,
-.hljs-regexp,
-.hljs-attribute,
-.hljs-meta .hljs-string {
-  color: var(--hl-string);
-}
-.hljs-addition {
-  color: var(--add-fg);
-}
-.hljs-deletion {
-  color: var(--del-fg);
-}
-.hljs-number,
-.hljs-symbol,
-.hljs-bullet,
-.hljs-link,
-.hljs-selector-attr,
-.hljs-selector-pseudo {
-  color: var(--hl-number);
-}
-.hljs-title,
-.hljs-title.function_,
-.hljs-section .hljs-title {
-  color: var(--hl-func);
-}
-.hljs-class .hljs-title,
-.hljs-title.class_,
-.hljs-built_in,
-.hljs-attr {
-  color: var(--hl-type);
-}
-.hljs-variable,
-.hljs-template-variable,
-.hljs-property,
-.hljs-params,
-.hljs-selector-id,
-.hljs-selector-class {
-  color: var(--hl-builtin);
-}
-.hljs-meta,
-.hljs-comment .hljs-doctag {
-  color: var(--hl-meta);
-}
-.hljs-emphasis {
-  font-style: italic;
-}
-.hljs-strong {
-  font-weight: 600;
-}
 
 /* ── scrollbars ──────────────────────────────────────────────────────────── */
 * {
@@ -33552,7 +33474,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .md:not(.chat-transcript .md) th,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .md-code,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .copybtn,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .msg-meta__btn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .turn-actions__btn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .rewind__btn,
@@ -33597,11 +33519,11 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Home: interact elements — hover/active states */
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .turn-actions__btn:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .rewind__btn:hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .msg-meta__btn:hover:not(:disabled),
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .msg-meta .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .msg-meta .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .composer-task-mode-trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .modelsw__trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="home"] .app:not(.app--creation) .prompt-action:hover,
@@ -33678,7 +33600,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .md:not(.chat-transcript .md) th,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .md-code,
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .copybtn,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .msg-meta__btn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .turn-actions__btn,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .rewind__btn,
@@ -33722,11 +33644,11 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Task: interact elements — hover/active states */
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .turn-actions__btn:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .rewind__btn:hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .msg-meta__btn:hover:not(:disabled),
-:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .msg-meta .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .msg-meta .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .composer-task-mode-trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .modelsw__trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"][data-theme-scene="task"] .app:not(.app--creation) .prompt-action:hover,
@@ -33801,7 +33723,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .mermaid-diagram,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .md:not(.chat-transcript .md) th,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .md-code,
-:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .copybtn,
+:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy),
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .msg-meta__btn,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .turn-actions__btn,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .rewind__btn,
@@ -33846,11 +33768,11 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Fallback: interact elements — hover/active states */
-:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .turn-actions__btn:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .rewind__btn:hover,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .msg-meta__btn:hover:not(:disabled),
-:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .msg-meta .copybtn:hover,
+:root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .msg-meta .copybtn:not(.code-block__header-copy):hover,
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .composer-task-mode-trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .modelsw__trigger:hover:not(:disabled),
 :root[data-theme-pack][data-theme-has-bg="true"] .app:not(.app--creation) .prompt-action:hover,
@@ -36646,6 +36568,23 @@ body > .mermaid-diagram--fullscreen {
   font-size: var(--text-sm);
 }
 .session-recovery--loading { color: var(--fg-dim); background: var(--chat-bg); }
+.session-loading-indicator {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: var(--z-inline-sticky);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 32px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--chat-bg, var(--bg));
+  color: var(--fg-dim);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+.session-loading-indicator > svg { flex-shrink: 0; }
 .session-recovery-placeholder {
   display: flex;
   flex: 1;
@@ -36664,6 +36603,7 @@ body > .mermaid-diagram--fullscreen {
   .session-recovery__spinner { animation: none; }
 }
 .remote-surface {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -37539,7 +37479,7 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
 }
 
 
-.workbench-dock__tab-add {
+.workbench-dock__tab-button {
   --reasonix-draggable: no-drag;
   display: inline-flex;
   align-items: center;
@@ -37554,13 +37494,13 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
   cursor: pointer;
   padding: 0;
   /* Hug the tab strip: the tools row's 8px gap is cancelled down to a 4px
-     breathing room. Never shrinks, so when the strip compresses the button
+     breathing room. Never shrinks, so when the strip compresses each action
      stays visible and ends up pinned to the right edge. */
   margin-left: -4px;
 }
 
 
-.workbench-dock__tab-add:hover {
+.workbench-dock__tab-button:hover {
   /* Match the right-dock tab hover fill. */
   background: color-mix(in srgb, var(--fg) 5%, var(--chat-bg));
   color: var(--fg-dim);
@@ -37664,11 +37604,10 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
 }
 
 
-/* The + add button is a sibling of the strip, so the base 24px rule doesn't
-   follow this skin's taller tabs; sync its hit area / hover fill height so
-   it reads as one more tab. Width stays equal to height so the button
-   remains a rounded square. */
-.workbench-dock__tab-add {
+/* The tab actions are siblings of the strip, so the base 24px rule doesn't
+   follow this skin's taller tabs; sync their hit area / hover fill height.
+   Width stays equal to height so each action remains a rounded square. */
+.workbench-dock__tab-button {
   width: 28px;
   height: 28px;
 }
@@ -37741,10 +37680,9 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
 }
 
 
-:root[data-theme-style] .workbench-dock__tab-add {
-  /* Sync with the theme-style tab height (27px) so the + button's hit area
-     and hover fill line up with the tabs it sits beside; equal width keeps
-     it a rounded square. */
+:root[data-theme-style] .workbench-dock__tab-button {
+  /* Sync with the theme-style tab height (27px) so the actions' hit areas
+     and hover fills line up with the tabs; equal width keeps them square. */
   width: 27px;
   height: 27px;
 }

@@ -302,9 +302,18 @@ func (buffer *Buffer) applyToolResult(e event.Event) {
 	if callID != "" {
 		for _, row := range buffer.messages {
 			if row.message.Role == "tool" && row.message.ToolCallID == callID {
-				result.RecordID = row.message.RecordID
-				result.Source, result.TurnID = row.message.Source, row.message.TurnID
-				row.message = result
+				// ToolResult is a completion delta, not a replacement canonical
+				// message. Preserve formal identity and update only event-owned
+				// fields; e.MessageID may identify the owning assistant message.
+				row.message.Content = display
+				row.message.ToolResultError = errPreview
+				row.message.Pending = false
+				if toolName != "" {
+					row.message.ToolName = toolName
+				}
+				if len(e.Tool.PresentedFiles) > 0 {
+					row.message.PresentedFiles = append([]provider.PresentedFile(nil), e.Tool.PresentedFiles...)
+				}
 				return
 			}
 		}

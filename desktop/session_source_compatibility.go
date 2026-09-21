@@ -233,6 +233,15 @@ func (a *App) prepareDesktopImport(ctx context.Context, source desktopMigrationS
 		if err != nil {
 			return "", err
 		}
+		if source.versionFingerprint != "" {
+			// Older builds used the ordinary import ID for versioned mappings.
+			// Resume that exact reservation when present, but do not collide
+			// with an ordinary import of the same source fingerprint.
+			previous, exists := state.PendingOperations[opID]
+			if !exists || previous.Mapping == nil || previous.Mapping.SourceKey != source.mappingKey(path) {
+				opID = "review-" + opID
+			}
+		}
 		lifecycle := workspacestate.Active
 		kind := "import"
 		if source.deferArchive {
@@ -256,7 +265,7 @@ func (a *App) prepareDesktopImport(ctx context.Context, source desktopMigrationS
 	return opID, a.workspaceRegistry().ReserveOperationTargets(ctx, opID, []string{targetID}, mapping)
 }
 
-func (a *App) resolveDesktopImportTarget(ctx context.Context, query *session.Query, preferredID, key, contentDigest, path, fingerprint string, heads ...string) (string, bool, error) {
+func (a *App) resolveDesktopImportTarget(ctx context.Context, query *session.Query, preferredID, key, mappingKey, contentDigest, path, fingerprint string, heads ...string) (string, bool, error) {
 	headID := ""
 	if len(heads) > 0 {
 		headID = heads[0]
@@ -266,7 +275,9 @@ func (a *App) resolveDesktopImportTarget(ctx context.Context, query *session.Que
 		return "", false, err
 	}
 	for _, op := range state.PendingOperations {
-		if op.Mapping == nil || op.Mapping.SourceKey != desktopSourceKey(path, headID) || op.Mapping.Fingerprint != fingerprint || len(op.SessionIDs) != 1 {
+		// Explicit source versions reserve their own mapping key. Recover the
+		// exact reservation even when the imported manifest has no provenance.
+		if op.Mapping == nil || op.Mapping.SourceKey != mappingKey || op.Mapping.Fingerprint != fingerprint || len(op.SessionIDs) != 1 {
 			continue
 		}
 		id := op.SessionIDs[0]

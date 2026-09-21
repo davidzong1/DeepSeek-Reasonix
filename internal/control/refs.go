@@ -23,11 +23,6 @@ import (
 	"reasonix/internal/secrets"
 )
 
-// maxFileRefBytes caps how much of an @-referenced file is injected into a
-// message, so "@somehuge.log" can't blow the context window. The head is kept
-// and the rest noted as truncated.
-const maxFileRefBytes = 64 * 1024
-
 const pdfExtractTimeout = 8 * time.Second
 const pdfExtractWaitDelay = 1 * time.Second
 
@@ -771,6 +766,7 @@ func cleanAbsPath(path string) string {
 	return filepath.Clean(abs)
 }
 
+// appendRefBlock writes one resolved reference block into b.
 func appendRefBlock(b *strings.Builder, tag, attr, body string) {
 	if b.Len() > 0 {
 		b.WriteString("\n\n")
@@ -863,7 +859,7 @@ func readFileRefWithVision(path, baseDir string, vision bool) (content string, i
 		return fmt.Sprintf("[binary file %s, %d bytes — not shown]", displayPath, info.Size()), false, nil
 	}
 	if n > maxFileRefBytes {
-		return string(data[:maxFileRefBytes]) + fmt.Sprintf("\n…[truncated; file is %d bytes]…", info.Size()), false, nil
+		return oversizedFileRefNote(displayPath, string(data[:refPreviewBytes]), info.Size()), false, nil
 	}
 	return string(data), false, nil
 }
@@ -942,7 +938,7 @@ func readFileRefUnscoped(path string, vision bool) (content string, isDir bool, 
 		return fmt.Sprintf("[binary file %s, %d bytes — not shown]", path, info.Size()), false, nil
 	}
 	if n > maxFileRefBytes {
-		return string(data[:maxFileRefBytes]) + fmt.Sprintf("\n…[truncated; file is %d bytes]…", info.Size()), false, nil
+		return oversizedFileRefNote(path, string(data[:refPreviewBytes]), info.Size()), false, nil
 	}
 	return string(data), false, nil
 }

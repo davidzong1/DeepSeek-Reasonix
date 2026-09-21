@@ -45,6 +45,10 @@ type sessionRuntime struct {
 	// and any unconfirmed commit belong to the current conversation and reset.
 	path            string // bound transcript path for projection sidecars
 	checkpointState string // none|restored|pending|applied; runtime-only
+	// reasoningLanguageInjected is the concrete reasoning-language block this
+	// conversation already carries ("zh", "en", or "" for none); see
+	// reasoning_language.go. The block is a session constant.
+	reasoningLanguageInjected string
 	// pendingModelContextCommit is an event-log commit that was accepted but
 	// whose durability barrier did not complete. The exact payload is retained
 	// so the next model boundary can retry idempotently before any provider work.
@@ -71,6 +75,9 @@ type sessionRuntime struct {
 func (r *sessionRuntime) reset(s *Session) {
 	r.mu.Lock()
 	r.conversation = s
+	// The new conversation carries no reasoning-language block yet, so the next
+	// turn injects one again.
+	r.reasoningLanguageInjected = ""
 	r.mu.Unlock()
 	r.cacheHit.Store(0)
 	r.cacheMiss.Store(0)

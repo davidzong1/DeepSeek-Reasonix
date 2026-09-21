@@ -104,6 +104,7 @@ jobs:
           HAS_MINISIGN: ${{ secrets.MINISIGN_PRIVATE_KEY != '' && secrets.MINISIGN_PASSWORD != '' }}
         run: |
           bash scripts/validate-release-control-plane.sh
+          bash scripts/check-release-public-access.sh
           if [ "$OFFICIAL_REPOSITORY" = true ]; then
             for configured in "$HAS_APPLE_SIGNING" "$HAS_CERTUM_SIGNING" "$HAS_MINISIGN"; do
               [ "$configured" = true ] || { echo "::error::release signing configuration is incomplete"; exit 1; }
@@ -236,6 +237,11 @@ jobs:
     name: build, sign, and accept Desktop candidate
     needs: resolve
     if: needs.resolve.outputs.reuse != 'true'
+    # GitHub validates every nested job before evaluating its condition, even
+    # though candidate preparation skips the publisher and mirror jobs.
+    permissions:
+      actions: write
+      contents: write
     uses: ./.github/workflows/release-desktop.yml
     with:
       channel: stable

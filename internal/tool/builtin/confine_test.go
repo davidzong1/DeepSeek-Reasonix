@@ -57,6 +57,27 @@ func TestWindowsEnabledToolShellAliasesSelectOnlyPwsh(t *testing.T) {
 	}
 }
 
+func TestGitBashToolBindingPreservesBashDialectAndStableSchema(t *testing.T) {
+	workspace := Workspace{Bash: sandbox.Spec{
+		Mode:  "off",
+		Shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: `C:\Program Files\Git\bin\bash.exe`},
+	}}
+	baseline := ConfineBash(workspace.Bash, SessionDataGuard{})
+	for _, configured := range []string{"bash", "Bash", "PowerShell", "powershell", "pwsh"} {
+		tools := workspace.Tools(configured)
+		if len(tools) != 1 || tools[0].Name() != "bash" {
+			t.Fatalf("enabled %q produced %#v; want the bound Bash tool", configured, tools)
+		}
+		if tools[0].Description() != baseline.Description() || string(tools[0].Schema()) != string(baseline.Schema()) {
+			t.Fatalf("shell alias %q changed provider-visible Bash schema", configured)
+		}
+		bound := tools[0].(bash)
+		if bound.resolved() != workspace.Bash.Shell || strings.Contains(bound.Description(), "PowerShell command") {
+			t.Fatalf("Git Bash binding lost its dialect: %+v", bound)
+		}
+	}
+}
+
 func isolateBuiltinTestUserState(t *testing.T) string {
 	t.Helper()
 	cleanup, err := testenv.IsolateUserState()

@@ -89,7 +89,3 @@ current round; natural-language chat text is not treated as a submission.
 - After the report is accepted, remain available for a targeted follow-up; do
   not silently broaden the original scope.
 
-## Addition
-
-After completing the subtask assigned to you by the `leader`, use the `/compact` 
-command to compress the context to avoid redundancy of historical information.

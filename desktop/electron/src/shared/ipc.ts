@@ -8,6 +8,7 @@ export const IPC = {
   captureRendererProfile: "reasonix:native:capture-renderer-profile",
   cancelRendererProfile: "reasonix:native:cancel-renderer-profile",
   exportHeapSnapshot: "reasonix:native:export-heap-snapshot",
+  rendererDiagnostic: "reasonix:native:renderer-diagnostic",
   openExternal: "reasonix:native:open-external",
   clipboardWrite: "reasonix:native:clipboard-write",
   clipboardRead: "reasonix:native:clipboard-read",
@@ -45,7 +46,7 @@ export const IPC = {
   browserTakeover: "reasonix:browser:takeover",
 } as const;
 
-export type ServicePhase = "starting" | "ready" | "restarting" | "failed" | "exited";
+export type ServicePhase = "starting" | "ready" | "restarting" | "stopping" | "failed" | "exited";
 
 export interface ServiceState {
   phase: ServicePhase;

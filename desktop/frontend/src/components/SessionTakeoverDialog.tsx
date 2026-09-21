@@ -139,6 +139,10 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
   const preparation = useSyncExternalStore(subscribeHistoricalPreparation, historicalPreparationSnapshot);
   const [update, setUpdate] = useState<HistoricalSourceUpdateView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [updateError, setUpdateError] = useState("");
+  const updateOperation = useRef(0);
+  const [cancellingOperationId, setCancellingOperationId] = useState("");
+  const cancellingOperationRef = useRef("");
   const activeHostId = activeRef?.hostId ?? "";
   const activeSessionId = activeRef?.sessionId ?? "";
   const activeKey = activeSessionId ? `${activeHostId}:${activeSessionId}` : "";
@@ -149,7 +153,10 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
 
   useEffect(() => {
     let current = true;
+    updateOperation.current++;
     setUpdate(null);
+    setUpdateError("");
+    setBusy(false);
     if (!activeSessionId || activeHostId !== "local" || !app.CheckHistoricalSourceUpdate) return () => { current = false; };
     const ref = { hostId: activeHostId, sessionId: activeSessionId };
     const run = async () => {
@@ -175,11 +182,13 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
     setUpdate(null);
   };
   const importUpdate = async () => {
-    if (!update?.source || !update.version || !app.PrepareHistoricalSourceVersion || !app.GetSessionPreparation) return;
+    if (busy || !update?.source || !update.version || !app.PrepareHistoricalSourceVersion || !app.GetSessionPreparation) return;
     const expectedActive = activeKey;
+    const operation = ++updateOperation.current;
     const navigationCurrent = captureNavigation?.() ?? (() => activeKeyRef.current === expectedActive);
-    const current = () => mounted.current && navigationCurrent();
+    const current = () => mounted.current && operation === updateOperation.current && activeKeyRef.current === expectedActive && navigationCurrent();
     setBusy(true);
+    setUpdateError("");
     try {
       let view: SessionPreparationView = await app.PrepareHistoricalSourceVersion(update.source, update.version);
       while (current() && !terminalPreparation.has(view.status)) {
@@ -187,16 +196,30 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
         if (!current()) return;
         view = await app.GetSessionPreparation(view.operationId);
       }
-      if (view.status === "ready" && view.target && current()) await navigate({ kind: "canonical-session", ref: view.target });
-    } catch { /* Keep the update available for an explicit retry. */ }
-    finally { if (mounted.current) setBusy(false); }
+      if (!current()) return;
+      if (view.status === "ready" && view.target) {
+        await navigate({ kind: "canonical-session", ref: view.target });
+      } else {
+        setUpdateError(m(view.errorCode === "source_busy" ? "historicalSourceBusy" : "historicalImportFailed"));
+      }
+    } catch {
+      if (current()) setUpdateError(m("historicalImportFailed"));
+    }
+    finally { if (mounted.current && operation === updateOperation.current) setBusy(false); }
   };
   const cancelPreparation = async () => {
-    if (!preparation || !app.CancelSessionPreparation) return;
+    if (!preparation || !app.CancelSessionPreparation || cancellingOperationRef.current === preparation.operationId) return;
+    const operationId = preparation.operationId;
+    cancellingOperationRef.current = operationId;
+    setCancellingOperationId(operationId);
     try {
-      const view = await app.CancelSessionPreparation(preparation.operationId);
+      const view = await app.CancelSessionPreparation(operationId);
       if (mounted.current) reconcileHistoricalPreparation(preparation, view);
     } catch { /* The preparation poll remains the authority after a failed cancellation request. */ }
+    finally {
+      if (cancellingOperationRef.current === operationId) cancellingOperationRef.current = "";
+      if (mounted.current) setCancellingOperationId(current => current === operationId ? "" : current);
+    }
   };
 
   if (preparation) {
@@ -205,7 +228,7 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
       <span className="banner__msg">{m("historicalImporting")}: {preparation.session.title || preparation.session.topicId || m("historicalTitle")}</span>
       <span className="banner__hint">{m(preparation.status === "queued" ? "historicalQueued" : preparation.status === "preparing" ? "historicalImporting" : "historicalImportFailed")}</span>
       <span className="banner__spacer" />
-      {waiting && <button type="button" className="btn btn--small" onClick={() => void cancelPreparation()}>{t("common.cancel")}</button>}
+      {waiting && <button type="button" className="btn btn--small" disabled={cancellingOperationId === preparation.operationId} onClick={() => void cancelPreparation()}>{t("common.cancel")}</button>}
       {!waiting && preparation.retryable && <button type="button" className="btn btn--small" onClick={() => void navigate({ kind: "resume-session", session: preparation.session })}>{t("common.retry")}</button>}
     </div>;
   }
@@ -219,8 +242,9 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
     } })}>{m("historicalImportOpen")}</button>
   </div>;
   if (!update) return null;
-  return <div className="banner banner--warning banner--actionable" role="status">
-    <span className="banner__msg">{m("historicalTitle")} · {m("historicalAvailable")}</span>
+  return <div className={`banner ${updateError ? "banner--error" : "banner--warning"} banner--actionable`} role={updateError ? "alert" : "status"}>
+    <span className="banner__msg">{m("historicalSourceUpdated")}</span>
+    {(updateError || busy) && <span className="banner__hint">{updateError || m("historicalImporting")}</span>}
     <span className="banner__spacer" />
     <button type="button" className="btn btn--small" disabled={busy} onClick={() => void importUpdate()}>{m("historicalImportOpen")} · {m("branch")}</button>
     <button type="button" className="btn btn--small" disabled={busy} onClick={dismissUpdate}>{t("updater.dismiss")}</button>

@@ -25,6 +25,23 @@ type PendingInteraction struct {
 	RuntimeEpoch string `json:"runtimeEpoch"`
 }
 
+// MaintenanceState is the currently active controller-owned maintenance job.
+// It is absent for ordinary turns and idle sessions.
+type MaintenanceState struct {
+	OperationID       string `json:"operationId"`
+	OperationRevision uint64 `json:"operationRevision,omitempty"`
+	RuntimeEpoch      string `json:"runtimeEpoch,omitempty"`
+	Kind              string `json:"kind"`
+	Activity          string `json:"activity"`
+	Status            string `json:"status,omitempty"`
+	ErrorCode         string `json:"errorCode,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	Applied           bool   `json:"applied,omitempty"`
+	InputTokens       int    `json:"inputTokens,omitempty"`
+	ResultTokens      int    `json:"resultTokens,omitempty"`
+	Messages          int    `json:"messages,omitempty"`
+}
+
 // RuntimeStateSnapshot is a host-only, replaceable observation. It is never a
 // transcript or durable turn record. Running retains the legacy admission gate.
 type RuntimeStateSnapshot struct {
@@ -57,6 +74,7 @@ type RuntimeStateSnapshot struct {
 	Recovery         *RecoveryStatus      `json:"recovery,omitempty"`
 	Goal             *goaldomain.View     `json:"goal,omitempty"`
 	GoalError        string               `json:"goalError,omitempty"`
+	Maintenance      *MaintenanceState    `json:"maintenance,omitempty"`
 }
 
 func (s RuntimeStateSnapshot) ActiveWork() bool {

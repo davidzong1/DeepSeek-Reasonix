@@ -267,6 +267,17 @@ type inboxSteerProvider struct {
 
 func (p *inboxSteerProvider) Name() string { return "inbox-steer" }
 
+func (p *inboxSteerProvider) awaitStarted(t *testing.T, c *Controller) {
+	t.Helper()
+	// Admission checkpoints use real durable I/O. These tests assert steer
+	// ordering and exactly-once consumption, not a one-second startup SLA.
+	select {
+	case <-p.started:
+	case <-time.After(inboxDispatchTestTimeout):
+		failInboxDispatchWait(t, c, "initial steer provider turn")
+	}
+}
+
 func (p *inboxSteerProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.requests = append(p.requests, req)
 	ch := make(chan provider.Chunk, 2)
@@ -302,13 +313,12 @@ func TestThirtySteersApplyAndAckExactlyOnce(t *testing.T) {
 		SessionDir:  dir,
 		SessionPath: filepath.Join(dir, "s.jsonl"),
 	})
-	defer c.autosaveWG.Wait()
+	t.Cleanup(func() {
+		c.Close()
+		c.autosaveWG.Wait()
+	})
 	c.Submit("initial turn")
-	select {
-	case <-prov.started:
-	case <-time.After(time.Second):
-		t.Fatal("initial provider turn did not start")
-	}
+	prov.awaitStarted(t, c)
 
 	const steerCount = 30
 	for i := range steerCount {

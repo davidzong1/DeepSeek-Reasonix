@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -191,6 +192,59 @@ func TestSessionExportRejectsOldRemoteBeforeSaveDialog(t *testing.T) {
 	}
 	if len(host.callNames()) != 0 {
 		t.Fatal("opened save dialog for unsupported peer")
+	}
+}
+
+func TestRemoteSessionExportPinsExplicitIdentityAcrossTabSwitch(t *testing.T) {
+	const sourceID = "source-a"
+	var requests []string
+	app, tab := remoteRuntimeTestApp(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Query().Get("sessionId"); got != sourceID {
+			t.Fatalf("%s sessionId = %q, want %q", req.URL.Path, got, sourceID)
+		}
+		if got := req.Header.Get(expectedSessionIDHeader); got != sourceID {
+			t.Fatalf("%s expected session = %q, want %q", req.URL.Path, got, sourceID)
+		}
+		requests = append(requests, req.URL.Path)
+		switch req.URL.Path {
+		case "/session-export/snapshot":
+			snapshot := session.ExportSnapshot{Ref: session.SessionRef{HostID: "fixture-host", SessionID: sourceID}, StorageGeneration: "generation-a", SnapshotSequence: 1, AcceptedThrough: 1, DurableThrough: 1, Title: "Source A"}
+			return remoteRuntimeTestResponse(req, http.StatusOK, remoteRuntimeTestJSON(t, snapshot)), nil
+		case "/session-export/document":
+			response := remoteRuntimeTestResponse(req, http.StatusOK, `[{"id":"SOURCE-A"}]`)
+			response.Header.Set("X-Reasonix-Export-Records", "1")
+			return response, nil
+		case "/session-export/validate":
+			return remoteRuntimeTestResponse(req, http.StatusNoContent, ""), nil
+		default:
+			t.Fatalf("unexpected remote export request %s", req.URL)
+			return nil, nil
+		}
+	})})
+	tab.capabilities["session-export-v1"] = true
+	tab.routing.currentPath = remoteSessionIDRoutePrefix + sourceID
+	tab.session.path = tab.routing.currentPath
+	path := filepath.Join(t.TempDir(), "remote.json")
+	app.setNativeHost(&recordingNativeHost{dialogPath: path, onCall: func(name string) {
+		if strings.HasPrefix(name, "SaveFileDialog:") {
+			tab.routing.currentPath = remoteSessionIDRoutePrefix + "source-b"
+		}
+	}})
+	ref := session.SessionRef{HostID: "fixture-host", SessionID: sourceID}
+	handle, err := app.BeginSessionExportForTarget(SessionSelector{Ref: &ref}, tab.id, "json", "Source A", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = app.FinishSessionExport(handle.ExportID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte("SOURCE-A")) {
+		t.Fatalf("published remote export = %s err=%v", data, err)
+	}
+	want := []string{"/session-export/snapshot", "/session-export/validate", "/session-export/document", "/session-export/validate"}
+	if !slices.Equal(requests, want) {
+		t.Fatalf("remote requests = %v, want %v", requests, want)
 	}
 }
 

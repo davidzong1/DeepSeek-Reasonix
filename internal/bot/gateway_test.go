@@ -155,7 +155,7 @@ func (f *fakeReactionAdapter) cleanupMessages() []string {
 }
 
 type queueTestController struct {
-	botController
+	stubBotController
 	mu          sync.Mutex
 	steers      []string
 	rejectSteer bool
@@ -200,7 +200,7 @@ func (c *queueTestController) wasCanceled() bool {
 }
 
 type rotatingBotController struct {
-	botController
+	stubBotController
 	path     string
 	newPath  string
 	newCalls int
@@ -217,7 +217,7 @@ func (c *rotatingBotController) SessionPath() string { return c.path }
 func (c *rotatingBotController) Close()              { c.closed = true }
 
 type runtimeStatusBotController struct {
-	botController
+	stubBotController
 	status        control.RuntimeStatus
 	workspaceRoot string
 	sessionPath   string
@@ -230,7 +230,7 @@ func (c *runtimeStatusBotController) SessionPath() string                  { ret
 func (c *runtimeStatusBotController) Close()                               { c.closed = true }
 
 type blockingApprovalController struct {
-	botController
+	stubBotController
 	emit     func(event.Event)
 	emitted  chan struct{}
 	approved chan struct{}
@@ -255,7 +255,7 @@ func (c *blockingApprovalController) Approve(id string, allow, session, persist 
 }
 
 type blockingAskController struct {
-	botController
+	stubBotController
 	emit     func(event.Event)
 	emitted  chan struct{}
 	answered chan []event.AskAnswer
@@ -2556,7 +2556,7 @@ func TestDegradedMappingStateStaysStable(t *testing.T) {
 	}
 }
 
-type stubPathController struct{ botController }
+type stubPathController struct{ stubBotController }
 
 func (stubPathController) SessionPath() string   { return "" }
 func (stubPathController) WorkspaceRoot() string { return "" }

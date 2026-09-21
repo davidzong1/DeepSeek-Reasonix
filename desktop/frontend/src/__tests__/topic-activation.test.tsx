@@ -96,6 +96,8 @@ function metaFor(tab: TabMeta, overrides: Partial<Meta> = {}): Meta {
     workspaceName: tab.workspaceName,
     workspacePath: tab.workspacePath,
     sessionPath: tab.sessionPath,
+    session: tab.session,
+    sessionGeneration: tab.sessionGeneration,
     gitBranch: tab.gitBranch,
     autoApproveTools: false,
     bypass: false,
@@ -145,6 +147,7 @@ const requestIdByTab = new Map<string, string>();
 // When true, the mock emits starting+ready synchronously BEFORE returning the
 // ticket (exercises the terminal-event stash path).
 let eagerActivationEvents = false;
+let beforeActivationReturn: (() => Promise<void>) | undefined;
 let failedHistoryTabId = "";
 let historyRequests = 0;
 let historyGate: { tabId: string; promise: Promise<void> } | undefined;
@@ -197,6 +200,7 @@ const desktopStub = installDesktopHostStub(({
         backendActiveId = target.id;
         const requestId = req.requestId || `mock-activation-${target.id}`;
         requestIdByTab.set(target.id, requestId);
+        await beforeActivationReturn?.();
         if (eagerActivationEvents) {
           emitActivation({ requestId, tabId: target.id, phase: "starting" });
           emitActivation({ requestId, tabId: target.id, phase: "ready" });
@@ -477,6 +481,34 @@ eq(controller?.state.ask?.id, "ask-tab-ask", "transient Ask history retry preser
 await act(async () => {
   root.unmount();
 });
+
+// A restored legacy surface reuses its tab ID when preparation publishes a
+// canonical identity. Exercise both terminal/ticket orders after a failed
+// startup baseline, including passive agent-ready arriving before the ticket.
+for (const eager of [false, true]) {
+  const restored = tabMeta(`restored-${eager}`, { ready: false, sessionPath: "C:\\fixture\\legacy.jsonl" });
+  tabsById.clear();
+  tabsById.set(restored.id, restored);
+  backendActiveId = restored.id;
+  failedHistoryTabId = restored.id;
+  const restoredRoot = createRoot(rootEl);
+  await act(async () => { restoredRoot.render(<Probe />); await flushPromises(); });
+  await waitFor("restored startup baseline fails", () => controller?.activeTabId === restored.id && !!controller.state.hydrateError);
+  tabsById.set(restored.id, { ...restored, ready: true, sessionPath: "", session: { hostId: "local", sessionId: `canonical-${eager}` }, sessionGeneration: 1 });
+  failedHistoryTabId = "";
+  eagerActivationEvents = eager;
+  beforeActivationReturn = async () => { desktopStub.emit("agent:ready", restored.id); await flushPromises(); };
+  await act(async () => {
+    await controller?.activateTopic(restored.scope, restored.workspaceRoot, restored.topicId ?? "", `session-id:canonical-${eager}`);
+    if (!eager) emitActivation({ requestId: requestIdByTab.get(restored.id) ?? "", tabId: restored.id, phase: "ready" });
+    await flushPromises();
+  });
+  await waitFor("restored canonical history is visible", () => hasHistory(restored.id) && !controller?.state.hydrating);
+  eq(controller?.state.hydrateError, undefined, `same-tab canonical adoption clears the failed startup baseline (eager=${eager})`);
+  eq(controller?.state.meta?.session?.sessionId, `canonical-${eager}`, "the restored surface retains its formal session identity");
+  eq(controller?.state.transcriptProtocol, 2, "canonical adoption installs the live Follow projection");
+  await act(async () => restoredRoot.unmount());
+}
 dom.window.close();
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -60,9 +60,9 @@ const resetMouseTracking = ansi.ResetModeMouseX10 +
 	ansi.ResetModeMouseExtUrxvt +
 	ansi.ResetModeMouseExtSgrPixel
 
-// compactDoneMsg reports that an async /compact pass returned. The card was
-// already drawn from the CompactionDone event; this only surfaces a failure and
-// snapshots on success.
+// compactDoneMsg is the compatibility completion for controllers that do not
+// support registered management submissions. SessionOperation owns the normal
+// lifecycle and persistence path.
 type compactDoneMsg struct{ err error }
 
 // tuiShutdownMsg asks the live TUI model to persist its current controller and
@@ -234,42 +234,45 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 	history := chatUIDisplayHistory(ctrl)
 	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
 	return chatTUI{
-		ctrl:                 ctrl,
-		label:                ctrl.Label(),
-		modelRef:             ctrl.ModelRef(),
-		missing:              missing,
-		nativeScrollback:     nativeScrollback,
-		legacyScrollClear:    useLegacyViewportScrollClear(runtime.GOOS, os.Environ()),
-		mouseCaptureOff:      mouseCaptureOffByDefault(),
-		input:                ti,
-		spinner:              sp,
-		submittedInputCursor: -1,
-		queueEditCursor:      -1,
-		nextPasteID:          nextPasteID,
-		usedPasteIDs:         usedPasteIDs,
-		reasoningLineIdx:     -1,
-		reasoningTextIdx:     -1,
-		answerIdx:            -1,
-		toolStreamIdx:        -1,
-		reasoning:            &strings.Builder{},
-		pending:              &strings.Builder{},
-		pendingCommit:        &commitBuf,
-		diffMaxLines:         diffFoldLimit,
-		showReasoning:        nativeScrollback,
-		showTurnUsage:        true,
-		shellOutputs:         make(map[string]string),
-		shellExpanded:        make(map[string]bool),
-		shellTranscriptIdx:   make(map[string]int),
-		toolLineCountByID:    make(map[string]int),
-		subagentProgressIdx:  make(map[string]int),
-		subagentProgress:     make(map[string]*cliSubagentProgress),
-		eventCh:              eventCh,
-		history:              history,
-		host:                 ctrl.Host(),
-		commands:             ctrl.Commands(),
-		skills:               ctrl.SlashSkills(),
-		viewport:             viewport.New(viewport.WithWidth(termW)),
-		statusLineCount:      3,
+		ctrl:                     ctrl,
+		label:                    ctrl.Label(),
+		modelRef:                 ctrl.ModelRef(),
+		missing:                  missing,
+		nativeScrollback:         nativeScrollback,
+		legacyScrollClear:        useLegacyViewportScrollClear(runtime.GOOS, os.Environ()),
+		mouseCaptureOff:          mouseCaptureOffByDefault(),
+		input:                    ti,
+		spinner:                  sp,
+		submittedInputCursor:     -1,
+		queueEditCursor:          -1,
+		maintenanceTranscriptIdx: -1,
+		maintenanceTerminal:      make(map[string]struct{}),
+		maintenanceLatest:        make(map[string]event.SessionOperationInfo),
+		nextPasteID:              nextPasteID,
+		usedPasteIDs:             usedPasteIDs,
+		reasoningLineIdx:         -1,
+		reasoningTextIdx:         -1,
+		answerIdx:                -1,
+		toolStreamIdx:            -1,
+		reasoning:                &strings.Builder{},
+		pending:                  &strings.Builder{},
+		pendingCommit:            &commitBuf,
+		diffMaxLines:             diffFoldLimit,
+		showReasoning:            nativeScrollback,
+		showTurnUsage:            true,
+		shellOutputs:             make(map[string]string),
+		shellExpanded:            make(map[string]bool),
+		shellTranscriptIdx:       make(map[string]int),
+		toolLineCountByID:        make(map[string]int),
+		subagentProgressIdx:      make(map[string]int),
+		subagentProgress:         make(map[string]*cliSubagentProgress),
+		eventCh:                  eventCh,
+		history:                  history,
+		host:                     ctrl.Host(),
+		commands:                 ctrl.Commands(),
+		skills:                   ctrl.SlashSkills(),
+		viewport:                 viewport.New(viewport.WithWidth(termW)),
+		statusLineCount:          3,
 	}
 }
 

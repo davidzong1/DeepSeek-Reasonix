@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -132,7 +131,10 @@ type SessionPersistence interface {
 }
 
 // FilesystemPersistence owns a versioned sessions-v4 root.
-type FilesystemPersistence struct{ Root string }
+type FilesystemPersistence struct {
+	Root          string
+	metadataReads sessionMetadataReads
+}
 
 func NewFilesystemPersistence(root string) *FilesystemPersistence {
 	return &FilesystemPersistence{Root: filepath.Clean(root)}
@@ -199,71 +201,7 @@ func (p *FilesystemPersistence) Open(sessionID string, mode AccessMode) (*Sessio
 }
 
 func (p *FilesystemPersistence) Stat(ctx context.Context, sessionID string) (SessionInfo, error) {
-	if err := ctx.Err(); err != nil {
-		return SessionInfo{}, err
-	}
-	id := strings.TrimSpace(sessionID)
-	if err := validateSessionID(id); err != nil {
-		return SessionInfo{}, err
-	}
-	dir, err := p.sessionDir(id, true)
-	if err != nil {
-		return SessionInfo{}, err
-	}
-	manifest, err := readCatalogManifest(filepath.Join(dir, "manifest.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return SessionInfo{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
-		}
-		return SessionInfo{}, err
-	}
-	if manifest.SessionID != id {
-		return SessionInfo{}, fmt.Errorf("%w: manifest belongs to %q", ErrDamagedStore, manifest.SessionID)
-	}
-	header, hasHeader, err := readSessionHeader(dir, id)
-	if err != nil {
-		return SessionInfo{}, err
-	}
-	// Listing reads the manifest, log metadata, and rebuildable catalog cache.
-	// It never opens event bodies; Query refreshes missing display metadata in
-	// the background.
-	revision, err := revisionOfLog(dir)
-	if err != nil {
-		return SessionInfo{}, err
-	}
-	updatedAt := manifest.CreatedAt
-	if revision.Exists {
-		if stat, statErr := os.Stat(logPathForManifest(dir, manifest)); statErr == nil && stat.ModTime().After(updatedAt) {
-			updatedAt = stat.ModTime()
-		}
-	}
-	info := SessionInfo{SessionID: manifest.SessionID, Codec: manifest.Codec, CreatedAt: manifest.CreatedAt, UpdatedAt: updatedAt, MetadataStatus: MetadataPending, Path: dir}
-	if hasHeader {
-		info.CWD, info.ParentSessionID, info.Origin = header.CWD, header.ParentSessionID, header.Origin
-	}
-	cacheDir := filepath.Join(p.Root, ".query-cache", filepath.Base(id))
-	if metadata, metadataErr := readCatalogMetadata(cacheDir, manifest, revision); metadataErr == nil {
-		info.Title, info.TitleSequence = metadata.Title, metadata.TitleSequence
-		info.ModelRef, info.ModelIdentity = metadata.ModelRef, metadata.ModelIdentity
-		info.Turns, info.Preview, info.MetadataStatus = metadata.Turns, metadata.Preview, MetadataReady
-		info.EventSequence, info.ResultSequence = metadata.Sequence, metadata.ResultSequence
-	}
-	return info, nil
-}
-
-func readCatalogManifest(path string) (Manifest, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Manifest{}, err
-	}
-	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return Manifest{}, err
-	}
-	if !supportedStoredManifest(manifest) {
-		return Manifest{}, fmt.Errorf("%w: manifest schema or codec", ErrUnsupportedVersion)
-	}
-	return manifest, nil
+	return p.cachedSessionInfo(ctx, sessionID)
 }
 
 func (p *FilesystemPersistence) sessionDir(id string, mustExist bool) (string, error) {

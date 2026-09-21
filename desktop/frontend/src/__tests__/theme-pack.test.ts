@@ -209,7 +209,8 @@ for (let index = 0; index < 512; index += 1) {
 }
 ok(generatedPaletteMinimum >= 4.5, "generated custom palettes preserve WCAG AA across every rendered code surface");
 const invertedDarkPack = deriveCodeReadabilityPalette("dark", "graphite", { bg: "#ffffff", bgSoft: "#fafafa" });
-ok(invertedDarkPack.string === "#0a3069", "syntax direction follows final code luminance instead of global dark mode");
+ok(invertedDarkPack.string === deriveCodeReadabilityPalette("light", "graphite", { bg: "#ffffff", bgSoft: "#fafafa" }).string,
+  "syntax direction follows final code luminance instead of global dark mode");
 
 const baseReadabilityCSS = baseCodeReadabilityStylesheet(THEME_STYLES);
 for (const style of THEME_STYLES) {

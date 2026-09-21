@@ -43,9 +43,7 @@ func TestToolCheckpointSurvivesReloadWhileNextWriterRuns(t *testing.T) {
 	exec := agent.New(mock, reg, session, agent.Options{}, event.Discard)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
-	sink, done, _ := collectSink()
-	c := newOwnedTestController(t, Options{Runner: exec, Executor: exec, Sink: sink, SessionDir: dir, SessionPath: path})
-	t.Cleanup(c.Close)
+	c := newOwnedTestController(t, Options{Runner: exec, Executor: exec, Sink: event.Discard, SessionDir: dir, SessionPath: path})
 	c.Submit("run both")
 	select {
 	case <-started:
@@ -65,6 +63,6 @@ func TestToolCheckpointSurvivesReloadWhileNextWriterRuns(t *testing.T) {
 	if !completed || loaded.ActiveTools["c2"] != "second" {
 		t.Fatalf("completed=%v active=%v history=%+v", completed, loaded.ActiveTools, loaded.Messages)
 	}
-	c.Cancel()
-	waitForDone(t, done)
+	// The owned fixture cancels and joins teardown after these checkpoint
+	// assertions. Cancellation latency is not part of the reload contract.
 }

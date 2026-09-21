@@ -123,7 +123,7 @@ func cloneRuntimeTopics(topics []ProjectRuntimeTopic) []ProjectRuntimeTopic {
 
 func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []ProjectRuntimeTopic {
 	bySession := map[string]ProjectRuntimeTopic{}
-	state, _ := a.workspaceRegistry().Load(a.bootContext())
+	state, _ := a.workspaceRegistry().LoadProjection(a.bootContext())
 	for _, snapshot := range snapshots {
 		scope, root := normalizeDesktopTopicScope(snapshot.scope, snapshot.workspaceRoot)
 		snapshot.scope, snapshot.workspaceRoot = scope, root
@@ -202,8 +202,23 @@ func (a *App) emitProjectTreeRuntimeChanged() {
 		return
 	}
 	snapshot := a.GetRuntimeStateSnapshot()
+	a.emitRuntimeProjection(snapshot, false)
+}
+
+func (a *App) emitRuntimeProjection(snapshot RuntimeStateProjection, legacy bool) {
+	r := &a.runtimeStateProjection
+	r.mu.Lock()
+	if r.publishedEpoch == snapshot.Epoch && r.publishedRevision >= snapshot.Revision {
+		r.mu.Unlock()
+		return
+	}
+	r.publishedEpoch, r.publishedRevision = snapshot.Epoch, snapshot.Revision
+	r.mu.Unlock()
 	a.emitRuntimeEvent("project-tree:runtime-changed", ProjectTreeRuntimeSnapshot{Revision: snapshot.Revision, Topics: snapshot.Topics})
 	a.emitRuntimeEvent("runtime-state:changed", snapshot)
+	if legacy {
+		a.emitRuntimeEvent("project-tree:changed", map[string]string{"reason": "runtime"})
+	}
 }
 
 // The tagged legacy event keeps the previous frontend usable for one release.

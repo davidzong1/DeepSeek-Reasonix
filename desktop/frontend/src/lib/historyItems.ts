@@ -12,6 +12,7 @@ import { createUniqueItemIDAllocator } from "./historyItemIds";
 import { t } from "./i18n";
 import { upsertReadPause } from "./readPause";
 import { historySearchAndAnswer } from "./searchTranscript";
+import { sessionOperationFromHistory, sessionOperationItem, upsertSessionOperationItem } from "./sessionMaintenanceOperation";
 import { fileDiffFromWire, summarizeFileDiff } from "./tools";
 import type { HistoryMessage, HistoryPage, MemoryCitation } from "./types";
 import type { Item } from "./useController";
@@ -106,6 +107,13 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       continue;
     }
     if (m.role === "compaction") {
+      const operation = sessionOperationFromHistory(m);
+      if (operation) {
+        const updated = upsertSessionOperationItem(items, sessionOperationItem(operation, m.recordId));
+        items = updated.items;
+        if (updated.inserted) seq++;
+        continue;
+      }
       items.push({
         kind: "compaction",
         id: recordItemId,
@@ -114,6 +122,10 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         messages: m.messages ?? 0,
         summary: m.summary ?? "",
         archive: m.archive ?? "",
+        operationId: m.operationId, operationKind: m.operationKind,
+        status: m.operationStatus, activity: m.operationActivity,
+        errorCode: m.errorCode, detail: m.detail, applied: m.applied,
+        inputTokens: m.inputTokens, resultTokens: m.resultTokens,
       });
       seq++;
       continue;

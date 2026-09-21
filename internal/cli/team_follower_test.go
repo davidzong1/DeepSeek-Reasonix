@@ -181,6 +181,92 @@ func TestFollowerAttachesWhenWriterOwnsSession(t *testing.T) {
 	}
 }
 
+// attachFollowerBackend drives the real bind path into a follower: a live writer
+// holds the member's lease, so this process's bind attaches read-only.
+func attachFollowerBackend(t *testing.T) control.SessionAPI {
+	t.Helper()
+	root := t.TempDir()
+	owners, err := team.NewOwnerStore(filepath.Join(root, "team"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionFile = "team-alpha-lead.json"
+	paths, err := owners.Paths(team.OwnerKey{TeamID: "alpha", MemberID: "lead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := newFollowerWriter(t, root, paths.Transcript)
+	publishFollowerIdentity(t, owners, "alpha", "lead", writer.ctrl.HistoryStamp())
+	backend, err := followerBindAttempt(t, owners, writer.storeRoot, "alpha", "lead", sessionFile, paths.Dir, true)
+	if err != nil {
+		t.Fatalf("a contended member must attach a follower, got %v", err)
+	}
+	t.Cleanup(backend.Close)
+	return backend
+}
+
+// callWithoutPanic reports the panic itself as the failure. The property under
+// test is "the call returned at all", so a bare call would abort the test binary
+// and hide which read was the one without an override.
+func callWithoutPanic(t *testing.T, name string, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%s panicked on a read-only follower: %v", name, r)
+		}
+	}()
+	fn()
+}
+
+// TestFollowerHostReadsDoNotPanic pins the reads the host makes on its own
+// schedule rather than on a user action. Both run inside a bubbletea Cmd
+// goroutine, where bubbletea recovers the panic into a program-level failure
+// ("program was killed: program experienced a panic"): a read-only member bound
+// to the window took down the whole TUI from the roster tick, seconds after the
+// bind, with nothing on screen to explain it. A follower must answer these — the
+// nil embedded port is a compile-time filler, not a runtime fallback.
+func TestFollowerHostReadsDoNotPanic(t *testing.T) {
+	backend := attachFollowerBackend(t)
+
+	// The 1s roster tick's history poll, exactly as refreshTeamRoster arms it.
+	var poll tea.Cmd
+	callWithoutPanic(t, "roster tick history poll", func() {
+		poll = (&chatTUI{}).loadBoundHistoryCmd(backend, "lead", "stamp-1")
+	})
+	var first tea.Msg
+	callWithoutPanic(t, "roster tick history read", func() { first = poll() })
+	sync, ok := first.(teamRosterRefreshMsg)
+	if !ok || sync.sync == nil {
+		t.Fatalf("the history poll must report through the tick message, got %#v", first)
+	}
+	if sync.sync.err != nil || !sync.sync.reloaded {
+		// A follower owns no in-memory transcript, so the window must rebuild from
+		// its live read; reporting "nothing changed" would freeze the transcript
+		// of a member whose writer is appending.
+		t.Fatalf("a follower must ask for the re-render, got %+v", *sync.sync)
+	}
+	var again tea.Msg
+	callWithoutPanic(t, "roster tick history re-read", func() { again = poll() })
+	if repeat, ok := again.(teamRosterRefreshMsg); !ok || repeat.sync == nil || repeat.sync.reloaded {
+		// The same stamp is a no-op, so an idle follower does not page the durable
+		// store once a second.
+		t.Fatalf("an unchanged stamp must not re-read, got %#v", again)
+	}
+
+	// The turn-end balance refresh (chat_tui.go, on drained.turnDone).
+	callWithoutPanic(t, "turn-end balance refresh", func() { _ = fetchBalance(backend)() })
+
+	// The two host reads a keystroke can reach.
+	if runner := backend.HookRunner(); runner != nil && len(runner.Hooks()) != 0 {
+		t.Fatalf("a follower runs no hooks, got %d", len(runner.Hooks()))
+	}
+	callWithoutPanic(t, "MCP import", func() {
+		if _, _, _, _, _, _, err := backend.ImportMCPEntries(nil); !errors.Is(err, errFollowerReadOnly) {
+			t.Fatalf("MCP import on a follower must refuse, got %v", err)
+		}
+	})
+}
+
 // TestFollowerRefusesEveryMutationPath pins the read-only half: submit, clear,
 // approve and branch all refuse with the follower's sentinel, and none of them
 // reaches the writer's session.

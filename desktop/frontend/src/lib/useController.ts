@@ -1,3 +1,4 @@
+import { reduceCompactionEvent, reduceMaintenanceRuntimeSnapshot, reconcileMaintenanceState } from "./sessionMaintenanceReducer";
 import { isShellToolName } from "./shellToolIdentity";
 // useController is the frontend's state machine over the agent event stream. It keeps
 // per-tab output, tool state, and approvals while the user switches tabs; components
@@ -11,6 +12,7 @@ import { asArray } from "./array";
 import { createControllerModelCommands } from "./controllerModelCommands";
 import { compactArchivedToolItems } from "./archivedToolItems";
 import { addBreadcrumb } from "./breadcrumbs";
+import { desktopHost } from "./desktopHost";
 import { app, onEvent, onReady, onRuntimeRebuilt, onTabMeta, onTopicActivation } from "./bridge";
 import { startControllerEventRecovery } from "./controllerEventRecovery";
 import { metaFromTab } from "./controllerTabMeta";
@@ -60,8 +62,10 @@ import { applyLiveSegments, coalesceStreamDeltas, completeLiveReasoning, type St
 import { assistantHasContent, ensureActiveAssistant, ensureAssistant, removeEmptyAssistantItems } from "./assistantItems";
 import { setTranscriptBindingIdentity } from "./canonicalTranscriptBackend";
 import { getTranscriptStore } from "./transcriptStore";
+import { isIsolatedStreamDelta, releaseCachedHistory } from "./transcriptMemory";
 import { TranscriptSessionFollower } from "./transcriptSessionFollower";
 import { historyReplaceAction, historyRevisionIsOlder } from "./sessionTranscriptMode";
+import { reconcileSessionOperationItems } from "./sessionMaintenanceOperation";
 import { matchingSnapshotItem, transcriptPageState, transcriptSnapshotState } from "./transcriptSnapshotState";
 import type { TranscriptSnapshot } from "./transcriptProtocol";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
@@ -338,6 +342,20 @@ export type Item = { turnId?: string } & (
       messages: number;
       summary: string;
       archive: string;
+      operationId?: string;
+      operationKind?: string;
+      status?: string;
+      activity?: string;
+      operationRevision?: number;
+      observedRuntimeRevision?: number;
+      interruptionInferred?: boolean;
+      runtimeEpoch?: string;
+      historyEntryId?: string;
+      errorCode?: string;
+      detail?: string;
+      applied?: boolean;
+      inputTokens?: number;
+      resultTokens?: number;
     }
   | {
       kind: "tool";
@@ -350,6 +368,7 @@ export type Item = { turnId?: string } & (
       capabilityId?: string; subagentOutcome?: import("./subagentOutcome").SubagentOutcome;
       status: ToolStatus;
       resultMissing?: boolean; contentState?: "unloaded" | "loading" | "ready" | "failed";
+      resultEvidence?: "missing" | "observation" | "formal"; sourceEntryId?: string; identityConflict?: boolean;
       output?: string; searchSources?: SearchSource[]; searchSourcesStatus?: "available" | "not_provided"; searchSummary?: string; // display-only provider search results; replay data stays in output/serverSearch
       error?: string;
       truncated?: boolean;
@@ -462,7 +481,7 @@ export interface State extends ReadStatusHost, ForkTurnState {
   historyRevision?: number;
   historyDigest?: string;
   /** Number of leading items owned by the persisted transcript projection. */
-  historyPrefixCount: number;
+  historyPrefixCount: number; transcriptProjectedIds: string[];
   /** Bumped when lazy history content can change already-estimated row sizes. */
   historyLayoutRevision: number;
   historyMutation: HistoryMutation;
@@ -618,7 +637,7 @@ export const initialState: State = {
   historyOlderLoading: false,
   historyNewerLoading: false,
   historyLayoutRevision: 0,
-  historyPrefixCount: 0,
+  historyPrefixCount: 0, transcriptProjectedIds: [],
   historyMutation: { seq: 0, kind: "replace" },
   backendActivationPending: false,
   deliveryRecoveryActive: false,
@@ -827,6 +846,7 @@ export type Action =
   | { type: "checkpoints"; checkpoints: CheckpointMeta[] } | ForkTurnAction
   | { type: "hydrate_start"; reason: HydrateReason; placeholderItems?: Item[] }
   | { type: "hydrate_done" }
+  | { type: "history_cache_evicted" }
   | { type: "hydrate_error"; reason: HydrateReason; error: string }
   | { type: "backend_activation_start"; backendPendingPrompt?: boolean }
   | { type: "backend_activation_done" }
@@ -1529,6 +1549,8 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
       if (!t) return s;
       const next = [...s.items];
       let idx = t.id ? next.findIndex((it) => it.kind === "tool" && it.id === t.id) : -1;
+      const matched = idx >= 0 ? next[idx] : undefined;
+      if (matched?.kind === "tool" && matched.identityConflict) return s;
       if (idx < 0) {
         for (let i = next.length - 1; i >= 0; i--) {
           const it = next[i];
@@ -1669,20 +1691,10 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
     }
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
+    case "session_operation":
     case "compaction_started":
-      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "compaction", id: `c${s.seq}`, pending: true, trigger: e.compaction?.trigger ?? "", messages: 0, summary: "", archive: "" }] };
-    case "compaction_done": {
-      const c = e.compaction;
-      const idx = [...s.items].reverse().findIndex((it) => it.kind === "compaction" && it.pending);
-      const at = idx < 0 ? -1 : s.items.length - 1 - idx;
-      if (!c?.summary) {
-        const items = at < 0 ? s.items : s.items.filter((_, i) => i !== at);
-        return { ...s, running: s.turnActive ? s.running : false, items };
-      }
-      const filled: Item = { kind: "compaction", id: at < 0 ? `c${s.seq}` : (s.items[at] as Extract<Item, { kind: "compaction" }>).id, pending: false, trigger: c.trigger ?? "", messages: c.messages ?? 0, summary: c.summary, archive: c.archive ?? "" };
-      const items = at < 0 ? [...s.items, filled] : s.items.map((it, i) => (i === at ? filled : it));
-      return { ...s, running: s.turnActive ? s.running : false, seq: s.seq + 1, items };
-    }
+    case "compaction_done":
+      return reduceCompactionEvent(s, e);
     case "steer":
       if (isHostRecoveryGuidance(e.text ?? "")) return s;
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `s${s.seq}`, level: "info", text: `${STEER_NOTICE_PREFIX}${e.text ?? ""}`, inboxItemId: e.itemId }] };
@@ -1887,7 +1899,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
 }
 
 export function reducer(s: State, a: Action): State {
-  const next = reduceState(s, a);
+  const next = reconcileMaintenanceState(reduceState(s, a), a);
   return next.items !== s.items ? settleLocalSubmissions(next, next.items) : next;
 }
 
@@ -1918,7 +1930,8 @@ function reduceState(s: State, a: Action): State {
     }
     case "transcript_v2_snapshot": {
       const next = transcriptSnapshotState(s, a.snapshot, historyMessagesToItems, (state, event) => applyEvent(state, event, a.remote), promptEventClock(), a.projection.items);
-      return { ...next, transcriptProtocol: 2, historyHasOlder: a.projection.hasOlder, historyHasNewer: a.projection.hasNewer,
+      return { ...next, transcriptProtocol: 2, transcriptProjectedIds: a.projection.items.map(item => item.id), historyStartTurn: a.projection.startTurn,
+        historyEndTurn: a.projection.endTurn, historyTotalTurns: a.projection.totalTurns, historyHasOlder: a.projection.hasOlder, historyHasNewer: a.projection.hasNewer,
         historyRevision: a.projection.revision, historyDigest: a.projection.digest };
     }
     case "transcript_records": return installTranscriptRecords(s, a);
@@ -2072,14 +2085,8 @@ function reduceState(s: State, a: Action): State {
         : { ...s, meta: acceptedMeta, runtimeStateSnapshot };
     }
     case "optimistic_meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta, hydrateError: undefined };
-    case "runtime_snapshot": {
-      const runtimeStateSnapshot = acceptSessionRuntimeSnapshot(s.runtimeStateSnapshot, a.snapshot);
-      if (runtimeStateSnapshot === s.runtimeStateSnapshot) return s;
-      const meta = runtimeStateSnapshot.todos !== undefined && s.meta
-        ? { ...s.meta, runtimeStateSnapshot, canonicalTodos: runtimeStateSnapshot.todos }
-        : s.meta;
-      return { ...s, meta, runtimeStateSnapshot };
-    }
+    case "runtime_snapshot":
+      return reduceMaintenanceRuntimeSnapshot(s, a.snapshot);
     case "context": {
       const sessionTokens = typeof a.context.sessionTokens === "number"
         ? Math.max(0, a.context.sessionTokens)
@@ -2113,6 +2120,7 @@ function reduceState(s: State, a: Action): State {
       hydrateHistoryLoaded: false,
       hydratePlaceholderItems: a.placeholderItems?.length ? a.placeholderItems : undefined,
     };
+    case "history_cache_evicted": return releaseCachedHistory(s);
     case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError || s.hydrateHistoryLoaded || s.hydratePlaceholderItems
       ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
       : s;
@@ -2140,13 +2148,14 @@ function reduceState(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
+      const reconciled = reconcileSessionOperationItems(items, s.items);
       // Remote cards have no local ToolResultForTab fallback; retain expansion data.
-      return { ...s, items: a.remote ? items : compactArchivedToolItems(items), historyPrefixCount: items.length, pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyEndTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyHasNewer: false, historyOlderLoading: false, historyOlderError: undefined, historyNewerLoading: false, historyNewerError: undefined, historyRevision: undefined, historyDigest: undefined, historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" } };
+      return { ...s, items: a.remote ? reconciled : compactArchivedToolItems(reconciled), historyPrefixCount: reconciled.length, pendingSubmissionId: undefined, seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyEndTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyHasNewer: false, historyOlderLoading: false, historyOlderError: undefined, historyNewerLoading: false, historyNewerError: undefined, historyRevision: undefined, historyDigest: undefined, historyMutation: { seq: s.historyMutation.seq + 1, kind: "replace" } };
     }
     case "history_page": {
       if (historyRevisionIsOlder(s.historyRevision, a.page.revision)) return s;
       const { items, seq, firstTurn } = historyPageItems(a.page);
-      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : items;
+      const nextItems = reconcileSessionOperationItems(a.mode === "prepend" ? [...items, ...s.items] : items, s.items);
       return {
         ...s,
         items: compactArchivedToolItems(nextItems),
@@ -2368,6 +2377,14 @@ export function useController() {
   const composerProfileInFlightByTabRef = useRef(new Map<string, { key: string; promise: Promise<boolean> }>());
   const composerProfileQueueByTabRef = useRef(new Map<string, Promise<void>>());
   const composerProfileLifecycleByTabRef = useRef(new Map<string, number>());
+  useEffect(() => desktopHost().native.onServiceState((service) => {
+    addBreadcrumb("service", `phase=${service.phase} generation=${service.generation || "unknown"}`);
+    if (service.phase !== "stopping" && service.phase !== "exited") return;
+    // Each follower owns its service-stop fence, including remote followers.
+    // Retire only the controller's references here so late hydration cannot
+    // mistake a stopped follower for an active subscription.
+    followers.current.clear();
+  }), []);
   const cancelReconcileTimers = useRef(new Map<string, number>());
   const stalePromptReconcileTimers = useRef(new Map<string, number>());
   // Indirection so dispatchRuntimeStatusForTab (defined above reconcileTabRuntime)
@@ -2472,8 +2489,7 @@ export function useController() {
   activeTabIdRef.current = activeTabId;
   stateRef.current = activeState;
 
-  // Dispatch to a specific tab's state. If the tab doesn't have state yet, it's
-  // created. Bumps the version so React re-renders when it becomes active.
+  // Publish per-tab state; only the visible tab invalidates this controller.
   const dispatchTo = useCallback((tabId: string, action: Action) => {
     const states = statesRef.current;
     const prev = getOrCreateState(states, tabId);
@@ -2489,18 +2505,10 @@ export function useController() {
       getTranscriptStore().setPinned(tabId, Boolean(next.running || next.turnActive || next.live));
       uiPerfTracker.onStateCommit();
       notifyLiveListeners(tabId);
-      const streamDeltaOnly =
-        (action.type === "stream_batch" ||
-          (action.type === "event" && (action.e.kind === "text" || action.e.kind === "reasoning"))) &&
-        prev.items === next.items &&
-        prev.currentAssistant === next.currentAssistant &&
-        prev.pendingUser === next.pendingUser &&
-        prev.retry === next.retry;
-      // Text/reasoning-only deltas only update the live stream — which the
-      // frontend reads through its own subscription — so they must not bump the
-      // full controller tree (the run-strip TPS estimate subscribes to the live
-      // stream directly and updates itself).
-      if (!streamDeltaOnly) bump();
+      const streamDeltaOnly = isIsolatedStreamDelta(action, prev, next);
+      // Stream subscribers (including TPS) handle text/reasoning deltas;
+      // only visible structural changes invalidate the full controller tree.
+      if (!streamDeltaOnly && tabId === activeTabIdRef.current) bump();
     }
   }, [bump, notifyLiveListeners]);
   useEffect(() => {
@@ -2627,7 +2635,15 @@ export function useController() {
     if (transcriptSubscriptions.current.has(tabId)) return;
     const unsubscribe = getTranscriptStore().subscribe(tabId, (change) => {
       if (!statesRef.current.has(tabId)) return;
-      dispatchTo(tabId, { type: "history_items_patch", patches: change.patches, expected: change.expected });
+      if (change.evictedPath !== undefined) {
+        if (statesRef.current.get(tabId)?.meta?.sessionPath !== change.evictedPath) return;
+        followers.current.get(tabId)?.stop();
+        followers.current.delete(tabId);
+        bumpSessionLoadSeq(tabId);
+        dispatchTo(tabId, { type: "history_cache_evicted" });
+        return;
+      }
+      if (change.projection) dispatchTo(tabId, { type: "transcript_records", projection: change.projection, confirmedUsers: [] }); else dispatchTo(tabId, { type: "history_items_patch", patches: change.patches, expected: change.expected });
       const patchCount = Object.keys(change.patches).length;
       if (patchCount > 0) {
         recordFrontendDiagnostic("history", "history.items-patch", {
@@ -2637,7 +2653,7 @@ export function useController() {
       }
     });
     transcriptSubscriptions.current.set(tabId, unsubscribe);
-  }, [dispatchTo]);
+  }, [dispatchTo, bumpSessionLoadSeq]);
   const startTranscriptFollow = useCallback(async (tabId: string, path: string) => {
     ensureTranscriptSubscription(tabId, { path, key: sessionIdentityStableKey(statesRef.current.get(tabId)?.meta) });
     followers.current.get(tabId)?.stop();
@@ -3337,6 +3353,8 @@ export function useController() {
     const handleWireEvent = (e: WireEvent) => {
       const targetTabId = e.tabId;
       if (!targetTabId) throw new Error("ordered event has no target tab");
+      if (e.kind === "turn_done" || e.tool) void import("./autoHTML")
+        .then((module) => module.default(e, targetTabId, activeTabIdRef, statesRef));
       if (e.kind === "turn_done" || e.kind === "context_maintenance") {
         void app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
       }

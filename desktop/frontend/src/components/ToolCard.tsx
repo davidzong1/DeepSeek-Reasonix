@@ -431,6 +431,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
           {item.status === "unknown" && <span className="tool__status-icon" title={t("tool.statusUnknown")}>?</span>}
           {item.status === "stopped" && <span className="tool__status-icon tool__status-icon--stopped">—</span>}
           <span className="tool__name">{isShellCard ? shellName : (displayName ?? item.name)}</span>
+          {item.identityConflict && <span className="tool__subject" title={t("tool.identityConflict")}>{t("tool.identityConflict")}</span>}
           {subject && <span className="tool__subject">{subject}</span>}
         </span>
         {profileText && <span className="tool__profile">{profileText}</span>}

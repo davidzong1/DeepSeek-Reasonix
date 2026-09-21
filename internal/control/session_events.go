@@ -437,6 +437,9 @@ func (c *Controller) sessionEventsFor(e event.Event, projection session.Projecti
 	if e.Kind == event.Notice {
 		return mcpDisplayNoticeEvents(e)
 	}
+	if e.Kind == event.SessionOperation {
+		return sessionMaintenanceEvents(e)
+	}
 	return c.v3EventsFor(e, projection)
 }
 

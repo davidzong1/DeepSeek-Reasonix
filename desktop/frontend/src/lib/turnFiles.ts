@@ -38,9 +38,12 @@ export function deriveTurnFiles(calls: readonly ToolItem[]): TurnFileView[] {
     const key = fileIdentity(path);
     if (!key) continue;
     const existing = files.get(key);
-    const value = { path: path.trim(), toolCallId: call.id, operation: definition.operation };
-    if (existing) files.set(key, { ...value, path: existing.path });
-    else files.set(key, value);
+    const value: TurnFileView = {
+      path: existing?.path ?? path.trim(),
+      toolCallId: call.id,
+      operation: definition.operation,
+    };
+    files.set(key, value);
   }
   return [...files.values()];
 }
