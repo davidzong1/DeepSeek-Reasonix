@@ -79,6 +79,8 @@ var subagentAlwaysHiddenTools = []string{
 }
 
 var subagentJobTools = []string{
+	"job_output",
+	"job_kill",
 	"wait",
 	"bash_output",
 	"kill_shell",
@@ -88,7 +90,7 @@ var readOnlySubagentWorkflowTools = []string{
 	"connect_tool_source",
 }
 
-const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed only while max_subagent_depth leaves another delegation layer; unsupported background job tools (parallel_tasks, wait, bash_output, kill_shell) are excluded; bash is exposed as foreground-only inside subagents."
+const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed only while max_subagent_depth leaves another delegation layer; background job tools (job_output/job_kill and the legacy wait/bash_output/kill_shell aliases) are excluded; the platform shell is exposed as foreground-only inside subagents."
 
 // maxConcurrentBackgroundTasks is the legacy writer-background fallback used
 // only when a TaskTool has no session scheduler (tests). Production boots
@@ -159,8 +161,13 @@ func SubagentToolRegistryForDepthWithRuntime(parent *tool.Registry, names []stri
 	stripDirectMCPTools(sub)
 	AttachCompleteSubtaskTool(sub)
 	attachSubagentCapabilityProxy(parent, sub, names, runtime)
-	if bash, ok := sub.Get("bash"); ok {
-		sub.Add(foregroundOnlyBash{inner: bash})
+	shellName := "bash"
+	if _, ok := sub.Get("pwsh"); ok {
+		shellName = "pwsh"
+		sub.RemovePrefix("bash")
+	}
+	if shell, ok := sub.Get(shellName); ok {
+		sub.Add(foregroundOnlyBash{inner: shell})
 	}
 	return sub
 }
@@ -169,7 +176,7 @@ type foregroundOnlyBash struct {
 	inner tool.Tool
 }
 
-func (b foregroundOnlyBash) Name() string { return "bash" }
+func (b foregroundOnlyBash) Name() string { return b.inner.Name() }
 
 func (b foregroundOnlyBash) Description() string {
 	desc := strings.TrimSpace(b.inner.Description())
@@ -180,7 +187,10 @@ func (b foregroundOnlyBash) Description() string {
 	return desc + " Background execution is unavailable inside subagents."
 }
 
-func (foregroundOnlyBash) Schema() json.RawMessage {
+func (b foregroundOnlyBash) Schema() json.RawMessage {
+	if b.Name() == "pwsh" {
+		return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"PowerShell command to execute in the foreground"},"description":{"type":"string","description":"Clear 5-10 word active-voice description shown in the UI"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command","description"]}`)
+	}
 	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in the foreground"}},"required":["command"]}`)
 }
 
@@ -192,7 +202,7 @@ func (b foregroundOnlyBash) Execute(ctx context.Context, args json.RawMessage) (
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if p.RunInBackground {
-		return "", tool.Blocked("blocked: background bash is unavailable in subagents; run a foreground command or ask the parent agent to start a background job")
+		return "", tool.Blocked(fmt.Sprintf("blocked: background %s is unavailable in subagents; run a foreground command or ask the parent agent to start a background job", b.Name()))
 	}
 	return b.inner.Execute(ctx, args)
 }
@@ -203,7 +213,7 @@ type readOnlyBash struct {
 	inner tool.Tool
 }
 
-func (b readOnlyBash) Name() string { return "bash" }
+func (b readOnlyBash) Name() string { return b.inner.Name() }
 
 func (b readOnlyBash) Description() string {
 	desc := strings.TrimSpace(b.inner.Description())
@@ -214,7 +224,10 @@ func (b readOnlyBash) Description() string {
 	return desc + " Only permission-classified read-only commands are allowed; shell operators, background execution, process preservation, and write-capable arguments are blocked."
 }
 
-func (readOnlyBash) Schema() json.RawMessage {
+func (b readOnlyBash) Schema() json.RawMessage {
+	if b.Name() == "pwsh" {
+		return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Read-only PowerShell command to execute in the foreground"},"description":{"type":"string","description":"Clear 5-10 word active-voice description shown in the UI"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command","description"]}`)
+	}
 	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Read-only shell command to execute in the foreground. Must match the permission-layer read-only command policy."}},"required":["command"]}`)
 }
 
@@ -278,43 +291,11 @@ type TaskTool struct {
 	// mutationObserver is shared with spawned sub-agents for checkpoint capture.
 	mutationObserver *checkpoint.MutationObserver
 	writeRoots       *sandbox.WritableRootSet
+	imageResolver    ImageRequestResolver
 	// capabilityRuntime is the session-shared MCP Host/specs substrate. Each
 	// sub-agent gets its own use_capability frontend so ledger state stays
 	// isolated while connections reuse the parent Host.
 	capabilityRuntime *MCPCapabilityRuntime
-}
-
-// NewTaskToolWithOptions is the internal standard constructor for TaskTool.
-// An empty SysPrompt still resolves to DefaultTaskSystemPrompt. No extra
-// validation or default overrides are applied beyond the historical NewTaskTool
-// behavior.
-func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
-	sysPrompt := opts.SysPrompt
-	if sysPrompt == "" {
-		sysPrompt = DefaultTaskSystemPrompt
-	}
-	return &TaskTool{
-		imageInput:           opts.ImageInput,
-		prov:                 opts.Provider,
-		pricing:              opts.Pricing,
-		quoteContext:         opts.QuoteContext,
-		parentReg:            opts.ParentRegistry,
-		maxSteps:             opts.MaxSteps,
-		contextWindow:        opts.ContextWindow,
-		visibleWindowTokens:  opts.VisibleWindowTokens,
-		cacheAwareCompaction: opts.CacheAwareCompaction,
-		recentKeep:           opts.RecentKeep,
-		compactRatio:         opts.CompactRatio,
-		temperature:          opts.Temperature,
-		archiveDir:           opts.ArchiveDir,
-		keepPolicy:           opts.KeepPolicy,
-		sysPrompt:            sysPrompt,
-		gate:                 opts.Gate,
-		subagentModel:        opts.SubagentModel,
-		subagentEffort:       opts.SubagentEffort,
-		resolveProvider:      opts.ResolveProvider,
-		maxSubagentDepth:     DefaultMaxSubagentDepth,
-	}
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -450,7 +431,7 @@ func (t *TaskTool) Schema() json.RawMessage {
   "write_paths":{"type":"array","items":{"type":"string"},"description":"Optional workspace-relative or absolute file/directory paths this writer may modify. Globs and workspace escapes are rejected. Writers without write_paths claim the whole workspace (serializing against every other writer claim). Non-overlapping paths allow parallel writers up to max_parallel_writers. In fleet, multiple whole-workspace claims fail preflight before any task starts."},
   "tools":{"type":"array","items":{"type":"string"},"description":"Optional tool whitelist. When profile sets allowed-tools, this list is intersected (call args cannot expand profile permissions). ` + subagentToolBoundarySummary + `"},
   "max_steps":{"type":"integer","description":"Optional cap on tool-call rounds. Defaults to half the parent's cap (min 5).","minimum":1},
-  "run_in_background":{"type":"boolean","description":"Run the sub-agent asynchronously: returns a job id immediately and keeps working across turns. Collect its final answer with wait, and you'll be notified when it finishes. Use for long, independent sub-tasks you don't need to block on right now."},
+  "run_in_background":{"type":"boolean","description":"Run the sub-agent asynchronously: returns a job id immediately and keeps working across turns. Collect its final answer with job_output, and you'll be notified when it finishes. Use for long, independent sub-tasks you don't need to block on right now."},
   "model":{"type":"string","description":"Optional model override for the sub-agent (a configured provider/model name). Precedence: persistent profile config, this argument, profile frontmatter, global subagent default, parent model."},
   "effort":{"type":"string","description":"Optional reasoning effort for the sub-agent (e.g. high, max). Same precedence as model."},
   "continue_from":{"type":"string","description":"Continue a prior compatible subagent transcript in the current conversation context. Pass only the 'sa_...' value from the prior result's 'Subagent reference: ...' line. If the ref belongs to an ancestor conversation, the framework continues a current-conversation copy."}
@@ -848,7 +829,7 @@ func (t *TaskTool) runBackgroundProfileSpec(ctx context.Context, spec ProfileExe
 		var okReserve bool
 		releaseStart, running, okReserve = jm.ReserveStartForSession(jobs.SessionFromContext(ctx), "task", maxConcurrentBackgroundTasks)
 		if !okReserve {
-			result, err := t.failBeforeSubagentRelease(run, fmt.Errorf("%d background tasks are already running for this session (limit %d); collect their results with wait — or run this sub-task in the foreground — before starting more", running, maxConcurrentBackgroundTasks))
+			result, err := t.failBeforeSubagentRelease(run, fmt.Errorf("%d background tasks are already running for this session (limit %d); collect their results with job_output — or run this sub-task in the foreground — before starting more", running, maxConcurrentBackgroundTasks))
 			return result, err, false
 		}
 		defer releaseStart()
@@ -918,9 +899,9 @@ func (t *TaskTool) runBackgroundProfileSpec(ctx context.Context, spec ProfileExe
 		queuedNote = " It may wait in the session queue until a concurrency/write slot is free."
 	}
 	if run != nil && run.Ref != "" {
-		return fmt.Sprintf("Started background task %q (%s).%s\n%s\nIt runs across turns; collect its final answer with wait (or wait will return it once done), and you'll be notified when it finishes.", job.ID, label, queuedNote, FormatSubagentReference(run)), nil, true
+		return fmt.Sprintf("Started background task %q (%s).%s\n%s\nIt runs across turns; collect its final answer with job_output, and you'll be notified when it finishes.", job.ID, label, queuedNote, FormatSubagentReference(run)), nil, true
 	}
-	return fmt.Sprintf("Started background task %q (%s).%s It runs across turns; collect its final answer with wait (or wait will return it once done), and you'll be notified when it finishes.", job.ID, label, queuedNote), nil, true
+	return fmt.Sprintf("Started background task %q (%s).%s It runs across turns; collect its final answer with job_output, and you'll be notified when it finishes.", job.ID, label, queuedNote), nil, true
 }
 
 func (t *TaskTool) acquireSlot(ctx context.Context, req AcquireRequest) (func(), int64, error) {
@@ -1035,7 +1016,7 @@ func FilterRegistry(parent *tool.Registry, names []string, exclude ...string) *t
 		ex[e] = true
 	}
 	customAllowlist := len(names) > 0
-	src := names
+	src := normalizeSubagentShellNames(parent, names)
 	if !customAllowlist {
 		src = parent.Names()
 	} else {
@@ -1362,7 +1343,7 @@ func ReadOnlySubagentToolRegistryForDepthWithRuntime(parent *tool.Registry, name
 	if parent == nil {
 		return sub
 	}
-	src := names
+	src := normalizeSubagentShellNames(parent, names)
 	if len(src) == 0 {
 		src = parent.Names()
 	} else {
@@ -1379,7 +1360,11 @@ func ReadOnlySubagentToolRegistryForDepthWithRuntime(parent *tool.Registry, name
 		if !ok {
 			continue
 		}
-		if name == "bash" {
+		_, parentHasPwsh := parent.Get("pwsh")
+		if name == "bash" && parentHasPwsh {
+			continue
+		}
+		if name == "bash" || name == "pwsh" {
 			sub.Add(readOnlyBash{inner: tl})
 			continue
 		}
@@ -1478,7 +1463,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 	prompt = t.withWorkspaceContext(prompt) + "\n\n" + completeSubtaskContract
 	// The child provider owns the final vision decision. Text-only providers
 	// retain the attachment metadata but omit image parts during serialization.
-	ctx = WithUserImages(ctx, SubagentImageCandidates(ctx))
+	ctx = withSubagentTurnImages(ctx)
 	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, opts, sink)
 }
 
@@ -1489,7 +1474,7 @@ func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, sub
 	// intent classification must judge the task, not the wrapper.
 	opts.ClassifierTaskText = prompt
 	prompt = t.withWorkspaceContext(prompt)
-	ctx = WithUserImages(ctx, SubagentImageCandidates(ctx))
+	ctx = withSubagentTurnImages(ctx)
 	return RunReadOnlySubAgentWithSession(ctx, prov, subReg, sess, prompt, opts, sink)
 }
 

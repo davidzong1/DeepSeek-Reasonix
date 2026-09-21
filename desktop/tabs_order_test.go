@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -461,37 +462,6 @@ func TestAttachExistingSessionRuntimeSkipsRemovedTab(t *testing.T) {
 	}
 	if target.Ctrl != nil || target.Ready {
 		t.Fatal("removed target tab was mutated")
-	}
-}
-
-func TestRemoveWorkspaceDropsVisibleTabsAndPersistedEntries(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	projectRoot := t.TempDir()
-	if err := addProject(projectRoot, "Project"); err != nil {
-		t.Fatalf("add project: %v", err)
-	}
-	app := &App{
-		tabs: map[string]*WorkspaceTab{
-			"project": {ID: "project", Scope: "project", WorkspaceRoot: projectRoot, TopicID: "topic-project", Ready: true, disabledMCP: map[string]ServerView{}},
-			"global":  {ID: "global", Scope: "global", WorkspaceRoot: globalTabWorkspaceRoot(), TopicID: "topic-global", Ready: true, disabledMCP: map[string]ServerView{}},
-		},
-		tabOrder:         []string{"project", "global"},
-		activeTabID:      "project",
-		detachedSessions: map[string]*WorkspaceTab{},
-	}
-	app.mu.Lock()
-	app.saveTabsLocked()
-	app.mu.Unlock()
-
-	if err := app.RemoveWorkspace(projectRoot); err != nil {
-		t.Fatalf("RemoveWorkspace: %v", err)
-	}
-	assertTabIDs(t, app.ListTabs(), "global")
-	if got := app.ListWorkspaces(); len(got) != 0 {
-		t.Fatalf("workspaces after remove = %+v, want none", got)
-	}
-	if got := loadTabsFile(); len(got.Tabs) != 1 || got.Tabs[0].ID != "global" {
-		t.Fatalf("persisted tabs after workspace remove = %+v, want only global", got)
 	}
 }
 

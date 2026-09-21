@@ -452,7 +452,7 @@ auth_mode = "none"
 原生 CLI 更新器始终安装最新的严格 `vX.Y.Z` 正式版。1.x 期间仍解析旧渠道配置与
 参数，但统一指向正式版，并在后续保存配置时省略这些字段。
 
-权限预设直接选择强制沙盒边界。交互会话可以用「扩展写入范围」授权（仅本次 / 本会话 / 拒绝）按需扩大可写根；文件工具会申请目标父目录，Bash 必须声明 `additional_write_dirs` 和 `justification`。无头 `reasonix run` 缺少目录时失败关闭。file writer 默认限制在 workspace root、会话私有临时目录和显式授权根；`forbid_read` 可阻止读取敏感路径。macOS 使用 Seatbelt，Linux 使用 bubblewrap，Windows 使用受限令牌、ACL 和 Job Object；受限 backend 不可用时拒绝执行，不无约束回退。
+权限预设直接选择强制沙盒边界。交互会话可以用「扩展写入范围」授权（仅本次 / 本会话 / 拒绝）按需扩大可写根；文件工具会申请目标父目录，Bash 必须声明 `additional_write_dirs` 和 `justification`。无头 `reasonix run` 缺少目录时失败关闭。file writer 默认限制在 workspace root、会话私有临时目录和显式授权根；`forbid_read` 可阻止读取敏感路径。macOS 使用 Seatbelt，Linux 使用 bubblewrap；受限 backend 不可用时拒绝执行，不无约束回退。Windows 没有 OS 级 Shell 沙箱：受限预设仍约束文件工具，Shell 命令以当前系统账户运行。
 
 `[serve]` 控制 `reasonix serve` 的 browser frontend。默认 `auth_mode = "none"` 仅适合 loopback；暴露到其他机器时必须使用 token 或 password。只有位于可信 reverse proxy 后方时才能启用 `behind_proxy`。
 

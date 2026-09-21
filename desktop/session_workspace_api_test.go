@@ -10,6 +10,34 @@ import (
 	"reasonix/internal/session"
 )
 
+func TestCreateSessionBootstrapsGlobalWorkspace(t *testing.T) {
+	root := t.TempDir()
+	app := NewApp()
+	t.Cleanup(app.closeSessionServices)
+	app.ctx = t.Context()
+	app.desktopSessions.root = filepath.Join(root, "desktop-sessions-v5", "by-id")
+	app.desktopSessions.workspaceState = workspacestate.NewStore(filepath.Join(root, "desktop", "workspace-state-v1.json"))
+
+	ref, err := app.CreateSession(workspacestate.GlobalWorkspaceID)
+	if err != nil {
+		t.Fatalf("CreateSession(global): %v", err)
+	}
+	if err := validateLocalSessionRef(ref); err != nil {
+		t.Fatalf("CreateSession(global) ref: %v", err)
+	}
+	state, err := app.desktopSessions.workspaceState.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, ok := state.Workspaces[workspacestate.GlobalWorkspaceID]
+	if !ok {
+		t.Fatal("CreateSession(global) did not register the global workspace")
+	}
+	if len(workspace.SessionIDs) != 1 || workspace.SessionIDs[0] != ref.SessionID {
+		t.Fatalf("global sessions = %v, want [%s]", workspace.SessionIDs, ref.SessionID)
+	}
+}
+
 func TestWorkspaceSessionListSurvivesRuntimePruneAndAppRestart(t *testing.T) {
 	root := t.TempDir()
 	sessionRoot := filepath.Join(root, "desktop-sessions-v5", "by-id")

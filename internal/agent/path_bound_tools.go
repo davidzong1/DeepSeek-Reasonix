@@ -180,7 +180,7 @@ func BindWritePaths(reg *tool.Registry, claims WritePathSet, workDir string, kee
 		if !ok {
 			continue
 		}
-		if name == "bash" {
+		if tool.IsShellToolName(name) {
 			if !keepBash {
 				removed = append(removed, name)
 				continue
@@ -237,7 +237,7 @@ func rebindBashToClaimRoots(tl tool.Tool, roots []string) (tool.Tool, bool) {
 // Meta/delegation tools (task, fleet, run_skill, …) are excluded so the parent
 // can still schedule while background writers run.
 func parentWriteGuardTarget(name string) bool {
-	if pathBoundWriterNames[name] || name == "bash" {
+	if pathBoundWriterNames[name] || tool.IsShellToolName(name) {
 		return true
 	}
 	return strings.HasPrefix(name, tool.MCPNamePrefix)

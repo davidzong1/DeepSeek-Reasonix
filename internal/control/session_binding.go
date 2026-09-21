@@ -29,9 +29,13 @@ func bindInitialSessionRuntime(opts Options) (*session.Runtime, *session.ClientB
 	return runtime, binding
 }
 
-// releaseSessionRuntimeBinding drops this controller's client reference. The
-// host service retains the writer until the last binding and activity exit.
-func (c *Controller) releaseSessionRuntimeBinding(service *session.Service) {
+// ReleaseSessionRuntimeBinding drops this controller's client reference without
+// tearing down the controller itself. Hosts use it when a session is handed
+// back to another runtime while keeping the current process alive.
+func (c *Controller) ReleaseSessionRuntimeBinding() error {
+	if c == nil {
+		return nil
+	}
 	c.v3BindingMu.Lock()
 	binding := c.sessionBinding
 	runtime := c.sessionRuntime
@@ -40,9 +44,52 @@ func (c *Controller) releaseSessionRuntimeBinding(service *session.Service) {
 	c.v3BindingMu.Unlock()
 	c.unbindExecutionControl(runtime)
 	if binding != nil {
-		if err := binding.Release(context.Background()); err != nil {
-			slog.Warn("controller: release exclusive v3 binding", "err", err)
-		}
+		return binding.Release(context.Background())
+	}
+	return nil
+}
+
+// ReleaseSessionForHandoff hands the bound identity to another runtime without
+// allocating a replacement: it flushes the runtime, drops this controller's
+// client binding and empties the in-memory transcript, leaving the controller in
+// the never-bound exclusive state whose next turn or NewSession allocates a
+// fresh identity lazily. Closing the runtime, which drops the writer lock, stays
+// with the host: the host owns the rollback (OpenSession) when that close is
+// refused, and this controller is exactly re-attachable until then.
+func (c *Controller) ReleaseSessionForHandoff() error {
+	if c == nil {
+		return nil
+	}
+	if _, runtime, exclusive := c.v3Binding(); !exclusive || runtime == nil {
+		return session.ErrSessionNotRunning
+	}
+	if err := c.Snapshot(); err != nil {
+		return err
+	}
+	if err := c.ReleaseSessionRuntimeBinding(); err != nil {
+		return err
+	}
+	// Under snapshotMu so the swap cannot interleave with an in-flight save.
+	// Emptying the transcript keeps a later Snapshot a no-op and keeps the
+	// handed-off conversation out of the identity the next turn allocates.
+	c.snapshotMu.Lock()
+	if c.executor != nil {
+		c.executor.SetSession(agent.NewSession(c.basePrompt()))
+	}
+	c.snapshotMu.Unlock()
+	// With no runtime bound an exclusive controller has no event store, so
+	// history, transcript pages and admission answer from nothing — the released
+	// runtime's cached store must not keep serving the handed-off conversation.
+	c.rebindTurnEvents("")
+	return nil
+}
+
+// releaseSessionRuntimeBinding is the final controller teardown wrapper. It
+// keeps the handoff-only release available without making normal Close paths
+// responsible for surfacing a late binding-release error.
+func (c *Controller) releaseSessionRuntimeBinding(service *session.Service) {
+	if err := c.ReleaseSessionRuntimeBinding(); err != nil {
+		slog.Warn("controller: release exclusive v3 binding", "err", err)
 	} else if service == nil {
 		slog.Warn("controller: exclusive v3 runtime has no service binding")
 	}
@@ -196,7 +243,12 @@ func (c *Controller) OpenSession(ctx context.Context, ref session.SessionRef) (s
 		return session.SessionRef{}, errors.New("v3 session service is unavailable")
 	}
 	if current != nil && current.Ref() == ref {
-		return ref, nil
+		// After a reclaim the controller still renders a runtime whose store
+		// the service closed, so the next turn append would hit a closed
+		// recovery database. Only a still-active instance may skip the re-open.
+		if active, ok := service.Runtime(ref); ok && active == current {
+			return ref, nil
+		}
 	}
 	binding, err := service.Open(ctx, ref)
 	if errors.Is(err, session.ErrUnsupportedVersion) {
@@ -370,6 +422,7 @@ func (c *Controller) publishSessionRuntimeWithCommit(ctx context.Context, candid
 	c.sessionBinding = binding
 	c.exclusiveSession = true
 	c.v3BindingMu.Unlock()
+	c.bindAttachmentService()
 	c.bindExecutionControl()
 	if old != nil && old != candidate {
 		old.UnbindExecution(oldGen)
@@ -512,16 +565,27 @@ type SessionRotationPlan struct {
 // directory; new leaves it available in history.
 func (c *Controller) rotateExclusiveSession(clear bool) error {
 	service, runtime, _ := c.v3Binding()
-	if service == nil || runtime == nil {
+	if service == nil {
 		return errors.New("exclusive v3 session runtime is unavailable")
-	}
-	oldRef := runtime.Ref()
-	if err := c.Snapshot(); err != nil {
-		return err
 	}
 	reason := "new"
 	if clear {
 		reason = "clear"
+	}
+	if runtime == nil {
+		// A handoff released the identity without a replacement: with no source
+		// to flush, end or plan from, allocation is the whole rotation — the
+		// step the next turn would otherwise take lazily.
+		ref, err := c.bindFreshSessionWithCommit(context.Background(), session.CreateOptions{}, nil)
+		if err != nil {
+			return err
+		}
+		c.startExclusiveSession(ref, reason)
+		return nil
+	}
+	oldRef := runtime.Ref()
+	if err := c.Snapshot(); err != nil {
+		return err
 	}
 	if err := c.extensionSessionPhase(context.Background(), extension.PointSessionRotate, dispatch.PhaseRotate, oldRef.SessionID); err != nil {
 		return err
@@ -546,6 +610,13 @@ func (c *Controller) rotateExclusiveSession(clear bool) error {
 			return fmt.Errorf("new session %s is active; delete cleared session: %w", ref.SessionID, err)
 		}
 	}
+	c.startExclusiveSession(ref, reason)
+	return nil
+}
+
+// startExclusiveSession runs the session-start side of a rotation once the
+// fresh identity is published.
+func (c *Controller) startExclusiveSession(ref session.SessionRef, reason string) {
 	c.ClearGoal()
 	c.mu.Lock()
 	c.startedOnce = true
@@ -554,5 +625,4 @@ func (c *Controller) rotateExclusiveSession(clear bool) error {
 	c.enqueueHookContexts(c.hooks.SessionStart(context.Background(), reason))
 	c.extensionSessionEvent(extension.PointSessionStart, dispatch.PhaseStart, ref.SessionID)
 	c.clearSessionWriteAccess()
-	return nil
 }

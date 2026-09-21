@@ -13,7 +13,6 @@ import (
 	"github.com/joho/godotenv"
 
 	"reasonix/internal/fileutil"
-	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 const (
@@ -671,7 +670,7 @@ func storeCredentialsInFile(path string, assignments map[string]string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("credentials store unavailable")
 	}
-	lines, err := readCredentialFileLines(path)
+	lines, err := readCredentialFileLinesForWrite(path)
 	if err != nil {
 		return err
 	}
@@ -728,7 +727,7 @@ func isBareDotEnvValue(value string) bool {
 }
 
 func removeCredentialFromFile(path, key string) error {
-	lines, err := readCredentialFileLines(path)
+	lines, err := readCredentialFileLinesForWrite(path)
 	if err != nil {
 		return err
 	}
@@ -744,21 +743,6 @@ func removeCredentialFromFile(path, key string) error {
 	}
 	out = append(out, credentialClearedPrefix+key)
 	return writeCredentialFileLines(path, out)
-}
-
-func readCredentialFileLines(path string) ([]string, error) {
-	data, err := readCredentialFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	text := strings.TrimRight(string(fileencoding.DecodeToUTF8(data)), "\n")
-	if text == "" {
-		return nil, nil
-	}
-	return strings.Split(text, "\n"), nil
 }
 
 func writeCredentialFileLines(path string, lines []string) error {

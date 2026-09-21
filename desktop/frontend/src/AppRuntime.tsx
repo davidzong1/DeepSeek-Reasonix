@@ -22,6 +22,7 @@ import { useAppShellStores } from "./app-runtime/useAppShellStores";
 import { useAppSessionComposition } from "./app-runtime/useAppSessionComposition";
 import { useAppNavigationComposition } from "./app-runtime/useAppNavigationComposition";
 import { useSessionDraftSurface } from "./app-runtime/useSessionDraftSurface";
+import { draftLandingTargetForTab, type DraftLandingTarget } from "./app-runtime/draftLandingTarget";
 import { useRetiredProjectTreeUiMigration } from "./app-runtime/useLocalUiLifecycles";
 import logoSymbol from "./assets/logo-symbol.svg";
 
@@ -71,6 +72,8 @@ export function AppRuntime() {
   const activeSessionIdentity = sessionIdentityKey({
     tabId: activeTabId,
     session: activeTab?.session ?? state.meta?.session,
+    sessionId: activeTab?.sessionId,
+    remote: activeTab?.remote,
     sessionPath: activeTab?.sessionPath ?? state.meta?.sessionPath,
     sessionGeneration: activeTab?.sessionGeneration ?? state.meta?.sessionGeneration ?? state.sessionGen,
     scope: activeTab?.scope,
@@ -87,7 +90,7 @@ export function AppRuntime() {
       ...tabMetas.filter(tab => tab.id !== activeTabId).map(tab => ({
         tabId: tab.id,
         sessionKey: sessionIdentityKey({ tabId: tab.id, sessionPath: tab.sessionPath,
-          session: tab.session, sessionGeneration: tab.sessionGeneration,
+          session: tab.session, sessionId: tab.sessionId, remote: tab.remote, sessionGeneration: tab.sessionGeneration,
           scope: tab.scope, workspaceRoot: tab.workspaceRoot, topicId: tab.topicId }),
       })),
     ],
@@ -127,6 +130,13 @@ export function AppRuntime() {
     isNavigationIntentCurrent: runtime.navigation.isNavigationIntentCurrent,
   });
   useEffect(() => { void drafts.initializeEmptySurface(); }, [drafts.initializeEmptySurface]);
+  // Archiving or closing the last formal surface leaves no tab behind (the
+  // backend opens no replacement blank session), so the draft of the workspace
+  // the user was working in becomes the landing surface.
+  const lastFormalTargetRef = useRef<DraftLandingTarget | null>(null);
+  useEffect(() => {
+    if (activeTab) lastFormalTargetRef.current = draftLandingTargetForTab(activeTab);
+  }, [activeTab]);
   const hadFormalSurfaceRef = useRef(false);
   useEffect(() => {
     if (tabMetas.length > 0) {
@@ -135,7 +145,8 @@ export function AppRuntime() {
     }
     if (!hadFormalSurfaceRef.current) return;
     hadFormalSurfaceRef.current = false;
-    void drafts.open("global", "");
+    const target = lastFormalTargetRef.current ?? draftLandingTargetForTab();
+    void drafts.open(target.scope, target.workspaceRoot);
   }, [drafts.open, tabMetas.length]);
 
   const session = useAppSessionComposition({

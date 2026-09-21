@@ -6023,14 +6023,9 @@ func TestLegacyDeleteLastTopicSessionFallbackDoesNotReuseDeletedTopic(t *testing
 	if _, ok := app.tabs["only"]; ok {
 		t.Fatalf("deleted topic session tab should be removed")
 	}
-	for id, tab := range app.tabs {
-		if tab.TopicID == topicID {
-			t.Fatalf("fallback tab %q reused deleted topic %q", id, topicID)
-		}
-		if strings.TrimSpace(tab.TopicID) != "" {
-			t.Fatalf("fallback tab %q topic ID = %q, want transient unindexed blank", id, tab.TopicID)
-		}
-	}
+	// The deleted topic owns no content, so nothing is re-activated and no
+	// replacement blank session is created: the frontend lands on the draft.
+	assertNoVisibleRuntime(t, app)
 	trashPath := filepath.Join(dir, sessionTrashDir, "delete-last.jsonl", "delete-last.jsonl")
 	if _, err := os.Stat(trashPath); err != nil {
 		t.Fatalf("deleted session should be moved to trash: %v", err)

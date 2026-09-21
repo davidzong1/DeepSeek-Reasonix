@@ -34,6 +34,18 @@ type Tool interface {
 	ReadOnly() bool
 }
 
+// IsShellToolName reports current and compatibility names for the built-in
+// command shell. It keeps policy, evidence, and UI routing stable while Windows
+// exposes pwsh and older sessions continue to contain bash calls.
+func IsShellToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "pwsh", "powershell", "shell":
+		return true
+	default:
+		return false
+	}
+}
+
 // CallClass is a pure, argument-aware dispatch classification. Generation is a
 // target schema/lifecycle fingerprint checked again by the execution adapter;
 // an empty generation keeps the call on the serial path.
@@ -69,6 +81,12 @@ type BatchClassifier interface {
 // permissions, hooks, leases, or Execute so stale transcripts fail closed.
 type ContextualTool interface {
 	ProviderVisible(context.Context) bool
+}
+
+// CapabilityCatalogHidden marks compatibility-only routes that remain
+// executable for replay but must not be suggested to new model turns.
+type CapabilityCatalogHidden interface {
+	HiddenFromCapabilityCatalog() bool
 }
 
 // Previewer is an optional capability a writer Tool may implement: given the
@@ -421,6 +439,28 @@ func (r *Registry) Add(t Tool) {
 	r.schemaRev.Add(1)
 }
 
+// Remove unregisters one exact tool name. Compatibility routing remains the
+// responsibility of ResolveCall, so an old name can stay executable without
+// appearing in schemas or capability catalogs.
+func (r *Registry) Remove(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	delete(r.tools, name)
+	delete(r.canon, name)
+	for i, registered := range r.order {
+		if registered == name {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+	delete(r.providerVisible, name)
+	r.schemaRev.Add(1)
+	return true
+}
+
 // MCPNamePrefix is the namespace every MCP tool name carries: the
 // model-visible name is "mcp__<server>__<tool>".
 const MCPNamePrefix = "mcp__"
@@ -532,6 +572,14 @@ func (r *Registry) ResolveCall(name string) (resolved Tool, canonical string, ca
 
 	if t, ok := r.tools[name]; ok {
 		return t, name, nil
+	}
+	if IsShellToolName(name) {
+		if t, ok := r.tools["pwsh"]; ok {
+			return t, "pwsh", nil
+		}
+		if t, ok := r.tools["bash"]; ok {
+			return t, "bash", nil
+		}
 	}
 	matches := map[string]Tool{}
 	for canonicalName, t := range r.tools {

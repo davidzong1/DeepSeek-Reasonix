@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
@@ -153,11 +152,17 @@ func (a *App) aiRenameLegacySession(ctx context.Context, target SessionTarget) (
 	return title, nil
 }
 
-func (a *App) aiRenameCanonicalSession(operationCtx context.Context, target SessionTarget) (string, error) {
+// The model round trip is already bounded where it is made: control's session
+// title call gives the provider its own budget. This operation therefore runs
+// on the caller's cancellation only, like aiRenameLegacySession. A second
+// host-level wall clock here would also bound the durable snapshot, the flush,
+// the history projection TitleMessages builds and the conditional commit —
+// work whose cost scales with the conversation, not with provider health — so
+// a long session on a slow host would lose an already generated title to a
+// deadline that belongs to the provider.
+func (a *App) aiRenameCanonicalSession(ctx context.Context, target SessionTarget) (string, error) {
 	service := a.desktopSessionService("")
 	ref := target.SessionRef
-	ctx, cancel := context.WithTimeout(operationCtx, 30*time.Second)
-	defer cancel()
 	snapshot, err := service.Query().Snapshot(ctx, ref)
 	if err != nil {
 		return "", fmt.Errorf("AI rename session: read current title: %w", err)
@@ -200,9 +205,7 @@ func (a *App) aiRenameCanonicalSession(operationCtx context.Context, target Sess
 	}); err != nil {
 		return "", sessionOperationConflict(err)
 	}
-	a.updateCanonicalSessionTitle(ref, title)
-	a.invalidatePromptHistoryCache()
-	a.emitProjectTreeChanged()
+	a.publishCanonicalSessionTitle(ref, title)
 	return title, nil
 }
 

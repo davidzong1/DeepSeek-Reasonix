@@ -1,11 +1,12 @@
 package hostrpc
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 
-	"reasonix/desktop/internal/instanceidentity"
 	"reasonix/internal/extension/rpcwire"
+	"reasonix/internal/pathidentity"
 )
 
 // Error codes from docs/DESKTOP_HOST_PROTOCOL.md. Business errors raised by
@@ -62,15 +63,26 @@ type HelloInstance struct {
 
 // HelloResult is the service's desktop/hello response.
 type HelloResult struct {
-	ProtocolVersion    int             `json:"protocolVersion"`
-	ContractDigest     string          `json:"contractDigest"`
-	Service            ServiceInfo     `json:"service"`
-	RuntimeGeneration  string          `json:"runtimeGeneration"`
-	Resources          Resources       `json:"resources"`
-	Window             *WindowGeometry `json:"window,omitempty"`
-	RunID              string          `json:"runId,omitempty"`
-	IncidentID         string          `json:"incidentId,omitempty"`
-	DiagnosticsEnabled bool            `json:"diagnosticsEnabled"`
+	ProtocolVersion   int             `json:"protocolVersion"`
+	ContractDigest    string          `json:"contractDigest"`
+	Service           ServiceInfo     `json:"service"`
+	RuntimeGeneration string          `json:"runtimeGeneration"`
+	Resources         Resources       `json:"resources"`
+	Window            *WindowGeometry `json:"window,omitempty"`
+	Instance          *InstanceInfo   `json:"instance,omitempty"`
+	// The shell validates both identifiers as present strings and accepts
+	// empty values when diagnostics are disabled; omitting the keys is a
+	// handshake failure, so they must never carry omitempty.
+	RunID              string `json:"runId"`
+	IncidentID         string `json:"incidentId"`
+	DiagnosticsEnabled bool   `json:"diagnosticsEnabled"`
+}
+
+// InstanceInfo extends the handshake without invalidating older shells.
+type InstanceInfo struct {
+	IdentityVersion int    `json:"identityVersion"`
+	IdentityDigest  string `json:"identityDigest"`
+	LegacyID        string `json:"legacyId"`
 }
 
 type ShutdownParams struct {
@@ -154,12 +166,22 @@ func validateHello(p HelloParams, digest string, id Identity) error {
 			fmt.Sprintf("shell build %s does not match service build %s", p.Build.Version, id.Version),
 			map[string]any{"expected": id.Version, "got": p.Build.Version})
 	}
-	shellHome := instanceidentity.CanonicalHome(p.Instance.Home)
-	serviceHome := instanceidentity.CanonicalHome(id.Home)
-	if shellHome == "" || shellHome != serviceHome {
+	same, identityErr := pathidentity.Same(p.Instance.Home, id.Home, pathidentity.Options{FollowLeaf: true})
+	if identityErr != nil || !same {
 		return mismatch(CodeInstanceMismatch, "instance_mismatch",
 			"shell data home does not match the service data home",
-			map[string]any{"expected": serviceHome, "got": shellHome})
+			map[string]any{"reason": identityReason(identityErr)})
 	}
 	return nil
+}
+
+func identityReason(err error) string {
+	if err == nil {
+		return "different_directory"
+	}
+	var identityErr *pathidentity.Error
+	if errors.As(err, &identityErr) {
+		return string(identityErr.Kind)
+	}
+	return "unknown"
 }

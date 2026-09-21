@@ -35,7 +35,8 @@ func TestIndependentLegacyHeadsAdoptOneWithoutHidingSibling(t *testing.T) {
 	if len(rows) != 2 || projectNodeSessionKey(rows[0]) == projectNodeSessionKey(rows[1]) {
 		t.Fatalf("heads=%+v", rows)
 	}
-	// Grouping a source is metadata-only; pinning is an explicit adoption.
+	// Display metadata stays lightweight and is transferred when the selected
+	// source is explicitly prepared.
 	if err := app.SetSessionPinned(SessionSelector{Source: rows[0].Source}, true); err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +44,23 @@ func TestIndependentLegacyHeadsAdoptOneWithoutHidingSibling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.SourceMappings) != 1 {
-		t.Fatalf("mapped more than requested head: %+v", state.SourceMappings)
+	if len(state.SourceMappings) != 0 {
+		t.Fatalf("pinning converted historical content: %+v", state.SourceMappings)
+	}
+	app.historicalImports.mu.Lock()
+	app.historicalImports.initialize(app.bootContext())
+	app.historicalImports.sources[rows[0].Source.SourceKey] = historicalSource{path: path, format: "legacy", scope: "global", head: rows[0].Source.HeadID}
+	app.historicalImports.views[rows[0].Source.SourceKey] = historicalImportViewFromSource(rows[0].Source.SourceKey, app.historicalImports.sources[rows[0].Source.SourceKey])
+	app.historicalImports.mu.Unlock()
+	if _, err := app.ImportHistoricalSession(rows[0].Source.SourceKey); err != nil {
+		t.Fatal(err)
+	}
+	state, err = app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
 	if _, ok := state.SourceMappings[rows[0].Source.SourceKey]; !ok {
-		t.Fatal("requested head was not adopted")
+		t.Fatal("explicit preparation did not adopt the selected head")
 	}
 	if _, ok := state.SourceMappings[rows[1].Source.SourceKey]; ok {
 		t.Fatal("sibling was adopted")

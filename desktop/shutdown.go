@@ -217,12 +217,15 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 
 	c.mu.Lock()
 	frozen := c.frozen
+	reason := c.status.Reason
 	c.mu.Unlock()
 	if !frozen {
-		c.setPhase("preparing")
-		a.lifecycle.tracker.markShutdown(c.status.Reason, "preparing", "in_progress")
+		c.setPhase("cancelling_background")
+		a.lifecycle.tracker.markShutdown(reason, "cancelling_background", "in_progress")
 		a.shuttingDown.Store(true)
+		a.stopHistoricalImports()
 		a.cancelSessionExports()
+		a.cancelSessionNavigation()
 		a.cancelAllTabBuilds()
 		a.stopSessionCatalog(250 * time.Millisecond)
 		c.mu.Lock()
@@ -232,8 +235,12 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 
 	// Use the normal runtime lock order and never hold App.mu while invoking a
 	// controller. This prevents callback re-entry deadlocks during snapshots.
+	c.setPhase("waiting_runtime_rebuild")
+	a.lifecycle.tracker.markShutdown(reason, "waiting_runtime_rebuild", "in_progress")
 	a.runtimeRebuildMu.Lock()
 	defer a.runtimeRebuildMu.Unlock()
+	c.setPhase("waiting_runtime_admission")
+	a.lifecycle.tracker.markShutdown(reason, "waiting_runtime_admission", "in_progress")
 	a.runtimeAdmissionMu.Lock()
 	defer a.runtimeAdmissionMu.Unlock()
 
@@ -257,7 +264,7 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 	}
 	c.mu.Lock()
 	items := append([]desktopShutdownItem(nil), c.items...)
-	reason := c.status.Reason
+	reason = c.status.Reason
 	c.mu.Unlock()
 
 	c.setPhase("saving")

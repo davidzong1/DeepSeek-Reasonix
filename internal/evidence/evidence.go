@@ -569,7 +569,7 @@ func (l *Ledger) HasSuccessfulDeliverySignoffAfter(after int) bool {
 			}
 			for j := start; j < i; j++ {
 				candidate := receipts[j]
-				if candidate.Success && candidate.ToolName == "bash" && CommandMatches(command, candidate.Command) {
+				if candidate.Success && isShellToolName(candidate.ToolName) && CommandMatches(command, candidate.Command) {
 					return true
 				}
 			}
@@ -618,7 +618,7 @@ func (l *Ledger) HasHostReviewCoverageAfter(after int, requiredPaths []string) b
 	}
 	for i := start; i < len(receipts); i++ {
 		r := receipts[i]
-		if r.Success && r.ToolName == "bash" && r.OutputBytes > 0 && commandShowsWholeGitDiff(r.Command) {
+		if r.Success && isShellToolName(r.ToolName) && r.OutputBytes > 0 && commandShowsWholeGitDiff(r.Command) {
 			return true
 		}
 	}
@@ -643,7 +643,7 @@ func (l *Ledger) HasHostReviewCoverageAfter(after int, requiredPaths []string) b
 					}
 				}
 			}
-			if !covered && r.ToolName == "bash" && r.OutputBytes > 0 && commandShowsContentForPath(r.Command, needle) {
+			if !covered && isShellToolName(r.ToolName) && r.OutputBytes > 0 && commandShowsContentForPath(r.Command, needle) {
 				covered = true
 			}
 			if covered {
@@ -691,10 +691,10 @@ func receiptsReviewChanges(receipts []Receipt, start, end, mutationIndex int) bo
 		if !r.Success {
 			continue
 		}
-		if r.ToolName == "bash" && commandReviewsChanges(r.Command) {
+		if isShellToolName(r.ToolName) && commandReviewsChanges(r.Command) {
 			return true
 		}
-		if r.ToolName == "bash" && len(wanted) > 0 && !bashMayMutate(r.Command) && commandMentionsPaths(r.Command, wanted) {
+		if isShellToolName(r.ToolName) && len(wanted) > 0 && !bashMayMutate(r.Command) && commandMentionsPaths(r.Command, wanted) {
 			return true
 		}
 		if !r.Read {
@@ -935,7 +935,7 @@ func (l *Ledger) HasSuccessfulVerificationCommandAfter(after int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.receipts[max(after+1, 0):] {
-		if r.Success && r.ToolName == "bash" && bashCommandIsVerification(r.Command) {
+		if r.Success && isShellToolName(r.ToolName) && bashCommandIsVerification(r.Command) {
 			return true
 		}
 	}
@@ -1248,7 +1248,7 @@ func ReceiptFromToolCall(toolName string, args json.RawMessage, success bool, re
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(args, &fields); err == nil {
-		if toolName == "bash" {
+		if isShellToolName(toolName) {
 			r.Command = stringField(fields, "command")
 		}
 		if toolName == "task" {

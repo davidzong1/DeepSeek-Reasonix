@@ -415,16 +415,19 @@ func TestTrySubagentRegistryIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestTrySubagentRegistryBashEnforcesReadOnlyPolicy(t *testing.T) {
+func TestTrySubagentRegistryShellEnforcesReadOnlyPolicy(t *testing.T) {
 	reg := trySubagentToolRegistry(config.Default(), t.TempDir(), nil)
-	bash, ok := reg.Get("bash")
+	shell, ok := reg.Get("bash")
 	if !ok {
-		t.Fatalf("try registry should keep bash; got %v", reg.Names())
+		shell, ok = reg.Get("pwsh")
 	}
-	if !bash.ReadOnly() {
-		t.Fatal("try bash should report ReadOnly=true (restricted read-only wrapper)")
+	if !ok {
+		t.Fatalf("try registry should keep the native shell; got %v", reg.Names())
 	}
-	out, err := bash.Execute(context.Background(), json.RawMessage(`{"command":"rm -rf /tmp/x"}`))
+	if !shell.ReadOnly() {
+		t.Fatal("try shell should report ReadOnly=true (restricted read-only wrapper)")
+	}
+	out, err := shell.Execute(context.Background(), json.RawMessage(`{"command":"rm -rf /tmp/x"}`))
 	msg, blocked := tool.BlockedMessage(err)
 	if low := strings.ToLower(msg); !blocked || (!strings.Contains(low, "plan mode") && !strings.Contains(low, "blocked") && !strings.Contains(low, "not allowed")) {
 		t.Fatalf("write-capable command should be refused by the read-only policy, got %q, %v", out, err)
@@ -444,13 +447,8 @@ func TestTrySubagentRegistryHonorsAllowedTools(t *testing.T) {
 	}
 }
 
-// TestTrySubagentRegistryResolvesRelativePathsAgainstWorkspaceRoot pins the
-// multi-workspace contract: the try registry's tools must resolve relative
-// paths against the ACTIVE TAB's root, not the desktop process CWD. The
-// process working directory is global and, in a multi-tab session, points at
-// whichever project the app happened to start in — a try run resolving
-// against it could read (and send to the provider) a different project than
-// the one on screen.
+// Try tools resolve relative paths against the active tab, not the process CWD;
+// otherwise a multi-tab run could send a different project's files upstream.
 func TestTrySubagentRegistryResolvesRelativePathsAgainstWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte("workspace-bound"), 0o644); err != nil {

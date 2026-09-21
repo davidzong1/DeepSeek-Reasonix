@@ -391,13 +391,10 @@ func (a *App) archiveCanonicalSessionWithOperation(ref session.SessionRef, opera
 	if !ok {
 		return SessionTarget{}, errTopicArchiveBusy
 	}
-	fallback, err := a.archiveSessionRefsWithOperation([]session.SessionRef{ref}, operationID)
+	err := a.archiveSessionRefsWithOperation([]session.SessionRef{ref}, operationID)
 	release()
 	if err != nil {
 		return SessionTarget{}, err
-	}
-	if fallback.needs {
-		_ = a.openFallbackRuntime(fallback)
 	}
 	a.emitProjectTreeChanged()
 	target, err := a.resolveCanonicalSessionTargetState(ref, "", true)
@@ -502,11 +499,17 @@ func (a *App) MoveWorkspace(workspaceID, beforeWorkspaceID string) error {
 // browser. The existing controller creation transaction still owns prompt/model
 // seeding; this method only resolves a durable Workspace identity to that flow.
 func (a *App) CreateSession(workspaceID string) (session.SessionRef, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == workspacestate.GlobalWorkspaceID {
+		if _, err := a.ensureDesktopWorkspace(context.Background(), "global", ""); err != nil {
+			return session.SessionRef{}, err
+		}
+	}
 	state, err := a.workspaceRegistry().Load(context.Background())
 	if err != nil {
 		return session.SessionRef{}, err
 	}
-	workspace, ok := state.Workspaces[strings.TrimSpace(workspaceID)]
+	workspace, ok := state.Workspaces[workspaceID]
 	if !ok {
 		return session.SessionRef{}, workspacestate.ErrWorkspaceNotFound
 	}
@@ -706,11 +709,18 @@ func (a *App) openSessionWithNavigation(ref session.SessionRef, navigationSequen
 	if a.desktopSessions.navigationSeq.Load() != navigationSequence {
 		return HistoryPage{}, errSessionNavigationSuperseded
 	}
-	tab, ctrl := a.tabAndCtrlByID("")
-	if tab == nil {
-		return HistoryPage{}, errors.New("workspace is not ready")
+	workspace, err := a.canonicalSessionWorkspace(a.bootContext(), ref)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	tab, ctrl, created, err := a.surfaceForCanonicalSession(ref, workspace)
+	if err != nil {
+		return HistoryPage{}, err
 	}
 	if _, err := a.resumeCanonicalSessionForTranscript(tab, ctrl, sessionRoute(ref.SessionID), defaultHistoryPageTurns, false, navigationSequence); err != nil {
+		if created {
+			a.discardUnboundSurface(tab)
+		}
 		return HistoryPage{}, err
 	}
 	// runtime:rebuilt intentionally has no reload semantics. SessionRef opening
@@ -731,27 +741,23 @@ func (a *App) RenameCanonicalSession(ref session.SessionRef, title string) error
 	return a.renameCanonicalSessionTarget(target, title)
 }
 
-// SetSessionPinned updates one durable session, never all members of its topic.
-// An older path is adopted through the existing journal before storing the
-// session-specific preference.
+// SetSessionPinned updates canonical presentation directly. A historical
+// source keeps its lightweight topic preference without converting content;
+// import transfers that presentation when the target is committed.
 func (a *App) SetSessionPinned(selector SessionSelector, pinned bool) error {
-	target, err := a.resolveSessionMutationTarget(selector)
+	target, err := a.resolveSessionTarget(selector)
 	if err != nil {
 		return err
 	}
-	if target.SessionRef.SessionID == "" && target.SessionPath != "" {
-		workspaceID, ensureErr := a.ensureDesktopWorkspace(a.bootContext(), target.Scope, target.WorkspaceRoot)
-		if ensureErr != nil {
-			return ensureErr
-		}
-		if err = a.migrateLegacySession(a.bootContext(), target.SessionPath,
-			desktopMigrationSource{scope: target.Scope, workspaceRoot: target.WorkspaceRoot}, workspaceID); err != nil {
+	if target.SessionRef.SessionID == "" && target.Source != nil {
+		value := pinned
+		if err := a.saveHistoricalSourcePresentation(target.Source.SourceKey, func(presentation *historicalSourcePresentation) {
+			presentation.Pinned = &value
+		}); err != nil {
 			return err
 		}
-		target, err = a.resolveSessionTarget(SessionSelector{SessionPath: target.SessionPath})
-		if err != nil {
-			return err
-		}
+		a.emitProjectTreeMetadataChanged()
+		return nil
 	}
 	if target.SessionRef.SessionID == "" {
 		return newSessionOperationError(sessionOperationNoMessages, "This empty session has no durable preference yet.")
@@ -783,7 +789,6 @@ func (a *App) renameCanonicalSessionTarget(target SessionTarget, title string) e
 	if err != nil {
 		return err
 	}
-	a.updateCanonicalSessionTitle(ref, strings.TrimSpace(title))
-	a.emitProjectTreeChanged()
+	a.publishCanonicalSessionTitle(ref, title)
 	return nil
 }

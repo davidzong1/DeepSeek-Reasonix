@@ -1163,8 +1163,6 @@ func canonicalMCPRuntimeTransport(raw string) string {
 
 func canonicalMCPRuntimeSandbox(in sandbox.Spec) sandbox.Spec {
 	in.WriteRoots = nonEmptyStrings(in.WriteRoots)
-	in.ReadRoots = nonEmptyStrings(in.ReadRoots)
-	in.AppContainerWriteRoots = nonEmptyStrings(in.AppContainerWriteRoots)
 	in.ForbidReadRoots = nonEmptyStrings(in.ForbidReadRoots)
 	return in
 }

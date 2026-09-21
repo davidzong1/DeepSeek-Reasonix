@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 )
 
@@ -37,6 +38,7 @@ func (a *App) retireRemoteTabGeneration(tabID string, gen uint64) {
 	tab.client = nil
 	tab.base = ""
 	tab.token = ""
+	closeRemoteTabProvisionalRouteLocked(tab)
 	a.remoteTabMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -68,12 +70,25 @@ func (a *App) reconnectRemoteTabGeneration(tabID string, gen uint64) bool {
 	tab.token = ""
 	tab.state = "reconnecting"
 	tab.err = ""
+	closeRemoteTabProvisionalRouteLocked(tab)
 	a.remoteTabMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "reconnecting"})
 	return startRetry
+}
+
+// startRemoteTabReattach retires a dead pump generation and hands the tab to
+// the reattach retry loop. It is the single recovery path for every stream
+// failure — mid-stream EOF, a refused replacement connection, or a non-200
+// /events response — so a healing tunnel always gets retried instead of
+// parking a healthy tab in a terminal state. Callers hold no tab locks.
+func (a *App) startRemoteTabReattach(tabID string, gen uint64) {
+	if startRetry := a.reconnectRemoteTabGeneration(tabID, gen); startRetry {
+		log.Printf("[remote] remoteTabPump: DIED tab=%s gen=%d — reattaching", tabID, gen)
+		a.goRemoteTabSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })
+	}
 }
 
 func (a *App) emitRemoteTabStateForGeneration(tabID string, gen uint64, state, errMsg string) bool {
@@ -164,7 +179,32 @@ func (a *App) installRemoteTabAttachPump(ctx context.Context, tabID string, tab 
 	pumpCtx, cancelPump := context.WithCancel(ctx)
 	tab.cancel = cancelPump
 	a.remoteTabMu.Unlock()
+	// Only an attach that committed a session route announces itself here.
+	if installRoute && targetPath != "" {
+		a.publishRemoteTabAttachIdentityLocked(tabID, tab, gen)
+	}
 	tab.routeEventMu.Unlock()
 
 	return pumpCtx, gen, attachPathRevision, nil
+}
+
+// publishRemoteTabAttachIdentityLocked announces the tab once its route,
+// client, and capabilities are live but before the foreground rotation
+// starts, so history-first hydration can read the persisted window during
+// /resume. Only an attach that committed a session route owns such a window;
+// a routeless attach (a fresh session) must stay silent, because the first
+// remote-tab:updated of a bootstrap is what the sidebar re-pulls its brand-new
+// project group on, and a connecting meta there carries no session to list.
+// The caller holds the tab's publication fence, so this meta cannot overtake
+// or be overtaken by another publication for the same tab.
+func (a *App) publishRemoteTabAttachIdentityLocked(tabID string, tab *remoteTab, gen uint64) {
+	a.remoteTabMu.Lock()
+	current := a.remoteTabs[tabID]
+	if current != tab || current.gen != gen {
+		a.remoteTabMu.Unlock()
+		return
+	}
+	meta := remoteTabMetaLocked(current)
+	a.remoteTabMu.Unlock()
+	a.emitRemoteEvent("remote-tab:updated", meta)
 }

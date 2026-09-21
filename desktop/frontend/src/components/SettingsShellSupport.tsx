@@ -1,39 +1,14 @@
 import { SettingsSelect } from "./SettingsSelect";
-import { CircleAlert, CircleCheck, ExternalLink, RefreshCw } from "lucide-react";
-import { openExternal } from "../lib/bridge";
+import { CircleAlert, CircleCheck, RefreshCw } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { asArray } from "../lib/array";
 import type { SandboxView, ShellCapabilityView } from "../lib/types";
 import { CopyButton } from "./CopyButton";
 
-const GIT_FOR_WINDOWS_DOWNLOAD_URL = "https://git-scm.com/download/win";
-
-export function gitForWindowsDownloadURL(candidate?: string): string {
-  try {
-    const parsed = new URL(candidate ?? "");
-    if (
-      parsed.protocol === "https:"
-      && parsed.hostname.toLowerCase() === "git-scm.com"
-      && parsed.port === ""
-      && parsed.username === ""
-      && parsed.password === ""
-      && parsed.pathname === "/download/win"
-      && parsed.search === ""
-      && parsed.hash === ""
-    ) {
-      return parsed.href;
-    }
-  } catch {
-    // Fall through to the trusted built-in target.
-  }
-  return GIT_FOR_WINDOWS_DOWNLOAD_URL;
-}
-
 // The Sandbox settings section's shell surface: interpreter preference, the
-// current session's bound shell vs what a reload would pick, detection, and
-// the Windows-only Git for Windows manual repair link. Package managers are
-// never launched from this surface; after repairing manually, the user chooses
-// when to re-detect and reload the current session.
+// current session's bound shell vs what a reload would pick, and diagnostics.
+// Windows exposes native PowerShell runtimes only; legacy Bash discovery stays
+// behind compatibility code and is not presented as a supported Agent runtime.
 
 function effectiveShellLabel(value: string, t: ReturnType<typeof useT>): string {
   switch (value) {
@@ -58,6 +33,32 @@ function capabilityLabel(id: string, t: ReturnType<typeof useT>): string {
     case "git": return t("settings.gitCapability");
     default: return t("settings.effectiveShellBash");
   }
+}
+
+function visibleCapabilities(capabilities: ShellCapabilityView[], windows: boolean): ShellCapabilityView[] {
+  return capabilities.filter(({ id }) => windows
+    ? id === "pwsh" || id === "powershell"
+    : id === "bash" || id === "zsh" || id === "sh");
+}
+
+function selectedPreference(preference: string, windows: boolean): string {
+  const normalized = preference.trim().toLowerCase();
+  if (windows) return normalized === "pwsh" || normalized === "powershell" ? normalized : "auto";
+  return normalized === "bash" ? "bash" : "auto";
+}
+
+function ShellRuntimeValue({ shell, capabilities, t }: {
+  shell: string;
+  capabilities: ShellCapabilityView[];
+  t: ReturnType<typeof useT>;
+}) {
+  const capability = capabilities.find(({ id }) => id === shell);
+  return (
+    <div className="shell-runtime">
+      <span>{effectiveShellLabel(shell, t)}</span>
+      {capability?.path && <code>{capability.path}</code>}
+    </div>
+  );
 }
 
 function RepairCard({ message, guidance, busy, reloadSession }: {
@@ -128,67 +129,104 @@ export function ShellInterpreterFields({
   reloadSession: () => void;
 }) {
   const t = useT();
-  const capabilities = asArray(sb.shellCapabilities);
-  const gitBash = capabilities.find((cap) => cap.id === "git-bash");
-  const git = sb.gitCapability ?? null;
-  const bashMissing = windows ? !gitBash?.available : !capabilities.some((cap) => cap.id === "bash" && cap.available);
-  const action = windows ? sb.shellInstallAction ?? null : null;
-  const guidance = windows ? null : sb.shellRepairGuidance ?? null;
-  const gitGuidance = windows ? null : sb.gitRepairGuidance ?? null;
-  const nativeFallback = sb.resolvedShell === "zsh" || sb.resolvedShell === "sh";
-  // The manual download entry exists only on Windows; macOS and Linux use
-  // platform-native detect-and-guide cards.
-  const showInstallCard = windows && action != null && !gitBash?.available;
+  const capabilities = visibleCapabilities(asArray(sb.shellCapabilities), windows);
+  const preference = (sb.shell || "auto").trim().toLowerCase();
+  const selected = selectedPreference(preference, windows);
+  const currentShell = String(sb.effectiveShell || selected);
+  const resolvedShell = String(sb.resolvedShell || selected);
+  const autoLabel = windows ? t("settings.shellAutoWindows") : t("settings.shellAuto");
 
   return (
     <>
-      {field(t("settings.shellInterpreter"),
-        <SettingsSelect className="mem-select set-grow" value={sb.shell || "auto"} disabled={busy} onValueChange={(value) => setShell(value)}>
-          <option value="auto">{windows ? t("settings.shellAutoWindows") : t("settings.shellAuto")}</option>
-          {(!windows || sb.shell === "bash") && <option value="bash" disabled={windows}>{windows ? t("settings.shellLegacyBash") : t("settings.shellBash")}</option>}
-          <option value="powershell">{t("settings.shellPowershell")}</option>
-          <option value="pwsh">{t("settings.shellPwsh")}</option>
+      {field(t(windows ? "settings.powershellRuntime" : "settings.shellInterpreter"),
+        <SettingsSelect className="mem-select set-grow" value={preference} selectedLabel={preference === selected ? undefined : autoLabel} disabled={busy} onValueChange={(value) => setShell(value)}>
+          <option value="auto">{autoLabel}</option>
+          {windows ? (
+            <>
+              <option value="pwsh">{t("settings.shellPwsh")}</option>
+              <option value="powershell">{t("settings.shellPowershell")}</option>
+            </>
+          ) : <option value="bash">{t("settings.shellBash")}</option>}
         </SettingsSelect>)}
       {field(t("settings.effectiveShell"),
-        <div className="settings-readonly-field">{effectiveShellLabel(String(sb.effectiveShell || sb.shell || ""), t)}</div>)}
-      {field(t("settings.resolvedShell"),
+        <div className="settings-readonly-field"><ShellRuntimeValue shell={currentShell} capabilities={capabilities} t={t} /></div>)}
+      {sb.shellReloadRequired && field(t("settings.resolvedShell"),
         <div className="settings-readonly-field">
-          {effectiveShellLabel(String(sb.resolvedShell || sb.shell || ""), t)}
-          {sb.shellReloadRequired && (
-            <button type="button" className="btn btn--small set-shell-reload" disabled={busy} onClick={reloadSession}>
-              <RefreshCw size={13} aria-hidden="true" />
-              <span>{t("settings.shellReloadNow")}</span>
-            </button>
-          )}
+          <ShellRuntimeValue shell={resolvedShell} capabilities={capabilities} t={t} />
+          <button type="button" className="btn btn--small set-shell-reload" disabled={busy} onClick={reloadSession}>
+            <RefreshCw size={13} aria-hidden="true" />
+            <span>{t("settings.shellReloadNow")}</span>
+          </button>
         </div>)}
-      {field(t("settings.shellDetection"),
-        <div className="shell-support">
-          <div className="settings-readonly-field shell-support__detection" aria-label={t("settings.shellDetection")}>
-            {capabilities.map((cap) => <DetectionRow key={cap.id} cap={cap} t={t} />)}
-            {git && <DetectionRow cap={git} t={t} />}
-          </div>
-          {showInstallCard && (
-            <div className="shell-support__card">
-              <div className="shell-support__hint">{t("settings.shellInstallManualNotice")}</div>
-              <div className="shell-support__actions">
-                <button type="button" className="btn btn--small" onClick={() => void openExternal(gitForWindowsDownloadURL(action.manualUrl))}>
-                  <ExternalLink size={14} aria-hidden="true" />
-                  <span>{t("settings.shellInstallManualLink")}</span>
-                </button>
-                <button type="button" className="btn btn--small" disabled={busy} onClick={reloadSession}>
-                  <RefreshCw size={13} aria-hidden="true" />
-                  <span>{t("settings.shellRepairReload")}</span>
-                </button>
-              </div>
-            </div>
-          )}
-          {!windows && bashMissing && !nativeFallback && (
-            <RepairCard message={t("settings.shellBashManualRepair")} guidance={guidance} busy={busy} reloadSession={reloadSession} />
-          )}
-          {!windows && git && !git.available && (
-            <RepairCard message={t("settings.gitManualRepair")} guidance={gitGuidance} busy={busy} reloadSession={reloadSession} />
-          )}
-        </div>, true)}
     </>
+  );
+}
+
+export function ShellEnvironmentDetails({
+  sb,
+  windows,
+  busy,
+  effectiveWriteRoots,
+  reloadSession,
+}: {
+  sb: SandboxView;
+  windows: boolean;
+  busy: boolean;
+  effectiveWriteRoots: string[];
+  reloadSession: () => void;
+}) {
+  const t = useT();
+  const capabilities = visibleCapabilities(asArray(sb.shellCapabilities), windows);
+  const git = sb.gitCapability ?? null;
+  const bashMissing = !windows && !capabilities.some((capability) => capability.id === "bash" && capability.available);
+  const nativeFallback = sb.resolvedShell === "zsh" || sb.resolvedShell === "sh";
+  const powershellFallback = windows
+    && selectedPreference(sb.shell || "auto", true) === "auto"
+    && sb.resolvedShell === "powershell"
+    && !capabilities.some((capability) => capability.id === "pwsh" && capability.available);
+  const runtimeMissing = windows
+    ? !capabilities.some((capability) => capability.available)
+    : bashMissing && !nativeFallback;
+  const needsAttention = Boolean(sb.shellReloadRequired || runtimeMissing || nativeFallback || powershellFallback);
+
+  return (
+    <details className="runtime-details" open={needsAttention || undefined}>
+      <summary>{t("settings.runtimeDetails")}</summary>
+      <div>
+        {field(t("settings.shellDetection"),
+          <div className="shell-support">
+            <div className="settings-readonly-field shell-support__detection">
+              {capabilities.map((capability) => <DetectionRow key={capability.id} cap={capability} t={t} />)}
+            </div>
+            {!windows && bashMissing && !nativeFallback && (
+              <RepairCard message={t("settings.shellBashManualRepair")} guidance={sb.shellRepairGuidance ?? null} busy={busy} reloadSession={reloadSession} />
+            )}
+          </div>, true)}
+        {git && field(t("settings.dependencyDetection"),
+          <div className="shell-support">
+            <div className="settings-readonly-field shell-support__detection">
+              <DetectionRow cap={git} t={t} />
+            </div>
+            {!git.available && !windows && (
+              <RepairCard message={t("settings.gitManualRepair")} guidance={sb.gitRepairGuidance ?? null} busy={busy} reloadSession={reloadSession} />
+            )}
+          </div>, true)}
+        {field(t("settings.effectiveWriteRoots"),
+          <div className="set-rules set-rules--readonly">
+            <div className="set-rules__chips">
+              {effectiveWriteRoots.length === 0 && <span className="mem-empty">{t("settings.noEffectiveWriteRoots")}</span>}
+              {effectiveWriteRoots.map((path, index) => (
+                <span className="set-rule set-rule--path" key={`${path}-${index}`}>{path}</span>
+              ))}
+            </div>
+          </div>, true)}
+        <footer>
+          <button type="button" className="btn btn--small" disabled={busy} onClick={reloadSession}>
+            <RefreshCw size={13} aria-hidden="true" />
+            <span>{t("settings.reloadSessionConfig")}</span>
+          </button>
+        </footer>
+      </div>
+    </details>
   );
 }

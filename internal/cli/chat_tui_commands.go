@@ -128,7 +128,7 @@ func (m *chatTUI) runCopyCommand(input string) tea.Cmd {
 	// (or a non-numeric argument) opens the interactive picker instead.
 	arg := strings.TrimSpace(strings.TrimPrefix(input, "/copy"))
 	if n, err := strconv.Atoi(arg); err == nil && n > 0 {
-		msgs := m.ctrl.History()
+		msgs := chatUIDisplayHistory(m.ctrl)
 		parts := copyAssistantParts(msgs)
 		if len(parts) == 0 {
 			m.notice(i18n.M.SlashCopyEmpty)
@@ -165,7 +165,7 @@ func firstLine(s string) string {
 // system messages, reasoning/thinking content, and tool calls/results.
 func (m *chatTUI) runExportCommand(input string) {
 	m.echoLocalCommand(input)
-	msgs := m.ctrl.History()
+	msgs := chatUIDisplayHistory(m.ctrl)
 	if len(msgs) == 0 {
 		m.notice(i18n.M.SlashExportEmpty)
 		return

@@ -1,8 +1,10 @@
+import { isShellToolName } from "./shellToolIdentity";
 import { historyToolStatus } from "./historyToolStatus";
 import { asArray } from "./array";
 import { canonicalMessage } from "./canonicalTranscriptBackend";
 import { historicalResultNotice } from "./completionResultState";
 import { historyNoticeItems } from "./controllerNotices";
+import { appendHistoryAttachmentRefs } from "./historyAttachmentRefs";
 import { historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, summarizeFileDiff } from "./tools";
 import { historyToolError, isReadOnlyTool, type Item } from "./useController";
@@ -92,7 +94,7 @@ function convertRecordBody(
   if (message.role === "user") {
     if (message.content.trim() !== "") {
       items.push({ kind: "user", id, messageId: message.messageId, submissionId: message.submissionId,
-        text: message.content, submitText: message.submitText, createdAt: message.createdAt,
+        text: appendHistoryAttachmentRefs(message.content, message.attachments), submitText: message.submitText, createdAt: message.createdAt,
         checkpointTurn: message.checkpointTurn, historyTurn: rec.turn > 0 ? rec.turn : undefined });
     }
     return { items, claims, unresolvedIds, pendingPositional, matches };
@@ -147,7 +149,7 @@ function convertRecordBody(
         resolvedName: toolCall.resolvedName, capabilityId: toolCall.capabilityId,
         status: historyToolStatus(result, toolCall, error), contentState: !result || archived ? "unloaded" : "ready", resultMissing: !result && !toolCall.resultObservation?.messageId || undefined, output, error, dataArchived: archived || undefined,
         subject: toolCall.subject, summary: summarizeFileDiff(fileDiff) || toolCall.summary, fileDiff,
-        isShell: toolCall.name === "bash" || (toolCall.id || "").startsWith("shell-"), execution: result?.execution,
+        isShell: isShellToolName(toolCall.name) || (toolCall.id || "").startsWith("shell-"), execution: result?.execution,
         presentedFiles: result?.presentedFiles,
       });
     }
@@ -160,7 +162,7 @@ function convertRecordBody(
     items.push({
       kind: "tool", id: itemIdForToolCall(message.toolCallId ?? "", id), name: message.toolName || "tool", args: "",
       readOnly: isReadOnlyTool(message.toolName || "tool"), status: error ? "error" : "done", output, error,
-      dataArchived: message.toolResultArchived || undefined, isShell: (message.toolName || "") === "bash" || (message.toolCallId || "").startsWith("shell-"),
+      dataArchived: message.toolResultArchived || undefined, isShell: isShellToolName(message.toolName || "") || (message.toolCallId || "").startsWith("shell-"),
       execution: message.execution, presentedFiles: message.presentedFiles,
     });
   }

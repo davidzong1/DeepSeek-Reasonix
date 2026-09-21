@@ -94,6 +94,46 @@ assert.equal(buildComposerSurface({ ...surfaceInput, tab: missingTab }).props.su
 assert.equal(buildComposerSurface({ ...surfaceInput, tab: { ...missingTab, modelSettingsPending: true } }).props.submitDisabled, false, "saved settings can reach backend apply-before-admission");
 assert.equal(buildComposerSurface({ ...surfaceInput, tab: { ...missingTab, modelSettingsPending: true }, view: { ...surfaceInput.view, controllerReady: false } }).props.submitDisabled, true, "pending settings never bypass controller readiness");
 assert.equal(buildComposerSurface({ ...surfaceInput, view: { ...surfaceInput.view, hero: false } }).props.workspaceContext, undefined, "established sessions use the compact follow-up composer");
+const draftSurfaceInput = {
+  ...surfaceInput,
+  view: { ...surfaceInput.view, hero: false },
+  draft: {
+    surface: {
+      kind: "draft",
+      draft: { id: "draft-a", workspaceId: "workspace-a", scope: "project", workspaceRoot: "/repo", revision: 1, contentJson: "{}", settings: {}, status: "active", updatedAt: 1 },
+      content: { text: "", invocations: [], attachments: [], workspaceRefs: [], pastedBlocks: [], openPastedLabels: [], sessionRefs: [], selectedTextRefs: [] },
+      settings: { model: "fixture/model", mode: "normal", toolApprovalMode: "ask", disabledMcp: {}, mcpOrder: [] },
+      commands: [], servers: [], generation: 1, editVersion: 0, pendingTasks: 0, preparingSubmission: false, saveState: "saved",
+    },
+    captureSubmission: noop, releasePreparation: noop, flushPreparation: noop, submitFrom: noop,
+    updateSettingsFor: noop, cancelSubmission: noop, updateContentFor: noop, patchContentFor: noop,
+    isCurrentHandle: () => true, canEditHandle: () => true, trackTask: noop, reportTaskError: noop,
+  },
+} as unknown as ComposerSurfaceInput;
+const draftContext = buildComposerSurface(draftSurfaceInput).props.workspaceContext;
+assert.equal(draftContext?.workspaceRoot, "/repo", "drafts keep workspace selection when the backing tab is not in its hero state");
+assert.equal(draftContext?.scopeKey, "draft:workspace-a", "draft workspace actions use the draft owner identity");
+assert.equal(draftContext?.tabId, undefined, "drafts cannot issue Git RPCs against the previous formal session");
+assert.equal(draftContext?.gitBranch, undefined, "drafts do not display the previous formal session's branch");
+for (const [scope, workspaceRoot, workspaceName] of [
+  ["project", "/other/project-b", "project-b"],
+  ["project", "D:\\Work\\TEST\\", "TEST"],
+  ["global", "", undefined],
+] as const) {
+  const owner = draftSurfaceInput.draft!;
+  const projected = buildComposerSurface({
+    ...draftSurfaceInput,
+    workspaceContext: { ...baseContext, remote: true },
+    draft: { ...owner, surface: { ...owner.surface!, draft: { ...owner.surface!.draft, scope, workspaceRoot } } },
+  }).props.workspaceContext;
+  assert.equal(projected?.scope, scope);
+  assert.equal(projected?.workspaceRoot, workspaceRoot);
+  assert.equal(projected?.workspaceName, workspaceName, "project labels belong to the draft, including Windows paths and global drafts");
+  assert.equal(projected?.remote, false);
+  assert.equal(projected?.tabId, undefined);
+  assert.equal(projected?.gitBranch, undefined);
+  assert.equal(projected?.onSwitchWorkspace, baseContext.onSwitchWorkspace, "draft project switching remains available");
+}
 
 const rootElement = document.getElementById("root");
 assert(rootElement);
@@ -171,6 +211,15 @@ assert.equal(calls.globals, 1);
 await render({ scope: "global", workspaceRoot: "/stale-cwd", workspaceName: "Stale workspace", remote: false });
 assert(document.querySelector('button[aria-label="Project: No project"]'), "global sessions never inherit a stale cwd label");
 assert.equal(document.querySelector('button[aria-label="Work without a project"]'), null, "global sessions do not render a redundant clear action");
+
+await render(draftContext);
+assert(document.querySelector('button[aria-label="Project: repo"]'), "drafts show their own project");
+assert.equal(document.querySelector('.composer-workspace-branch'), null);
+assert.equal(document.querySelector('button[aria-label^="Current Git branch:"]'), null, "drafts cannot open the previous session's Git menu");
+await click(document.querySelector('button[aria-label="Project: repo"]'));
+await click([...document.querySelectorAll('.composer-workspace-menu--projects [role="menuitem"]')].find((item) => item.textContent?.includes("Other")) ?? null);
+assert.deepEqual(calls.switches, ["/other", "/other"], "drafts can still switch projects");
+assert.equal(calls.history, 1, "draft project actions never query the old session's Git history");
 
 await act(async () => { root.unmount(); await flush(); });
 dom.window.close();

@@ -192,6 +192,12 @@ func (a *App) buildSessionOpenControllerCandidate(
 	cfg *config.Config,
 	options boot.Options,
 ) (control.SessionAPI, string, bool, error) {
+	if hook := a.sessionOpenBuildHook; hook != nil {
+		hook(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, options.Model, false, err
+		}
+	}
 	requestedModel := options.Model
 	candidate, err := a.buildTabControllerBootFenced(ctx, extensionGeneration, options)
 	if !errors.Is(err, boot.ErrUnknownModel) {

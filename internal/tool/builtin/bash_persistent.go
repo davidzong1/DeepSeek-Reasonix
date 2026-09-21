@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -59,7 +58,7 @@ func hasBackgroundStatement(command string) bool {
 }
 
 func (b bash) shouldUsePersistent(ctx context.Context, p bashParams, sh sandbox.Shell) bool {
-	if sh.Kind == sandbox.ShellPowerShell && os.Getenv("REASONIX_POWERSHELL_ONESHOT") == "1" {
+	if sh.Kind == sandbox.ShellPowerShell {
 		return false
 	}
 	if !persistentshell.Supports(sh) {
@@ -134,7 +133,7 @@ func (b bash) runPersistent(ctx context.Context, p bashParams, sh sandbox.Shell,
 		Dir:      b.workDir,
 		Env:      applyEnvOverrides(cmdEnv, launch.EnvOverrides),
 		Command:  p.Command,
-		Timeout:  b.foregroundTimeout(),
+		Timeout:  b.foregroundTimeoutFor(p),
 		Shell:    sh,
 		Progress: progress,
 	})

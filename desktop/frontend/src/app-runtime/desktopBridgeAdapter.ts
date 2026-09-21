@@ -14,6 +14,8 @@ export const desktopBridge = {
   listTabs: app.ListTabs,
   openTaskSessionForTab: app.OpenTaskSessionForTab,
   listSessionsForTab: app.ListSessionsForTab,
+  prepareSession: app.PrepareSession!,
+  getSessionPreparation: app.GetSessionPreparation!,
   closeMergedWorktreeTab: app.CloseMergedWorktreeTab,
   finalizeWorktreeMerge: app.FinalizeWorktreeMerge,
 };

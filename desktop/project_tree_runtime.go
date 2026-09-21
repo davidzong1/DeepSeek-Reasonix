@@ -149,7 +149,7 @@ func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []Pro
 			node.SessionPath, node.Key = path, projectSessionNodeKey(scope, path)
 		}
 		if node.Session != nil {
-			node.IdentityAliases = sourceAliases(state, desktopWorkspaceID(scope, root), node.Session.SessionID)
+			node.IdentityAliases = sourceAliases(state, desktopWorkspaceOwnerID(state, scope, root), node.Session.SessionID)
 			node.LifecycleGeneration = state.SessionStates[node.Session.SessionID].Generation
 			if snapshot.tabID != "" {
 				node.IdentityAliases = append(node.IdentityAliases, "tab\x00local\x00"+snapshot.tabID)
@@ -184,12 +184,6 @@ func (a *App) closeTab(tabID string, allowDetach bool) error {
 	err := a.closeTabRuntime(tabID, allowDetach)
 	if err == nil {
 		a.emitProjectTreeRuntimeChangedWithLegacy()
-		// Closing an idle view may release the last reason an upgrade candidate
-		// was classified busy. Retry the frozen batch once; unknown candidates
-		// remain manual/startup-only and detached work stays protected.
-		a.goSafe("retryLegacyEmptySessionCleanupAfterTabClose", func() {
-			a.retryLegacyEmptySessionCleanupAfterRuntimeRelease()
-		})
 	}
 	return err
 }

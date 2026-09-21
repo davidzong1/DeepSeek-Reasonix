@@ -179,21 +179,26 @@ func TestPermissionSnapshotAndExactGrantRevocation(t *testing.T) {
 	}
 }
 
-func TestWindowsPermissionCapabilitiesDescribePartialBoundaries(t *testing.T) {
-	got := permissionCapabilitiesForPlatform("windows", true, "")
-	if got.Backend != "windows-write-restricted+appcontainer" || got.Enforcement != "partial" {
-		t.Fatalf("Windows capability summary = %+v", got)
-	}
-	if got.WriteIsolation != "write-restricted-capability-sid" {
-		t.Fatalf("write isolation = %q", got.WriteIsolation)
-	}
-	if got.ReadIsolation == "" || got.NetworkIsolation == "" {
-		t.Fatalf("Windows partial boundaries are not reported: %+v", got)
+func TestWindowsPermissionCapabilitiesKeepPresetsWithoutBackend(t *testing.T) {
+	// The Windows backend is retired: regardless of what the host reports,
+	// no isolation is advertised, yet every preset remains selectable because
+	// the presets are enforced by Reasonix's own tools there.
+	for _, available := range []bool{true, false} {
+		got := permissionCapabilitiesForPlatform("windows", available, "no OS sandbox")
+		if got.Backend != "none" || got.Enforcement != "unavailable" || got.UnavailableReason != "no OS sandbox" {
+			t.Fatalf("available=%v: Windows capability summary = %+v", available, got)
+		}
+		if got.WriteIsolation != "" || got.ReadIsolation != "" || got.NetworkIsolation != "" {
+			t.Fatalf("available=%v: Windows advertised isolation: %+v", available, got)
+		}
+		if len(got.SupportedPresets) != 3 {
+			t.Fatalf("available=%v: supported presets = %v", available, got.SupportedPresets)
+		}
 	}
 }
 
 func TestUnavailablePermissionBackendOnlyOffersFullAccess(t *testing.T) {
-	got := permissionCapabilitiesForPlatform("windows", false, "native API unavailable")
+	got := permissionCapabilitiesForPlatform("linux", false, "native API unavailable")
 	if got.Enforcement != "unavailable" || got.UnavailableReason != "native API unavailable" {
 		t.Fatalf("unavailable capability summary = %+v", got)
 	}

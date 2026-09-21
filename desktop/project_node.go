@@ -6,6 +6,9 @@ import "reasonix/internal/session"
 // topic leaf).
 type ProjectNode struct {
 	Source                       *SessionSourceRef   `json:"source,omitempty"`
+	Historical                   bool                `json:"historical,omitempty"`
+	HistoricalBranch             bool                `json:"historicalBranch,omitempty"`
+	PreparationStatus            string              `json:"preparationStatus,omitempty"`
 	IdentityAliases              []string            `json:"identityAliases,omitempty"`
 	LifecycleGeneration          uint64              `json:"lifecycleGeneration,omitempty"`
 	TabID                        string              `json:"tabId,omitempty"`

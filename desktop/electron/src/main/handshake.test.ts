@@ -13,6 +13,7 @@ const goodResult = {
   diagnosticsEnabled: true,
   resources: { origin: "http://127.0.0.1:51234", token: "secret" },
   window: { width: 1280, height: 820, minWidth: 760, minHeight: 480, frameless: false, zoomFactor: 1 },
+  instance: { identityVersion: 2, identityDigest: "sha256:def", legacyId: "com.reasonix.desktop.0123456789abcdef" },
 };
 
 test("hello params carry the documented shape", () => {
@@ -42,6 +43,8 @@ test("a valid hello result is accepted and normalised", () => {
   const result = validateHelloResult(goodResult);
   assert.equal(result.runtimeGeneration, "g-01J");
   assert.equal(result.window.zoomFactor, 1);
+  assert.equal(result.instance?.identityVersion, 2);
+  assert.equal(validateHelloResult({ ...goodResult, instance: undefined }).instance, undefined, "old services remain readable");
   const noZoom = validateHelloResult({ ...goodResult, window: { ...goodResult.window, zoomFactor: 0 } });
   assert.equal(noZoom.window.zoomFactor, 1, "a non-positive zoom factor falls back to 1");
 });
@@ -56,6 +59,7 @@ test("invalid hello results are rejected with a precise message", () => {
   assert.throws(() => validateHelloResult({ ...goodResult, window: undefined }), /result\.window must be an object/);
   assert.throws(() => validateHelloResult({ ...goodResult, window: { ...goodResult.window, width: 0 } }), /positive/);
   assert.throws(() => validateHelloResult({ ...goodResult, runtimeGeneration: "" }), /runtimeGeneration/);
+  assert.throws(() => validateHelloResult({ ...goodResult, instance: { ...goodResult.instance, identityVersion: 0 } }), /identityVersion/);
   assert.throws(() => validateHelloResult("nope"), /result must be an object/);
 });
 
@@ -89,4 +93,12 @@ test("handshake failures map every documented code and keep the real error text"
   assert.equal(spawn.name, "service_failure");
   assert.equal(spawn.code, null);
   assert.equal(spawn.detail, "spawn ENOENT");
+});
+
+test("a service without lifecycle diagnostics reports empty run and incident ids", () => {
+  const result = validateHelloResult({ ...goodResult, runId: "", incidentId: "", diagnosticsEnabled: false });
+  assert.equal(result.runId, "");
+  assert.equal(result.incidentId, "");
+  assert.equal(result.diagnosticsEnabled, false);
+  assert.throws(() => validateHelloResult({ ...goodResult, runId: undefined }), /result\.runId/);
 });

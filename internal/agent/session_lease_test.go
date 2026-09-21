@@ -25,7 +25,7 @@ func leaseTestPath(t *testing.T) (userPath, key string) {
 	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	return userPath, canonicalSessionSavePath(userPath)
+	return userPath, CanonicalSessionPath(userPath)
 }
 
 func TestSessionLeaseRejectsConcurrentWriterAndReleases(t *testing.T) {
@@ -60,6 +60,55 @@ func TestSessionLeaseRejectsConcurrentWriterAndReleases(t *testing.T) {
 		t.Fatalf("third TryAcquireSessionLease after release: %v", err)
 	}
 	third.Release()
+}
+
+func TestCompatibleSessionLeaseLocksCompeteWithLegacyName(t *testing.T) {
+	dir := t.TempDir()
+	primaryPath := filepath.Join(dir, "Current", "session.jsonl")
+	legacyPath := filepath.Join(dir, "Legacy", "session.jsonl")
+	for _, path := range []string{primaryPath, legacyPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	legacy, err := tryTakeSessionLeaseLock(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary, compatibility, err := tryTakeCompatibleSessionLeaseLocks(primaryPath, legacyPath); !errors.Is(err, ErrSessionLeaseHeld) {
+		if compatibility != nil {
+			compatibility.Unlock()
+		}
+		if primary != nil {
+			primary.Unlock()
+		}
+		t.Fatalf("new acquisition against legacy holder = %v, want ErrSessionLeaseHeld", err)
+	}
+	legacy.Unlock()
+
+	primary, compatibility, err := tryTakeCompatibleSessionLeaseLocks(primaryPath, legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil {
+		t.Fatal("distinct legacy lock was not acquired")
+	}
+	if old, err := tryTakeSessionLeaseLock(legacyPath); !errors.Is(err, ErrSessionLeaseHeld) {
+		if old != nil {
+			old.Unlock()
+		}
+		t.Fatalf("legacy acquisition against new holder = %v, want ErrSessionLeaseHeld", err)
+	}
+	compatibility.RemoveAndUnlock()
+	primary.RemoveAndUnlock()
+
+	// The failed combined acquisition above must not leave its primary lock held.
+	probe, err := tryTakeSessionLeaseLock(primaryPath)
+	if err != nil {
+		t.Fatalf("primary lock leaked after compatibility contention: %v", err)
+	}
+	probe.RemoveAndUnlock()
 }
 
 func TestSessionLeaseHandoffTargetsWriterAndGeneration(t *testing.T) {

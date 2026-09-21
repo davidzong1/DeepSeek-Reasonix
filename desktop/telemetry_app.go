@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 // telemetry_app.go is the anonymous launch ping: one POST per app start carrying a

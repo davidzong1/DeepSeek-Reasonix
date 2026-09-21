@@ -58,6 +58,7 @@ export function SessionRecoveryBanner({ availability, onRetry }: {
 
 export function SessionRecoveryPlaceholder({ availability }: { availability: SessionAvailability }) {
   const t = useT();
+  if (availability.kind === "pending") return null;
   const loading = availability.kind === "loading";
   const Icon = loading ? Loader2 : availability.source === "connection" ? CloudOff : TriangleAlert;
   return <div className="session-recovery-placeholder">

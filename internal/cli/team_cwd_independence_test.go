@@ -42,7 +42,7 @@ func TestMemberBackendLoadsTeamSkillsFromUserRootOutsideCWD(t *testing.T) {
 				BaseURL: "https://example.invalid/v1", APIKey: "test-key",
 			},
 		}},
-		events:        make(chan memberEvent, 1),
+		events:        make(chan memberEvent, memberEventBuffer),
 		workspaceRoot: project,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: sessionDir, Stderr: io.Discard}

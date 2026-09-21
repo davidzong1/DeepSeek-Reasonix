@@ -9,8 +9,8 @@ import { beneath, internalRoots, listPackages, runGoTest } from "./go-test-group
 // list is enforced against the tree by macos-go-tests.test.mjs, so a new
 // darwin source cannot quietly fall outside the pull-request lane.
 export const darwinRoots = internalRoots(
-  "cli", "filelock", "mcplaunch", "notify", "projectiondb",
-  "repair", "sandbox", "sessioncatalog", "tool/builtin", "workspacelease",
+  "cli", "filelock", "fileutil", "mcplaunch", "notify", "pathidentity",
+  "projectiondb", "repair", "sandbox", "tool/builtin", "workspacelease",
 );
 
 export function selectPackages(packages, group) {

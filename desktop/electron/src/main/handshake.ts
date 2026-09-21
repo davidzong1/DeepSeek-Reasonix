@@ -52,6 +52,7 @@ export interface HelloResult {
   diagnosticsEnabled: boolean;
   resources: { origin: string; token: string };
   window: HelloWindow;
+  instance?: { identityVersion: number; identityDigest: string; legacyId: string };
 }
 
 export interface HandshakeFailure {
@@ -131,6 +132,19 @@ export function validateHelloResult(value: unknown, expectedProtocolVersion = DE
     const position = record(window.position, "result.window.position");
     geometry.position = { x: num(position, "x", "result.window.position"), y: num(position, "y", "result.window.position") };
   }
+  let instance: HelloResult["instance"];
+  if (root.instance !== undefined) {
+    const rawInstance = record(root.instance, "result.instance");
+    const identityVersion = num(rawInstance, "identityVersion", "result.instance");
+    if (!Number.isInteger(identityVersion) || identityVersion < 1) {
+      throw new HandshakeError("hello result: result.instance.identityVersion must be a positive integer");
+    }
+    instance = {
+      identityVersion,
+      identityDigest: str(rawInstance, "identityDigest", "result.instance"),
+      legacyId: str(rawInstance, "legacyId", "result.instance"),
+    };
+  }
   return {
     protocolVersion,
     contractDigest: str(root, "contractDigest", "result"),
@@ -146,6 +160,7 @@ export function validateHelloResult(value: unknown, expectedProtocolVersion = DE
     diagnosticsEnabled: root.diagnosticsEnabled === true,
     resources: { origin: str(resources, "origin", "result.resources"), token: str(resources, "token", "result.resources") },
     window: geometry,
+    instance,
   };
 }
 

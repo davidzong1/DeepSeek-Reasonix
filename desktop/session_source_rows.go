@@ -5,8 +5,6 @@ import (
 	"os"
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
-	"reasonix/internal/store"
-	"strings"
 	"sync"
 )
 
@@ -46,27 +44,24 @@ func sourceMappingHasPathAlias(mapping workspacestate.SourceMapping) bool {
 	return selected && visible <= 1
 }
 
-// Cache the bounded DAG read against both files that define its heads. No
-// transcript is rewritten and ordinary flat history needs no head expansion.
+// Listing consumes only the published head index. Replaying an event log here
+// would make sidebar pagination perform content work and contend with writers.
+// Missing/stale indices degrade to one path row and are repaired separately.
 func sessionSourceHeads(path string) ([]agent.SessionHead, error) {
-	var observation strings.Builder
-	for _, file := range []string{path, store.SessionEventLog(path)} {
-		info, err := os.Stat(file)
-		if os.IsNotExist(err) {
-			observation.WriteString("missing;")
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		fmt.Fprintf(&observation, "%d:%d;", info.Size(), info.ModTime().UnixNano())
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
 	}
-	stamp := observation.String()
+	stamp := fmt.Sprint(info.Size(), ":", info.ModTime().UnixNano())
 	if cached, ok := sourceHeadRows.Load(path); ok && cached.(sourceHeadObservation).stamp == stamp {
 		entry := cached.(sourceHeadObservation)
 		return entry.heads, entry.err
 	}
-	heads, err := agent.ListSessionHeads(path)
+	index, err := agent.ReadSessionHeadIndex(path)
+	var heads []agent.SessionHead
+	if err == nil && index != nil && index.Current(path) {
+		heads = index.Heads
+	}
 	sourceHeadRows.Store(path, sourceHeadObservation{stamp, heads, err})
 	return heads, err
 }
@@ -87,12 +82,19 @@ func expandSessionSourceRows(node ProjectNode) []ProjectNode {
 		}
 	}
 	if len(live) <= 1 {
+		headID := ""
+		if len(live) == 1 {
+			headID = live[0].ID
+		}
+		node.Source = &SessionSourceRef{HostID: localDesktopHostID, Path: node.SessionPath, HeadID: headID, SourceKey: desktopSourceKey(node.SessionPath, headID)}
+		node.Historical = true
 		return []ProjectNode{node}
 	}
 	rows := []ProjectNode{}
 	for _, head := range live {
 		row := node
 		row.Source = &SessionSourceRef{HostID: localDesktopHostID, Path: node.SessionPath, HeadID: head.ID, SourceKey: desktopSourceKey(node.SessionPath, head.ID)}
+		row.Historical, row.HistoricalBranch = true, true
 		row.Key = "source_" + row.Source.SourceKey
 		row.Turns, row.Preview = head.Turns, head.Preview
 		if !head.LastActivity.IsZero() {

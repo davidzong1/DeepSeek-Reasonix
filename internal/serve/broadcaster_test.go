@@ -233,3 +233,57 @@ func TestBroadcasterPreservesBackgroundJobCompletionNotice(t *testing.T) {
 		t.Fatal("slow subscriber lost background-job completion after priority reserve saturation")
 	}
 }
+
+// Notices about final-format identities (taken over, reclaim requested,
+// reclaimed, adopted) route by "session-id:<id>", which is not a filesystem
+// path. Every emit path must carry it verbatim and current-only subscribers
+// must still receive it: a canonicalized "<cwd>/session-id:x" matched no
+// subscriber and was dropped, so a browser tab never saw the takeover banner.
+func TestBroadcasterKeepsIdentityRoutesVerbatim(t *testing.T) {
+	b := NewBroadcaster()
+	b.SetCurrentSession("/sessions/current.jsonl")
+	current, stopCurrent := b.Subscribe()
+	all, stopAll := b.SubscribeAll()
+	defer stopCurrent()
+	defer stopAll()
+	const route = "session-id:abc"
+
+	b.Emit(event.Event{Kind: event.Notice, Code: event.NoticeCodeSessionTakenOver, SessionPath: route})
+	b.EmitTo(current, event.Event{Kind: event.Notice, Code: event.NoticeCodeSessionReclaimed, SessionPath: route})
+	b.EmitWire(eventwire.Event{Kind: "text", Text: "mirrored", SessionPath: route})
+
+	decode := func(name string, ch <-chan []byte) eventwire.Event {
+		t.Helper()
+		var frame eventwire.Event
+		select {
+		case raw := <-ch:
+			if err := json.Unmarshal(raw, &frame); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("%s subscriber did not receive the identity-routed frame", name)
+		}
+		return frame
+	}
+	for range 3 {
+		if frame := decode("current-only", current); frame.SessionPath != route {
+			t.Fatalf("current-only frame route = %q, want %q (%+v)", frame.SessionPath, route, frame)
+		}
+	}
+	for range 2 {
+		if frame := decode("all-session", all); frame.SessionPath != route {
+			t.Fatalf("all-session frame route = %q, want %q (%+v)", frame.SessionPath, route, frame)
+		}
+	}
+	// Legacy paths keep the path rule: a background transcript is still hidden
+	// from current-only subscribers.
+	b.Emit(event.Event{Kind: event.Text, Text: "background", SessionPath: "/sessions/background.jsonl"})
+	select {
+	case raw := <-current:
+		t.Fatalf("current-only subscriber received a background legacy frame: %s", raw)
+	default:
+	}
+	if frame := decode("all-session", all); frame.SessionPath == "" || strings.Contains(frame.SessionPath, route) {
+		t.Fatalf("legacy frame lost its path: %+v", frame)
+	}
+}

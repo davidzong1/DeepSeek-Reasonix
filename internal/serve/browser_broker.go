@@ -35,6 +35,7 @@ const (
 	capabilityGoalLifecycleV2         = servecontract.GoalLifecycleV2
 	capabilityTranscriptOutline       = servecontract.TranscriptOutlineV1
 	capabilityForkTargetsV1           = servecontract.SessionForkTargetsV1
+	capabilityAttachmentsV1           = "attachments-v1"
 )
 
 // BrowserBroker is Serve's end of the desktop browser broker: one HTTP

@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )

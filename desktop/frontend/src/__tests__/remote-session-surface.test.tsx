@@ -1,7 +1,7 @@
 import { verifyRemoteSubmissionLifecycle, verifyRemoteSubmissionTabIsolation } from "./helpers/remoteSubmissionLifecycle";
 import React, { act } from "react";
 import { RemoteNavigationHarness } from "./helpers/RemoteNavigationHarness";
-import { JSDOM } from "jsdom";
+import { installRemoteSurfaceDom } from "./helpers/remoteSurfaceDom";
 import type { AppBindings } from "../lib/bridge";
 import type { TabMeta } from "../lib/types";
 import type { RemoteSessionApi } from "../lib/useRemoteSession";
@@ -16,43 +16,7 @@ function ok(value: boolean, label: string) {
   else failed += 1;
 }
 console.log("\nRemote session surface + hook");
-const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-  pretendToBeVisual: true,
-  url: "http://localhost/",
-});
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-globalThis.window = dom.window as unknown as Window & typeof globalThis;
-globalThis.document = dom.window.document;
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
-globalThis.Node = dom.window.Node;
-globalThis.Element = dom.window.Element;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.Event = dom.window.Event;
-globalThis.KeyboardEvent = dom.window.KeyboardEvent;
-globalThis.localStorage = dom.window.localStorage;
-globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window) as typeof getComputedStyle;
-const elementProto = dom.window.HTMLElement.prototype;
-Object.defineProperty(elementProto, "attachEvent", { configurable: true, value: () => {} });
-Object.defineProperty(elementProto, "offsetHeight", {
-  configurable: true,
-  get(this: HTMLElement) { return this.classList.contains("transcript") ? 800 : 40; },
-});
-Object.defineProperty(elementProto, "offsetWidth", { configurable: true, get: () => 800 });
-Object.defineProperty(elementProto, "clientHeight", {
-  configurable: true,
-  get(this: HTMLElement) { return this.classList.contains("transcript") ? 800 : 40; },
-});
-Object.defineProperty(elementProto, "clientWidth", { configurable: true, get: () => 800 });
-(elementProto as unknown as { scrollTo: (arg?: number | ScrollToOptions) => void }).scrollTo = function (
-  this: HTMLElement,
-  arg?: number | ScrollToOptions,
-) {
-  this.scrollTop = typeof arg === "number" ? arg : arg?.top ?? this.scrollTop;
-};
-// Transcript calls global rAF; jsdom exposes it only on the visual window.
-globalThis.requestAnimationFrame = dom.window.requestAnimationFrame?.bind(dom.window) ?? ((cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 16) as unknown as number);
-globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame?.bind(dom.window) ?? ((handle: number) => clearTimeout(handle));
-Object.defineProperty(elementProto, "detachEvent", { configurable: true, value: () => {} });
+const dom = installRemoteSurfaceDom();
 
 const tape: string[] = [];
 let failApproval = false;
@@ -232,17 +196,30 @@ const desktopStub = installDesktopHostStub(({ main: { App: {
   async SetActiveTab(tabID: string) {
     tape.push(`setActive:${tabID}`);
   },
+  // The pre-activation history prime reads the canonical window through the
+  // remote binding. Answer like a serve whose tab has not attached yet, so
+  // the prime stays inert here and cannot consume the RemoteTabSnapshot
+  // deferreds the hydration race and rotation scenarios count.
+  async RemoteSessionHistoryWindowForTab(tabID: string) {
+    tape.push(`window:${tabID}`);
+    throw new Error("remote tab is not attached");
+  },
 } as Partial<AppBindings> as AppBindings } }).main.App);
 
 const __emitMockRemoteTab = (tabId: string, channel: "state" | "event", payload: unknown) => desktopStub.emit(`remote-tab:${tabId}:${channel}`, payload);
 installRemoteTranscriptFixture(desktopStub.commands);
-const [{ createRoot }, { RemoteSessionSurface }, { LocaleProvider }, { useRemoteSession }, { remoteRuntimeCommand }] = await Promise.all([
+const [{ createRoot }, { RemoteSessionSurface }, { LocaleProvider }, { useRemoteSession }, { remoteRuntimeCommand }, { setTranscriptBindingIdentity }] = await Promise.all([
   import("react-dom/client"),
   import("../components/RemoteSessionSurface"),
   import("../lib/i18n"),
   import("../lib/useRemoteSession"),
   import("../lib/useRemoteComposerIntegration"),
+  import("../lib/canonicalTranscriptBackend"),
 ]);
+// Production resolves remote tabs through the controller's meta; this harness
+// mounts the hook without a controller, so bind canonical reads to the remote
+// bridge the way the app does for every remote tab.
+setTranscriptBindingIdentity(() => "remote");
 
 const remoteTab: TabMeta = {
   id: "tab-remote-1",
@@ -258,7 +235,7 @@ const remoteTab: TabMeta = {
   active: true,
   cwd: "~/app",
   sessionId: "remote-session-1",
-  sessionGeneration: 1,
+  sessionGeneration: 0,
   interactionTargetSupported: true,
   extensionFormInstanceSupported: true,
   remote: { hostId: "gpu-box", workspace: "~/app" },

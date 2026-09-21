@@ -15,13 +15,14 @@ const { AskCard } = await import("../components/AskCard");
 const { LocaleProvider } = await import("../lib/i18n");
 const root = createRoot(document.getElementById("root")!);
 const answers: QuestionAnswer[][] = [];
+let onStop: () => void | Promise<void> = () => {};
 const ask: WireAsk = {
   id: "1", runtimeEpoch: "runtime-a", turnId: "turn-a",
   questions: [{ id: "q1", prompt: "Choose", options: [{ label: "Option A" }, { label: "Option B" }] }],
 };
 async function render(next: WireAsk | null, scope = "tab-a") {
   await act(async () => root.render(<LocaleProvider>{next && <AskCard ask={next} draftScope={scope}
-    onAnswer={(_id, value) => { answers.push(value); }} onStop={() => {}} />}</LocaleProvider>));
+    onAnswer={(_id, value) => { answers.push(value); }} onStop={onStop} />}</LocaleProvider>));
 }
 function input() { return document.querySelector<HTMLInputElement>(".ask-shelf__custom")!; }
 async function type(text: string) {
@@ -59,5 +60,25 @@ assert.equal(input().value, "", "tabs have separate drafts");
 await render(ask);
 assert.equal(input().value, "Keep this draft", "switching back restores only the original prompt's draft");
 console.log("  PASS  drafts follow tab, runtime, turn, and prompt identity across replay and replacement");
+
+let stopCalls = 0;
+onStop = async () => { stopCalls++; throw new Error("transport unavailable"); };
+await render(ask);
+function stopButton() { return document.querySelector<HTMLButtonElement>(".prompt-shelf__header-button:last-child")!; }
+await act(async () => stopButton().click());
+assert.equal(stopCalls, 1);
+assert.equal(stopButton().disabled, false, "failed cancellation permits retry");
+assert.ok(document.querySelector('[role="alert"]'), "failed cancellation is visible");
+await render(null);
+await render(ask);
+assert.equal(input().value, "Keep this draft", "failed cancellation preserves the draft across navigation");
+onStop = async () => { stopCalls++; };
+await render(ask);
+await act(async () => stopButton().click());
+assert.equal(stopCalls, 2, "retry reaches the transport");
+await render(null);
+await render(ask);
+assert.equal(input().value, "", "accepted cancellation clears its draft");
+console.log("  PASS  failed Stop preserves the draft and permits a successful retry");
 await act(async () => root.unmount());
 dom.window.close();

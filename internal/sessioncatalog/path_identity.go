@@ -1,9 +1,11 @@
 package sessioncatalog
 
 import (
+	"os"
 	"path/filepath"
-	"slices"
 	"strings"
+
+	"reasonix/internal/pathidentity"
 )
 
 // PathIdentityKey returns the stable comparison key for a catalog path while
@@ -15,13 +17,19 @@ func PathIdentityKey(path string) string {
 	if path == "" {
 		return ""
 	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		absolute = path
+	baseDir := ""
+	if !filepath.IsAbs(path) {
+		var err error
+		baseDir, err = os.Getwd()
+		if err != nil {
+			return ""
+		}
 	}
-	absolute = resolveCatalogPathThroughExistingAncestor(absolute)
-	absolute = platformCatalogPathIdentity(absolute)
-	return filepath.Clean(absolute)
+	identity, err := pathidentity.Resolve(path, pathidentity.Options{BaseDir: baseDir, FollowLeaf: true})
+	if err != nil {
+		return ""
+	}
+	return identity.Key
 }
 
 func cleanCatalogAccessPath(path string) string {
@@ -34,25 +42,6 @@ func cleanCatalogAccessPath(path string) string {
 		return ""
 	}
 	return path
-}
-
-func resolveCatalogPathThroughExistingAncestor(path string) string {
-	current := filepath.Clean(path)
-	missing := make([]string, 0, 4)
-	for {
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
-			for _, part := range slices.Backward(missing) {
-				resolved = filepath.Join(resolved, part)
-			}
-			return resolved
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return path
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
 }
 
 // UniqueDirectoryTargets keeps the first usable access spelling for each

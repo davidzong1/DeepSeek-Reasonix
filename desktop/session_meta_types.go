@@ -13,6 +13,7 @@ type Meta struct {
 	Ready                 bool                        `json:"ready"`
 	Runtime               SessionRuntimeView          `json:"runtime"`
 	StartupErr            string                      `json:"startupErr,omitempty"`
+	HistoricalSource      *SessionSourceRef           `json:"historicalSource,omitempty"`
 	EventChannel          string                      `json:"eventChannel"`
 	SessionPath           string                      `json:"sessionPath,omitempty"`
 	SessionID             string                      `json:"sessionId,omitempty"`

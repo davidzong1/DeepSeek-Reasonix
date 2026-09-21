@@ -49,7 +49,7 @@ func (a *Agent) parseToolCall(ctx context.Context, turn *turnRuntime, plan *tool
 			return out, true
 		}
 	}
-	if canonicalName == "bash" {
+	if tool.IsShellToolName(canonicalName) {
 		var permissionReader bool
 		plan.effects, permissionReader = evidence.ClassifyBashToolCall(plan.execArgs)
 		if permissionReader {

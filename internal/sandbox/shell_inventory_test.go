@@ -87,23 +87,25 @@ func TestWindowsBashCandidateOrder(t *testing.T) {
 	}
 }
 
-func TestWindowsShellCapabilitiesPreferConfiguredBashOverPath(t *testing.T) {
-	const (
-		configured = `E:\Portable\Git\bin\bash.exe`
-		onPath     = `C:\Program Files\Git\bin\bash.exe`
-	)
+func TestWindowsShellCapabilitiesOnlyReportPowerShellRuntimes(t *testing.T) {
+	const pwsh = `C:\Program Files\PowerShell\7\pwsh.exe`
 	snap := &shellSnapshot{
-		lookPath:   fakeLookPath(map[string]string{"bash": onPath}),
-		exists:     func(path string) bool { return path == configured || path == onPath },
+		lookPath:   fakeLookPath(map[string]string{"pwsh": pwsh}),
+		exists:     func(path string) bool { return path == pwsh },
 		isWSL:      func(string) bool { return false },
-		bashCands:  []string{configured},
-		sources:    map[string]string{strings.ToLower(configured): ShellSourceConfig},
+		psCands:    []string{pwsh},
+		sources:    map[string]string{},
 		probeFunc:  func(string) bool { return true },
 		probeCache: map[string]bool{},
 	}
 	caps := windowsShellCapabilities(snap)
-	if len(caps) == 0 || !caps[0].Available || caps[0].Path != configured || caps[0].Source != ShellSourceConfig {
-		t.Fatalf("Git Bash capability = %+v, want configured path before PATH", caps)
+	if len(caps) != 2 || caps[0].ID != ShellCapabilityPwsh || caps[1].ID != ShellCapabilityPowerShell {
+		t.Fatalf("Windows shell capabilities = %+v, want pwsh and powershell only", caps)
+	}
+	for _, cap := range caps {
+		if cap.ID == ShellCapabilityGitBash || cap.ID == ShellCapabilityBash {
+			t.Fatalf("Windows shell capabilities must not advertise Bash: %+v", caps)
+		}
 	}
 }
 
@@ -372,7 +374,7 @@ func TestGitCandidatesFromWindowsBashFindInstallRoot(t *testing.T) {
 }
 
 // TestShellCapabilitiesShape ensures the exported capability report matches
-// the platform: git-bash plus both PowerShells on Windows, and bash/zsh/sh on
+// the platform: both native PowerShells on Windows, and bash/zsh/sh on
 // Unix — with unavailable entries carrying a reason, never an error.
 func TestShellCapabilitiesShape(t *testing.T) {
 	caps := ShellCapabilities()
@@ -390,13 +392,15 @@ func TestShellCapabilitiesShape(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "windows" {
-		for _, id := range []string{ShellCapabilityGitBash, ShellCapabilityPowerShell, ShellCapabilityPwsh} {
+		for _, id := range []string{ShellCapabilityPowerShell, ShellCapabilityPwsh} {
 			if !ids[id] {
 				t.Errorf("Windows report missing %q: %v", id, caps)
 			}
 		}
-		if ids[ShellCapabilityBash] {
-			t.Errorf("Windows report must not advertise a generic bash id: %v", caps)
+		for _, id := range []string{ShellCapabilityBash, ShellCapabilityGitBash} {
+			if ids[id] {
+				t.Errorf("Windows report must not advertise %q: %v", id, caps)
+			}
 		}
 		for _, id := range []string{ShellCapabilityZsh, ShellCapabilitySh} {
 			if ids[id] {

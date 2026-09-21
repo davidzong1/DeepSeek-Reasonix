@@ -2,8 +2,9 @@ import { lazy, Suspense } from "react";
 import type { Translator } from "../lib/i18n";
 import { RemoteReclaimBanner } from "../components/RemoteReclaimBanner";
 import { UpdateBanner } from "../components/UpdateBanner";
+import type { HistoricalSessionBannerProps } from "../components/SessionTakeoverDialog";
 
-const SessionTakeoverDialog = lazy(() => import("../components/SessionTakeoverDialog").then((module) => ({ default: module.SessionTakeoverDialog })));
+const SessionRuntimeOverlays = lazy(() => import("../components/SessionTakeoverDialog").then((module) => ({ default: module.SessionRuntimeOverlays })));
 
 export type SessionStatusBannersProps = {
   t: Translator;
@@ -25,6 +26,7 @@ export type SessionStatusBannersProps = {
   onConfigureProvider: () => void;
   updateChecksEnabled: boolean;
   onShowReleaseNotes: (latest: string) => void;
+  historical?: HistoricalSessionBannerProps;
 };
 
 /** Presentation-only banner stack between the topic bar and the main pane. */
@@ -51,11 +53,6 @@ export function SessionStatusBanners(props: SessionStatusBannersProps) {
         <div className="banner banner--error">
           <span className="banner__msg">{t("topbar.startupError", { msg: props.startupError })}</span>
         </div>
-      ) : null}
-      {props.takeoverDialogTabId ? (
-        <Suspense fallback={null}>
-          <SessionTakeoverDialog tabId={props.takeoverDialogTabId} onClose={props.onCloseTakeover} />
-        </Suspense>
       ) : null}
       {props.configWarnings.length > 0 && (
         <div className="banner banner--warning banner--actionable">
@@ -88,6 +85,9 @@ export function SessionStatusBanners(props: SessionStatusBannersProps) {
         enabled={props.updateChecksEnabled}
         onShowReleaseNotes={props.onShowReleaseNotes}
       />
+      {props.takeoverDialogTabId || props.historical ? <Suspense fallback={null}>
+        <SessionRuntimeOverlays takeoverTabId={props.takeoverDialogTabId} onCloseTakeover={props.onCloseTakeover} historical={props.historical} />
+      </Suspense> : null}
     </>
   );
 }

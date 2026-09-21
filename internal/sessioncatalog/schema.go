@@ -238,6 +238,18 @@ CREATE INDEX IF NOT EXISTS idx_catalog_heads_activity ON catalog_heads(path_key,
 DELETE FROM catalog_directories;
 `
 
+// v13 invalidates every filesystem-derived key after path identity moved to
+// the shared strict resolver. The catalog is disposable; transcripts and
+// sidecars remain authoritative and rebuild the projection after restart.
+const migrationV13 = `
+DELETE FROM catalog_heads;
+DELETE FROM catalog_sessions;
+DELETE FROM catalog_directories;
+DELETE FROM catalog_projects;
+DELETE FROM catalog_topics;
+DELETE FROM catalog_folded_topics;
+`
+
 func sessionMigrations() []projectiondb.Migration {
 	return []projectiondb.Migration{
 		{Version: 1, Apply: func(ctx context.Context, tx *sql.Tx) error {
@@ -286,6 +298,10 @@ func sessionMigrations() []projectiondb.Migration {
 		}},
 		{Version: 12, Apply: func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, migrationV12)
+			return err
+		}},
+		{Version: 13, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, migrationV13)
 			return err
 		}},
 	}

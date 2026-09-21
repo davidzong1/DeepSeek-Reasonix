@@ -60,18 +60,17 @@ func permissionCapabilitiesForPlatform(goos string, available bool, unavailableR
 		readIsolation = "bubblewrap-mount-namespace"
 		networkIsolation = "bubblewrap-network-namespace"
 	case "windows":
-		backend = "windows-write-restricted+appcontainer"
-		writeIsolation = "write-restricted-capability-sid"
-		readIsolation = "forbid-read+appcontainer-direct-tools"
-		networkIsolation = "appcontainer-direct-tools-only"
+		// No OS backend, but the presets still apply as tool-layer boundaries
+		// (file writers, approval prompts), so every preset stays selectable.
+		return PermissionCapabilities{
+			Backend: "none", Enforcement: "unavailable",
+			SupportedPresets:  []string{string(permissionpreset.ReadOnly), string(permissionpreset.WorkspaceWrite), string(permissionpreset.DangerFullAccess)},
+			UnavailableReason: unavailableReason,
+		}
 	}
 	if available {
-		enforcement := "full"
-		if goos == "windows" {
-			enforcement = "partial"
-		}
 		return PermissionCapabilities{
-			Backend: backend, Enforcement: enforcement,
+			Backend: backend, Enforcement: "full",
 			SupportedPresets: []string{string(permissionpreset.ReadOnly), string(permissionpreset.WorkspaceWrite), string(permissionpreset.DangerFullAccess)},
 			WriteIsolation:   writeIsolation, ReadIsolation: readIsolation, NetworkIsolation: networkIsolation,
 		}

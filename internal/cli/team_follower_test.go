@@ -115,7 +115,7 @@ func followerBindAttempt(t *testing.T, owners *team.OwnerStore, storeRoot, teamN
 		SessionService: store, ExclusiveSession: exclusive,
 	})
 	roots := []string{ownerDir, dir}
-	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, 8)}
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, memberEventBuffer)}
 	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
 
 	path, _, bindErr := bindMemberSession(ctrl, sessionFile, roots, ownerDir)
@@ -261,7 +261,7 @@ func memberBindAttempt(t *testing.T, owners *team.OwnerStore, storeRoot, teamNam
 		SystemPrompt: "member-sys", DisableColdResumePrune: true, Sink: event.Discard,
 		SessionService: store, ExclusiveSession: true,
 	})
-	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, 8)}
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, memberEventBuffer)}
 	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
 
 	path, _, bindErr := bindMemberSession(ctrl, sessionFile, []string{ownerDir, dir}, ownerDir)

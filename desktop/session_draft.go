@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,13 +17,13 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/extension/providerext"
 	"reasonix/internal/session"
 	"reasonix/internal/skill"
 )
 
 type SessionDraftSettings struct {
 	Model             string                `json:"model"`
+	ModelSource       string                `json:"modelSource,omitempty"`
 	Effort            string                `json:"effort,omitempty"`
 	QualityFloor      string                `json:"qualityFloor,omitempty"`
 	Mode              string                `json:"mode"`
@@ -143,7 +141,7 @@ func (a *App) GetSessionDraftState(draftID string) (SessionDraftState, error) {
 			}
 		}
 	}
-	view, err := draftView(record)
+	view, err := a.draftViewForOperation(record, op)
 	if err != nil {
 		return SessionDraftState{}, err
 	}
@@ -176,13 +174,6 @@ func (a *App) ResumeDraftSubmission(operationID string, expectedRevision uint64)
 	return draftOperationView(op, a.metaForDraftSession(op.SessionID)), nil
 }
 
-type ComposerTarget struct {
-	Kind    string              `json:"kind"`
-	DraftID string              `json:"draftId,omitempty"`
-	TabID   string              `json:"tabId,omitempty"`
-	Session *session.SessionRef `json:"session,omitempty"`
-}
-
 func (a *App) draftStore() *draftstate.Store {
 	if a.desktopDrafts == nil {
 		a.desktopDrafts = draftstate.New(config.DesktopDraftStatePath())
@@ -190,7 +181,7 @@ func (a *App) draftStore() *draftstate.Store {
 	return a.desktopDrafts
 }
 
-func draftView(record draftstate.Draft) (SessionDraftView, error) {
+func (a *App) draftView(record draftstate.Draft) (SessionDraftView, error) {
 	settings := SessionDraftSettings{DisabledMCP: map[string]ServerView{}, MCPOrder: []string{}}
 	if strings.TrimSpace(record.SettingsJSON) != "" {
 		if err := json.Unmarshal([]byte(record.SettingsJSON), &settings); err != nil {
@@ -202,6 +193,9 @@ func draftView(record draftstate.Draft) (SessionDraftView, error) {
 	}
 	if settings.MCPOrder == nil {
 		settings.MCPOrder = []string{}
+	}
+	if settings.ModelSource == draftModelSourceDefault {
+		settings.Model, _ = desktopNewSessionDefaults(record.Scope, draftWorkspaceRoot(record))
 	}
 	digest, err := draftstate.SnapshotDigest(record.ContentJSON, record.SettingsJSON)
 	if err != nil {
@@ -218,7 +212,7 @@ func (a *App) defaultDraftSettings(scope, workspaceRoot string) SessionDraftSett
 		scope, workspaceRoot, actualRoot = "global", "", globalWorkspaceRoot()
 	}
 	model, approval := desktopNewSessionDefaults(scope, actualRoot)
-	settings := SessionDraftSettings{Model: model, QualityFloor: tabQualityFloor(workspaceRoot, "standard"),
+	settings := SessionDraftSettings{Model: model, ModelSource: draftModelSourceDefault, QualityFloor: tabQualityFloor(workspaceRoot, "standard"),
 		Mode: tabModeFromAxes(false, approval == control.ToolApprovalDangerFullAccess), ToolApprovalMode: approval,
 		DisabledMCP: map[string]ServerView{}, MCPOrder: []string{}}
 	a.mu.RLock()
@@ -259,9 +253,15 @@ func (a *App) OpenSessionDraft(workspaceID string) (SessionDraftView, error) {
 	if err != nil {
 		return SessionDraftView{}, err
 	}
+	if !created {
+		record, err = a.migrateLegacyUntouchedDraftModel(record)
+		if err != nil {
+			return SessionDraftView{}, err
+		}
+	}
 	slog.Debug("desktop: session draft opened", "draft", record.ID, "workspace", workspaceID,
 		"created", created, "duration_ms", time.Since(started).Milliseconds())
-	return draftView(record)
+	return a.draftView(record)
 }
 
 func (a *App) OpenSessionDraftForTarget(scope, workspaceRoot string) (SessionDraftView, error) {
@@ -285,7 +285,11 @@ func (a *App) RestoreSessionDraft() (*SessionDraftView, error) {
 	if err != nil {
 		return nil, err
 	}
-	view, err := draftView(record)
+	record, err = a.migrateLegacyUntouchedDraftModel(record)
+	if err != nil {
+		return nil, err
+	}
+	view, err := a.draftView(record)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +311,7 @@ func (a *App) GetSessionDraft(draftID string) (SessionDraftView, error) {
 	if err != nil {
 		return SessionDraftView{}, err
 	}
-	return draftView(record)
+	return a.draftView(record)
 }
 
 func (a *App) SaveSessionDraft(request SessionDraftSaveRequest) (SessionDraftSaveResult, error) {
@@ -318,13 +322,18 @@ func (a *App) SaveSessionDraft(request SessionDraftSaveRequest) (SessionDraftSav
 	if !json.Valid([]byte(content)) {
 		return SessionDraftSaveResult{}, errors.New("session draft content is invalid")
 	}
+	current, err := a.draftStore().Get(a.bootContext(), strings.TrimSpace(request.DraftID))
+	if err != nil {
+		return SessionDraftSaveResult{}, err
+	}
+	request.Settings = a.normalizeDraftSettingsForStorage(current, request.Settings)
 	settings, err := json.Marshal(request.Settings)
 	if err != nil {
 		return SessionDraftSaveResult{}, err
 	}
 	record, err := a.draftStore().Save(a.bootContext(), strings.TrimSpace(request.DraftID), request.Revision, content, string(settings), request.Force)
 	if errors.Is(err, draftstate.ErrConflict) {
-		view, viewErr := draftView(record)
+		view, viewErr := a.draftView(record)
 		return SessionDraftSaveResult{Draft: view, Conflict: true, Outcome: "conflict"}, viewErr
 	}
 	if errors.Is(err, draftstate.ErrConverted) {
@@ -332,7 +341,7 @@ func (a *App) SaveSessionDraft(request SessionDraftSaveRequest) (SessionDraftSav
 		if getErr != nil {
 			return SessionDraftSaveResult{}, err
 		}
-		view, viewErr := draftView(record)
+		view, viewErr := a.draftView(record)
 		outcome := "converted"
 		if record.Status == "discarded" {
 			outcome = "discarded"
@@ -344,13 +353,13 @@ func (a *App) SaveSessionDraft(request SessionDraftSaveRequest) (SessionDraftSav
 		if getErr != nil {
 			return SessionDraftSaveResult{}, err
 		}
-		view, viewErr := draftView(record)
+		view, viewErr := a.draftView(record)
 		return SessionDraftSaveResult{Draft: view, Outcome: "operation_locked"}, viewErr
 	}
 	if err != nil {
 		return SessionDraftSaveResult{}, err
 	}
-	view, err := draftView(record)
+	view, err := a.draftView(record)
 	return SessionDraftSaveResult{Draft: view, Outcome: "saved"}, err
 }
 
@@ -361,16 +370,46 @@ func (a *App) ListSessionDraftSummaries() ([]SessionDraftSummary, error) {
 	}
 	out := make([]SessionDraftSummary, 0, len(records))
 	for _, record := range records {
-		content := strings.TrimSpace(record.ContentJSON)
 		out = append(out, SessionDraftSummary{ID: record.ID, WorkspaceID: record.WorkspaceID, Scope: record.Scope,
 			WorkspaceRoot: record.WorkspaceRoot, Revision: record.Revision,
-			HasContent: content != "" && content != "{}", State: "saved", UpdatedAt: record.UpdatedAt.UnixMilli()})
+			HasContent: draftHasContent(record.ContentJSON), State: "saved", UpdatedAt: record.UpdatedAt.UnixMilli()})
 	}
 	return out, nil
 }
 
+// draftHasContent reports unsent work the user may want to return to: text or
+// any attached reference. The composer saves a full content object even after
+// every field was cleared, so only the fields themselves can decide this.
+func draftHasContent(contentJSON string) bool {
+	trimmed := strings.TrimSpace(contentJSON)
+	if trimmed == "" || trimmed == "{}" {
+		return false
+	}
+	var content struct {
+		Text             string            `json:"text"`
+		Invocations      []json.RawMessage `json:"invocations"`
+		Attachments      []json.RawMessage `json:"attachments"`
+		WorkspaceRefs    []json.RawMessage `json:"workspaceRefs"`
+		PastedBlocks     []json.RawMessage `json:"pastedBlocks"`
+		SessionRefs      []json.RawMessage `json:"sessionRefs"`
+		SelectedTextRefs []json.RawMessage `json:"selectedTextRefs"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &content); err != nil {
+		// Unknown shapes stay visible rather than silently hiding saved work.
+		return true
+	}
+	return strings.TrimSpace(content.Text) != "" || len(content.Invocations) > 0 || len(content.Attachments) > 0 ||
+		len(content.WorkspaceRefs) > 0 || len(content.PastedBlocks) > 0 || len(content.SessionRefs) > 0 ||
+		len(content.SelectedTextRefs) > 0
+}
+
 func (a *App) DiscardSessionDraft(draftID string, revision uint64) error {
-	return a.draftStore().Discard(a.bootContext(), strings.TrimSpace(draftID), revision)
+	draftID = strings.TrimSpace(draftID)
+	if err := a.draftStore().Discard(a.bootContext(), draftID, revision); err != nil {
+		return err
+	}
+	a.releaseAttachmentStageOperations("draft:" + draftID + ":")
+	return nil
 }
 
 func (a *App) GetDraftContext(draftID string) (SessionDraftContextView, error) {
@@ -382,7 +421,7 @@ func (a *App) GetDraftContext(draftID string) (SessionDraftContextView, error) {
 	if err != nil {
 		return SessionDraftContextView{Commands: []CommandInfo{}, Servers: []ServerView{}}, err
 	}
-	result := SessionDraftContextView{Draft: state.Draft, Operation: state.Operation, Commands: draftCommandInfos(record), Servers: draftMCPServerViews(record, state.Draft.Settings), Models: a.ModelsForDraft(draftID)}
+	result := SessionDraftContextView{Draft: state.Draft, Operation: state.Operation, Commands: draftCommandInfos(record), Servers: draftMCPServerViews(record, state.Draft.Settings), Models: a.desktopModelCatalog(state.Draft.Settings.Model, draftWorkspaceRoot(record), nil)}
 	return result, nil
 }
 
@@ -448,29 +487,6 @@ func draftCommandInfos(record draftstate.Draft) []CommandInfo {
 	return resolveDocsCommand(out)
 }
 
-func draftSubmissionFingerprint(request SessionDraftSubmissionRequest) (string, string, error) {
-	request.DraftID = strings.TrimSpace(request.DraftID)
-	request.Display = strings.TrimSpace(request.Display)
-	request.Input = strings.TrimSpace(request.Input)
-	if request.Kind == "" {
-		request.Kind = "turn"
-	}
-	data, err := json.Marshal(request)
-	if err != nil {
-		return "", "", err
-	}
-	// Request identity is transport metadata; equivalent concurrent requests
-	// must still converge on the same operation.
-	request.RequestID = ""
-	request.SourceContentJSON = ""
-	semantic, err := json.Marshal(request)
-	if err != nil {
-		return "", "", err
-	}
-	digest := sha256.Sum256(semantic)
-	return hex.EncodeToString(digest[:]), string(data), nil
-}
-
 func draftOperationView(op draftstate.Operation, tab *TabMeta) SessionDraftSubmissionView {
 	view := SessionDraftSubmissionView{OperationID: op.ID, DraftID: op.DraftID, Phase: op.Phase,
 		RequestID: op.RequestID, Revision: op.Revision,
@@ -499,19 +515,22 @@ func (a *App) BeginDraftSubmission(request SessionDraftSubmissionRequest) (resul
 	durableAttempt := false
 	defer func() {
 		if resultErr != nil && !durableAttempt {
-			resultErr = fmt.Errorf("draft submission not admitted: %w", resultErr)
+			resultErr = draftAdmissionError(resultErr)
 		}
 	}()
 	if request.SnapshotVersion > draftstate.SnapshotVersion {
 		return SessionDraftSubmissionView{}, errors.New("unsupported draft execution snapshot version")
 	}
 	request.DraftID = strings.TrimSpace(request.DraftID)
+	// Identity belongs to the incoming request, before aliases are resolved or
+	// inherited defaults are frozen into the execution snapshot. Retries must
+	// compare the same bytes even when provider configuration has since changed.
+	fingerprint, _, err := draftSubmissionFingerprint(request)
+	if err != nil {
+		return SessionDraftSubmissionView{}, err
+	}
 	if request.RequestID != "" {
 		if prior, err := a.draftStore().RequestOperation(a.bootContext(), request.DraftID, request.RequestID); err == nil {
-			fingerprint, _, hashErr := draftSubmissionFingerprint(request)
-			if hashErr != nil {
-				return SessionDraftSubmissionView{}, hashErr
-			}
 			if fingerprint != prior.Fingerprint {
 				return SessionDraftSubmissionView{}, draftstate.ErrOperationConflict
 			}
@@ -537,7 +556,7 @@ func (a *App) BeginDraftSubmission(request SessionDraftSubmissionRequest) (resul
 	if record.Revision != request.Revision {
 		return SessionDraftSubmissionView{}, draftstate.ErrConflict
 	}
-	view, err := draftView(record)
+	view, err := a.draftView(record)
 	if err != nil {
 		return SessionDraftSubmissionView{}, err
 	}
@@ -548,27 +567,12 @@ func (a *App) BeginDraftSubmission(request SessionDraftSubmissionRequest) (resul
 			return SessionDraftSubmissionView{}, draftstate.ErrConflict
 		}
 	}
-	root := record.WorkspaceRoot
-	if record.Scope != "project" {
-		root = globalWorkspaceRoot()
-	}
-	if providerext.PluginRefOwner(view.Settings.Model) == "" {
-		cfg, loadErr := config.LoadForRootReadOnly(root)
-		if loadErr != nil {
-			return SessionDraftSubmissionView{}, loadErr
-		}
-		resolved, resolveErr := resolveDraftCreateModelStrict(cfg, view.Settings.Model)
-		if resolveErr != nil {
-			return SessionDraftSubmissionView{}, resolveErr
-		}
-		view.Settings.Model = resolved
-	}
-	if request.SnapshotVersion < 3 {
-		request.Settings = view.Settings
-		request.SnapshotVersion = 3
+	request, err = a.freezeDraftSubmissionModel(record, view, request)
+	if err != nil {
+		return SessionDraftSubmissionView{}, err
 	}
 	request.SourceContentJSON = record.ContentJSON
-	fingerprint, payload, err := draftSubmissionFingerprint(request)
+	_, payload, err := draftSubmissionFingerprint(request)
 	if err != nil {
 		return SessionDraftSubmissionView{}, err
 	}
@@ -628,31 +632,6 @@ func draftBuiltinBehavior(input string) (behavior, name string) {
 		}
 	}
 	return "", name
-}
-
-func validateDraftAttachments(record draftstate.Draft) error {
-	var content struct {
-		Attachments []struct {
-			Path string `json:"path"`
-		} `json:"attachments"`
-	}
-	if err := json.Unmarshal([]byte(record.ContentJSON), &content); err != nil {
-		return fmt.Errorf("decode session draft attachments: %w", err)
-	}
-	root := record.WorkspaceRoot
-	if record.Scope != "project" {
-		root = globalWorkspaceRoot()
-	}
-	base, err := workspaceBaseFromRoot(root)
-	if err != nil {
-		return err
-	}
-	for _, attachment := range content.Attachments {
-		if err := control.ValidateAttachmentInRoot(base, attachment.Path); err != nil {
-			return fmt.Errorf("attachment %q is unavailable: %w", filepath.Base(attachment.Path), err)
-		}
-	}
-	return nil
 }
 
 func (a *App) GetDraftSubmission(operationID string) (SessionDraftSubmissionView, error) {
@@ -926,12 +905,12 @@ func (a *App) ensureDraftSessionTab(op draftstate.Operation) (TabMeta, error) {
 		return TabMeta{}, err
 	}
 	if meta := a.metaForDraftSession(op.SessionID); meta != nil {
-		if desktopWorkspaceID(meta.Scope, meta.WorkspaceRoot) != op.WorkspaceID {
-			return *meta, workspacestate.ErrMutationConflict
-		}
 		state, stateErr := a.workspaceRegistry().Load(a.bootContext())
 		if stateErr != nil {
 			return *meta, stateErr
+		}
+		if desktopWorkspaceOwnerID(state, meta.Scope, meta.WorkspaceRoot) != op.WorkspaceID {
+			return *meta, workspacestate.ErrMutationConflict
 		}
 		if lifecycle := state.SessionStates[op.SessionID].Lifecycle; lifecycle == workspacestate.Archived || lifecycle == workspacestate.Deleted {
 			return *meta, fmt.Errorf("session %q is %s and cannot accept the draft", op.SessionID, lifecycle)
@@ -1020,7 +999,7 @@ func (a *App) draftOperationSettings(op draftstate.Operation) (SessionDraftSetti
 	if request.SnapshotVersion > draftstate.SnapshotVersion {
 		return SessionDraftSettings{}, errors.New("unsupported draft execution snapshot version")
 	}
-	if (request.SnapshotVersion == 3 || request.SnapshotVersion == draftstate.SnapshotVersion) && strings.TrimSpace(request.Settings.Model) != "" {
+	if request.SnapshotVersion >= 3 && request.SnapshotVersion <= draftstate.SnapshotVersion && strings.TrimSpace(request.Settings.Model) != "" {
 		return request.Settings, nil
 	}
 	// A pre-v3 operation may only inherit the current draft settings when the
@@ -1032,7 +1011,7 @@ func (a *App) draftOperationSettings(op draftstate.Operation) (SessionDraftSetti
 	if record.Revision != op.DraftRevision {
 		return SessionDraftSettings{}, errors.New("draft operation predates frozen settings and cannot be resumed safely")
 	}
-	view, err := draftView(record)
+	view, err := a.draftView(record)
 	if err != nil {
 		return SessionDraftSettings{}, err
 	}
@@ -1223,7 +1202,7 @@ func (a *App) composerTargetWorkspace(target ComposerTarget) (string, control.Se
 	return base, ctrl, err
 }
 
-func (a *App) SavePastedImageForTarget(target ComposerTarget, dataURL string) (string, error) {
+func (a *App) SavePastedImageForComposerTarget(target ComposerTarget, dataURL string) (string, error) {
 	root, _, err := a.composerTargetWorkspace(target)
 	if err != nil {
 		return "", err
@@ -1240,7 +1219,7 @@ func (a *App) SavePastedImageForTarget(target ComposerTarget, dataURL string) (s
 	return control.SaveImageBytesInRoot(root, strings.TrimPrefix(before, "data:"), raw)
 }
 
-func (a *App) SavePastedFileForTarget(target ComposerTarget, name, dataURL string) (string, error) {
+func (a *App) SavePastedFileForComposerTarget(target ComposerTarget, name, dataURL string) (string, error) {
 	root, _, err := a.composerTargetWorkspace(target)
 	if err != nil {
 		return "", err
@@ -1256,7 +1235,7 @@ func (a *App) SavePastedFileForTarget(target ComposerTarget, name, dataURL strin
 	return control.SaveAttachmentBytesInRoot(root, name, raw)
 }
 
-func (a *App) SaveClipboardImageForTarget(target ComposerTarget) (string, error) {
+func (a *App) SaveClipboardImageForComposerTarget(target ComposerTarget) (string, error) {
 	root, _, err := a.composerTargetWorkspace(target)
 	if err != nil {
 		return "", err
@@ -1288,7 +1267,7 @@ func (a *App) SearchFileRefsForTarget(target ComposerTarget, query string) []Dir
 	return searchFileRefsForWorkspaceTarget(root, ctrl, query)
 }
 
-func (a *App) AttachmentDataURLForTarget(target ComposerTarget, rel string) (string, error) {
+func (a *App) AttachmentDataURLForComposerTarget(target ComposerTarget, rel string) (string, error) {
 	root, _, err := a.composerTargetWorkspace(target)
 	if err != nil {
 		return "", err
@@ -1296,7 +1275,7 @@ func (a *App) AttachmentDataURLForTarget(target ComposerTarget, rel string) (str
 	return control.ImageDataURLInRoot(root, rel)
 }
 
-func (a *App) AttachDroppedForTarget(target ComposerTarget, path string) (DroppedItem, error) {
+func (a *App) AttachDroppedForComposerTarget(target ComposerTarget, path string) (DroppedItem, error) {
 	root, _, err := a.composerTargetWorkspace(target)
 	if err != nil {
 		return DroppedItem{}, err

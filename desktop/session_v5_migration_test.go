@@ -45,7 +45,7 @@ func coldV4MigrationFixture(t *testing.T, root, id string) *session.Service {
 	return service
 }
 
-func TestDesktopV5StartupMigratesColdV4WithoutLegacyOrOpenTab(t *testing.T) {
+func TestDesktopV5ExplicitImportMigratesColdV4WithoutLegacyOrOpenTab(t *testing.T) {
 	for _, scope := range []string{"project", "global"} {
 		t.Run(scope, func(t *testing.T) {
 			isolateDesktopUserDirs(t)

@@ -49,6 +49,11 @@ export function useSessionControlCommands(input: SessionControlCommandsInput) {
     return sourceTabId ? ports.cancelForTab(sourceTabId, queuedItemIDs) : ports.cancel(queuedItemIDs);
   });
 
+  const handleStopActive = useCommittedCommand(async () => {
+    const outcome = await handleCancelActive();
+    if (outcome.error !== undefined) throw new Error(outcome.error);
+  });
+
   // Capture the committed source tab at the event boundary. Presentation must
   // never read the active-tab mirror while an async delivery operation is in flight.
   const handleAcceptDelivery = useCommittedCommand(() => {
@@ -73,6 +78,7 @@ export function useSessionControlCommands(input: SessionControlCommandsInput) {
   return {
     cancelRuntimeJob,
     handleCancelActive,
+    handleStopActive,
     handleAcceptDelivery,
     handleDisconnectRemote,
     cancelWorkspaceConflict,

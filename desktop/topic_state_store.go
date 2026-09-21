@@ -17,8 +17,8 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/topicstate"
 )
 

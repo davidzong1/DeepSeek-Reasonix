@@ -208,10 +208,9 @@ func ShellCapabilitiesForConfig(prefer, configPath string) []ShellCapability {
 	return out
 }
 
-// ShellCapabilitiesForPath reports the discovered interpreter inventory for
-// this host while honoring an explicit [tools.shell] path. On Windows this is
-// important for portable Git installations that are intentionally outside
-// PATH, the registry, and standard install roots.
+// ShellCapabilitiesForPath is the legacy path-scoped inventory entry point.
+// Windows keeps the path in the shared snapshot for Git discovery, while the
+// returned Agent runtime list remains limited to native PowerShell.
 func ShellCapabilitiesForPath(configPath string) []ShellCapability {
 	return ShellCapabilitiesForConfig("bash", configPath)
 }
@@ -374,47 +373,11 @@ func windowsStandardGitRoots() []string {
 	return append(withGitSubdir, atGitRoot...)
 }
 
-// windowsShellCapabilities reports git-bash plus both PowerShells, walking the
-// same order resolveShell's auto path uses so the reported winner matches what
-// a fresh session would actually bind.
+// windowsShellCapabilities reports the native runtimes available to the Windows
+// Agent. Git Bash discovery is retained for Git compatibility, but it is not an
+// Agent shell capability now that the Windows provider always exposes pwsh.
 func windowsShellCapabilities(snap *shellSnapshot) []ShellCapability {
-	caps := make([]ShellCapability, 0, 3)
-
-	gitBash := ShellCapability{ID: ShellCapabilityGitBash, Variant: "git-for-windows"}
-	acceptCandidate := func(path, source string) bool {
-		if path == "" || !snap.exists(path) || snap.isWSL(path) || !snap.probe(path) {
-			return false
-		}
-		gitBash.Available = true
-		gitBash.Path = path
-		gitBash.Source = source
-		return true
-	}
-	// Match ResolveShell's Windows priority: explicit compatible config, PATH,
-	// then Git-derived, registry, and standard locations.
-	for _, path := range snap.bashCands {
-		if snap.sources[strings.ToLower(path)] == ShellSourceConfig && acceptCandidate(path, ShellSourceConfig) {
-			break
-		}
-	}
-	if !gitBash.Available {
-		if path, err := snap.lookPath("bash"); err == nil {
-			acceptCandidate(path, ShellSourcePath)
-		}
-	}
-	if !gitBash.Available {
-		for _, path := range snap.bashCands {
-			source := snap.sources[strings.ToLower(path)]
-			if source != ShellSourceConfig && acceptCandidate(path, source) {
-				break
-			}
-		}
-	}
-	if !gitBash.Available {
-		gitBash.Reason = "not-installed"
-	}
-	caps = append(caps, gitBash)
-
+	caps := make([]ShellCapability, 0, 2)
 	caps = append(caps, windowsPowerShellCapability(snap, ShellCapabilityPwsh, []string{"pwsh", "pwsh.exe"}, "pwsh"))
 	caps = append(caps, windowsPowerShellCapability(snap, ShellCapabilityPowerShell, []string{"powershell", "powershell.exe"}, "powershell"))
 	return caps

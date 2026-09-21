@@ -42,7 +42,7 @@ try {
   for (const marker of ["NAV_ALPHA", "NAV_BETA"]) {
     console.log("Seeding", marker);
     if (marker === "NAV_BETA") {
-      await page.locator(".workspace-browser__workspace-create").first().click();
+      await page.locator(".sidebar__quick-action").click();
       await transcriptContains("ANSWER_NAV_ALPHA", false);
     }
     const composer = page.locator("textarea").first();
@@ -58,17 +58,24 @@ try {
     await invoke("RenameCanonicalSession", [refs[marker], marker]);
   }
   assert.notEqual(refs.NAV_ALPHA.sessionId, refs.NAV_BETA.sessionId);
+  const sessionRow = marker => page.locator(".project-tree__topic-main").filter({ has: page.getByText(marker, { exact: true }) });
   for (const marker of ["NAV_ALPHA", "NAV_BETA", "NAV_ALPHA"]) {
-    await page.locator(`.workspace-browser__session-open[data-session-id="${refs[marker].sessionId}"]`).click();
+    await sessionRow(marker).click();
     await transcriptContains(`ANSWER_${marker}`);
     const other = marker === "NAV_ALPHA" ? "NAV_BETA" : "NAV_ALPHA";
     await transcriptContains(`ANSWER_${other}`, false);
     assert.equal((await active()).session.sessionId, refs[marker].sessionId);
-    assert.equal(await page.locator(`.workspace-browser__session-open[data-session-id="${refs[marker].sessionId}"]`).getAttribute("aria-current"), "page");
+    assert.equal(await sessionRow(marker).locator("xpath=..").evaluate(node => node.classList.contains("project-tree__topic--active")), true);
   }
-  await page.evaluate(ids => {
-    for (const id of ids) document.querySelector(`.workspace-browser__session-open[data-session-id="${id}"]`).click();
-  }, [refs.NAV_BETA.sessionId, refs.NAV_ALPHA.sessionId, refs.NAV_BETA.sessionId]);
+  await page.evaluate(markers => {
+    for (const marker of markers) {
+      const label = [...document.querySelectorAll(".project-tree__topic-label")]
+        .find(candidate => candidate.textContent?.trim() === marker);
+      const row = label?.closest(".project-tree__topic-main");
+      if (!row) throw new Error(`missing project tree row ${marker}`);
+      row.click();
+    }
+  }, ["NAV_BETA", "NAV_ALPHA", "NAV_BETA"]);
   await transcriptContains("ANSWER_NAV_BETA");
   await transcriptContains("ANSWER_NAV_ALPHA", false);
   assert.equal((await active()).session.sessionId, refs.NAV_BETA.sessionId);

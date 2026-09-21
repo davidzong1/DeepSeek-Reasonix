@@ -12,6 +12,9 @@ export interface ProjectNode extends RemoteProjectNodeFields, CanonicalProjectNo
   recoveryPath?: string;
   sessionPath?: string;
   source?: import("../generated/desktopContract.generated").SessionSourceRef;
+  historical?: boolean;
+  historicalBranch?: boolean;
+  preparationStatus?: string;
   identityAliases?: string[];
   lifecycleGeneration?: number;
   tabId?: string;

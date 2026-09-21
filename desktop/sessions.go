@@ -15,8 +15,8 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/store"
 )
 
@@ -720,7 +720,7 @@ func validateSessionPath(dir, sessionPath string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if !store.IsSessionTranscriptName(filepath.Base(absPath)) {
+	if !isLegacySessionTranscriptName(filepath.Base(absPath)) {
 		return "", "", fmt.Errorf("not a session file: %s", sessionPath)
 	}
 	rel, err := filepath.Rel(absDir, absPath)
@@ -765,7 +765,7 @@ func validateTrashedSessionPath(dir, sessionPath string) (string, string, string
 	if err != nil {
 		return "", "", "", err
 	}
-	if !store.IsSessionTranscriptName(filepath.Base(absPath)) {
+	if !isLegacySessionTranscriptName(filepath.Base(absPath)) {
 		return "", "", "", fmt.Errorf("not a session file: %s", sessionPath)
 	}
 	rel, err := filepath.Rel(root, absPath)

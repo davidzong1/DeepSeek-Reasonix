@@ -675,7 +675,20 @@ func (s *Store) ReconcileDiscoveredSession(ctx context.Context, entry RecoveryEn
 			state.RecoveryEntries[entry.ID] = entry
 			return nil
 		}
-		value, ok := state.Workspaces[workspace.ID]
+		// A discovery snapshot can predate another process registering this
+		// directory. Resolve its owner under the writer lock, just like session
+		// ownership above, and preserve the owner's title and visibility.
+		workspaceID, found, err := ResolveWorkspaceID(*state, workspace.Root)
+		if err != nil {
+			return err
+		}
+		if !found {
+			workspaceID = workspace.ID
+			if existing, exists := state.Workspaces[workspaceID]; exists && existing.Root != workspace.Root {
+				return ErrMutationConflict
+			}
+		}
+		value, ok := state.Workspaces[workspaceID]
 		if !ok {
 			value = *workspace
 			state.WorkspaceIDs = append(state.WorkspaceIDs, value.ID)

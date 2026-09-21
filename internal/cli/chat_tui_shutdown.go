@@ -44,10 +44,24 @@ func (c *tuiShutdownCompletion) claimFallback() bool {
 // shutdownAndQuit persists what the controller holds beyond the last snapshot
 // and leaves. The shutdown variant writes a recovery branch when another
 // process keeps the active session's compatibility lock for the bounded wait.
-func (m chatTUI) shutdownAndQuit(completion *tuiShutdownCompletion) (tea.Model, tea.Cmd) {
-	defer completion.complete()
-	// Only snapshot if we still own the session (no takeover, or takeover returned).
-	if m.ctrl != nil && (m.takeover == nil || !m.takeover.Returned()) {
+func (m chatTUI) shutdownAndQuit(msg tuiShutdownMsg) (tea.Model, tea.Cmd) {
+	if !msg.userInitiated && m.takeover != nil && m.takeover.Reclaiming() {
+		// The manager goroutine owns the in-flight reclaim's final snapshot and
+		// its return, so the TUI must not race it with a second snapshot. The
+		// request is deferred, not dropped: completeSessionReclaim honors it.
+		if msg.completion != nil {
+			msg.completion.complete()
+		}
+		m.shutdownAfterReclaim = true
+		return m, nil
+	}
+	if msg.completion != nil {
+		defer msg.completion.complete()
+	}
+	// Snapshot only while this process still writes the session. A reclaimed
+	// or returned session belongs to the remote side again, and its runtime
+	// binding is already released.
+	if m.ctrl != nil && !m.sessionDetached() {
 		m.shutdownErr = m.ctrl.SnapshotForShutdown()
 		m.followSessionLease()
 	}

@@ -1,8 +1,11 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
 import { app } from "../lib/bridge";
-import type { SessionTakeoverView } from "../lib/types";
+import type { SessionTakeoverView, TabMeta } from "../lib/types";
+import type { HistoricalSourceUpdateView, SessionPreparationView } from "../generated/desktopContract.generated";
+import { historicalPreparationSnapshot, reconcileHistoricalPreparation, subscribeHistoricalPreparation, type DesktopNavigationIntent } from "../app-runtime/desktopNavigationOwner";
+import { useManagementT } from "../lib/managementLocale";
 
 /**
  * SessionTakeoverDialog confirms taking a lease-blocked session over from the
@@ -121,4 +124,116 @@ export function SessionTakeoverDialog({ tabId, onClose }: { tabId: string; onClo
     </div>,
     document.body,
   );
+}
+
+const terminalPreparation = new Set(["ready", "blocked", "failed", "cancelled"]);
+export type HistoricalSessionBannerProps = {
+  tab?: TabMeta;
+  navigate(intent: DesktopNavigationIntent): Promise<void>;
+  captureNavigation?(): () => boolean;
+};
+export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: HistoricalSessionBannerProps) {
+  const t = useT();
+  const m = useManagementT();
+  const activeRef = tab?.session ?? (tab?.sessionId ? { hostId: "local", sessionId: tab.sessionId } : undefined);
+  const preparation = useSyncExternalStore(subscribeHistoricalPreparation, historicalPreparationSnapshot);
+  const [update, setUpdate] = useState<HistoricalSourceUpdateView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const activeHostId = activeRef?.hostId ?? "";
+  const activeSessionId = activeRef?.sessionId ?? "";
+  const activeKey = activeSessionId ? `${activeHostId}:${activeSessionId}` : "";
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useEffect(() => {
+    let current = true;
+    setUpdate(null);
+    if (!activeSessionId || activeHostId !== "local" || !app.CheckHistoricalSourceUpdate) return () => { current = false; };
+    const ref = { hostId: activeHostId, sessionId: activeSessionId };
+    const run = async () => {
+      let next = await app.CheckHistoricalSourceUpdate!({ ref });
+      for (let attempt = 0; current && next.status === "checking" && attempt < 60; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (current) next = await app.CheckHistoricalSourceUpdate!({ ref });
+      }
+      if (!current || next.status !== "available" || !next.version || !next.source) return;
+      try {
+        if (localStorage.getItem(`historical-source-update:${next.sourceKey}`) === next.version) return;
+      } catch { /* private storage can be unavailable */ }
+      setUpdate(next);
+    };
+    void run().catch(() => {});
+    return () => { current = false; };
+  }, [activeHostId, activeSessionId]);
+
+  const dismissUpdate = () => {
+    if (update?.version) {
+      try { localStorage.setItem(`historical-source-update:${update.sourceKey}`, update.version); } catch { /* best effort */ }
+    }
+    setUpdate(null);
+  };
+  const importUpdate = async () => {
+    if (!update?.source || !update.version || !app.PrepareHistoricalSourceVersion || !app.GetSessionPreparation) return;
+    const expectedActive = activeKey;
+    const navigationCurrent = captureNavigation?.() ?? (() => activeKeyRef.current === expectedActive);
+    const current = () => mounted.current && navigationCurrent();
+    setBusy(true);
+    try {
+      let view: SessionPreparationView = await app.PrepareHistoricalSourceVersion(update.source, update.version);
+      while (current() && !terminalPreparation.has(view.status)) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        if (!current()) return;
+        view = await app.GetSessionPreparation(view.operationId);
+      }
+      if (view.status === "ready" && view.target && current()) await navigate({ kind: "canonical-session", ref: view.target });
+    } catch { /* Keep the update available for an explicit retry. */ }
+    finally { if (mounted.current) setBusy(false); }
+  };
+  const cancelPreparation = async () => {
+    if (!preparation || !app.CancelSessionPreparation) return;
+    try {
+      const view = await app.CancelSessionPreparation(preparation.operationId);
+      if (mounted.current) reconcileHistoricalPreparation(preparation, view);
+    } catch { /* The preparation poll remains the authority after a failed cancellation request. */ }
+  };
+
+  if (preparation) {
+    const waiting = preparation.status === "queued" || preparation.status === "preparing";
+    return <div className={`banner ${waiting ? "banner--warning" : "banner--error"} banner--actionable`} role="status">
+      <span className="banner__msg">{m("historicalImporting")}: {preparation.session.title || preparation.session.topicId || m("historicalTitle")}</span>
+      <span className="banner__hint">{m(preparation.status === "queued" ? "historicalQueued" : preparation.status === "preparing" ? "historicalImporting" : "historicalImportFailed")}</span>
+      <span className="banner__spacer" />
+      {waiting && <button type="button" className="btn btn--small" onClick={() => void cancelPreparation()}>{t("common.cancel")}</button>}
+      {!waiting && preparation.retryable && <button type="button" className="btn btn--small" onClick={() => void navigate({ kind: "resume-session", session: preparation.session })}>{t("common.retry")}</button>}
+    </div>;
+  }
+  if (tab?.historicalSource) return <div className="banner banner--warning banner--actionable" role="status">
+    <span className="banner__msg">{tab.topicTitle || m("historicalTitle")} · {m("historicalAvailable")}</span>
+    <span className="banner__hint">{m("historicalImportDescription")}</span>
+    <span className="banner__spacer" />
+    <button id="reasonix-prepare-restored-session" type="button" className="btn btn--small" onClick={() => void navigate({ kind: "resume-session", session: {
+      source: tab.historicalSource, path: tab.historicalSource!.path, scope: tab.scope, workspaceRoot: tab.workspaceRoot,
+      topicId: tab.topicId, title: tab.topicTitle, preview: "", turns: 0, turnsState: "unknown", createdAt: 0, lastActivityAt: 0, modTime: 0, current: true, open: true,
+    } })}>{m("historicalImportOpen")}</button>
+  </div>;
+  if (!update) return null;
+  return <div className="banner banner--warning banner--actionable" role="status">
+    <span className="banner__msg">{m("historicalTitle")} · {m("historicalAvailable")}</span>
+    <span className="banner__spacer" />
+    <button type="button" className="btn btn--small" disabled={busy} onClick={() => void importUpdate()}>{m("historicalImportOpen")} · {m("branch")}</button>
+    <button type="button" className="btn btn--small" disabled={busy} onClick={dismissUpdate}>{t("updater.dismiss")}</button>
+  </div>;
+}
+
+export function SessionRuntimeOverlays({ takeoverTabId, onCloseTakeover, historical }: {
+  takeoverTabId: string | null;
+  onCloseTakeover(): void;
+  historical?: HistoricalSessionBannerProps;
+}) {
+  return <>
+    {takeoverTabId ? <SessionTakeoverDialog tabId={takeoverTabId} onClose={onCloseTakeover} /> : null}
+    {historical ? <HistoricalSessionBanners {...historical} /> : null}
+  </>;
 }

@@ -27,6 +27,17 @@ func (a *Agent) applyArgumentValidation(plan *toolCallPlan) (toolOutcome, bool) 
 		return toolOutcome{}, false
 	}
 	normalized := tool.NormalizeArguments(plan.execArgs)
+	// Legacy shell aliases predate pwsh's required display description. Adapt
+	// only that call surface; canonical pwsh calls still use the strict schema.
+	if plan.execTool.Name() == "pwsh" && plan.call.Name != "pwsh" && tool.IsShellToolName(plan.call.Name) {
+		var args map[string]json.RawMessage
+		if json.Unmarshal(normalized, &args) == nil && args != nil {
+			if _, present := args["description"]; !present {
+				args["description"] = json.RawMessage(`"Run legacy PowerShell command"`)
+				normalized, _ = json.Marshal(args)
+			}
+		}
+	}
 	plan.execArgs = normalized
 	plan.permArgs = normalized
 	plan.evidenceArgs = normalized

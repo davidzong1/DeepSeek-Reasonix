@@ -3864,7 +3864,7 @@ func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
 	if secondCmd == nil {
 		t.Fatal("second Ctrl+C after cancel request should quit")
 	}
-	if msg := secondCmd(); msg != (tuiShutdownMsg{}) {
+	if msg := secondCmd(); msg != (tuiShutdownMsg{userInitiated: true}) {
 		t.Fatalf("second Ctrl+C command = %T, want tuiShutdownMsg (snapshot-before-quit, #5879)", msg)
 	}
 }
@@ -4301,7 +4301,7 @@ func TestQuitGesturesRouteThroughShutdown(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("second Ctrl+C should return a command")
 	}
-	if msg := cmd(); msg != (tuiShutdownMsg{}) {
+	if msg := cmd(); msg != (tuiShutdownMsg{userInitiated: true}) {
 		t.Fatalf("double Ctrl+C emitted %T, want tuiShutdownMsg", msg)
 	}
 
@@ -4311,7 +4311,7 @@ func TestQuitGesturesRouteThroughShutdown(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Ctrl+D should return a command")
 	}
-	if msg := cmd(); msg != (tuiShutdownMsg{}) {
+	if msg := cmd(); msg != (tuiShutdownMsg{userInitiated: true}) {
 		t.Fatalf("Ctrl+D emitted %T, want tuiShutdownMsg", msg)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"reasonix/internal/worktree"
 )
 
-func TestTransientFallbackRuntimeHonorsCleanupReservation(t *testing.T) {
+func TestBlankSessionCreationHonorsCleanupReservation(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	worktreeRoot := t.TempDir()
 	app := NewApp()
@@ -21,8 +21,8 @@ func TestTransientFallbackRuntimeHonorsCleanupReservation(t *testing.T) {
 	}
 	defer release()
 
-	if err := app.openTransientBlankRuntime("project", worktreeRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
-		t.Fatalf("reserved fallback open = %v", err)
+	if _, err := app.ensureBlankTab("project", worktreeRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
+		t.Fatalf("reserved blank session open = %v", err)
 	}
 	app.mu.RLock()
 	tabCount := len(app.tabs)
@@ -35,7 +35,7 @@ func TestTransientFallbackRuntimeHonorsCleanupReservation(t *testing.T) {
 	}
 }
 
-func TestFinalizeReservationRejectsConcurrentFallbackPublication(t *testing.T) {
+func TestFinalizeReservationRejectsConcurrentBlankSessionPublication(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	sourceRoot := t.TempDir()
 	worktreeRoot := t.TempDir()
@@ -56,9 +56,9 @@ func TestFinalizeReservationRejectsConcurrentFallbackPublication(t *testing.T) {
 	app := NewApp()
 	result := startFinalizeAdmissionTest(t, app, worktree.CleanupRequest{SourceRoot: sourceRoot, WorktreeRoot: worktreeRoot})
 	waitForFinalizeAdmissionGate(t, entered, result)
-	if err := app.openTransientBlankRuntime("project", worktreeRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
+	if _, err := app.ensureBlankTab("project", worktreeRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
 		close(releaseFinalize)
-		t.Fatalf("concurrent fallback open = %v", err)
+		t.Fatalf("concurrent blank session open = %v", err)
 	}
 	close(releaseFinalize)
 	if err := waitForFinalizeAdmissionResult(t, result); err != nil {
@@ -103,7 +103,7 @@ func TestFinalizeReservationCoversRetainedProjectRegistryUpdate(t *testing.T) {
 	}
 	result := startFinalizeAdmissionTest(t, app, worktree.CleanupRequest{SourceRoot: sourceRoot, WorktreeRoot: worktreeRoot})
 	waitForFinalizeAdmissionGate(t, registryEntered, result)
-	if err := app.openTransientBlankRuntime("project", recoveryRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
+	if _, err := app.ensureBlankTab("project", recoveryRoot); err == nil || !strings.Contains(err.Error(), "cleanup is in progress") {
 		close(releaseRegistry)
 		t.Fatalf("recovery runtime entered during registry update: %v", err)
 	}

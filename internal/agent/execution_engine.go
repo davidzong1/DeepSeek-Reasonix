@@ -65,7 +65,7 @@ func (a *Agent) pipelineDecision(plan *toolCallPlan) runtimepolicy.GuardDecision
 		Profile:        profile,
 		PlanReadOnly:   a.planMode.Load() || a.turn.constraints.PlanModeReadOnly,
 		Interactive:    a.hasInteractiveAsk(),
-		Verification:   plan.evidenceName == "bash" && evidence.IsVerificationCommand(bashCommandFromArgs(plan.evidenceArgs)),
+		Verification:   tool.IsShellToolName(plan.evidenceName) && evidence.IsVerificationCommand(bashCommandFromArgs(plan.evidenceArgs)),
 		TestsForbidden: a.turn.constraints.ForbidTests,
 		WorkspaceRoot:  a.writeWorkspaceRoot,
 	})

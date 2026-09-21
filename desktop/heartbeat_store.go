@@ -12,8 +12,8 @@ import (
 	"sort"
 	"time"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 func (e *HeartbeatEngine) readConfigSnapshot() (heartbeatConfigSnapshot, error) {

@@ -18,7 +18,7 @@ func contextualToolGateMessage(name string) string {
 		return "blocked: update_goal is only available while a goal is running, and no goal is active — no goal state was changed. End this turn with finish instead."
 	case "complete_step":
 		return "blocked: complete_step is only available after plan approval. While planning, keep task state with todo_write and present the plan for user approval."
-	case "bash_output", "wait", "kill_shell":
+	case "bash_output", "wait", "kill_shell", "job_output", "job_kill":
 		return "background jobs are not available in this context"
 	default:
 		return fmt.Sprintf("blocked: tool %q is unavailable in the current workflow context", name)

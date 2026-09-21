@@ -2,6 +2,7 @@ package boot
 
 import (
 	"reasonix/internal/agentpreset"
+	"reasonix/internal/tool"
 )
 
 // Role vocabulary re-exported for old frontends. Runtime constraints live in
@@ -59,9 +60,8 @@ func TokenModeFromAgentPreset(preset string) string {
 func CoreProviderToolNames() []string {
 	return []string{
 		"bash",
-		"bash_output",
-		"kill_shell",
-		"wait",
+		"job_output",
+		"job_kill",
 		"read_file",
 		"view_image",
 		"edit_file",
@@ -70,6 +70,23 @@ func CoreProviderToolNames() []string {
 		"use_capability",
 		"web_search",
 	}
+}
+
+func coreProviderToolNamesForRegistry(reg *tool.Registry) []string {
+	names := CoreProviderToolNames()
+	if reg == nil {
+		return names
+	}
+	if _, ok := reg.Get("pwsh"); !ok {
+		return names
+	}
+	for i, name := range names {
+		if name == "bash" {
+			names[i] = "pwsh"
+			break
+		}
+	}
+	return names
 }
 
 // HostControlToolNames are collaboration/contract tools that may appear in the

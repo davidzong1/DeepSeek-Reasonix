@@ -44,7 +44,7 @@ func (a *App) recoveryWorkspaceChoices(ctx context.Context, state workspacestate
 			}
 		}
 	} else {
-		allowed[desktopWorkspaceID(entry.Scope, entry.WorkspaceRoot)] = true
+		allowed[desktopWorkspaceOwnerID(state, entry.Scope, entry.WorkspaceRoot)] = true
 		if entry.WorkspaceID != "" {
 			allowed[entry.WorkspaceID] = true
 		}
@@ -232,7 +232,11 @@ func (a *App) RestoreRecoveryEntry(id, operationID string) (SessionRestoreResult
 }
 
 func (a *App) restoreRecoveryEntryInWorkspace(id, operationID, workspaceID string) (SessionRestoreResult, error) {
-	ctx := a.bootContext()
+	ctx, finish, err := a.beginHistoricalRecovery()
+	if err != nil {
+		return SessionRestoreResult{}, err
+	}
+	defer finish()
 	if operationID == "" {
 		operationID = "restore-recovery-" + id
 	}
@@ -262,9 +266,9 @@ func (a *App) restoreRecoveryEntryInWorkspace(id, operationID, workspaceID strin
 	if entry.SessionID != "" {
 		return a.restoreCanonicalSession(ctx, session.SessionRef{HostID: localDesktopHostID, SessionID: entry.SessionID}, operationID, id)
 	}
-	release, ok := a.tryLockRuntimeMutation("restore historical session")
-	if !ok {
-		return SessionRestoreResult{}, errTopicArchiveBusy
+	release, err := acquireHistoricalSource(ctx, desktopSourceKey(entry.Path, entry.HeadID), historicalSource{path: entry.Path, format: entry.Format})
+	if err != nil {
+		return SessionRestoreResult{}, err
 	}
 	defer release()
 	fingerprint, err := desktopSourceFingerprint(entry.Path)
@@ -296,17 +300,7 @@ func (a *App) restoreRecoveryEntryInWorkspace(id, operationID, workspaceID strin
 	if entry.Reason == "source_changed_after_adoption" {
 		source.versionFingerprint = fingerprint
 	}
-	if entry.Format == "canonical" {
-		source.root = filepath.Dir(entry.Path)
-		old, openErr := session.NewService("migration-source", session.NewFilesystemPersistence(source.root))
-		if openErr != nil {
-			return SessionRestoreResult{}, openErr
-		}
-		err = a.migrateCanonicalSession(ctx, old, source, workspaceID, filepath.Base(entry.Path))
-		err = errors.Join(err, old.Shutdown(context.Background()))
-	} else {
-		err = a.migrateLegacySession(ctx, entry.Path, source, workspaceID)
-	}
+	err = a.convertHistoricalSource(ctx, historicalSource{path: entry.Path, format: entry.Format}, source, workspaceID)
 	if err != nil {
 		return SessionRestoreResult{}, err
 	}
@@ -467,26 +461,41 @@ func (a *App) reconcileUnregisteredSessions(ctx context.Context) error {
 }
 
 func (a *App) recoverDesktopSessionOperations(ctx context.Context) error {
-	release := a.lockRuntimeMutation("replay session lifecycle")
+	return a.recoverDesktopOperations(ctx, true)
+}
+
+func (a *App) recoverDesktopOperations(ctx context.Context, includeHistorical bool) error {
 	state, err := a.workspaceRegistry().Load(ctx)
 	if err != nil {
-		release()
 		return err
+	}
+	replay := func(op workspacestate.Operation) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !includeHistorical && (op.Kind == "import" || op.Kind == "restore" || op.Kind == "archive-import") {
+			return nil
+		}
+		release, ok := a.tryLockRuntimeMutation("replay session lifecycle")
+		if !ok {
+			return errTopicArchiveBusy
+		}
+		defer release()
+		return a.replayDesktopSessionOperation(ctx, state, op)
 	}
 	var joined error
 	for _, op := range state.PendingOperations {
 		if op.Kind != "purge" || op.Phase == "committed" {
 			continue
 		}
-		joined = errors.Join(joined, a.replayDesktopSessionOperation(ctx, state, op))
+		joined = errors.Join(joined, replay(op))
 	}
 	for _, op := range state.PendingOperations {
 		if op.Phase == "committed" || op.Kind == "archive-import" || op.Kind == "command" || op.Kind == "purge" {
 			continue
 		}
-		joined = errors.Join(joined, a.replayDesktopSessionOperation(ctx, state, op))
+		joined = errors.Join(joined, replay(op))
 	}
-	release()
 	for _, op := range state.PendingOperations {
 		if op.Kind != "command" || op.Phase == "committed" {
 			continue
@@ -494,6 +503,9 @@ func (a *App) recoverDesktopSessionOperations(ctx context.Context) error {
 		var req SessionLifecycleRequest
 		if err := json.Unmarshal(op.Request, &req); err != nil {
 			joined = errors.Join(joined, err)
+			continue
+		}
+		if !includeHistorical && req.Action == "restore" {
 			continue
 		}
 		_, err := a.ApplySessionLifecycle(req)
@@ -512,18 +524,8 @@ func (a *App) replayDesktopSessionOperation(ctx context.Context, state workspace
 		}
 		return nil
 	}
-	checks := []workspacestate.Operation{op}
-	for _, dependency := range op.Dependencies {
-		checks = append(checks, state.PendingOperations[dependency])
-	}
-	for _, check := range checks {
-		if check.Mapping == nil {
-			continue
-		}
-		fingerprint, err := desktopSourceFingerprint(check.Mapping.Path)
-		if err != nil || fingerprint != check.Mapping.Fingerprint {
-			return errors.Join(err, workspacestate.ErrMutationConflict)
-		}
+	if err := validateDesktopOperationSources(state, op); err != nil {
+		return err
 	}
 	if op.Phase == "prepared" && op.Mapping != nil {
 		return a.replayPreparedImport(ctx, state, op)

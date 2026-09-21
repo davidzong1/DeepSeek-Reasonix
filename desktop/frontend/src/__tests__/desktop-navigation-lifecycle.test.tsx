@@ -9,6 +9,7 @@ import type { SidebarImConnection } from "../app-runtime/sidebarImProjection";
 import type { Translator } from "../lib/i18n";
 import { __emitMockRemoteTabOpened } from "../lib/remoteTabEvents";
 import { useRemoteTabOpened } from "../lib/useRemoteTabOpened";
+import { projectTreeTopicOpenRequest } from "../lib/projectTreeTopic";
 
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
@@ -21,6 +22,7 @@ const calls: string[] = [];
 const acceptedTopics: number[] = [];
 let intent = 0;
 let registration: ReturnType<typeof deferred<string>> | undefined;
+let preparationReads = 0;
 let api!: ReturnType<typeof useDesktopNavigation>;
 const activate = (id: string) => { calls.push(`open:${id}`); const request = deferred<TabMeta>(); pending.set(id, request); return request.promise; };
 const ports: Parameters<typeof useDesktopNavigation>[0]["ports"] = {
@@ -40,6 +42,13 @@ const ports: Parameters<typeof useDesktopNavigation>[0]["ports"] = {
   resumeSession: async (path, id) => { calls.push(`resume:${id}:${path}`); },
   listTabs: async () => [], applyTabs: () => { calls.push("tabs"); }, seedTab: value => { calls.push(`seed:${value.id}`); },
   listSessions: async () => { calls.push("history-refresh"); return []; },
+  prepareSession: async selector => { calls.push(`prepare:${selector.source?.sourceKey}`); return { operationId: "prepare-legacy", sourceKey: selector.source?.sourceKey || "", status: "queued", revision: 1, retryable: false }; },
+  getSessionPreparation: async () => {
+    preparationReads++;
+    return preparationReads < 2
+      ? { operationId: "prepare-legacy", sourceKey: "legacy", status: "preparing", revision: 2, retryable: false }
+      : { operationId: "prepare-legacy", sourceKey: "legacy", status: "ready", revision: 3, target: { hostId: "local", sessionId: "prepared-target" }, retryable: false };
+  },
   topicAccepted: seq => { acceptedTopics.push(seq); },
 };
 function Probe({ visible = "A" }: { visible?: string }) {
@@ -108,6 +117,24 @@ try {
   assert.ok(calls.includes("open:history"), "resuming a session activates its topic surface");
   assert.ok(!calls.includes("tab-session"), "every layout style takes the surface path, never a legacy tab");
   assert.ok(calls.includes("history-close"));
+
+  calls.length = 0; preparationReads = 0;
+  const legacy = api.enqueueNavigation({ kind: "resume-session", session: { scope: "global", topicId: "legacy-topic", title: "Legacy", path: "legacy.jsonl",
+    source: { hostId: "local", sourceKey: "legacy", path: "legacy.jsonl" } } as SessionMeta });
+  await finish("legacy-topic", legacy);
+  assert.ok(calls.includes("prepare:legacy"), "legacy navigation prepares through the shared coordinator");
+  assert.equal(preparationReads, 2, "navigation polls revisioned preparation until ready");
+
+  calls.length = 0; preparationReads = 0;
+  const sidebarRequest = projectTreeTopicOpenRequest({ kind: "global_topic", key: "cold-v4", label: "Cold v4",
+    topicId: "cold-topic", source: { hostId: "local", sourceKey: "cold-v4", path: "cold-store" } });
+  assert.ok(sidebarRequest?.sessionPath?.startsWith("session-source:"), "headless canonical sources keep their explicit identity");
+  const sidebar = api.enqueueNavigation({ kind: "topic", ...sidebarRequest! });
+  const sidebarIntent = intent;
+  await finish("cold-topic", sidebar);
+  assert.ok(calls.includes("prepare:cold-v4"), "sidebar uses the same preparation owner as history");
+  assert.equal(preparationReads, 2);
+  assert.equal(acceptedTopics.at(-1), sidebarIntent, "prepared sidebar navigation retains topic acceptance");
 
   calls.length = 0;
   const failed = topic("failed");

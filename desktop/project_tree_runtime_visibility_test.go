@@ -22,14 +22,19 @@ func TestProjectTreeRuntimeSnapshotWailsArraysAreNonNil(t *testing.T) {
 func TestProjectTreeRuntimeSnapshotLocalizesAutoTopicTitle(t *testing.T) {
 	app := NewApp()
 	app.setDesktopLocale("en-US")
+	const sessionID = "desktop-runtime-title"
 	app.tabs["auto"] = &WorkspaceTab{
 		ID: "auto", Scope: "global", TopicID: "topic-auto",
 		TopicTitle: defaultTopicTitle, topicTitleSource: topicTitleSourceAuto,
+		SessionID: sessionID, SessionPath: sessionRoute(sessionID),
 	}
 
 	snapshot := app.GetProjectTreeRuntimeSnapshot()
 	if len(snapshot.Topics) != 1 || snapshot.Topics[0].Node.Label != defaultTopicTitleEn {
 		t.Fatalf("runtime topic = %+v, want localized %q", snapshot.Topics, defaultTopicTitleEn)
+	}
+	if strings.Contains(snapshot.Topics[0].Node.Label, "session-id:") {
+		t.Fatalf("canonical route leaked into user-visible title: %+v", snapshot.Topics[0].Node)
 	}
 }
 

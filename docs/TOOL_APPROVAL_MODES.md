@@ -14,11 +14,11 @@ filesystem and process boundary.
 - **Collaboration mode** (Normal / Plan / Goal) decides how Reasonix advances the task. There is no automatic task mode or selectable quality floor. Verification obligations come from real tool actions, project rules, task risk, and explicit user requirements.
 - **Permission preset** decides the enforced filesystem and process boundary and when exact grants are requested.
 
-macOS enforces restricted presets with Seatbelt and Linux uses bubblewrap.
-Windows uses a restricted token, ACL-scoped private temporary storage, and Job
-Objects; the UI reports that backend as partial enforcement. If the required
-backend cannot start, restricted presets fail closed. Reasonix never offers to
-silently rerun the command without isolation.
+macOS enforces restricted presets with Seatbelt and Linux uses bubblewrap. If
+the required backend cannot start there, restricted presets fail closed;
+Reasonix never offers to silently rerun the command without isolation. Windows
+has no OS-level shell sandbox: restricted presets still confine Reasonix file
+tools and request exact grants, but shell commands run as the current OS user.
 
 ## Approval scope
 

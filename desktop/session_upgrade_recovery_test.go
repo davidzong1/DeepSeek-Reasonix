@@ -255,8 +255,13 @@ func TestHistoricalIdentityDoesNotMergeEqualMessagesOrChangedSources(t *testing.
 	if err := os.WriteFile(paths[0], []byte("{\"role\":\"user\",\"content\":\"changed old source\"}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := app.legacyCanonicalRef(t.Context(), paths[0]); err == nil {
-		t.Fatal("changed source was silently routed to prior import")
+	if ref, found, err := app.legacyCanonicalRef(t.Context(), paths[0]); err != nil || !found || ref != refs[0] {
+		t.Fatalf("opening adopted history must remain independent of its retained source: %v %v", ref, err)
+	}
+	// An explicit source re-evaluation still quarantines changed history; an
+	// ordinary open no longer performs this expensive scan or mutates recovery.
+	if err := app.migrateLegacySession(t.Context(), paths[0], desktopMigrationSource{scope: "global"}, workspace); err != nil {
+		t.Fatal(err)
 	}
 	state, err := app.workspaceRegistry().Load(t.Context())
 	if err != nil {

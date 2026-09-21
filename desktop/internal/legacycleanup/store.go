@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 const SchemaVersion = 1

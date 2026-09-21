@@ -20,10 +20,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/pathidentity"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )
@@ -1265,57 +1263,6 @@ func lockSessionFile(path string) (func(), error) {
 	}
 }
 
-// LockSessionMetaPath serializes a complete branch-meta read-modify-write
-// cycle with both goroutines in this process and other Reasonix processes.
-// Callers must hold it from the first read through the final replace.
-func LockSessionMetaPath(path string) (func(), error) {
-	lockPath, err := sessionMetaLockTarget(path)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionMetaLockWait)
-	releaseFile, err := filelock.Acquire(ctx, lockPath)
-	cancel()
-	if err != nil {
-		return nil, fmt.Errorf("lock session metadata: %w", err)
-	}
-	return func() {
-		releaseFile()
-	}, nil
-}
-
-func tryLockSessionMetaPath(path string) (func(), bool, error) {
-	lockPath, err := sessionMetaLockTarget(path)
-	if err != nil {
-		return nil, false, err
-	}
-	releaseFile, err := filelock.TryAcquire(lockPath)
-	if errors.Is(err, filelock.ErrHeld) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("try lock session metadata: %w", err)
-	}
-	return releaseFile, true, nil
-}
-
-func sessionMetaLockTarget(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("empty session path")
-	}
-	canonical := canonicalSessionSavePath(path)
-	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
-		return "", fmt.Errorf("create session metadata dir: %w", err)
-	}
-	return sessionMetaLockPath(canonical), nil
-}
-
-func sessionMetaLockPath(path string) string {
-	canonical := canonicalSessionSavePath(path)
-	digest := sha256.Sum256([]byte(canonical))
-	return filepath.Join(filepath.Dir(canonical), "."+hex.EncodeToString(digest[:8])+".meta.lock")
-}
-
 // UpdateBranchMeta is the owner-level metadata API. The callback runs while
 // the cross-process metadata lock is held, so callers cannot accidentally
 // load a stale sidecar and overwrite fields written by another runtime.
@@ -1340,24 +1287,6 @@ func UpdateBranchMeta(path string, touchUpdated bool, update func(*BranchMeta) e
 	// opaque title revision). Whole-record transcript/listing writers use the
 	// preserving saveBranchMeta path instead.
 	return saveBranchMetaContextMode(context.Background(), path, m, touchUpdated, false)
-}
-
-func canonicalSessionSavePath(path string) string {
-	return pathidentity.Canonical(path)
-}
-
-// CanonicalSessionPath is the identity key of a session path: cleaned,
-// absolute, and case-folded on Windows, matching the key form used by the
-// lease registry and the save-path locks. Any runtime bookkeeping that
-// compares or maps session paths (desktop tabs, detached runtimes) must use
-// this exact form, or the same file splits into distinct keys — e.g.
-// `C:\Users\...` vs the lease's lowercased `c:\users\...`. Empty input stays
-// empty instead of resolving to the working directory.
-func CanonicalSessionPath(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return ""
-	}
-	return canonicalSessionSavePath(path)
 }
 
 // LoadSession reads a saved session into a fresh Session value. New sessions
@@ -1763,7 +1692,7 @@ func removeStaleSessionLeaseInfoSidecar(basePath, sidecarPath string) error {
 }
 
 func sessionLeaseHeldLocally(path string) bool {
-	_, ok := sessionLeaseOwners.Load(canonicalSessionSavePath(path))
+	_, ok := sessionLeaseOwners.Load(CanonicalSessionPath(path))
 	return ok
 }
 

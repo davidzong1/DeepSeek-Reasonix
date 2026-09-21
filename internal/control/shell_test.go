@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -64,8 +65,12 @@ func TestRunShell_EmitsEvents(t *testing.T) {
 	if (*events)[0].Kind != event.ToolDispatch {
 		t.Errorf("first event: want ToolDispatch, got %v", (*events)[0].Kind)
 	}
-	if (*events)[0].Tool.Name != "bash" {
-		t.Errorf("tool name: want bash, got %s", (*events)[0].Tool.Name)
+	wantShell := "bash"
+	if runtime.GOOS == "windows" {
+		wantShell = "pwsh"
+	}
+	if (*events)[0].Tool.Name != wantShell {
+		t.Errorf("tool name: want %s, got %s", wantShell, (*events)[0].Tool.Name)
 	}
 
 	// Last event: TurnDone

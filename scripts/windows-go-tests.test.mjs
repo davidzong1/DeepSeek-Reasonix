@@ -9,7 +9,7 @@ const packages = ["reasonix/cmd/reasonix", "reasonix/internal/agent", "reasonix/
   "reasonix/internal/serve", "reasonix/internal/session", "reasonix/internal/worktree",
   "reasonix/internal/lsp", "reasonix/internal/fileops", "reasonix/internal/newpackage", "reasonix/internal/projectiondb",
   "reasonix/internal/sessioncatalog", "reasonix/internal/sqliteuri", "reasonix/internal/topicstate",
-  "reasonix/internal/winsandbox", "reasonix/tools/repolint"];
+  "reasonix/internal/winaclresidue", "reasonix/tools/repolint"];
 
 test("the full Windows groups cover every package exactly once, including new packages", () => {
   const grouped = ["full", ...isolatedGroups].flatMap(group => selectPackages(packages, group));
@@ -23,7 +23,7 @@ test("PR smoke keeps platform coverage without duplicating isolated suites", () 
     "reasonix/cmd/reasonix", "reasonix/internal/extension/sidecar", "reasonix/internal/proc", "reasonix/internal/lsp",
     "reasonix/internal/fileops",
     "reasonix/internal/projectiondb", "reasonix/internal/sessioncatalog", "reasonix/internal/sqliteuri",
-    "reasonix/internal/topicstate", "reasonix/internal/winsandbox",
+    "reasonix/internal/topicstate", "reasonix/internal/winaclresidue",
   ]);
   for (const group of isolatedGroups) {
     assert.deepEqual(testArgs(packages, group).slice(0, 4), ["test", "-p", "1", "-timeout=8m"]);

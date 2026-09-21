@@ -64,10 +64,10 @@ model = "x"
 				readOnly[e.Name] = e.ReadOnly
 			}
 			for name, want := range map[string]bool{
-				"bash":           false,
-				"read_file":      true,
-				"view_image":     true,
-				"use_capability": true,
+				platformShellToolName(): false,
+				"read_file":             true,
+				"view_image":            true,
+				"use_capability":        true,
 			} {
 				got, ok := readOnly[name]
 				if !ok {

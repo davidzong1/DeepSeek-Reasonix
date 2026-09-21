@@ -1,7 +1,23 @@
 import { asArray } from "./array";
 import { getLocale, type DictKey, type Translator } from "./i18n";
 import type { ProjectNode, ProjectTopicStatus } from "./types";
+import type { SessionDraftSummary } from "../generated/desktopContract.generated";
 import { projectSessionIdentity, projectSessionExcluded, projectSessionKeys, sameProjectSession } from "./projectSessionIdentity";
+
+/**
+ * The workspace badge points at a draft worth returning to: unsent content, or
+ * a save that has not settled yet. A clean empty draft is only the landing
+ * surface and must not mark its workspace.
+ */
+export function workspaceDraftBadge(
+  summaries: readonly SessionDraftSummary[],
+  scope: "global" | "project",
+  workspaceRoot: string,
+): SessionDraftSummary | undefined {
+  return summaries.find((draft) => draft.scope === scope
+    && (scope === "global" || draft.workspaceRoot === workspaceRoot)
+    && (draft.hasContent || (Boolean(draft.state) && draft.state !== "saved")));
+}
 
 export type ProjectTreeVariant = "workbench" | "creation";
 export type WorkbenchSortMode = "created" | "updated";
@@ -264,8 +280,8 @@ export function projectTreeTopicOpenRequest(node: ProjectNode): ProjectTreeTopic
     scope,
     workspaceRoot: scope === "global" ? "" : node.root ?? "",
     topicId: node.topicId ?? "",
-    sessionPath: node.session ? `session-id:${node.session.sessionId}` : node.source?.headId
-      ? `session-source:${encodeURIComponent(JSON.stringify(node.source))}` : node.sessionPath,
+    sessionPath: node.session ? `session-id:${node.session.sessionId}` : node.source
+      ? `session-source:${encodeURIComponent(JSON.stringify({ ...node.source, title: node.label }))}` : node.sessionPath,
   };
 }
 
@@ -313,7 +329,29 @@ function topicMatchesActiveIdentity(node: ProjectNode, activeScope?: string, act
   return activeScope === "project" && activeTopicId === node.topicId && activeWorkspaceRoot === node.root;
 }
 
-export function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string, activeSessionPath?: string): boolean {
+type ActiveRemoteSessionIdentity = {
+  hostId: string;
+  workspace: string;
+  sessionId?: string;
+};
+
+function remoteTopicMatchesActiveSession(node: ProjectNode, activeRemote?: ActiveRemoteSessionIdentity): boolean {
+  const remote = node.remoteSession;
+  const active = activeRemote;
+  if (!remote || !active || remote.hostId !== active.hostId || remote.workspace !== active.workspace) return false;
+  const sessionID = active.sessionId?.trim();
+  if (!sessionID) return false;
+  return remote.sessionId?.trim() === sessionID || (!remote.sessionId?.trim() && remote.name.trim() === sessionID);
+}
+
+export function topicIsActive(
+  node: ProjectNode,
+  activeScope?: string,
+  activeWorkspaceRoot?: string,
+  activeTopicId?: string,
+  activeSessionPath?: string,
+  activeRemote?: ActiveRemoteSessionIdentity,
+): boolean {
   if (node.source?.headId) return projectTreeTopicOpenRequest(node)?.sessionPath === activeSessionPath;
   if (node.session?.sessionId) {
     return Boolean(activeSessionPath && (activeSessionPath === `session-id:${node.session.sessionId}` || activeSessionPath === node.sessionPath
@@ -328,7 +366,10 @@ export function topicIsActive(node: ProjectNode, activeScope?: string, activeWor
   // same absolute session path. Their synthesized rows already carry a
   // host-qualified topicId, so never let the generic path fallback mark a row
   // from another host active.
-  if (node.remoteSession) return topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId);
+  if (node.remoteSession) {
+    if (remoteTopicMatchesActiveSession(node, activeRemote)) return true;
+    return topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId);
+  }
   if (node.sessionPath) return Boolean(activeSessionPath && activeSessionPath === node.sessionPath);
   if (topicMatchesActiveIdentity(node, activeScope, activeWorkspaceRoot, activeTopicId)) return true;
   return Boolean(node.sessionPath && activeSessionPath && activeSessionPath === node.sessionPath);

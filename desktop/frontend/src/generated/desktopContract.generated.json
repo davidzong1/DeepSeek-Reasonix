@@ -1212,7 +1212,7 @@
     },
     {
       "cancellation": "before-dispatch",
-      "domain": "desktop/app.go",
+      "domain": "desktop/attachments_app.go",
       "name": "AttachDropped",
       "owner": "App.AttachDropped",
       "params": [
@@ -1233,14 +1233,14 @@
         "resolver": "App.AttachDropped"
       },
       "sources": [
-        "desktop/app.go"
+        "desktop/attachments_app.go"
       ]
     },
     {
       "cancellation": "before-dispatch",
       "domain": "desktop/session_draft.go",
-      "name": "AttachDroppedForTarget",
-      "owner": "App.AttachDroppedForTarget",
+      "name": "AttachDroppedForComposerTarget",
+      "owner": "App.AttachDroppedForComposerTarget",
       "params": [
         {
           "kind": "object",
@@ -1261,7 +1261,7 @@
           "path"
         ],
         "kind": "owner-inputs",
-        "resolver": "App.AttachDroppedForTarget"
+        "resolver": "App.AttachDroppedForComposerTarget"
       },
       "sources": [
         "desktop/session_draft.go"
@@ -1269,7 +1269,67 @@
     },
     {
       "cancellation": "before-dispatch",
-      "domain": "desktop/app.go",
+      "domain": "desktop/attachments_app.go",
+      "name": "AttachDroppedForTab",
+      "owner": "App.AttachDroppedForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.DroppedItem"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "path"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.AttachDroppedForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "AttachDroppedForTarget",
+      "owner": "App.AttachDroppedForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.DroppedItem"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "path"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.AttachDroppedForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
       "name": "AttachmentDataURL",
       "owner": "App.AttachmentDataURL",
       "params": [
@@ -1289,14 +1349,14 @@
         "resolver": "App.AttachmentDataURL"
       },
       "sources": [
-        "desktop/app.go"
+        "desktop/attachments_app.go"
       ]
     },
     {
       "cancellation": "before-dispatch",
       "domain": "desktop/session_draft.go",
-      "name": "AttachmentDataURLForTarget",
-      "owner": "App.AttachmentDataURLForTarget",
+      "name": "AttachmentDataURLForComposerTarget",
+      "owner": "App.AttachmentDataURLForComposerTarget",
       "params": [
         {
           "kind": "object",
@@ -1316,10 +1376,68 @@
           "rel"
         ],
         "kind": "owner-inputs",
-        "resolver": "App.AttachmentDataURLForTarget"
+        "resolver": "App.AttachmentDataURLForComposerTarget"
       },
       "sources": [
         "desktop/session_draft.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "AttachmentDataURLForTab",
+      "owner": "App.AttachmentDataURLForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "path"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.AttachmentDataURLForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "AttachmentDataURLForTarget",
+      "owner": "App.AttachmentDataURLForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "path"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.AttachmentDataURLForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -1772,6 +1890,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/session_preparation.go",
+      "name": "CancelSessionPreparation",
+      "owner": "App.CancelSessionPreparation",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionPreparationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "operationID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.CancelSessionPreparation"
+      },
+      "sources": [
+        "desktop/session_preparation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/shell_support.go",
       "name": "CancelShellInstall",
       "owner": "App.CancelShellInstall",
@@ -2036,6 +2180,33 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "CaptureAttachmentTarget",
+      "owner": "App.CaptureAttachmentTarget",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.ComposerTarget"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.AttachmentTargetView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "composer"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.CaptureAttachmentTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/inbox_target.go",
       "name": "CaptureInboxTarget",
       "owner": "App.CaptureInboxTarget",
@@ -2062,6 +2233,33 @@
       },
       "sources": [
         "desktop/inbox_target.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_preparation.go",
+      "name": "CheckHistoricalSourceUpdate",
+      "owner": "App.CheckHistoricalSourceUpdate",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.SessionSelector"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.HistoricalSourceUpdateView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "selector"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.CheckHistoricalSourceUpdate"
+      },
+      "sources": [
+        "desktop/session_preparation.go"
       ]
     },
     {
@@ -2867,6 +3065,32 @@
       },
       "sources": [
         "desktop/app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/historical_import.go",
+      "name": "ControlHistoricalImport",
+      "owner": "App.ControlHistoricalImport",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.HistoricalImportStatus"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "action"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ControlHistoricalImport"
+      },
+      "sources": [
+        "desktop/historical_import.go"
       ]
     },
     {
@@ -3816,6 +4040,60 @@
       },
       "sources": [
         "desktop/app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "EnqueueForAttachmentTarget",
+      "owner": "App.EnqueueForAttachmentTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "elem": {
+            "kind": "object",
+            "ref": "control.InvocationRequest"
+          },
+          "kind": "array"
+        },
+        {
+          "elem": {
+            "kind": "object",
+            "ref": "control.SubmissionAttachment"
+          },
+          "kind": "array"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.InboxReceiptView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "submissionID",
+          "input",
+          "display",
+          "invocations",
+          "attachments"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.EnqueueForAttachmentTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -4904,6 +5182,25 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/historical_import.go",
+      "name": "GetHistoricalImportStatus",
+      "owner": "App.GetHistoricalImportStatus",
+      "params": [],
+      "result": {
+        "kind": "object",
+        "ref": "main.HistoricalImportStatus"
+      },
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.GetHistoricalImportStatus"
+      },
+      "sources": [
+        "desktop/historical_import.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/history_catalog.go",
       "name": "GetHistoryIndexStatus",
       "owner": "App.GetHistoryIndexStatus",
@@ -5299,6 +5596,32 @@
       },
       "sources": [
         "desktop/session_organization.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_preparation.go",
+      "name": "GetSessionPreparation",
+      "owner": "App.GetSessionPreparation",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionPreparationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "operationID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.GetSessionPreparation"
+      },
+      "sources": [
+        "desktop/session_preparation.go"
       ]
     },
     {
@@ -6125,6 +6448,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/historical_import.go",
+      "name": "ImportHistoricalSession",
+      "owner": "App.ImportHistoricalSession",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionRestoreResult"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ImportHistoricalSession"
+      },
+      "sources": [
+        "desktop/historical_import.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/theme_app.go",
       "name": "ImportThemePack",
       "owner": "App.ImportThemePack",
@@ -6599,6 +6948,26 @@
       },
       "sources": [
         "desktop/session_draft.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/historical_import.go",
+      "name": "ListHistoricalSessions",
+      "owner": "App.ListHistoricalSessions",
+      "params": [],
+      "result": {
+        "kind": "object",
+        "ref": "main.HistoricalImportStatus"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.ListHistoricalSessions"
+      },
+      "sources": [
+        "desktop/historical_import.go"
       ]
     },
     {
@@ -9117,6 +9486,64 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/session_preparation.go",
+      "name": "PrepareHistoricalSourceVersion",
+      "owner": "App.PrepareHistoricalSourceVersion",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.SessionSourceRef"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionPreparationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "sourceRef",
+          "version"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.PrepareHistoricalSourceVersion"
+      },
+      "sources": [
+        "desktop/session_preparation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_preparation.go",
+      "name": "PrepareSession",
+      "owner": "App.PrepareSession",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.SessionSelector"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionPreparationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "selector"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.PrepareSession"
+      },
+      "sources": [
+        "desktop/session_preparation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/delivery_worktree.go",
       "name": "PrepareWorktreeMerge",
       "owner": "App.PrepareWorktreeMerge",
@@ -9352,6 +9779,64 @@
       },
       "sources": [
         "desktop/session_takeover.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "ReadDraftImageForTab",
+      "owner": "App.ReadDraftImageForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "draftID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadDraftImageForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "ReadDraftImageForTarget",
+      "owner": "App.ReadDraftImageForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "draftID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadDraftImageForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -9636,6 +10121,40 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "ReadSessionAttachmentForTab",
+      "owner": "App.ReadSessionAttachmentForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "integer"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionHistoryContentChunk"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "digest",
+          "offset"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadSessionAttachmentForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/session_export.go",
       "name": "ReadSessionExportChunk",
       "owner": "App.ReadSessionExportChunk",
@@ -9697,6 +10216,36 @@
       },
       "sources": [
         "desktop/session_workspace_api.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "RebindDraftImageForTarget",
+      "owner": "App.RebindDraftImageForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.DraftImageView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "draftID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.RebindDraftImageForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -9945,6 +10494,79 @@
       },
       "sources": [
         "desktop/navigation_intent.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "ReleaseAttachmentTarget",
+      "owner": "App.ReleaseAttachmentTarget",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "scope": {
+        "inputs": [
+          "token"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReleaseAttachmentTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "ReleaseDraftImageForTab",
+      "owner": "App.ReleaseDraftImageForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "draftID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReleaseDraftImageForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "ReleaseDraftImageForTarget",
+      "owner": "App.ReleaseDraftImageForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "draftID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReleaseDraftImageForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -13412,7 +14034,7 @@
     },
     {
       "cancellation": "before-dispatch",
-      "domain": "desktop/app.go",
+      "domain": "desktop/attachments_app.go",
       "name": "SaveClipboardImage",
       "owner": "App.SaveClipboardImage",
       "params": [],
@@ -13426,14 +14048,14 @@
         "resolver": "App.SaveClipboardImage"
       },
       "sources": [
-        "desktop/app.go"
+        "desktop/attachments_app.go"
       ]
     },
     {
       "cancellation": "before-dispatch",
       "domain": "desktop/session_draft.go",
-      "name": "SaveClipboardImageForTarget",
-      "owner": "App.SaveClipboardImageForTarget",
+      "name": "SaveClipboardImageForComposerTarget",
+      "owner": "App.SaveClipboardImageForComposerTarget",
       "params": [
         {
           "kind": "object",
@@ -13449,10 +14071,60 @@
           "target"
         ],
         "kind": "owner-inputs",
-        "resolver": "App.SaveClipboardImageForTarget"
+        "resolver": "App.SaveClipboardImageForComposerTarget"
       },
       "sources": [
         "desktop/session_draft.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "SaveClipboardImageForTab",
+      "owner": "App.SaveClipboardImageForTab",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SaveClipboardImageForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "SaveClipboardImageForTarget",
+      "owner": "App.SaveClipboardImageForTarget",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SaveClipboardImageForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
       ]
     },
     {
@@ -13667,7 +14339,7 @@
     },
     {
       "cancellation": "before-dispatch",
-      "domain": "desktop/app.go",
+      "domain": "desktop/attachments_app.go",
       "name": "SavePastedFile",
       "owner": "App.SavePastedFile",
       "params": [
@@ -13691,14 +14363,14 @@
         "resolver": "App.SavePastedFile"
       },
       "sources": [
-        "desktop/app.go"
+        "desktop/attachments_app.go"
       ]
     },
     {
       "cancellation": "before-dispatch",
       "domain": "desktop/session_draft.go",
-      "name": "SavePastedFileForTarget",
-      "owner": "App.SavePastedFileForTarget",
+      "name": "SavePastedFileForComposerTarget",
+      "owner": "App.SavePastedFileForComposerTarget",
       "params": [
         {
           "kind": "object",
@@ -13722,7 +14394,7 @@
           "dataURL"
         ],
         "kind": "owner-inputs",
-        "resolver": "App.SavePastedFileForTarget"
+        "resolver": "App.SavePastedFileForComposerTarget"
       },
       "sources": [
         "desktop/session_draft.go"
@@ -13730,7 +14402,73 @@
     },
     {
       "cancellation": "before-dispatch",
-      "domain": "desktop/app.go",
+      "domain": "desktop/attachments_app.go",
+      "name": "SavePastedFileForTab",
+      "owner": "App.SavePastedFileForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "name",
+          "dataURL"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SavePastedFileForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "SavePastedFileForTarget",
+      "owner": "App.SavePastedFileForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "name",
+          "dataURL"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SavePastedFileForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
       "name": "SavePastedImage",
       "owner": "App.SavePastedImage",
       "params": [
@@ -13750,14 +14488,14 @@
         "resolver": "App.SavePastedImage"
       },
       "sources": [
-        "desktop/app.go"
+        "desktop/attachments_app.go"
       ]
     },
     {
       "cancellation": "before-dispatch",
       "domain": "desktop/session_draft.go",
-      "name": "SavePastedImageForTarget",
-      "owner": "App.SavePastedImageForTarget",
+      "name": "SavePastedImageForComposerTarget",
+      "owner": "App.SavePastedImageForComposerTarget",
       "params": [
         {
           "kind": "object",
@@ -13777,10 +14515,39 @@
           "dataURL"
         ],
         "kind": "owner-inputs",
-        "resolver": "App.SavePastedImageForTarget"
+        "resolver": "App.SavePastedImageForComposerTarget"
       },
       "sources": [
         "desktop/session_draft.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "SavePastedImageForTab",
+      "owner": "App.SavePastedImageForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "dataURL"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SavePastedImageForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
       ]
     },
     {
@@ -17297,6 +18064,90 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/attachments_app.go",
+      "name": "StageImageForTab",
+      "owner": "App.StageImageForTab",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.DraftImageView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "operationID",
+          "displayName",
+          "mime",
+          "dataURL"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.StageImageForTab"
+      },
+      "sources": [
+        "desktop/attachments_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "StageImageForTarget",
+      "owner": "App.StageImageForTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.DraftImageView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "operationID",
+          "displayName",
+          "mime",
+          "dataURL"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.StageImageForTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/bot_connection_app.go",
       "name": "StartBotConnectionInstall",
       "owner": "App.StartBotConnectionInstall",
@@ -17323,6 +18174,35 @@
       },
       "sources": [
         "desktop/bot_connection_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/historical_import.go",
+      "name": "StartHistoricalImport",
+      "owner": "App.StartHistoricalImport",
+      "params": [
+        {
+          "elem": {
+            "kind": "string"
+          },
+          "kind": "array"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.HistoricalImportStatus"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "ids"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.StartHistoricalImport"
+      },
+      "sources": [
+        "desktop/historical_import.go"
       ]
     },
     {
@@ -17354,6 +18234,41 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/attachment_targets.go",
+      "name": "StartTurnForAttachmentTarget",
+      "owner": "App.StartTurnForAttachmentTarget",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "object",
+          "ref": "control.SubmissionRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.TurnStartView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "token",
+          "submissionID",
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.StartTurnForAttachmentTarget"
+      },
+      "sources": [
+        "desktop/attachment_targets.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/turn_runtime_api.go",
       "name": "StartTurnForTab",
       "owner": "App.StartTurnForTab",
@@ -17381,6 +18296,47 @@
         ],
         "kind": "owner-inputs",
         "resolver": "App.StartTurnForTab"
+      },
+      "sources": [
+        "desktop/turn_runtime_api.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/turn_runtime_api.go",
+      "name": "StartTurnForTabWithDrafts",
+      "owner": "App.StartTurnForTabWithDrafts",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "elem": {
+            "kind": "string"
+          },
+          "kind": "array"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.TurnStartView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID",
+          "input",
+          "submissionID",
+          "draftIDs"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.StartTurnForTabWithDrafts"
       },
       "sources": [
         "desktop/turn_runtime_api.go"
@@ -19830,6 +20786,44 @@
         }
       ]
     },
+    "attachment.AttachmentRef": {
+      "fields": [
+        {
+          "name": "v",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "content",
+          "type": {
+            "kind": "object",
+            "ref": "sessioncontent.Ref"
+          }
+        },
+        {
+          "name": "width",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "height",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "name",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
     "billing.CostQuote": {
       "fields": [
         {
@@ -21319,6 +22313,28 @@
         }
       ]
     },
+    "control.InvocationRequest": {
+      "fields": [
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "kind",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "offset",
+          "type": {
+            "kind": "integer"
+          }
+        }
+      ]
+    },
     "control.PermissionCapabilities": {
       "fields": [
         {
@@ -21435,6 +22451,149 @@
           "name": "target",
           "type": {
             "kind": "string"
+          }
+        }
+      ]
+    },
+    "control.SubmissionAttachment": {
+      "fields": [
+        {
+          "name": "clientAttachmentId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "draftId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "path",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "reference",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "attachment.AttachmentRef"
+            },
+            "kind": "nullable"
+          }
+        }
+      ]
+    },
+    "control.SubmissionRequest": {
+      "fields": [
+        {
+          "name": "http",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "input",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "display",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "format",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "action",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "recoveryId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "original",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "goal",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "toolApprovalMode",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "invocations",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "control.InvocationRequest"
+            },
+            "kind": "array"
+          }
+        },
+        {
+          "name": "draftIds",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "string"
+            },
+            "kind": "array"
+          }
+        },
+        {
+          "name": "attachmentDigests",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "string"
+            },
+            "kind": "array"
+          }
+        },
+        {
+          "name": "attachments",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "control.SubmissionAttachment"
+            },
+            "kind": "array"
           }
         }
       ]
@@ -25087,6 +26246,25 @@
         }
       ]
     },
+    "main.AttachmentTargetView": {
+      "fields": [
+        {
+          "name": "token",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "capabilities",
+          "type": {
+            "elem": {
+              "kind": "string"
+            },
+            "kind": "array"
+          }
+        }
+      ]
+    },
     "main.BackgroundRuntimeView": {
       "fields": [
         {
@@ -26549,6 +27727,13 @@
             },
             "kind": "nullable"
           }
+        },
+        {
+          "name": "generation",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
         }
       ]
     },
@@ -27535,6 +28720,53 @@
         }
       ]
     },
+    "main.DraftImageView": {
+      "fields": [
+        {
+          "name": "draftId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "path",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "displayName",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "mime",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "width",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "height",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "bytes",
+          "type": {
+            "kind": "integer"
+          }
+        }
+      ]
+    },
     "main.DraftWorkspaceRef": {
       "fields": [
         {
@@ -28449,6 +29681,171 @@
               "kind": "boolean"
             },
             "kind": "nullable"
+          }
+        }
+      ]
+    },
+    "main.HistoricalImportStatus": {
+      "fields": [
+        {
+          "name": "items",
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.HistoricalSessionView"
+            },
+            "kind": "array"
+          }
+        },
+        {
+          "name": "running",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "paused",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "remaining",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "completed",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "blocked",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "failed",
+          "type": {
+            "kind": "integer"
+          }
+        }
+      ]
+    },
+    "main.HistoricalSessionView": {
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "title",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "format",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "status",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "errorCode",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "session",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "session.SessionRef"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
+          "name": "source",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.SessionSourceRef"
+            },
+            "kind": "nullable"
+          }
+        }
+      ]
+    },
+    "main.HistoricalSourceUpdateView": {
+      "fields": [
+        {
+          "name": "sourceKey",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "status",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "version",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "target",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "session.SessionRef"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
+          "name": "source",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.SessionSourceRef"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
+          "name": "errorCode",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "retryable",
+          "type": {
+            "kind": "boolean"
           }
         }
       ]
@@ -30960,6 +32357,17 @@
           }
         },
         {
+          "name": "historicalSource",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.SessionSourceRef"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
           "name": "eventChannel",
           "type": {
             "kind": "string"
@@ -32152,6 +33560,27 @@
               "ref": "main.SessionSourceRef"
             },
             "kind": "nullable"
+          }
+        },
+        {
+          "name": "historical",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "historicalBranch",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "preparationStatus",
+          "optional": true,
+          "type": {
+            "kind": "string"
           }
         },
         {
@@ -36146,6 +37575,13 @@
           }
         },
         {
+          "name": "modelSource",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "effort",
           "optional": true,
           "type": {
@@ -36847,6 +38283,27 @@
           }
         },
         {
+          "name": "historical",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "historicalBranch",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "preparationStatus",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "path",
           "type": {
             "kind": "string"
@@ -37236,6 +38693,58 @@
           "optional": true,
           "type": {
             "kind": "string"
+          }
+        }
+      ]
+    },
+    "main.SessionPreparationView": {
+      "fields": [
+        {
+          "name": "operationId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "sourceKey",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "status",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "revision",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "target",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "session.SessionRef"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
+          "name": "errorCode",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "retryable",
+          "type": {
+            "kind": "boolean"
           }
         }
       ]
@@ -38861,6 +40370,17 @@
           "optional": true,
           "type": {
             "kind": "string"
+          }
+        },
+        {
+          "name": "historicalSource",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.SessionSourceRef"
+            },
+            "kind": "nullable"
           }
         },
         {
@@ -43209,6 +44729,59 @@
         }
       ]
     },
+    "transcript.Attachment": {
+      "fields": [
+        {
+          "name": "kind",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "digest",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "name",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "mime",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "width",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "height",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "bytes",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        }
+      ]
+    },
     "transcript.Change": {
       "fields": [
         {
@@ -43796,6 +45369,17 @@
             "elem": {
               "kind": "object",
               "ref": "provider.ServerSearchCall"
+            },
+            "kind": "array"
+          }
+        },
+        {
+          "name": "attachments",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "transcript.Attachment"
             },
             "kind": "array"
           }

@@ -43,6 +43,10 @@ func (s *Server) commitLoadedResume(w http.ResponseWriter, cur control.SessionAP
 			return false
 		}
 		w.Header().Set(sessionIDHeader, ref.SessionID)
+		// The identity is the live route now. Leaving the frame tag on the
+		// frozen legacy path would stamp every later turn with it, and
+		// identity-routed subscribers drop those.
+		s.setControllerPath(ctrl, "")
 		if s.leases != nil {
 			// Migration has frozen and published the source. It is now a
 			// read-only legacy artifact, so the Serve must release that lease.

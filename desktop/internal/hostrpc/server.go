@@ -10,7 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"reasonix/desktop/internal/instanceidentity"
 	"reasonix/internal/extension/rpcwire"
+	"reasonix/internal/pathidentity"
 )
 
 // Hooks are the lifecycle owners behind the desktop/* requests. A nil hook
@@ -156,6 +158,11 @@ func (s *Server) hello(_ context.Context, raw json.RawMessage) (any, error) {
 		PID:       os.Getpid(),
 	}
 	result.RuntimeGeneration = s.cfg.Generation
+	result.Instance = &InstanceInfo{
+		IdentityVersion: pathidentity.Version,
+		IdentityDigest:  instanceidentity.Digest(s.cfg.Identity.Home),
+		LegacyID:        instanceidentity.ForHome(s.cfg.Identity.Home),
+	}
 	s.ready.Store(true)
 	return result, nil
 }

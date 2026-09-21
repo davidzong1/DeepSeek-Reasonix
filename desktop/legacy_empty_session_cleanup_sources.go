@@ -128,7 +128,7 @@ func (a *App) archiveLegacyCleanupSource(item legacycleanup.Candidate, target le
 		}
 		return nil
 	}
-	_, err = a.archiveSessionRefsWithOperationConditional([]session.SessionRef{target.ref}, item.OperationID, verify)
+	err = a.archiveSessionRefsWithOperationConditional([]session.SessionRef{target.ref}, item.OperationID, verify)
 	if err != nil {
 		classification, reason := legacyCleanupArchiveError(err)
 		a.setLegacyCleanupSourceOutcome(item.ID, target.mapping.SessionID, classification, reason)

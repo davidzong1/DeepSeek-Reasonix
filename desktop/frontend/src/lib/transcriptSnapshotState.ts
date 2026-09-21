@@ -1,25 +1,49 @@
 import type { HistoryMessage, WireEvent } from "./types";
 import type { Item, State } from "./useController";
 import type { TranscriptRecord, TranscriptSnapshot } from "./transcriptProtocol";
-import { canonicalUserConfirmations, settleLocalSubmissions } from "./localSubmissionState";
+import { canonicalUserConfirmations, settleLocalSubmissions, settleRebasedSubmissions } from "./localSubmissionState";
 
 export function snapshotRecords(snapshot: TranscriptSnapshot): TranscriptRecord[] {
+  if (!Number.isSafeInteger(snapshot.totalRecords) || snapshot.totalRecords < 0) {
+    throw new Error("invalid transcript snapshot record count");
+  }
   const records: TranscriptRecord[] = [];
-  const ids = new Set<string>();
-  for (const record of [...(snapshot.records ?? []), ...(snapshot.activeRecords ?? [])]) {
-    if (!record.id || !Number.isSafeInteger(record.order) || record.order < 0 || record.order >= snapshot.totalRecords) {
+  const indexes = new Map<string, number>();
+  const normalize = (record: TranscriptRecord): TranscriptRecord => {
+    if (!Number.isSafeInteger(record.order) || record.order < 0 || record.order >= snapshot.totalRecords) {
       throw new Error("invalid transcript snapshot record identity");
     }
+    const derived = record.message.messageId ? `m:${record.message.messageId}`
+      : record.message.role === "tool" && record.message.toolCallId ? `tool:${record.message.toolCallId}` : undefined;
+    const referencedID = record.refs.find(ref => ref.recordId)?.recordId;
+    let id = record.id || record.message.recordId || derived || referencedID;
+    if (!id) {
+      if (record.refs.length > 0) throw new Error("transcript snapshot content identity missing");
+      id = `view:legacy:${snapshot.snapshotId || `${snapshot.identity.runtimeEpoch}:${snapshot.projectionRevision}`}:${record.order}`;
+    }
+    if (record.message.recordId && record.message.recordId !== id) {
+      throw new Error("transcript snapshot record identity mismatch");
+    }
+    if (record.refs.some(ref => ref.recordId !== id)) throw new Error("transcript snapshot content identity mismatch");
+    return { ...record, id, message: { ...record.message, recordId: id } };
+  };
+  for (const raw of snapshot.records ?? []) {
+    const record = normalize(raw);
+    if (indexes.has(record.id)) throw new Error("duplicate transcript snapshot record identity");
+    indexes.set(record.id, records.length);
+    records.push(record);
+  }
+  const activeIDs = new Set<string>();
+  for (const raw of snapshot.activeRecords ?? []) {
+    const record = normalize(raw);
+    if (activeIDs.has(record.id)) throw new Error("duplicate active transcript snapshot record identity");
+    activeIDs.add(record.id);
     // A mutable owner may also fall inside the requested page. The backend
     // omits that duplicate, but tolerate older/remote implementations that
     // return it in both arrays and keep the active copy authoritative.
-    if (ids.has(record.id)) {
-      const index = records.findIndex((existing) => existing.id === record.id);
-      if (index >= 0) records[index] = record;
-      continue;
-    }
-    ids.add(record.id);
-    records.push(record);
+    const index = indexes.get(record.id);
+    if (index !== undefined) records[index] = record;
+    else { indexes.set(record.id, records.length); records.push(record); }
   }
   return records.sort((a, b) => a.order - b.order);
 }
@@ -90,6 +114,12 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
   state = settleLocalSubmissions(state, converted.items, canonicalUserConfirmations(messages.map(message => ({
     kind: message.role, messageId: message.messageId, submissionId: message.submissionId, turnId: message.turnId,
   }))));
+  const active = snapshot.runtime.status === "queued" || snapshot.runtime.status === "in_progress" ||
+    snapshot.runtime.status === "waiting_user" || snapshot.runtime.status === "cancelling";
+  // Older serves and history-rebased projections omit message ids, so the
+  // id-keyed settlement above cannot retire an echo the server already owns.
+  state = settleRebasedSubmissions(state, state.items,
+    converted.items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user"), !active);
   const order = projectedItems ? Object.fromEntries(projectedItems.map((item, index) => [item.id, index])) : recordItemOrder(records, convert);
   const users = state.items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
   const items = converted.items.map((item) => {
@@ -106,8 +136,6 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
   });
   const hasLocalSubmission = Boolean(state.pendingSubmissionId && state.localSubmissions[state.pendingSubmissionId]
     && state.localSubmissions[state.pendingSubmissionId].status !== "failed");
-  const active = snapshot.runtime.status === "queued" || snapshot.runtime.status === "in_progress" ||
-    snapshot.runtime.status === "waiting_user" || snapshot.runtime.status === "cancelling";
   let next: State = {
     ...state,
     transcriptSessionId: sessionId,

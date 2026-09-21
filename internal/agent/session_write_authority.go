@@ -122,7 +122,7 @@ func (a *SessionWriteAuthority) lockCurrentLease(path string) (func(), error) {
 	if a == nil || a.lease == nil || a.generation == 0 {
 		return nil, ErrSessionWriteAuthorityMissing
 	}
-	canonical := canonicalSessionSavePath(path)
+	canonical := CanonicalSessionPath(path)
 	a.lease.mu.Lock()
 	if a.path != canonical || !a.validLeaseLocked() {
 		a.lease.mu.Unlock()
@@ -136,7 +136,7 @@ func (a *SessionWriteAuthority) Covers(path string) bool {
 	if !a.Valid() {
 		return false
 	}
-	return a.path == canonicalSessionSavePath(path)
+	return a.path == CanonicalSessionPath(path)
 }
 
 // BeginSave registers an in-flight save so Release waits for it. Writer-minted
@@ -173,7 +173,7 @@ func (a *SessionWriteAuthority) BeginSave(path string) (func(), error) {
 func (a *SessionWriteAuthority) beginLeaseSave(path string) (func(), error) {
 	a.lease.mu.Lock()
 	defer a.lease.mu.Unlock()
-	if a.path != canonicalSessionSavePath(path) ||
+	if a.path != CanonicalSessionPath(path) ||
 		a.lease.released || a.lease.leaseLock == nil ||
 		a.lease.path != a.path || a.lease.ownerID != a.ownerID ||
 		a.lease.writeGeneration != a.generation {

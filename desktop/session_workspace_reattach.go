@@ -20,7 +20,7 @@ func (a *App) reattachCanonicalSessionRuntime(tab *WorkspaceTab, current control
 		a.mu.Unlock()
 		return nil, nil
 	}
-	if canonicalWorkspaceChanged(snapshotTabRuntimeLocked(source), workspace) {
+	if source.SessionWorkspace.ID != workspace.ID || canonicalWorkspaceScope(workspace) != source.Scope {
 		a.mu.Unlock()
 		return nil, errSessionWorkspaceConflict
 	}
@@ -50,7 +50,7 @@ func (a *App) reattachCanonicalSessionRuntime(tab *WorkspaceTab, current control
 	if a.activeTabID == source.ID {
 		a.activeTabID = tab.ID
 	}
-	applyCanonicalWorkspaceLocked(tab, workspace)
+	applyCanonicalWorkspaceLocked(tab, workspace, true)
 	applyRuntimeTab(tab, source, sessionRoute(ref.SessionID), a.ctx, a)
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()

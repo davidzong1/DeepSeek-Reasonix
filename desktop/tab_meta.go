@@ -70,6 +70,7 @@ type TabMeta struct {
 	VersionState         string                       `json:"versionState,omitempty"`
 	ParentVersionID      string                       `json:"parentVersionId,omitempty"`
 	StartupErr           string                       `json:"startupErr,omitempty"`
+	HistoricalSource     *SessionSourceRef            `json:"historicalSource,omitempty"`
 	Authentication       *control.AuthenticationState `json:"authentication,omitempty"`
 	ModelSettingsPending bool                         `json:"modelSettingsPending,omitempty"`
 	Active               bool                         `json:"active"`

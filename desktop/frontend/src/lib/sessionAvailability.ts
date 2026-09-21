@@ -2,7 +2,7 @@ import type { State } from "./useController";
 import type { RemoteSessionApi } from "./useRemoteSession";
 
 export type SessionAvailability = {
-  kind: "ready" | "loading" | "error";
+  kind: "ready" | "loading" | "error" | "pending";
   source: "history" | "connection" | "runtime";
   detail?: string;
 };
@@ -21,6 +21,7 @@ export function projectSessionAvailability(input: { local?: LocalSession; remote
     if (remote.state !== "ready") return { kind: "loading", source: "connection" };
     return { kind: remote.hydrated ? "ready" : "loading", source: "history" };
   }
+  if (local?.meta?.historicalSource) return { kind: "pending", source: "runtime" };
   if (local?.hydrateError) return { kind: "error", source: "history", detail: local.hydrateError };
   if (local?.meta?.startupErr) return { kind: "error", source: "runtime", detail: local.meta.startupErr };
   if (local?.hydrating) return { kind: "loading", source: "history" };

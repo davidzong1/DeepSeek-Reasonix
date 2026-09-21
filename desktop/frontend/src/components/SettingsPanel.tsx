@@ -17,7 +17,7 @@ import { Eye, EyeOff, Files } from "lucide-react";
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowRight, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
-import { ShellInterpreterFields } from "./SettingsShellSupport";
+import { ShellEnvironmentDetails, ShellInterpreterFields } from "./SettingsShellSupport";
 import { CHANNEL_ICONS } from "./channelIcons";
 import { botAccessEntryCount, botAccessReady, botConnectionCredentialSummary, botConnectionLabel, botConnectionScopeLabel, botConnectionSecretEnv, botConnectionSecretPatch, botInstallTargetForConnection, botInstallTargetMatchesConnection, botTargetHint, botTargetLabel, diagnosticMessage, diagnosticReportDetail, firstConnectionRemote, formatInstallTimeLeft, formatInstallUserCode, qqBotAdded, type BotInstallTarget, type BotOfficialInstallTarget } from "./botConnectionSettings";
 import { app, COMPACT_RATIO_MAX_PERCENT, COMPACT_RATIO_MIN_PERCENT, onRuntimeRebuilt, openExternal } from "../lib/bridge";
@@ -6939,20 +6939,12 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
   return (
     <SettingsSection
       title={t("settings.sandboxTitle")}
-      description={t("settings.sandboxBoundaryHint")}
-      actions={
-        <Tooltip label={t("settings.reloadSessionConfigHint")}>
-          <button className="btn btn--small" disabled={busy} title={t("settings.reloadSessionConfigHint")} onClick={() => void reloadSession()}>
-            <RefreshCw size={14} aria-hidden="true" />
-            <span>{t("settings.reloadSessionConfig")}</span>
-          </button>
-        </Tooltip>
-      }
+      description={t(windows ? "settings.sandboxBoundaryHintWindows" : "settings.sandboxBoundaryHint")}
     >
       <ShellInterpreterFields sb={sb} windows={windows} busy={busy} setShell={(prefer) => void apply(() => app.SetShellPreference(prefer))} reloadSession={() => void reloadSession()} />
-      <SettingsField label={t("settings.allowNetwork")}>
+      <SettingsField label={t("settings.allowNetwork")} hint={windows ? t("settings.allowNetworkWindowsHint") : undefined}>
         <label className="set-check set-check--inline">
-          <input type="checkbox" checked={sb.network} disabled={busy} onChange={(e) => void set({ network: e.target.checked })} />
+          <input type="checkbox" checked={sb.network} disabled={busy || windows} onChange={(e) => void set({ network: e.target.checked })} />
           {t("settings.allowNetwork")}
         </label>
       </SettingsField>
@@ -6966,24 +6958,19 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
           onBlur={() => root !== sb.workspaceRoot && void set({ workspaceRoot: root })}
         />
       </SettingsField>
-      <SettingsField label={t("settings.effectiveWriteRoots")} hint={t("settings.effectiveWriteRootsHint")} stacked>
-        <div className="set-rules set-rules--readonly">
-          <div className="set-rules__chips">
-            {effectiveWriteRoots.length === 0 && <span className="mem-empty">{t("settings.noEffectiveWriteRoots")}</span>}
-            {effectiveWriteRoots.map((path, index) => (
-              <span className="set-rule set-rule--path" key={`${path}-${index}`}>
-                {path}
-              </span>
-            ))}
-          </div>
-        </div>
-      </SettingsField>
       <RuleList
         list="allow_write"
         rules={sb.allowWrite}
         busy={busy}
         onAdd={async (d) => { await set({ allowWrite: [...sb.allowWrite, d] }); }}
         onRemove={async (d) => { await set({ allowWrite: sb.allowWrite.filter((x) => x !== d) }); }}
+      />
+      <ShellEnvironmentDetails
+        sb={sb}
+        windows={windows}
+        busy={busy}
+        effectiveWriteRoots={effectiveWriteRoots}
+        reloadSession={() => void reloadSession()}
       />
     </SettingsSection>
   );

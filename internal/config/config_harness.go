@@ -207,10 +207,15 @@ func (c *Config) BashMode() string {
 }
 
 // BashModeForGOOS normalises the bash-sandbox mode for tests and cross-platform
-// rendering. Windows has no OS-level Bash sandbox and forces the effective mode
-// off, even when older configs explicitly requested "enforce". macOS/Linux keep
-// the existing explicit-mode behavior.
-func (c *Config) BashModeForGOOS(_ string) string {
+// rendering. macOS and Linux default to enforcement; backend capability is
+// checked at launch and restricted presets fail closed when it is unavailable.
+// Windows has no OS-level shell sandbox, so every value resolves to "off":
+// an explicit "enforce" stays readable (doctor reports it as ignored) but
+// never turns into a fail-closed launch.
+func (c *Config) BashModeForGOOS(goos string) string {
+	if goos == "windows" {
+		return "off"
+	}
 	switch strings.TrimSpace(c.Sandbox.Bash) {
 	case "enforce":
 		return "enforce"

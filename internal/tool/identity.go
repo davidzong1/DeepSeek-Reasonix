@@ -45,6 +45,7 @@ const (
 // Callers must import tool/builtin to initialize the compile-time inventory.
 func KnownToolNames() []string {
 	names := []string{
+		"pwsh", // Windows runtime identity; the compile-time builtin is named bash.
 		HostAsk,
 		HostCompleteSubtask,
 		HostDocs,

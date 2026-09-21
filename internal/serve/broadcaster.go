@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,13 +54,39 @@ func (b *Broadcaster) SetDisplayCurrency(currency string) {
 	b.mu.Unlock()
 }
 
+// sessionRouteKey is the one normalization rule for session references the
+// broadcaster keys on: final-format identity routes ("session-id:<id>") are not
+// filesystem paths and stay verbatim, legacy transcript paths take their
+// canonical form. Every emit, ledger and current-session update goes through
+// it so an identity route can never be rewritten into a cwd-relative pseudo
+// path that no subscriber or registry matches.
+func sessionRouteKey(path string) string {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, remoteSessionIDQueryPrefix) {
+		return path
+	}
+	return agent.CanonicalSessionPath(path)
+}
+
+// hiddenFromCurrentOnly reports whether a routed frame is filtered out for
+// subscribers that watch only the current session. The filter compares path
+// keys; identity routes are not path-keyed and are routed by the client from
+// the frame itself, exactly like identity-tagged live frames (which carry no
+// path), so they are never dropped here.
+func hiddenFromCurrentOnly(sessionPath, current string) bool {
+	if sessionPath == "" || strings.HasPrefix(sessionPath, remoteSessionIDQueryPrefix) {
+		return false
+	}
+	return sessionPath != current
+}
+
 // SetCurrentSession records the controller shown by current-only subscribers.
 // Untagged events remain compatible and are attributed to this session.
 func (b *Broadcaster) SetCurrentSession(path string) {
 	if b == nil {
 		return
 	}
-	path = agent.CanonicalSessionPath(path)
+	path = sessionRouteKey(path)
 	b.mu.Lock()
 	b.current = path
 	b.mu.Unlock()
@@ -90,7 +117,7 @@ func (b *Broadcaster) ResetSessionPath(path string) {
 	if path == "" {
 		path = b.current
 	} else {
-		path = agent.CanonicalSessionPath(path)
+		path = sessionRouteKey(path)
 	}
 	delete(b.ledgers, path)
 	b.mu.Unlock()
@@ -116,7 +143,7 @@ func (b *Broadcaster) ledgerLocked(path string) *billing.Ledger {
 	if path == "" {
 		path = b.current
 	} else {
-		path = agent.CanonicalSessionPath(path)
+		path = sessionRouteKey(path)
 	}
 	ledger := b.ledgers[path]
 	if ledger == nil {
@@ -131,7 +158,7 @@ func (b *Broadcaster) ledgerLocked(path string) *billing.Ledger {
 // dropped silently — one bad event shouldn't stall the stream.
 func (b *Broadcaster) Emit(e event.Event) {
 	if e.SessionPath != "" {
-		e.SessionPath = agent.CanonicalSessionPath(e.SessionPath)
+		e.SessionPath = sessionRouteKey(e.SessionPath)
 	}
 	wired := eventwire.ToWire(e)
 	b.mu.Lock()
@@ -160,7 +187,7 @@ func (b *Broadcaster) Emit(e event.Event) {
 		}, time.Now().UTC())
 	}
 	for ch, sub := range b.subs {
-		if !sub.all && e.SessionPath != "" && e.SessionPath != b.current {
+		if !sub.all && hiddenFromCurrentOnly(e.SessionPath, b.current) {
 			continue
 		}
 		enqueueSubscriberFrame(ch, data, e.Kind)
@@ -173,7 +200,7 @@ func (b *Broadcaster) Emit(e event.Event) {
 // should continue to use Emit so every subscriber receives them.
 func (b *Broadcaster) EmitTo(target <-chan []byte, e event.Event) {
 	if e.SessionPath != "" {
-		e.SessionPath = agent.CanonicalSessionPath(e.SessionPath)
+		e.SessionPath = sessionRouteKey(e.SessionPath)
 	}
 	wired := eventwire.ToWire(e)
 	b.mu.Lock()
@@ -197,7 +224,7 @@ func (b *Broadcaster) EmitTo(target <-chan []byte, e event.Event) {
 		if (<-chan []byte)(ch) != target {
 			continue
 		}
-		if !sub.all && e.SessionPath != "" && e.SessionPath != b.current {
+		if !sub.all && hiddenFromCurrentOnly(e.SessionPath, b.current) {
 			return
 		}
 		enqueueSubscriberFrame(ch, data, e.Kind)
@@ -304,7 +331,7 @@ func wireFrameMustReachSubscriber(data []byte) bool {
 // change to its own pipeline.
 func (b *Broadcaster) EmitWire(wired eventwire.Event) {
 	if wired.SessionPath != "" {
-		wired.SessionPath = agent.CanonicalSessionPath(wired.SessionPath)
+		wired.SessionPath = sessionRouteKey(wired.SessionPath)
 	}
 	b.mu.Lock()
 	observedCurrent := b.current

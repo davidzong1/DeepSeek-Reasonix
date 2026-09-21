@@ -43,11 +43,16 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // 每个服务进程唯一
+  "instance": {"identityVersion":2,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
   "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}
 }}
 ```
+
+`instance` 为跨版本兼容的可选字段。新服务会发布共享文件系统身份解析器生成的
+版本化摘要以及旧实例 ID；壳只将这些不透明值用于诊断，不会把摘要当作文件路径。
+旧壳会忽略该对象，新壳也接受对象缺失。
 
 `window` 是 Go 根据保存状态和平台规则得到的主窗口初始几何。可选
 `position: {x, y}` 传递保存的原点（零坐标和负坐标均有效），缺省表示居中。

@@ -38,6 +38,13 @@ eq(zh["composer.permissionWorkspaceWrite"], "工作区内修改", "Simplified Ch
 eq(zh["composer.permissionFullAccess"], "完全权限", "Simplified Chinese full-access label");
 eq(zh["composer.permissionRecommended"], "推荐", "Simplified Chinese workspace recommendation");
 eq(zh["composer.permissionWorkspaceWriteDesc"], "可读写当前工作区；越界操作需要你授权", "Simplified Chinese workspace description");
+// Windows has no OS-level shell sandbox; the workspace preset copy must not
+// promise a shell boundary the platform cannot enforce.
+for (const [name, dict] of [["English", en], ["Simplified Chinese", zh], ["Traditional Chinese", zhTW]] as const) {
+  const desc = dict["composer.permissionWorkspaceWriteDescWindows"];
+  eq(typeof desc === "string" && desc.length > 0 && /shell/i.test(desc), true, `${name} Windows workspace description names the shell`);
+  eq(desc !== dict["composer.permissionWorkspaceWriteDesc"], true, `${name} Windows workspace description differs from the sandboxed copy`);
+}
 eq(zhTW["composer.permissionReadOnly"], "僅可查看", "Traditional Chinese read-only label");
 eq(zhTW["composer.permissionWorkspaceWrite"], "工作區內修改", "Traditional Chinese workspace label");
 eq(zhTW["composer.permissionFullAccess"], "完全權限", "Traditional Chinese full-access label");

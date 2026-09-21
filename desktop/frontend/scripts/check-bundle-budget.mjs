@@ -466,6 +466,25 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // identity measures 2064746 B; retain the next one-decimal ceiling.
 // The React error-family field adds 177 B to the same production build. The
 // measured 2064923 B payload keeps the existing gzip, CSS, and chunk limits.
-const rawInitialBudgetKiB = 2_016.6;
+// Approval outcome recovery measures 2065149 B on current main-v2, versus the
+// 2015.6 KiB base. Retain 0.15 KiB headroom; all other limits stay unchanged.
+// Live-default draft fencing and frozen-model recovery measure 2066040 B
+// (2017.617 KiB). Retain 0.183 KiB; gzip, chunk, CSS, and locale gates stay fixed.
+// Session-id migration and cross-client takeover measure 2073794 B merged onto
+// that main-v2 payload, 7754 B (0.375%) over it. The startup-path growth is
+// attributable to this branch's remote session identity work: the remote
+// telemetry and status modules become static imports of useRemoteSession (they
+// leave their lazily loaded surface chunk), plus the canonical session-id
+// plumbing, the spectator reconcile loop and its ownership classification, the
+// pre-activation history prime, the rebased optimistic-submission settlement,
+// and the project tree's canonical row identity. The CI Linux stable build
+// measures 2073980 B (2025.4 KiB), 186 B above the same-toolchain macOS build;
+// the ceiling follows the CI producer. Retain 0.13 KiB headroom at the next
+// one-decimal ceiling; gzip, CSS, and chunk limits are unchanged.
+// Combining that migration with restored historical-tab preparation measures
+// 2074127 B locally. Preserve the measured 186 B Linux producer difference
+// above (2074313 B combined), with 0.11 KiB headroom. Historical preparation
+// remains lazy; compressed, chunk, CSS, and locale limits stay unchanged.
+const rawInitialBudgetKiB = 2_025.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

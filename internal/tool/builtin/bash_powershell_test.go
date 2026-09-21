@@ -25,6 +25,16 @@ func powershellPath(t *testing.T) string {
 	return ""
 }
 
+func TestLegacyPowerShellCallWithoutDescriptionStillValidates(t *testing.T) {
+	var params bashParams
+	if err := json.Unmarshal([]byte(`{"command":"Write-Output legacy"}`), &params); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBashParams(params); err != nil {
+		t.Fatalf("legacy bash call without description must remain executable: %v", err)
+	}
+}
+
 func runPS(t *testing.T, command string) (string, error) {
 	t.Helper()
 	b := bash{shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: powershellPath(t)}}
@@ -229,25 +239,19 @@ func TestBashPowerShell51PreflightRejectsAndAndDetailed(t *testing.T) {
 	}
 }
 
-func TestBashDescriptionReflectsShell(t *testing.T) {
+func TestPowerShellDescriptionIsStableAcrossVersions(t *testing.T) {
 	ps := bash{shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "powershell"}}
 	psDesc := ps.Description()
-	if !strings.Contains(psDesc, "Windows PowerShell") {
-		t.Errorf("powershell description should name Windows PowerShell: %q", psDesc)
+	if !strings.Contains(psDesc, "isolated process") {
+		t.Errorf("powershell description should state one-shot execution: %q", psDesc)
 	}
-	if !strings.Contains(psDesc, "'&&' and '||' are NOT parsed") {
-		t.Errorf("powershell description should warn about unsupported chaining: %q", psDesc)
+	if !strings.Contains(psDesc, "if ($?)") || strings.Contains(psDesc, "'&&'") {
+		t.Errorf("powershell description should use the portable chaining subset: %q", psDesc)
 	}
 	pwsh := bash{shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"}}
 	pwshDesc := pwsh.Description()
-	if !strings.Contains(pwshDesc, "PowerShell 7 (pwsh)") {
-		t.Errorf("pwsh description should name PowerShell 7: %q", pwshDesc)
-	}
-	if !strings.Contains(pwshDesc, "'&&' and '||' are parsed") {
-		t.Errorf("pwsh description should allow conditional chaining: %q", pwshDesc)
-	}
-	if strings.Contains(pwshDesc, "NOT parsed") {
-		t.Errorf("pwsh description should not reuse the Windows PowerShell chaining warning: %q", pwshDesc)
+	if pwshDesc != psDesc {
+		t.Errorf("PowerShell schema description must stay cache-stable across resolved versions\n5.1=%q\n7=%q", psDesc, pwshDesc)
 	}
 	sh := bash{shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: "bash"}}
 	if strings.Contains(sh.Description(), "PowerShell") {

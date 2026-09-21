@@ -17,6 +17,46 @@ import (
 	"reasonix/internal/tool"
 )
 
+func TestPowerShellToolUsesPwshIdentityAndConfinedLegacyAlias(t *testing.T) {
+	spec := sandbox.Spec{
+		Mode:  "enforce",
+		Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"},
+	}
+	primary := ConfineBash(spec, SessionDataGuard{})
+	if primary.Name() != "pwsh" {
+		t.Fatalf("primary name = %q", primary.Name())
+	}
+	schema := string(primary.Schema())
+	for _, want := range []string{`"description"`, `"timeout_ms"`, `"run_in_background"`} {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("pwsh schema missing %s: %s", want, schema)
+		}
+	}
+	if strings.Contains(schema, "preserve_background_processes") {
+		t.Fatalf("pwsh schema should require formal jobs: %s", schema)
+	}
+	legacy, ok := AliasBash(primary, "bash")
+	if !ok || legacy.Name() != "bash" {
+		t.Fatalf("legacy alias = %T/%v/%q", legacy, ok, legacy.Name())
+	}
+	if got := legacy.(bash).sb.Mode; got != "enforce" {
+		t.Fatalf("legacy alias lost confinement: %q", got)
+	}
+}
+
+func TestWindowsEnabledToolShellAliasesSelectOnlyPwsh(t *testing.T) {
+	workspace := Workspace{Bash: sandbox.Spec{
+		Mode:  "enforce",
+		Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"},
+	}}
+	for _, configured := range []string{"bash", "Bash", "PowerShell", "powershell", "pwsh"} {
+		tools := workspace.Tools(configured)
+		if len(tools) != 1 || tools[0].Name() != "pwsh" {
+			t.Fatalf("enabled %q produced %#v; want only pwsh", configured, tools)
+		}
+	}
+}
+
 func isolateBuiltinTestUserState(t *testing.T) string {
 	t.Helper()
 	cleanup, err := testenv.IsolateUserState()
@@ -74,9 +114,6 @@ func TestRebindBashWriteRootsUsesMinimalWriteSurface(t *testing.T) {
 	want := realRoots([]string{claim})
 	if len(rebound.sb.WriteRoots) != 1 || rebound.sb.WriteRoots[0] != want[0] {
 		t.Fatalf("write roots = %v, want %v", rebound.sb.WriteRoots, want)
-	}
-	if len(rebound.sb.AppContainerWriteRoots) != 1 || rebound.sb.AppContainerWriteRoots[0] != want[0] {
-		t.Fatalf("app-container write roots = %v, want %v", rebound.sb.AppContainerWriteRoots, want)
 	}
 }
 
@@ -372,7 +409,7 @@ func TestBashEnforceRejectsWhenSandboxUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("bash should reject enforce mode when the OS sandbox is unavailable")
 	}
-	if !strings.Contains(err.Error(), "bash sandbox requested but unavailable") {
+	if !strings.Contains(err.Error(), "shell sandbox requested but unavailable") {
 		t.Fatalf("error = %q, want sandbox unavailable", err)
 	}
 	if out != "" {

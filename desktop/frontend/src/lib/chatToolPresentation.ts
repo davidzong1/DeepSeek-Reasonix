@@ -1,4 +1,5 @@
 import type { Item } from "./useController";
+import { isShellToolName, isPowerShellToolName } from "./shellToolIdentity";
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type ToolPresentationKind = "search" | "web" | "shell" | "agent" | "file" | "present" | "tool";
@@ -47,14 +48,14 @@ export function classifyTool(item: ToolItem): ToolPresentationKind {
   if (item.name === "present") return "present";
   if (item.name === "web_search") return "search";
   if (item.name === "web_fetch") return "web";
-  if (item.name === "bash" || item.isShell) return "shell";
+  if (isShellToolName(item.name) || item.isShell) return "shell";
   if (AGENT_TOOLS.has(item.name)) return "agent";
   if (FILE_TOOLS.has(item.name)) return "file";
   return "tool";
 }
 
 export function shellDisplayName(item: ToolItem): string {
-  const shell = item.execution?.shell?.trim().toLowerCase();
+  const shell = item.execution?.shell?.trim().toLowerCase() || (isPowerShellToolName(item.name) ? "pwsh" : "");
   if (shell === "powershell" || shell === "pwsh") return "PowerShell";
   if (shell === "git-bash") return "Git Bash";
   if (shell === "bash") return "Bash";

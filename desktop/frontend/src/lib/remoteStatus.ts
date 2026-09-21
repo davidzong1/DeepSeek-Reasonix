@@ -43,6 +43,8 @@ export type RemoteStatus = {
   qualityFloor?: unknown;
   sessionName?: unknown;
   goalRuntime?: unknown;
+  /** Ownership flag for sessions a local runtime on the serve host holds. */
+  takenOver?: unknown;
 };
 
 export function isAuthoritativeRemoteStatus(status: unknown): status is RemoteStatus {
@@ -51,6 +53,11 @@ export function isAuthoritativeRemoteStatus(status: unknown): status is RemoteSt
   return typeof raw.plan === "boolean"
     && ["read-only", "workspace-write", "danger-full-access", "ask", "auto", "yolo"].includes(String(raw.toolApprovalMode))
     && typeof raw.goal === "string";
+}
+
+/** The serve's ownership verdict; readable even from a non-authoritative status. */
+export function remoteStatusTakenOver(status: unknown): boolean {
+  return Boolean(status && typeof status === "object" && !Array.isArray(status) && (status as RemoteStatus).takenOver === true);
 }
 
 export function remoteGoalView(status: unknown): GoalLifecycleView | undefined {

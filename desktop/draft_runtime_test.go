@@ -78,7 +78,7 @@ func TestDraftCancelWaitsForWorkerOwnership(t *testing.T) {
 	}
 }
 
-func TestDraftV3SnapshotSurvivesV4DatabaseAndChangedEditor(t *testing.T) {
+func TestDraftV3SnapshotSurvivesV5DatabaseAndChangedEditor(t *testing.T) {
 	a := newDraftTestApp(t)
 	draft, op := beginDraftTestOperation(t, a, "reserved")
 	request := SessionDraftSubmissionRequest{SnapshotVersion: 3, Settings: SessionDraftSettings{Model: "frozen/model", ToolApprovalMode: "read-only"}}
@@ -96,6 +96,29 @@ func TestDraftV3SnapshotSurvivesV4DatabaseAndChangedEditor(t *testing.T) {
 	op.RequestJSON = string(encoded)
 	if _, err = a.draftOperationSettings(op); err == nil {
 		t.Fatal("future snapshot was interpreted as current editor settings")
+	}
+}
+
+func TestDraftV5InheritedModelSnapshotRemainsFrozenForRetry(t *testing.T) {
+	a := newDraftTestApp(t)
+	_, op := beginDraftTestOperation(t, a, "reserved")
+	request := SessionDraftSubmissionRequest{
+		SnapshotVersion: draftstate.SnapshotVersion,
+		Settings: SessionDraftSettings{
+			Model: "fixture/frozen", ModelSource: draftModelSourceDefault, ToolApprovalMode: "read-only",
+		},
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.RequestJSON = string(encoded)
+	settings, err := a.draftOperationSettings(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Model != "fixture/frozen" || settings.ModelSource != draftModelSourceDefault {
+		t.Fatalf("retry settings = %+v, want the submission-time effective model", settings)
 	}
 }
 

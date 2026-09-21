@@ -100,73 +100,6 @@
       }
     },
     {
-      "name": "bash",
-      "description": "Execute a command in the shell and return combined stdout/stderr. Ordinary foreground calls share a persistent session: working directory, variables, functions and environment persist. Background or permission-specific calls are isolated. Commands run under Windows PowerShell on this host, so write PowerShell, not bash:\n  - chaining: ';' runs both regardless; 'if ($?) { ... }' is conditional. '\u0026\u0026' and '||' are NOT parsed.\n  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2\u003e$null' drops stderr.\n  - file ops: Get-ChildItem (ls), Get-Content (cat), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0). Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands.",
-      "parameters": {
-        "properties": {
-          "additional_write_dirs": {
-            "description": "Directories this command must write outside the workspace. Directories only, no globs. Accepts absolute paths, workspace-relative paths, ~, and ${HOME}. Request the smallest set needed; the host will not infer paths from the command text.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "command": {
-            "description": "Shell command to execute",
-            "type": "string"
-          },
-          "denial_id": {
-            "description": "Host-issued denial identifier required when retrying with danger-full-access.",
-            "type": "string"
-          },
-          "justification": {
-            "description": "Required when additional_write_dirs or sandbox_permissions is set. Explain why the access is needed.",
-            "type": "string"
-          },
-          "preserve_background_processes": {
-            "description": "After the shell command exits normally, keep any process-group members it intentionally left behind. Use only for deliberate daemonization, browser/GUI/session launchers such as playwright-cli open, or nohup/disown/setsid; cancellation and timeouts still kill the process group.",
-            "type": "boolean"
-          },
-          "run_in_background": {
-            "description": "Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don't need to block on.",
-            "type": "boolean"
-          },
-          "sandbox_permissions": {
-            "description": "Optional per-call permission escalation. Use workspace-write for an authorized write while the session is read-only. danger-full-access is accepted only after a host-recorded denial and explicit authorization.",
-            "enum": [
-              "workspace-write",
-              "danger-full-access"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "command"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "name": "bash_output",
-      "description": "Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns the output produced since the last bash_output call for that job, plus its status (running/done/failed/killed). Does not block.",
-      "parameters": {
-        "properties": {
-          "filter": {
-            "description": "Optional regular expression; only matching lines of the new output are returned.",
-            "type": "string"
-          },
-          "job_id": {
-            "description": "The background job id (e.g. \"bash-1\") returned when it was started.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "job_id"
-        ],
-        "type": "object"
-      }
-    },
-    {
       "name": "compress",
       "description": "Compress a selected part of the current model-visible conversation without deleting visible history. Use only when the user explicitly asks for context compression. Choose `before` to summarize everything before the uniquely matched user turn while keeping that turn and later context, or `after` to summarize from that turn through the last completed turn while keeping the active turn. The anchor must be an exact, unique excerpt from a real user message; use a longer excerpt if the tool reports multiple matches.",
       "parameters": {
@@ -264,17 +197,104 @@
       }
     },
     {
-      "name": "kill_shell",
-      "description": "Terminate a running background job (bash or task) started with run_in_background. A no-op if the job has already finished or the id is unknown.",
+      "name": "job_kill",
+      "description": "Request cancellation of a running background job by job id. Returns immediately; the process tree settles as killed once shutdown completes.",
       "parameters": {
         "properties": {
           "job_id": {
-            "description": "The background job id to terminate (e.g. \"bash-1\").",
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Optional short reason for stopping the job.",
             "type": "string"
           }
         },
         "required": [
           "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "job_output",
+      "description": "Read output from a background job. Reads are non-blocking unless wait=true; every response includes the current status. Do not busy-poll a running job.",
+      "parameters": {
+        "properties": {
+          "filter": {
+            "description": "Optional regular expression; only matching lines of new output are returned.",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Maximum wait in milliseconds. Defaults to 30000 and is capped at 600000.",
+            "maximum": 600000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "wait": {
+            "description": "Wait until the job finishes or timeout_ms elapses. A timeout leaves the job running.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "pwsh",
+      "description": "Execute one PowerShell command in an isolated process and return combined stdout/stderr. The host prefers PowerShell 7 and can fall back to Windows PowerShell 5.1, so use syntax accepted by both:\n  - chaining: ';' runs both commands; use 'if ($?) { ... }' for conditional execution.\n  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2\u003e$null' drops stderr.\n  - file ops: Get-ChildItem (ls), Get-Content (cat), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n  - services/watchers: set run_in_background=true and manage the returned job id with job_output/job_kill.\n  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0). Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands.",
+      "parameters": {
+        "properties": {
+          "additional_write_dirs": {
+            "description": "Directories this command must write outside the workspace. Directories only, no globs. Accepts absolute paths, workspace-relative paths, ~, and ${HOME}. Request the smallest set needed; the host will not infer paths from the command text.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "PowerShell command to execute",
+            "type": "string"
+          },
+          "denial_id": {
+            "description": "Host-issued denial identifier required when retrying with danger-full-access.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Clear 5-10 word active-voice description shown in the UI",
+            "type": "string"
+          },
+          "justification": {
+            "description": "Required when additional_write_dirs or sandbox_permissions is set. Explain why the access is needed.",
+            "type": "string"
+          },
+          "run_in_background": {
+            "description": "Run without a foreground timeout and return a pwsh job id immediately. Read it with job_output or stop it with job_kill.",
+            "type": "boolean"
+          },
+          "sandbox_permissions": {
+            "description": "Optional per-call permission escalation. Use workspace-write for an authorized write while the session is read-only. danger-full-access is accepted only after a host-recorded denial and explicit authorization.",
+            "enum": [
+              "workspace-write",
+              "danger-full-access"
+            ],
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Optional foreground timeout in milliseconds, capped by the configured shell timeout",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command",
+          "description"
         ],
         "type": "object"
       }
@@ -476,27 +496,6 @@
         "required": [
           "path"
         ],
-        "type": "object"
-      }
-    },
-    {
-      "name": "wait",
-      "description": "Block until background jobs finish, then return each job's status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job.",
-      "parameters": {
-        "properties": {
-          "job_ids": {
-            "description": "Background job ids to wait for. Omit to wait for every currently-running job.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "timeout_seconds": {
-            "description": "Optional maximum seconds to block before returning current progress. Omit to wait until the jobs finish.",
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
         "type": "object"
       }
     },

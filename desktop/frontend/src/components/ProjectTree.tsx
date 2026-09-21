@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectTreeSessionBadges } from "./ProjectTreeSessionBadges";
 import { sessionLifecycleFences } from "../lib/sessionLifecycleFences";
 import { projectSessionIdentity, projectSessionRowKey } from "../lib/projectSessionIdentity";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
@@ -10,7 +11,7 @@ import { onProjectTreeChangedV2 } from "../lib/sessionCatalogBridge";
 import { sessionCatalogNotice } from "../lib/sessionCatalogPresentation";
 import { sessionTitleErrorKey, sessionTitleTarget } from "../lib/sessionTitleOperation";
 import { useSessionTitleOperation } from "../lib/useSessionTitleOperation";
-import { isRuntimeSessionNode, isTopicNode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeWithoutSession, projectTreeWithoutTopic, projectTreeWithSessionTitle, projectTreeWithTopicTitle, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_SORT_KEY, type ProjectTreePendingTopicOpen, type WorkbenchSortMode } from "../lib/projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode, loadWorkbenchSortMode, mergeIncompleteProjectTopicPage, mergeProjectTopicPage, projectTreeDedupedExactTime, projectTreeEventAffectsFolder, projectTreeFolderDisclosure, projectTreeRevisionIsFresh, projectTreeShellChildren, projectTreeShellSignature, projectTreeShouldApplyShellSnapshot, projectTreeShouldRenderTopicActions, projectTreeShouldSuppressOpenForRename, projectTreeTopicArchiveBlocked, projectTreeTopicHasUnreadActivity, projectTreeTopicMenuOffersPin, projectTreeTopicMetaLine, projectTreeTopicOpenRequest, projectTreeTopicPageIsFresh, projectTreeWithoutSession, projectTreeWithoutTopic, projectTreeWithSessionTitle, projectTreeWithTopicTitle, topicActivityDateLabel, topicActivityLabel, topicIsActive, topicStatus, topicStatusLabel, topicUnknownTimeLabel, WORKBENCH_SORT_KEY, workspaceDraftBadge, type ProjectTreePendingTopicOpen, type WorkbenchSortMode } from "../lib/projectTreeTopic";
 export * from "../lib/projectTreeTopic";
 import { arrangeWorkbenchTree, splitPinnedProjectTree, type PinnedTreeSections } from "../lib/projectTreePresentation";
 export * from "../lib/projectTreePresentation";
@@ -29,7 +30,7 @@ import { summarizeProjectTreeSessions } from "../lib/projectTreeDiagnostics";
 import { GLOBAL_PROJECT_ORDER_KEY, ProjectTreeFolderActivity, ProjectTreeGroupRows, applyProjectOrder, projectTreeGroupContainsNode, projectTreeOrganizationKey, projectTreeProjectRoots, reorderedProjectRoots, useProjectTreeOrganization, type ProjectDropPosition } from "./ProjectTreeOrganization";
 import { ProjectTreeSessionArchiveMenu } from "./ProjectTreeSessionArchiveMenu";
 import { ProjectTreeHeaderAddControl, ProjectTreeRemoteAction, projectTreeHeaderAddItems } from "./ProjectTreeAddControls";
-import { activeRemoteProjectAncestorKeys, buildRemoteProjectMenuItems, useRemoteRuntimeTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, RemoteProjectEmptyState, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
+import { activeRemoteProjectAncestorKeys, buildRemoteProjectMenuItems, useRemoteRuntimeTree, openRemoteSessionNode, remoteProjectKey, remoteServeBadgeState, renameRemoteProjectTitle, RemoteProjectEmptyState, remoteSessionActionIdentity, remoteSessionArchiveBlocked, useRemoteProjectGroups, useRemoteSessionActions } from "./ProjectTreeRemoteGroups";
 import type { ProjectTreeProps } from "./ProjectTreeProps";
 import { PROJECT_TREE_SEARCH_PAGE, PROJECT_TREE_WINDOW_INITIAL, PROJECT_TREE_WINDOW_STEP, forgetProjectTreeWindowLimits, loadProjectTreePageWindow, projectTreeListKey, projectTreeListNeedsInitialization, projectTreeProjectsNeedingInitialLoad, projectTreeWindowRows, reloadProjectTreeTopicLists, rememberProjectTreeWindowLimit, type ProjectTreeListPageState } from "../lib/projectTreeWindow";
 import { useProjectTreeReadActivity } from "./useProjectTreeReadActivity";
@@ -666,12 +667,12 @@ export function ProjectTree({
   useEffect(() => {
     const markActive = (nodes: ProjectNode[]) => {
       for (const node of nodes) {
-        if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) markNodeRead(node);
+        if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, activeRemote)) markNodeRead(node);
         markActive(asArray(node.children));
       }
     };
     markActive(treeWithRemoteSessions);
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, treeWithRemoteSessions]);
+  }, [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, treeWithRemoteSessions]);
 
   useEffect(() => {
     try {
@@ -861,7 +862,7 @@ export function ProjectTree({
     setEditingTopic(null);
     if (!title) return;
     try {
-      if (await remoteSessionActions.mutate(topicId, (remote) => app.RenameRemoteProjectSession(remote.hostId, remote.workspace, remote.name, title))) return;
+      if (await remoteSessionActions.mutate(topicId, (remote) => app.RenameRemoteProjectSession(remote.hostId, remote.workspace, remoteSessionActionIdentity(remote), title))) return;
       if (node.session || node.sessionPath) await app.RenameSessionTarget({ ref: node.session, source: node.source, sessionPath: node.sessionPath }, title);
       else if (onRenameTopic) await onRenameTopic(topicId, title);
       else await app.RenameTopic(topicId, title);
@@ -908,7 +909,7 @@ export function ProjectTree({
     setMenuNodeKey(null);
     setMenuPoint(null);
     try {
-      if (await remoteSessionActions.mutate(topicId, (remote) => app.SetRemoteSessionPinned(remote.hostId, remote.workspace, remote.name, pinned))) return;
+      if (await remoteSessionActions.mutate(topicId, (remote) => app.SetRemoteSessionPinned(remote.hostId, remote.workspace, remoteSessionActionIdentity(remote), pinned))) return;
       if (node.session || node.sessionPath) await app.SetSessionPinned({ ref: node.session, source: node.source, sessionPath: node.sessionPath }, pinned);
       else await app.SetTopicPinned(topicId, pinned);
       await refresh();
@@ -1143,7 +1144,7 @@ export function ProjectTree({
         return { visible, collapsed };
       },
       projectNodeKey,
-      isActive: (node) => topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
+      isActive: (node) => topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, activeRemote),
       isUnread: (node) => projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, readBaselineAt),
     });
     return {
@@ -1165,7 +1166,7 @@ export function ProjectTree({
       treeRevision: latestRevisionRef.current,
       organizationRevision,
     };
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, catalogStatus, expanded, organization, organizationRevision, query, readActivity, readBaselineAt, topicListLimit, topicListState, topicWindowLimits, tree, variant, visibleTree]);
+  }, [activeRemote, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, catalogStatus, expanded, organization, organizationRevision, query, readActivity, readBaselineAt, topicListLimit, topicListState, topicWindowLimits, tree, variant, visibleTree]);
 
   useProjectTreeFrontendDiagnostics(projectTreeDiagnosticSnapshot);
 
@@ -1185,7 +1186,7 @@ export function ProjectTree({
       const scope = openRequest?.scope ?? "project";
       const scopeClass = scope === "global" ? " project-tree__topic--global" : " project-tree__topic--project";
       const accentStyle = projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
-      const active = topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
+      const active = topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath, activeRemote);
       const label = (node.label || node.topicId || "Untitled").replace(/^●\s*/, "");
       const activityAt = node.lastActivityAt || node.createdAt || 0;
       // Every variant is a single-line row with the activity time on the right;
@@ -1266,7 +1267,7 @@ export function ProjectTree({
           key: "trash",
           icon: <Archive className={topicTrashing || sessionTrashing ? "project-tree__archive-spinner" : undefined} size={13} />,
           label: confirmArchiveTarget === archiveTargetKey ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
-          disabled: archiveBlocked || topicTrashing || sessionTrashing,
+          disabled: archiveBlocked || topicTrashing || sessionTrashing || remoteSessionArchiveBlocked(node.remoteSession),
           danger: true,
           onSelect: () => {
             if (confirmArchiveTarget === archiveTargetKey) void trashTopicAny(node);
@@ -1366,8 +1367,7 @@ export function ProjectTree({
             <span className="project-tree__topic-copy">
               <span className="project-tree__topic-heading">
                 <span className="project-tree__topic-label">{label}</span>
-                {forkedFromLabel && <span className="project-tree__topic-recovery" title={forkedFromLabel}><GitBranch size={10} />{forkedFromLabel}</span>}
-                {recoveryLabel && <span className="project-tree__topic-recovery" title={recoveryLabel}>{recoveryLabel}</span>}
+                <ProjectTreeSessionBadges node={node} forkedFromLabel={forkedFromLabel} recoveryLabel={recoveryLabel} />
                 {imSource && (
                   <span
                     className={`project-tree__topic-im project-tree__topic-im--${imSourcePlatform}`}
@@ -1495,7 +1495,7 @@ export function ProjectTree({
     const projectPath = node.root ?? "";
     const colorTargetRoot = scope === "global" ? "" : projectPath;
     const projectLabel = node.label || (scope === "global" ? "Global" : "Untitled");
-    const workspaceDraft = draftSummaries.find((draft) => draft.scope === scope && (scope === "global" || draft.workspaceRoot === projectRoot));
+    const workspaceDraft = workspaceDraftBadge(draftSummaries, scope, projectRoot);
     const projectPinned = Boolean(node.pinned);
     const projectActive = node.remote ? Boolean(activeRemote && remoteProjectKey(activeRemote) === remoteProjectKey(node.remote)) : activeScope === scope && (scope === "global" || activeWorkspaceRoot === node.root);
     const projectMenuOpen = menuProject?.key === key;

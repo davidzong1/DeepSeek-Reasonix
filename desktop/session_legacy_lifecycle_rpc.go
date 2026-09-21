@@ -38,19 +38,15 @@ func (a *App) archiveSessionPathWithOperation(path, operationID string) (Session
 		return SessionTarget{}, errTopicArchiveBusy
 	}
 	ref, dependency, err := a.stageArchiveSource(a.bootContext(), valid)
-	var fallback fallbackRuntimeTarget
 	if err == nil {
 		dependencies := []string{}
 		if dependency != "" {
 			dependencies = append(dependencies, dependency)
 		}
-		fallback, err = a.archiveSessionRefsWithOperation([]session.SessionRef{ref}, operationID, dependencies...)
+		err = a.archiveSessionRefsWithOperation([]session.SessionRef{ref}, operationID, dependencies...)
 	}
 	release()
 	if err == nil {
-		if fallback.needs {
-			_ = a.openFallbackRuntime(fallback)
-		}
 		a.emitProjectTreeChanged()
 		archived, resolveErr := a.resolveCanonicalSessionTargetState(ref, "", true)
 		if resolveErr != nil {

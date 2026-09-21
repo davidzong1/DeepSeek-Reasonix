@@ -1,248 +1,37 @@
 package cli
 
-// Local takeover for the CLI resume paths: when the session lease is held by a
-// resident serve process on this machine (left behind by a remote desktop that
-// connected over SSH), the user can take the session over instead of exiting
-// with a refusal. Serve releases the lease via POST /handoff; the remote tab
-// keeps watching read-only through the frame mirror.
+// Mirror side of CLI takeover: once a resident serve releases the lease the
+// manager below owns the session, streams frames back to the remote tab that
+// keeps watching read-only, and returns the lease when the tab reclaims it.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
-	"reasonix/internal/remote/bootstrap"
-	"reasonix/internal/store"
 )
 
-// cliTakeoverTimeout bounds the drain window of a wait-mode takeover.
-const cliTakeoverTimeout = 2 * time.Minute
-
-type cliServeRecord struct {
-	pid   int
-	base  string
-	token string
-}
-
-type cliTakeoverGrant struct {
-	SessionPath     string `json:"sessionPath"`
-	MirrorID        string `json:"mirrorId"`
-	HandoffID       string `json:"handoffId,omitempty"`
-	ReturnHandoffID string `json:"returnHandoffId"`
-	SourceWriterID  string `json:"sourceWriterId"`
-	TargetWriterID  string `json:"targetWriterId"`
-}
-
 type cliTakeoverBinding struct {
-	path        string
+	path string
+	// canonical marks a final-format identity route ("session-id:<id>"): there
+	// is no path lease to move, ownership is the session directory's writer
+	// lock, released when the TUI yields and on process exit as a fallback.
+	canonical   bool
 	record      cliServeRecord
 	client      *http.Client
 	grant       cliTakeoverGrant
 	previous    *control.SessionLeaseKeeper
 	priorMirror *cliTakeoverBinding
-}
-
-// discoverCLIServes enumerates resident serve processes recorded under
-// <Reasonix home>/remote. This machine is the SSH target in the takeover
-// scenario, so the bootstrap's SFTP-written state files are local files here.
-func discoverCLIServes() []cliServeRecord {
-	dir := config.RemoteStateDir()
-	if dir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var out []cliServeRecord
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "serve-") || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		state, err := bootstrap.UnmarshalState(data)
-		if err != nil || state.PID <= 0 {
-			continue
-		}
-		slug := strings.TrimSuffix(strings.TrimPrefix(name, "serve-"), ".json")
-		addr := state.Addr
-		if port, err := os.ReadFile(filepath.Join(dir, store.RemoteServePortName(slug))); err == nil {
-			if trimmed := strings.TrimSpace(string(port)); trimmed != "" {
-				addr = trimmed
-			}
-		}
-		if addr == "" {
-			continue
-		}
-		token := ""
-		if data, err := os.ReadFile(filepath.Join(dir, store.RemoteServeTokenName(slug))); err == nil {
-			token = strings.TrimSpace(string(data))
-		}
-		if token == "" {
-			continue
-		}
-		out = append(out, cliServeRecord{pid: state.PID, base: "http://" + addr, token: token})
-	}
-	return out
-}
-
-var discoverCLIServesForTakeover = discoverCLIServes
-
-// cliServeForPID finds the resident serve holding the lease by matching the
-// holder PID the lease error reported.
-func cliServeForPID(pid int) *cliServeRecord {
-	records := discoverCLIServes()
-	for i := range records {
-		if records[i].pid == pid {
-			return &records[i]
-		}
-	}
-	return nil
-}
-
-func cliServeClient(ctx context.Context, record cliServeRecord) (*http.Client, error) {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Jar: jar}
-	auth, _ := json.Marshal(map[string]string{"token": record.token})
-	authReq, err := http.NewRequestWithContext(ctx, http.MethodPost, record.base+"/auth/token", bytes.NewReader(auth))
-	if err != nil {
-		return nil, err
-	}
-	authReq.Header.Set("Content-Type", "application/json")
-	authResp, err := client.Do(authReq)
-	if err != nil {
-		return nil, err
-	}
-	_, _ = io.Copy(io.Discard, authResp.Body)
-	authResp.Body.Close()
-	if authResp.StatusCode != http.StatusNoContent {
-		return nil, fmt.Errorf("serve auth: status %d", authResp.StatusCode)
-	}
-	return client, nil
-}
-
-// cliTakeoverHeldSession requests a target-writer reservation and consumes it
-// through leases. The previous keeper binding is retained if either step
-// fails; callers commit their controller only after this returns a binding.
-func cliTakeoverHeldSession(sessionPath string, leaseErr error, leases *control.SessionLeaseKeeper, manager *cliTakeoverManager) (*cliTakeoverBinding, error) {
-	if manager != nil && manager.Reclaiming() {
-		return nil, fmt.Errorf("the remote side is reclaiming the current session")
-	}
-	pid := 0
-	var leaseError *agent.SessionLeaseError
-	if errors.As(leaseErr, &leaseError) && leaseError != nil && leaseError.Info != nil {
-		pid = leaseError.Info.PID
-	}
-	if pid <= 0 {
-		return nil, fmt.Errorf("%w; no local serve identity to take over from", agent.ErrSessionLeaseHeld)
-	}
-	record := cliServeForPID(pid)
-	if record == nil {
-		return nil, fmt.Errorf("%w; holder pid %d is not a resident serve on this machine", agent.ErrSessionLeaseHeld, pid)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cliTakeoverTimeout+15*time.Second)
-	defer cancel()
-	client, err := cliServeClient(ctx, *record)
-	if err != nil {
-		return nil, fmt.Errorf("takeover from local serve (pid %d): %w", pid, err)
-	}
-	body, _ := json.Marshal(map[string]any{
-		"sessionPath": sessionPath, "targetWriterId": agent.SessionWriterID(),
-		"force": true, "mode": "wait", "timeoutMs": cliTakeoverTimeout.Milliseconds(),
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, record.base+"/handoff", bytes.NewReader(body))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("takeover from local serve (pid %d): %w", pid, err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("takeover from local serve (pid %d): %s", pid, strings.TrimSpace(string(respBody)))
-	}
-	var grant cliTakeoverGrant
-	if json.Unmarshal(respBody, &grant) != nil || grant.MirrorID == "" || grant.HandoffID == "" ||
-		grant.ReturnHandoffID == "" || grant.SourceWriterID == "" || grant.TargetWriterID != agent.SessionWriterID() {
-		return nil, fmt.Errorf("takeover from local serve (pid %d): invalid handoff grant", pid)
-	}
-	binding := &cliTakeoverBinding{path: sessionPath, record: *record, client: client, grant: grant}
-	if manager != nil {
-		current, _, _, _ := manager.snapshot()
-		if current != nil && !manager.Returned() && agent.CanonicalSessionPath(current.path) != agent.CanonicalSessionPath(sessionPath) {
-			binding.priorMirror = current
-		}
-	}
-	previous, err := leases.RebindDetachingWithHandoff(sessionPath, grant.SourceWriterID, grant.HandoffID)
-	if err != nil {
-		cliEndFailedHandoff(binding)
-		return nil, err
-	}
-	binding.previous = previous
-	return binding, nil
-}
-
-// cliSessionTakeoverCandidate reports whether leaseErr points at a resident
-// serve on this machine — the case where a takeover offer makes sense.
-func cliSessionTakeoverCandidate(leaseErr error) bool {
-	var leaseError *agent.SessionLeaseError
-	if !errors.As(leaseErr, &leaseError) || leaseError == nil || leaseError.Info == nil {
-		return false
-	}
-	return cliServeForPID(leaseError.Info.PID) != nil
-}
-
-// promptSessionTakeover asks on the terminal (pre-TUI startup) whether to take
-// the held session over. Non-interactive sessions answer no.
-func promptSessionTakeover(leaseErr error) bool {
-	if !isInteractive() {
-		return false
-	}
-	fmt.Fprintf(os.Stderr, "%s\n", sessionLeaseResumeRefusal(leaseErr))
-	fmt.Fprint(os.Stderr, "take over the session from this machine's resident serve? [y/N] ")
-	answer, err := readCLITakeoverAnswer()
-	if err != nil {
-		return false
-	}
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	return answer == "y" || answer == "yes"
-}
-
-func readCLITakeoverAnswer() (string, error) {
-	buf := make([]byte, 64)
-	n, err := os.Stdin.Read(buf)
-	if n > 0 {
-		return string(buf[:n]), nil
-	}
-	return "", err
 }
 
 const (
@@ -276,6 +65,10 @@ type cliTakeoverManager struct {
 	sendMu   sync.Mutex
 	mu       sync.Mutex
 	binding  *cliTakeoverBinding
+	// yielded is the binding the last reclaim (or Close) returned. "/takeover
+	// takes it back" routes by the mirror's own key because a legacy path lease
+	// stays a path, so the controller's SessionRef cannot tell the kinds apart.
+	yielded  *cliTakeoverBinding
 	revision uint64
 	failures int
 	ctrl     control.SessionAPI
@@ -379,6 +172,7 @@ func (m *cliTakeoverManager) Activate(binding *cliTakeoverBinding) {
 	defer m.sendMu.Unlock()
 	m.mu.Lock()
 	m.binding = binding
+	m.yielded = nil
 	m.revision++
 	m.failures = 0
 	m.returned.Store(false)
@@ -409,6 +203,36 @@ func (m *cliTakeoverManager) SetYieldCallback(fn func()) {
 
 func (m *cliTakeoverManager) Reclaiming() bool { return m != nil && m.reclaiming.Load() }
 func (m *cliTakeoverManager) Returned() bool   { return m != nil && m.returned.Load() }
+
+// ResumeAfterYield clears the terminal-side marker after the TUI has acquired
+// a different session. Returning a mirror ends that mirror permanently; the
+// manager must not keep blocking the new session just because the process that
+// hosted the old one stayed alive.
+func (m *cliTakeoverManager) ResumeAfterYield() {
+	if m == nil {
+		return
+	}
+	m.returnMu.Lock()
+	defer m.returnMu.Unlock()
+	m.mu.Lock()
+	if m.binding == nil {
+		m.yielded = nil
+		m.returned.Store(false)
+		m.reclaiming.Store(false)
+	}
+	m.mu.Unlock()
+}
+
+// yieldedBinding reports the mirror a reclaim returned, until the TUI either
+// re-takes it or moves on to another session.
+func (m *cliTakeoverManager) yieldedBinding() *cliTakeoverBinding {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.yielded
+}
 
 func (m *cliTakeoverManager) snapshot() (*cliTakeoverBinding, control.SessionAPI, func(), uint64) {
 	m.mu.Lock()
@@ -630,7 +454,9 @@ func (m *cliTakeoverManager) readoptLocked(binding *cliTakeoverBinding, revision
 			agent.CanonicalSessionPath(grant.SessionPath) == agent.CanonicalSessionPath(binding.path) {
 			m.mu.Lock()
 			if m.binding == binding && m.revision == revision && !m.returned.Load() {
-				m.binding = &cliTakeoverBinding{path: binding.path, record: record, client: client, grant: grant}
+				next := *binding
+				next.record, next.client, next.grant = record, client, grant
+				m.binding = &next
 				m.revision++
 				m.failures = 0
 			}
@@ -694,6 +520,11 @@ func (m *cliTakeoverManager) returnLeaseFor(expected *cliTakeoverBinding, revisi
 		expectedPath = expected.path
 	}
 	return m.returnMirrorTransaction(expectedPath, true, true, func(current *cliTakeoverBinding) error {
+		if current.canonical {
+			// The canonical writer lock is released by the live TUI handoff; the
+			// flushed snapshot above is the only durable step the reservation covered.
+			return nil
+		}
 		return m.leases.ReleaseForHandoff(current.grant.SourceWriterID, current.grant.ReturnHandoffID)
 	})
 }
@@ -710,6 +541,9 @@ func (m *cliTakeoverManager) RebindAway(path string) (bool, error) {
 		return false, nil
 	}
 	err := m.returnCurrentMirror(binding.path, func(current *cliTakeoverBinding) error {
+		if current.canonical {
+			return nil
+		}
 		return m.leases.RebindReturningCurrent(path, current.grant.SourceWriterID, current.grant.ReturnHandoffID)
 	})
 	return true, err
@@ -761,10 +595,10 @@ func cliPrepareTakeoverCandidate(binding *cliTakeoverBinding, leases *control.Se
 }
 
 // commitPrevious retires the source keeper only after the handed-off target
-// has been loaded successfully. A mirrored source is returned through its
-// reverse reservation; an ordinary source is simply released.
+// has been loaded successfully. A mirrored source is returned through the
+// manager's single leave step; an ordinary source is simply released.
 func (b *cliTakeoverBinding) commitPrevious(manager *cliTakeoverManager) error {
-	if b == nil || b.previous == nil {
+	if b == nil {
 		return nil
 	}
 	if b.priorMirror == nil {
@@ -779,16 +613,60 @@ func (b *cliTakeoverBinding) commitPrevious(manager *cliTakeoverManager) error {
 }
 
 func (m *cliTakeoverManager) commitPriorMirror(next *cliTakeoverBinding) error {
-	if m == nil || next == nil || next.previous == nil || next.priorMirror == nil {
+	if m == nil || next == nil || next.priorMirror == nil {
 		return nil
 	}
-	err := m.returnCurrentMirror(next.priorMirror.path, func(current *cliTakeoverBinding) error {
-		return next.previous.RetireDetachedForHandoff(current.grant.SourceWriterID, current.grant.ReturnHandoffID)
-	})
-	if err == nil {
-		next.previous = nil
+	if err := m.leaveMirror(next.priorMirror.path, next.previous); err != nil {
+		return err
 	}
-	return err
+	next.previous = nil
+	return nil
+}
+
+// leaveMirror returns the active mirror on behalf of a session switch that
+// has already secured its target, so no frame of the next session travels
+// under the old mirror id and the remote tab regains its writer. It is the one
+// exit every switch takes before binding the next session — /resume and
+// /takeover, legacy and canonical targets alike — and it retires the source's
+// ownership by kind. A legacy lease publishes its reverse reservation from
+// whichever keeper still holds it: previous when a legacy switch already moved
+// the source out of the live keeper, otherwise the live keeper; a lease nobody
+// holds (an exclusive-mode import released its compatibility lease) has
+// nothing to publish. A canonical identity's writer lock travels with the
+// controller binding the caller moves, so only the mirror itself ends.
+// expectedPath, when set, names the mirror the caller observed; a different
+// current mirror aborts the switch.
+func (m *cliTakeoverManager) leaveMirror(expectedPath string, previous *control.SessionLeaseKeeper) error {
+	if m == nil {
+		return nil
+	}
+	current, _, _, _ := m.snapshot()
+	if current == nil || m.returned.Load() {
+		// Nothing is mirrored, so the detached source keeper is plain state.
+		previous.RetireDetached()
+		return nil
+	}
+	if expectedPath == "" {
+		expectedPath = current.path
+	}
+	return m.returnCurrentMirror(expectedPath, func(current *cliTakeoverBinding) error {
+		if current.canonical {
+			previous.RetireDetached()
+			return nil
+		}
+		holder := previous
+		if holder == nil {
+			holder = m.leases
+		}
+		if holder.HeldPath() != agent.CanonicalSessionPath(current.path) {
+			previous.RetireDetached()
+			return nil
+		}
+		if previous != nil {
+			return previous.RetireDetachedForHandoff(current.grant.SourceWriterID, current.grant.ReturnHandoffID)
+		}
+		return m.leases.ReleaseForHandoff(current.grant.SourceWriterID, current.grant.ReturnHandoffID)
+	})
 }
 
 func (m *cliTakeoverManager) mirrorEnd(binding *cliTakeoverBinding) {

@@ -117,10 +117,13 @@ func TestCanonicalBindingUsesRenamedSessionTitleAndRuntimeIdentity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tab := &WorkspaceTab{ID: "binding", SessionID: ref.SessionID}
+	tab := &WorkspaceTab{ID: "binding", SessionID: ref.SessionID, HistoricalSource: &SessionSourceRef{Path: "/fixture/old.jsonl"}}
 	app.tabs[tab.ID] = tab
 	if err := app.commitCanonicalSessionBinding(tab, nil, ref, state.Workspaces[ws], 0); err != nil {
 		t.Fatal(err)
+	}
+	if tab.HistoricalSource != nil {
+		t.Fatal("canonical binding retained the preparation action")
 	}
 	if tab.TopicTitle != "Renamed B" {
 		t.Fatalf("reopened title=%q", tab.TopicTitle)

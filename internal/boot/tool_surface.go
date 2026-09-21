@@ -9,7 +9,9 @@ func applyUnifiedProviderToolSurface(reg *tool.Registry, extra ...tool.Tool) {
 		return
 	}
 	allow := make([]string, 0, 16)
-	for _, name := range UnifiedProviderToolNames() {
+	names := coreProviderToolNamesForRegistry(reg)
+	names = append(names, HostControlToolNames()...)
+	for _, name := range names {
 		if _, ok := reg.Get(name); ok {
 			allow = append(allow, name)
 		}

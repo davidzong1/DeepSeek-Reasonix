@@ -61,29 +61,30 @@ func (a *App) startDesktopSessionMigration(ctx context.Context) {
 		close(a.desktopMigrationDone)
 		return
 	}
+	c := &a.historicalImports
+	c.mu.Lock()
+	c.initialize(ctx)
+	if c.stopped || a.shuttingDown.Load() {
+		c.mu.Unlock()
+		close(a.desktopMigrationDone)
+		return
+	}
+	ctx = c.ctx
+	c.catalogEnabled = true
+	c.workers.Add(1)
+	c.mu.Unlock()
 	go func() {
+		defer c.workers.Done()
 		defer close(a.desktopMigrationDone)
-		if err := a.backupDesktopUpgradeMetadata(ctx); err != nil {
-			a.desktopMigrationFailed.Store(true)
-			slogWarnDesktopMigration(err)
-			return
-		}
+		_, _ = a.listHistoricalSessions(ctx)
 		if err := a.recoverDesktopPendingCreateSnapshot(ctx, startupState.PendingCreates); err != nil {
 			a.desktopMigrationFailed.Store(true)
 			slogWarnDesktopMigration(err)
 		}
-		if err := a.migrateDesktopSessionsV5(ctx); err != nil {
-			a.desktopMigrationFailed.Store(true)
+		// Historical content waits for an explicit request. Keep prepared
+		// reservations intact for the on-demand importer.
+		if err := a.recoverDesktopOperations(ctx, false); err != nil {
 			slogWarnDesktopMigration(err)
-			// A handled migration failure no longer terminates the process, so
-			// run a second drain after its diagnostic has entered the queue.
-			a.goSafe("flushPendingCrash", a.flushPendingCrash)
-		}
-		for _, run := range []func(context.Context) error{a.recoverDesktopSessionOperations, a.discoverHistoricalTrash, a.reconcileUnregisteredSessions} {
-			if err := run(ctx); err != nil {
-				a.desktopMigrationFailed.Store(true)
-				slogWarnDesktopMigration(err)
-			}
 		}
 		a.emitProjectTreeChanged()
 	}()
@@ -159,6 +160,29 @@ type desktopMigrationSource struct {
 
 func (a *App) migrateDesktopSessionsV5(ctx context.Context) error {
 	replayErr := a.recoverDesktopSessionOperations(ctx)
+	sources, legacySources := a.desktopHistoricalRoots()
+	joined := replayErr
+	conversions, handledStores, conversionErr := discoverDesktopMigrationConversions(ctx, sources)
+	joined = errors.Join(joined, conversionErr)
+	for _, source := range legacySources {
+		source.conversions, source.handledStores = conversions, handledStores
+		joined = errors.Join(joined, markDesktopMigrationPairedStores(source, sources))
+		if err := a.migrateLegacyDirectory(ctx, source); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	joined = errors.Join(joined, a.migrateStoredConversionLineages(ctx, conversions, sources, handledStores))
+	for _, source := range sources {
+		source.handledStores = handledStores
+		if err := a.migrateCanonicalStore(ctx, *source); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return errors.Join(joined, a.discoverHistoricalTrash(ctx), a.reconcileUnregisteredSessions(ctx))
+}
+
+// Enumerate trusted storage roots without reading or converting transcripts.
+func (a *App) desktopHistoricalRoots() (map[string]*desktopMigrationSource, map[string]desktopMigrationSource) {
 	tabs := loadTabsFile()
 	projects := loadProjectsFile()
 	sources := map[string]*desktopMigrationSource{}
@@ -201,7 +225,6 @@ func (a *App) migrateDesktopSessionsV5(ctx context.Context) error {
 		}
 		addStores(tab.Scope, tab.WorkspaceRoot, root)
 	}
-	joined := replayErr
 	legacySources := map[string]desktopMigrationSource{}
 	addLegacy := func(scope, workspaceRoot, dir string) {
 		dir = filepath.Clean(strings.TrimSpace(dir))
@@ -237,23 +260,7 @@ func (a *App) migrateDesktopSessionsV5(ctx context.Context) error {
 	for _, source := range legacySources {
 		addStores(source.scope, source.workspaceRoot, source.pairedRoot)
 	}
-	conversions, handledStores, conversionErr := discoverDesktopMigrationConversions(ctx, sources)
-	joined = errors.Join(joined, conversionErr)
-	for _, source := range legacySources {
-		source.conversions, source.handledStores = conversions, handledStores
-		joined = errors.Join(joined, markDesktopMigrationPairedStores(source, sources))
-		if err := a.migrateLegacyDirectory(ctx, source); err != nil {
-			joined = errors.Join(joined, err)
-		}
-	}
-	joined = errors.Join(joined, a.migrateStoredConversionLineages(ctx, conversions, sources, handledStores))
-	for _, source := range sources {
-		source.handledStores = handledStores
-		if err := a.migrateCanonicalStore(ctx, *source); err != nil {
-			joined = errors.Join(joined, err)
-		}
-	}
-	return errors.Join(joined, a.discoverHistoricalTrash(ctx), a.reconcileUnregisteredSessions(ctx))
+	return sources, legacySources
 }
 
 // A paired checkpoint and event store are one migration decision. Never
@@ -397,7 +404,7 @@ func (a *App) migrateCanonicalSession(ctx context.Context, old *session.Service,
 		}
 		bundle := filepath.Join(tmp, "bundle")
 		defer os.RemoveAll(tmp)
-		if err := old.Export(ctx, oldRef, bundle); err != nil {
+		if err := old.TryExportCold(ctx, oldRef, bundle); err != nil {
 			_ = updateDesktopMigrationLedger(key, targetID, "failed", "export", contentDigest)
 			return err
 		}
@@ -631,7 +638,7 @@ func resolveMigrationTarget(ctx context.Context, query *session.Query, preferred
 			if err := json.Unmarshal(body, &manifest); err != nil {
 				return false, err
 			}
-			if manifest.Source == nil || sessionRuntimeKey(manifest.Source.Path) != sessionRuntimeKey(sourcePaths[0]) {
+			if manifest.Source == nil || !sameDesktopPath(manifest.Source.Path, sourcePaths[0]) {
 				return false, nil
 			}
 			if len(sourcePaths) > 1 && sourcePaths[1] != "" && manifest.Source.LegacyHeadID != sourcePaths[1] {

@@ -17,6 +17,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 	"reasonix/internal/shellparse"
+	"reasonix/internal/tool"
 )
 
 // notifier is the slice of Conn the dispatch sink depends on: it pushes
@@ -467,7 +468,7 @@ func (s *updateSink) permissionMeta(a event.Approval) map[string]any {
 		reasonix["ordinaryPermissionNeeded"] = wa.OrdinaryPermissionNeeded
 		reasonix["persistAllowed"] = wa.PersistAllowed
 	}
-	if a.Tool == "bash" && strings.TrimSpace(s.cwd) != "" {
+	if tool.IsShellToolName(a.Tool) && strings.TrimSpace(s.cwd) != "" {
 		var input struct {
 			Command                     string `json:"command"`
 			RunInBackground             bool   `json:"run_in_background"`
@@ -637,7 +638,7 @@ func toolKindFor(name string) string {
 		return "search"
 	case "edit_file", "move_file", "multiedit", "write_file":
 		return "edit"
-	case "bash":
+	case "bash", "pwsh", "powershell", "shell":
 		return "execute"
 	case control.SandboxEscapeApprovalTool:
 		return "execute"

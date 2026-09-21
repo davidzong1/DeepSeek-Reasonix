@@ -11,7 +11,7 @@ import (
 func ClassifyEffect(in EffectInput) EffectProfile {
 	name := strings.ToLower(strings.TrimSpace(in.ToolName))
 	args := json.RawMessage(in.Args)
-	if name == "bash" || name == "shell" {
+	if isShellToolName(name) {
 		return classifyBashEffect(args, in)
 	}
 	if in.Hint.Present && in.Hint.ReadOnly {
@@ -26,9 +26,9 @@ func ClassifyEffect(in EffectInput) EffectProfile {
 		return profile
 	}
 	switch name {
-	case "ask", "todo_write", "complete_step", "bash_output", "wait":
+	case "ask", "todo_write", "complete_step", "job_output", "bash_output", "wait":
 		return readOnlyProfile(nil, ReasonReadOnly)
-	case "remember", "forget", "set_session_title", "kill_shell":
+	case "remember", "forget", "set_session_title", "job_kill", "kill_shell":
 		return EffectProfile{Known: true, HostState: true, Reason: ReasonHostState}
 	}
 	profile := writerProfile(in)
@@ -36,6 +36,15 @@ func ClassifyEffect(in EffectInput) EffectProfile {
 		applyCallHint(&profile, in.Hint)
 	}
 	return profile
+}
+
+func isShellToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "pwsh", "powershell", "shell":
+		return true
+	default:
+		return false
+	}
 }
 
 func classifyBashEffect(args json.RawMessage, in EffectInput) EffectProfile {

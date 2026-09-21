@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 )
 
 // The sibling staging files remain inode witnesses until publication is marked

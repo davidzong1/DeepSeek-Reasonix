@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,38 @@ func TestRootGroupCancellationReleasesPartialCompatibilityHolds(t *testing.T) {
 			t.Fatalf("cancelled group leaked compatibility lock: %v", err)
 		}
 		unlock()
+	}
+}
+
+func TestRootGroupRejectsLinkRedirectAfterLockAcquisition(t *testing.T) {
+	root := t.TempDir()
+	first, second := filepath.Join(root, "first"), filepath.Join(root, "second")
+	if err := os.Mkdir(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(second, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(first, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	original := workspaceRootsAfterAcquire
+	workspaceRootsAfterAcquire = func() {
+		if err := os.Remove(alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(second, alias); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { workspaceRootsAfterAcquire = original })
+	release, err := HoldWriteRoots(t.Context(), t.TempDir(), alias)
+	if release != nil {
+		release()
+	}
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

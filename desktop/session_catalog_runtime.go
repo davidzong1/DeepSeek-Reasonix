@@ -217,8 +217,13 @@ func (a *App) runtimeProjectTopicNodes(scope, workspaceRoot string, snapshots []
 		if strings.TrimSpace(snapshot.topicTitle) != "" {
 			label = snapshot.topicTitle
 		}
-		if pathLabel := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)); pathLabel != "" && pathLabel != "." {
-			label = pathLabel
+		// A canonical route is an internal identity, never a display name. Only
+		// legacy file-backed sessions may use their filename as the last-resort
+		// runtime label while the catalog is catching up.
+		if _, canonical := parseSessionRoute(path); !canonical {
+			if pathLabel := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)); pathLabel != "" && pathLabel != "." {
+				label = pathLabel
+			}
 		}
 		status, running := catalogControllerStatus(snapshot.ctrl, snapshot.activity)
 		if snapshot.state != nil {

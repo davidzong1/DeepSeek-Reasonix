@@ -433,7 +433,10 @@ function bootstrap(dataHome: string): void {
         if (lifecycle.isQuitting) return;
         status.lifecycle = "ready";
         status.servicePID = hello.service.pid;
-        log.info(`desktop service ready: generation ${hello.runtimeGeneration}, pid ${hello.service.pid}`);
+        const identityLog = hello.instance
+          ? `, path identity v${hello.instance.identityVersion} ${hello.instance.identityDigest}`
+          : ", legacy path identity";
+        log.info(`desktop service ready: generation ${hello.runtimeGeneration}, pid ${hello.service.pid}${identityLog}`);
         try {
           await zoomStore.load();
         } catch (error) {

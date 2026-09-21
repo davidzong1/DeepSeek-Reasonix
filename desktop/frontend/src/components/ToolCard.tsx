@@ -1,3 +1,4 @@
+import { isShellToolName } from "../lib/shellToolIdentity";
 import { searchOutputMetadata } from "../lib/searchSources";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Suspense, lazy } from "react";
@@ -51,7 +52,7 @@ import type { SearchSourcePresentation } from "../lib/searchSourcesPresentation"
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
 function commandLanguage(shell: string | undefined, name: string): string | undefined {
-  const knownShell = shell?.toLowerCase() || (name === "bash" ? "bash" : "");
+  const knownShell = shell?.toLowerCase() || (isShellToolName(name) ? name.toLowerCase() : "");
   if (knownShell === "powershell" || knownShell === "pwsh") return "powershell";
   if (knownShell === "bash" || knownShell === "sh" || knownShell === "zsh") return "bash";
   return undefined;
@@ -101,8 +102,9 @@ function formatToolDuration(ms?: number): string {
   return `${Math.round(ms)} ms`;
 }
 
-function shellDisplayName(execution?: { shell?: string; shellVersion?: string }): string {
-  switch (execution?.shell) {
+function shellDisplayName(execution: { shell?: string; shellVersion?: string } | undefined, toolName: string): string {
+  const shell = execution?.shell || (isShellToolName(toolName) ? toolName.trim().toLowerCase() : "");
+  switch (shell) {
     case "git-bash":
       return "Git Bash";
     case "powershell":
@@ -112,7 +114,7 @@ function shellDisplayName(execution?: { shell?: string; shellVersion?: string })
     case "bash":
       return "bash";
     default:
-      return execution?.shell || "bash";
+      return shell || "bash";
   }
 }
 
@@ -330,13 +332,13 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const searchResultLabel = searchSourcesMissing ? t("sources.notProvided") : isWebSearch && searchVisibleCount === 0 && searchHiddenCount > 0
     ? t("sources.noValid")
     : t("tool.searchResults", { n: searchVisibleCount });
-  const isShellCard = Boolean(item.isShell || item.name === "bash" || execution);
+  const isShellCard = Boolean(item.isShell || isShellToolName(item.name) || execution);
   const shellCommand = isShellCard ? subjectOf("bash", effectiveArgs) : "";
   const displayOutput = isWebSearch || toolOutputDuplicatesError(effectiveOutput, item.error) ? undefined : effectiveOutput;
   const previewDiff = item.fileDiff?.diff ? item.fileDiff : undefined;
   const diffs = previewDiff || archivedWithoutFullData ? [] : diffsFor(item.name, effectiveArgs);
   const subject = fullData ? subjectOf(item.name, effectiveArgs) : item.subject || subjectOf(item.name, effectiveArgs);
-  const shellName = isShellCard ? shellDisplayName(execution) : (displayName ?? item.name);
+  const shellName = isShellCard ? shellDisplayName(execution, item.name) : (displayName ?? item.name);
   const shellSummary = execution && item.status !== "running" ? shellSettledSummary(t, execution, item.durationMs) : "";
   const verificationLabel = shellVerificationLabel(t, execution?.verification);
   const riskLabel = shellRiskLabel(t, execution);

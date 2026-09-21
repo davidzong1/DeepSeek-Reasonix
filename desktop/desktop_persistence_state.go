@@ -19,6 +19,7 @@ type desktopPersistenceState struct {
 	desktopMigrationFailed      atomic.Bool
 	beforeSavedTabMigrationWait func()
 	legacyCleanupWorker         legacyCleanupWorkerState
+	historicalImports           historicalImportCoordinator
 }
 
 func newDesktopPersistenceState() desktopPersistenceState {
@@ -39,8 +40,5 @@ func (a *App) registerLegacyCleanupUpgradeBatch() {
 func (a *App) startDesktopPersistenceReconciliation() {
 	a.goSafe("reconcileDraftSubmissions", func() {
 		a.reconcileDraftSubmissionOperations()
-		// Busy and unknown candidates retry once after creation recovery converges;
-		// the worker never loops them within one startup.
-		a.runLegacyEmptySessionCleanup(true)
 	})
 }

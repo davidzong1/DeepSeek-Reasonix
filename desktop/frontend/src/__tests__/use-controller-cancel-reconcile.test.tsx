@@ -104,7 +104,14 @@ globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.win
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
 let backendRunning = false;
-const backendHistory: HistoryMessage[] = [{ role: "user", content: "hello", messageId: "initial-user", createdAt: 1000, checkpointTurn: 0 }];
+const backendHistory: HistoryMessage[] = [{
+  role: "user",
+  content: "hello",
+  messageId: "initial-user",
+  createdAt: 1000,
+  checkpointTurn: 0,
+  attachments: [{ kind: "image", digest: "a".repeat(64), name: "photo.png", mime: "image/png", width: 1, height: 1, bytes: 68 }],
+}];
 let cancelCalls = 0;
 let cancelInboxCalls = 0;
 let cancelInboxError: Error | null = null;
@@ -347,9 +354,10 @@ eq(cancelOutcome?.discardedItemIds.join(","), "withdrawn-guidance", "cancel retu
 
 cancelInboxError = new Error("reasonix_error:inbox_invalid_state");
 await act(async () => {
-  await controller?.cancel(["queued-guidance"]);
+  cancelOutcome = await controller?.cancel(["queued-guidance"]);
   await flushPromises();
 });
+ok(Boolean(cancelOutcome?.error), "cancellation outcome preserves failure for the decision card");
 const inboxCancelNotice = controller?.state.items.find((item) =>
   item.kind === "notice" && item.text.includes("Cancel failed: This inbox instruction cannot be changed"),
 );

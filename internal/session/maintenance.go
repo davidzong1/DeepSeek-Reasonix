@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 )
 
 // PurgeWithTombstone keeps directory ownership across writer-lock release and

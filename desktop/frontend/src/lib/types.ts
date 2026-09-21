@@ -10,8 +10,7 @@ export type { ProviderProtocolEndpoint, ProviderCatalog, ProviderPresetView } fr
 import type { WireReadStatus } from "./readStatus";
 export type { WireReadStatus } from "./readStatus";
 import type { RecoveryEventFields } from "./recoveryStatus";
-// Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
-// One event channel carries every kind; `kind` discriminates the payload.
+// Wire contract: one discriminated event channel mirrors desktop/wire.go and internal/serve/wire.go.
 import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
 import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
@@ -563,6 +562,7 @@ export interface WireFinalReadiness {
 
 // Tab management types (desktop/tabs.go).
 export interface TabMeta extends RemoteTabMetaFields {
+  historicalSource?: import("../generated/desktopContract.generated").SessionSourceRef;
   id: string;
   tabType?: "session" | "file";
   scope: string;
@@ -857,6 +857,7 @@ export interface HistoryMessage extends TranscriptTurnMetadata {
   protocolRecovery?: { id: string };
   diagnostic?: { kind: string; status?: number; traceId?: string; providerId?: string; providerDisplayName?: string; protocol?: string; requestPath?: string };
   serverSearch?: HistoryServerSearch[];
+  attachments?: Array<{ kind?: string; digest?: string; name?: string; mime?: string; width?: number; height?: number; bytes?: number }>;
 }
 
 export interface HistoryPage {
@@ -991,6 +992,7 @@ export interface Meta extends RemoteSessionMetaFields {
   ready: boolean;
   runtime?: SessionRuntimeView;
   startupErr?: string;
+  historicalSource?: import("../generated/desktopContract.generated").SessionSourceRef;
   eventChannel: string;
   sessionPath?: string;
   sessionId?: string; session?: SessionRef | null;

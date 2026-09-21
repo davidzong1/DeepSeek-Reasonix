@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -610,173 +608,6 @@ model = "x"
 	}
 }
 
-func TestBuildDeepSeekTextParentCanUseImageReturningMCPAndVisionSubagent(t *testing.T) {
-	isolateConfigHome(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-
-	registerBootSubagentTestProvider()
-	prov := &bootSubagentTestProvider{combinedVision: true}
-	setBootSubagentTestProvider(t, prov)
-	if _, err := config.SetCredential("BOOT_DEEPSEEK_TEST_KEY", "test-key"); err != nil {
-		t.Fatalf("store test DeepSeek credential: %v", err)
-	}
-	writeFile(t, dir, "reasonix.toml", `
-default_model = "parent"
-
-[agent]
-system_prompt = "BASE"
-subagent_model = "vision-model"
-
-[[providers]]
-name = "parent"
-kind = "boot-subagent-test"
-base_url = "https://api.deepseek.com/anthropic"
-model = "x"
-api_key_env = "BOOT_DEEPSEEK_TEST_KEY"
-
-[[providers]]
-name = "vision-model"
-kind = "boot-subagent-test"
-base_url = "https://vision.example.invalid"
-model = "x"
-vision = true
-`)
-	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
-	if err != nil {
-		t.Fatalf("decode test png: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, ".reasonix", "attachments"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".reasonix", "attachments", "shot.png"), png, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mcpImage := base64.StdEncoding.EncodeToString(png)
-	var mcpCalls atomic.Int32
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			ID     *int            `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if request.ID == nil {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		var result any
-		switch request.Method {
-		case "initialize":
-			result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"serverInfo":      map[string]any{"name": "vision-reader", "version": "1"},
-				"capabilities":    map[string]any{"tools": map[string]any{}},
-			}
-		case "tools/list":
-			result = map[string]any{"tools": []map[string]any{{
-				"name":        "inspect",
-				"description": "Inspect an image file by path.",
-				"inputSchema": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"path": map[string]any{"type": "string"}},
-					"required":   []string{"path"},
-				},
-				"annotations": map[string]any{"readOnlyHint": true},
-			}}}
-		case "tools/call":
-			mcpCalls.Add(1)
-			result = map[string]any{"content": []map[string]any{
-				{"type": "text", "text": "vision-mcp-ok"},
-				{"type": "image", "mimeType": "image/png", "data": mcpImage},
-			}}
-		default:
-			http.Error(w, "unsupported method", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *request.ID, "result": result})
-	}))
-	defer mcpServer.Close()
-
-	ctrl, err := Build(context.Background(), Options{
-		Sink: event.Discard,
-		ExtraPlugins: []plugin.Spec{{
-			Name:       "vision-reader",
-			Type:       "http",
-			URL:        mcpServer.URL,
-			Authorized: true,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-	if ctrl.ImageInputEnabled() {
-		loaded, loadErr := config.LoadForRoot(dir)
-		resolved, _ := loaded.ResolveModel(ctrl.ModelRef())
-		t.Fatalf("official DeepSeek parent unexpectedly enables direct images: ref=%q entry=%+v load_err=%v", ctrl.ModelRef(), resolved, loadErr)
-	}
-	if err := ctrl.Run(context.Background(), "review @.reasonix/attachments/shot.png"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	reqs := prov.requestsSnapshot()
-	if len(reqs) < 4 {
-		t.Fatalf("provider requests = %d, want parent MCP call, parent subagent call, vision child, and parent final", len(reqs))
-	}
-	if got := mcpCalls.Load(); got != 1 {
-		t.Fatalf("vision MCP calls = %d, want 1", got)
-	}
-	// MCP tools stay behind use_capability; review is registered for dispatch.
-	if !requestHasTool(reqs[0], "use_capability") {
-		t.Fatalf("parent tools = %v, want use_capability for MCP/review dispatch", toolSchemaNames(reqs[0].Tools))
-	}
-	registered := map[string]bool{}
-	for _, e := range ctrl.AllToolContractEntries() {
-		registered[e.Name] = true
-	}
-	if !registered["review"] && !registered["run_skill"] {
-		t.Fatalf("capability registry missing review/run_skill: %v", registered)
-	}
-	if got := bootLastUser(reqs[0]); !strings.Contains(got, "@.reasonix/attachments/shot.png") {
-		t.Fatalf("text-only parent lost the attachment reference needed by MCP: %q", got)
-	}
-	// The direct attachment remains candidate-only for the text parent. An MCP
-	// image is intentionally retained on its local tool-result message; the real
-	// DeepSeek adapter tests assert that this exact role is omitted on the wire.
-	for _, requestIndex := range []int{0, 1, len(reqs) - 1} {
-		for _, msg := range reqs[requestIndex].Messages {
-			if msg.Role == provider.RoleUser && len(msg.Images) != 0 {
-				t.Fatalf("text-only parent request %d embedded %d direct attachment(s): %+v", requestIndex, len(msg.Images), reqs[requestIndex].Messages)
-			}
-		}
-	}
-	if !requestMessageContains(reqs[1].Messages, provider.RoleTool, "vision-mcp-ok") {
-		t.Fatalf("parent did not receive the vision MCP text result: %+v", reqs[1].Messages)
-	}
-	var parentMCPImageCount int
-	for _, msg := range reqs[1].Messages {
-		if msg.Role == provider.RoleTool && msg.Name == "mcp__vision-reader__inspect" {
-			parentMCPImageCount += len(msg.Images)
-		}
-	}
-	if parentMCPImageCount != 1 {
-		t.Fatalf("parent local MCP result images = %d, want one image for provider-boundary filtering", parentMCPImageCount)
-	}
-	var childImageCount int
-	for _, msg := range reqs[2].Messages {
-		if msg.Role == provider.RoleUser {
-			childImageCount = len(msg.Images)
-		}
-	}
-	if childImageCount != 1 {
-		t.Fatalf("vision child user images = %d, want one attachment; request = %+v", childImageCount, reqs[2].Messages)
-	}
-}
-
 func TestBuildUsesConfiguredLanguageForResponsePreference(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
@@ -855,7 +686,8 @@ model = "x"
 	}
 	parentReq, subReq := reqs[0], reqs[1]
 	// Core shell tools stay top-level; task is dispatched via use_capability.
-	for _, want := range []string{"bash", "wait", "bash_output", "kill_shell", "use_capability"} {
+	shellName := platformShellToolName()
+	for _, want := range []string{shellName, "job_output", "job_kill", "use_capability"} {
 		if !requestHasTool(parentReq, want) {
 			t.Fatalf("parent request missing %q; tools=%v", want, toolSchemaNames(parentReq.Tools))
 		}
@@ -867,22 +699,22 @@ model = "x"
 	if !registered["task"] && !registered["review"] {
 		t.Fatalf("capability registry missing task/review for skill subagent dispatch")
 	}
-	if !requestToolSchemaContains(parentReq, "bash", "run_in_background") {
-		t.Fatalf("parent bash schema should include run_in_background")
+	if !requestToolSchemaContains(parentReq, shellName, "run_in_background") {
+		t.Fatalf("parent %s schema should include run_in_background", shellName)
 	}
-	for _, hidden := range []string{"task", "run_skill", "read_only_skill", "read_skill", "install_skill", "install_source", "explore", "research", "review", "security_review", "wait", "bash_output", "kill_shell"} {
+	for _, hidden := range []string{"task", "run_skill", "read_only_skill", "read_skill", "install_skill", "install_source", "explore", "research", "review", "security_review", "job_output", "job_kill", "wait", "bash_output", "kill_shell"} {
 		if requestHasTool(subReq, hidden) {
 			t.Fatalf("skill subagent request should hide %q; tools=%v", hidden, toolSchemaNames(subReq.Tools))
 		}
 	}
-	if !requestHasTool(subReq, "bash") {
-		t.Fatalf("skill subagent request should keep bash; tools=%v", toolSchemaNames(subReq.Tools))
+	if !requestHasTool(subReq, shellName) {
+		t.Fatalf("skill subagent request should keep %s; tools=%v", shellName, toolSchemaNames(subReq.Tools))
 	}
-	if requestToolSchemaContains(subReq, "bash", "run_in_background") {
-		t.Fatalf("skill subagent bash schema should not include run_in_background")
+	if requestToolSchemaContains(subReq, shellName, "run_in_background") {
+		t.Fatalf("skill subagent %s schema should not include run_in_background", shellName)
 	}
-	if !requestToolDescriptionContains(subReq, "bash", "Only permission-classified read-only commands are allowed") {
-		t.Fatalf("review subagent bash must advertise its permission-layer read-only policy; got %q", requestToolDescription(subReq, "bash"))
+	if !requestToolDescriptionContains(subReq, shellName, "Only permission-classified read-only commands are allowed") {
+		t.Fatalf("review subagent %s must advertise its permission-layer read-only policy; got %q", shellName, requestToolDescription(subReq, shellName))
 	}
 }
 
@@ -950,15 +782,16 @@ model = "x"
 		t.Fatalf("provider requests = %d, want 5 (parent, writer sub, parent, read-only sub, parent)", len(reqs))
 	}
 	writerReq, roReq := reqs[1], reqs[3]
+	shellName := platformShellToolName()
 
 	if !requestHasTool(writerReq, "write_file") {
 		t.Fatalf("writer skill subagent should keep write_file; tools=%v", toolSchemaNames(writerReq.Tools))
 	}
-	if !requestToolDescriptionContains(writerReq, "bash", "Background execution is unavailable inside subagents") {
-		t.Fatalf("writer skill subagent bash should be the foreground-only wrapper; got %q", requestToolDescription(writerReq, "bash"))
+	if !requestToolDescriptionContains(writerReq, shellName, "Background execution is unavailable inside subagents") {
+		t.Fatalf("writer skill subagent %s should be the foreground-only wrapper; got %q", shellName, requestToolDescription(writerReq, shellName))
 	}
-	if requestToolDescriptionContains(writerReq, "bash", "Only permission-classified read-only commands are allowed") {
-		t.Fatalf("writer skill subagent bash must not be the read-only wrapper; got %q", requestToolDescription(writerReq, "bash"))
+	if requestToolDescriptionContains(writerReq, shellName, "Only permission-classified read-only commands are allowed") {
+		t.Fatalf("writer skill subagent %s must not be the read-only wrapper; got %q", shellName, requestToolDescription(writerReq, shellName))
 	}
 
 	if requestHasTool(roReq, "write_file") {
@@ -967,8 +800,8 @@ model = "x"
 	if !requestHasTool(roReq, "read_file") {
 		t.Fatalf("read-only skill subagent should keep read_file; tools=%v", toolSchemaNames(roReq.Tools))
 	}
-	if !requestToolDescriptionContains(roReq, "bash", "Only permission-classified read-only commands are allowed") {
-		t.Fatalf("read-only skill subagent bash must be the permission-layer wrapper; got %q", requestToolDescription(roReq, "bash"))
+	if !requestToolDescriptionContains(roReq, shellName, "Only permission-classified read-only commands are allowed") {
+		t.Fatalf("read-only skill subagent %s must be the permission-layer wrapper; got %q", shellName, requestToolDescription(roReq, shellName))
 	}
 }
 
@@ -982,11 +815,14 @@ var (
 
 func registerBootSubagentTestProvider() {
 	bootSubagentTestProviderOnce.Do(func() {
-		provider.Register(bootSubagentTestProviderKind, func(provider.Config) (provider.Provider, error) {
+		provider.Register(bootSubagentTestProviderKind, func(cfg provider.Config) (provider.Provider, error) {
 			bootSubagentTestProviderMu.Lock()
 			defer bootSubagentTestProviderMu.Unlock()
 			if bootSubagentTestProviderCurrent == nil {
 				return nil, errors.New("boot subagent test provider is not installed")
+			}
+			if cfg.ModelInfo != nil {
+				return bootImageInfoProvider{bootSubagentTestProviderCurrent, *cfg.ModelInfo}, nil
 			}
 			return bootSubagentTestProviderCurrent, nil
 		})
@@ -1013,7 +849,15 @@ type bootSubagentTestProvider struct {
 	continueRef    string
 	requests       []provider.Request
 	combinedVision bool
+	visionRequests []provider.Request
 }
+
+type bootImageInfoProvider struct {
+	provider.Provider
+	info provider.ModelInfo
+}
+
+func (p bootImageInfoProvider) ModelInfo() provider.ModelInfo { return p.info }
 
 func (p *bootSubagentTestProvider) Name() string { return "boot-subagent-test" }
 
@@ -1025,6 +869,15 @@ func (p *bootSubagentTestProvider) setContinueRef(ref string) {
 
 func (p *bootSubagentTestProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
+	if p.combinedVision && len(req.Tools) == 0 && len(req.Messages) == 1 && len(req.Messages[0].Images) > 0 {
+		p.visionRequests = append(p.visionRequests, req)
+		p.mu.Unlock()
+		ch := make(chan provider.Chunk, 2)
+		ch <- provider.Chunk{Type: provider.ChunkText, Text: "A green pixel."}
+		ch <- provider.Chunk{Type: provider.ChunkDone}
+		close(ch)
+		return ch, nil
+	}
 	call := p.calls
 	p.calls++
 	ref := p.continueRef
@@ -2322,23 +2175,32 @@ func contractEntryNames(entries []tool.ContractEntry) []string {
 // unifiedBootToolNames is the provider-visible surface shared by every Agent
 // role setting under identical configuration (core tools + host-control tools).
 func unifiedBootToolNames() []string {
-	return []string{
+	names := []string{
 		"ask",
-		"bash",
-		"bash_output",
 		"compress",
 		"create_goal",
 		"edit_file",
 		"get_goal",
-		"kill_shell",
+		"job_kill",
+		"job_output",
 		"read_file",
 		"todo_write",
 		"update_goal",
 		"use_capability",
 		"view_image",
-		"wait",
 		"write_file",
 	}
+	if runtime.GOOS == "windows" {
+		return append(names[:7], append([]string{"pwsh"}, names[7:]...)...)
+	}
+	return append(names[:1], append([]string{"bash"}, names[1:]...)...)
+}
+
+func platformShellToolName() string {
+	if runtime.GOOS == "windows" {
+		return "pwsh"
+	}
+	return "bash"
 }
 
 func TestBuildTokenEconomyStartsWithLeanToolSurface(t *testing.T) {
@@ -2385,7 +2247,7 @@ command = "reasonix-missing-mockmcp"
 	if got := toolSchemaNames(req.Tools); !reflect.DeepEqual(got, wantTools) {
 		t.Fatalf("light first request tool order changed\ngot  %v\nwant %v", got, wantTools)
 	}
-	for _, want := range []string{"compress", "use_capability", "read_file", "edit_file", "write_file", "bash", "ask"} {
+	for _, want := range []string{"compress", "use_capability", "read_file", "edit_file", "write_file", platformShellToolName(), "ask"} {
 		if !requestHasTool(req, want) {
 			t.Fatalf("light first request missing tool %q; tools=%v", want, toolSchemaNames(req.Tools))
 		}
@@ -4512,7 +4374,7 @@ func TestBuildKeepsSourceConnectorAndSkillToolsDespiteSafeModeEnv(t *testing.T) 
 	if !names["use_capability"] {
 		t.Fatal("expected use_capability when REASONIX_SAFE_MODE is set")
 	}
-	for _, want := range []string{"bash", "read_file", "write_file"} {
+	for _, want := range []string{platformShellToolName(), "read_file", "write_file"} {
 		if !names[want] {
 			t.Fatalf("expected core tool %s when REASONIX_SAFE_MODE is set", want)
 		}

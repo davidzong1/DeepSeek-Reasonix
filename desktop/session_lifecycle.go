@@ -15,11 +15,11 @@ import (
 	"reasonix/internal/session"
 )
 
-func (a *App) archiveSessionRefsLocked(refs []session.SessionRef, dependencies ...string) (fallbackRuntimeTarget, error) {
+func (a *App) archiveSessionRefsLocked(refs []session.SessionRef, dependencies ...string) error {
 	return a.archiveSessionRefsWithOperation(refs, "archive-"+newTabID(), dependencies...)
 }
 
-func (a *App) archiveSessionRefsWithOperation(refs []session.SessionRef, operationID string, dependencies ...string) (fallbackRuntimeTarget, error) {
+func (a *App) archiveSessionRefsWithOperation(refs []session.SessionRef, operationID string, dependencies ...string) error {
 	return a.archiveSessionRefsWithOperationConditional(refs, operationID, nil, dependencies...)
 }
 
@@ -27,7 +27,10 @@ func (a *App) archiveSessionRefsWithOperation(refs []session.SessionRef, operati
 // filesystem maintenance ownership has been acquired, while session removal is
 // still serialized. It is used by maintenance jobs whose read decision must be
 // fenced from a concurrent title/content/runtime mutation.
-func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionRef, operationID string, verify func(context.Context, workspacestate.State) error, dependencies ...string) (fallbackRuntimeTarget, error) {
+//
+// Archiving the last visible session leaves the surface empty on purpose: the
+// frontend lands on the workspace draft instead of a replacement blank session.
+func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionRef, operationID string, verify func(context.Context, workspacestate.State) error, dependencies ...string) error {
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
 	ctx := a.bootContext()
@@ -35,13 +38,13 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	unique := map[string]session.SessionRef{}
 	for _, ref := range refs {
 		if err := validateLocalSessionRef(ref); err != nil {
-			return fallbackRuntimeTarget{}, err
+			return err
 		}
 		a.cancelAISessionTitle((SessionTarget{SessionRef: ref}).key())
 		unique[ref.SessionID] = ref
 	}
 	if len(unique) == 0 {
-		return fallbackRuntimeTarget{}, errors.New("no sessions to archive")
+		return errors.New("no sessions to archive")
 	}
 	ids := make([]string, 0, len(unique))
 	for id := range unique {
@@ -50,7 +53,7 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	sort.Strings(ids)
 	state, err := a.workspaceRegistry().Load(ctx)
 	if err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
 	legacyTargets := map[string]bool{}
 	for _, dependency := range dependencies {
@@ -60,14 +63,14 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	}
 	removed, err := a.idleArchiveRuntimes(ids, legacyTargets)
 	if err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
 	guards := []func(){}
 	staged := map[string]string{}
 	for _, dependency := range dependencies {
 		op, ok := state.PendingOperations[dependency]
 		if !ok || op.Kind != "archive-import" || op.Phase != "content_ready" {
-			return fallbackRuntimeTarget{}, workspacestate.ErrMutationConflict
+			return workspacestate.ErrMutationConflict
 		}
 		for _, id := range op.SessionIDs {
 			staged[id] = op.WorkspaceID
@@ -81,39 +84,39 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	for _, id := range ids {
 		ref := unique[id]
 		if err := a.validateConditionalArchiveWorkspace(ctx, state, ref, staged[id], verify != nil); err != nil {
-			return fallbackRuntimeTarget{}, err
+			return err
 		}
 		if runtime, live := service.Runtime(ref); live {
 			phase := runtime.StateSnapshot().Phase
 			if phase != session.RuntimeIdle && phase != session.RuntimeRecoveryRequired {
-				return fallbackRuntimeTarget{}, errTopicHasActiveWork
+				return errTopicHasActiveWork
 			}
 		} else {
 			guard, err := session.NewFilesystemPersistence(a.desktopSessions.root).AcquireMaintenance(id)
 			if err != nil {
-				return fallbackRuntimeTarget{}, userFacingSessionLeaseError("", err)
+				return userFacingSessionLeaseError("", err)
 			}
 			guards = append(guards, guard)
 		}
 		if _, err := service.Query().Snapshot(ctx, ref); err != nil {
-			return fallbackRuntimeTarget{}, err
+			return err
 		}
 	}
 	state, err = a.workspaceRegistry().Load(ctx)
 	if err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
 	op := workspacestate.Operation{ID: operationID, Kind: "archive", Lifecycle: workspacestate.Archived, SessionIDs: ids, ExpectedGeneration: state.Generation, Dependencies: dependencies}
 	if err := a.beginConditionalArchiveOperation(ctx, state, op, verify); err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
 	if err := a.workspaceRegistry().PrepareOperationContent(ctx, op.ID, ids, nil, nil); err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
 	if err := a.workspaceRegistry().CommitOperation(ctx, op.ID); err != nil {
-		return fallbackRuntimeTarget{}, err
+		return err
 	}
-	fallback := a.finishArchivedRuntimeBindings(removed)
+	a.finishArchivedRuntimeBindings(removed)
 	for _, ref := range unique {
 		if err := a.retireArchivedSessionRuntime(ctx, ref); err != nil {
 			// Archive is already durable. Preserve that result and let purge's
@@ -121,7 +124,7 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 			slog.Warn("desktop: archived runtime retirement deferred", "err", err)
 		}
 	}
-	return fallback, nil
+	return nil
 }
 
 func (a *App) validateConditionalArchiveWorkspace(ctx context.Context, state workspacestate.State, ref session.SessionRef, stagedWorkspaceID string, maintenance bool) error {
@@ -163,15 +166,13 @@ func (a *App) beginConditionalArchiveOperation(ctx context.Context, state worksp
 }
 
 // Called only after durable commit, with runtime mutation admission held.
-func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) fallbackRuntimeTarget {
-	fallback := fallbackRuntimeTarget{}
+func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) {
 	a.mu.Lock()
 	for _, item := range removed {
 		tab := item.tab
 		if tab.Ctrl != item.ctrl {
 			continue
 		}
-		fallback.scope, fallback.workspaceRoot = tab.Scope, tab.WorkspaceRoot
 		a.markTabRemovedLocked(tab)
 		a.releaseSessionRuntimeLocked(tab)
 		a.unregisterDetachedRuntimeLocked(tab)
@@ -184,7 +185,6 @@ func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) fal
 	if a.activeTabID == "" && len(a.tabOrder) > 0 {
 		a.activeTabID = a.tabOrder[0]
 	}
-	fallback.needs = len(removed) > 0 && len(a.tabs) == 0
 	var dir, activeID string
 	var entries []desktopTabEntry
 	var version uint64
@@ -197,7 +197,6 @@ func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) fal
 	}
 	a.finalizeRemovedTopicRuntimes(removed)
 	a.closeRemainingRemovedSessionRuntimesAdmissionHeld(removed, map[control.SessionAPI]bool{})
-	return fallback
 }
 
 func (a *App) archiveCompatibleTopic(topicID string) error {
@@ -284,8 +283,7 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 	for _, ref := range refs {
 		list = append(list, ref)
 	}
-	fallback, err := a.archiveSessionRefsLocked(list, dependencies...)
-	if err != nil {
+	if err := a.archiveSessionRefsLocked(list, dependencies...); err != nil {
 		return err
 	}
 	for _, lease := range leases {
@@ -294,9 +292,6 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 	leases = nil
 	release()
 	release = nil
-	if fallback.needs {
-		_ = a.openFallbackRuntime(fallback)
-	}
 	a.emitProjectTreeChanged()
 	return nil
 }
