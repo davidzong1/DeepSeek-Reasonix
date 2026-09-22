@@ -231,7 +231,7 @@ func memberProxySpec(p team.ProxyConfig) netclient.ProxySpec {
 }
 
 // memberBackendDeps is what assembling one member backend needs beyond its
-// binding: the pool lookup, the tagged event channel every member shares, and
+// binding: the pool lookup, the event pump every member emits into, and
 // the boot options this session launched with, so a member inherits the same
 // permissions, workspace root and session directory as the ambient session.
 type memberBackendDeps struct {
@@ -240,8 +240,11 @@ type memberBackendDeps struct {
 	store    *team.TeamStore
 	sessions *team.TeamSessionStore
 	tasks    *teamTaskService
-	events   chan memberEvent
-	base     func() boot.Options
+	// events is the pump every member emits into: one bounded queue per member,
+	// drained by the window's single pump goroutine. A nil pump keeps the
+	// historical silence (a member with no frontend to report to).
+	events *memberEventPump
+	base   func() boot.Options
 	// workspaceRoot is captured from the ambient controller when the overlay
 	// opens: members created while the process CWD is elsewhere must still
 	// resolve project skills against this root, not the session directory.
@@ -434,7 +437,7 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		opts.TeamRole = string(roleForLeader(b.Leader))
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
-		opts.Sink = memberSink(b.MemberID, deps.events)
+		opts.Sink = deps.events.sink(b.MemberID)
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
 			// Invalid team_role declarations warn through the assembly's own
 			// diagnostic writer (nil keeps the historical silence).

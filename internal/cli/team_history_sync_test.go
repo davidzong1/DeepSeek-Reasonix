@@ -21,7 +21,7 @@ func syncFixture(t *testing.T, backend stubBackend) chatTUI {
 	m := openTeamOverlay(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return backend, nil
 	}, 4)
@@ -335,7 +335,7 @@ func TestHistorySyncReplaySuppressesLegacyClearScreen(t *testing.T) {
 	m := syncFixture(t, stubBackend{label: "lead", stamp: "s1"})
 	m.legacyScrollClear = true
 
-	m.replayBoundHistory()
+	_ = m.replayBoundHistory()
 	if !m.sessionSwitch {
 		t.Fatal("a cross-window replay must arm sessionSwitch like every other rebuild")
 	}

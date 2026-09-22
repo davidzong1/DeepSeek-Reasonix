@@ -107,7 +107,7 @@ func overlayWithClickableBackends(t *testing.T) chatTUI {
 	t.Helper()
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return control.New(control.Options{}), nil
 	}, 4)

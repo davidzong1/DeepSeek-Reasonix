@@ -22,7 +22,7 @@ import (
 func TestP4CloseSessionKeepsBackendsAndResetsWindow(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	closed := map[string]*int{}
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		n := 0
@@ -57,7 +57,7 @@ func TestP4CloseSessionKeepsBackendsAndResetsWindow(t *testing.T) {
 func TestP4FullRegistryCloseRebindReassembles(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, history: map[string][]provider.Message{
 			"lead":  {userMessage("LEAD-HISTORY")},

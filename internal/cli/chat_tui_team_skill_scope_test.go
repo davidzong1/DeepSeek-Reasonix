@@ -108,7 +108,7 @@ type stubCatalogs map[string]struct{ slash, all []skill.Skill }
 // does not implement, so a re-bind over an already-bound stub skips it.
 func bindStubMember(t *testing.T, m chatTUI, member string, catalogs stubCatalogs, render bool) chatTUI {
 	t.Helper()
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		c := catalogs[b.MemberID]
 		return stubBackend{label: b.MemberID, skills: c.slash, all: c.all}, nil

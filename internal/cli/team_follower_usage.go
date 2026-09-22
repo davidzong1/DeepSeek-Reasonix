@@ -68,13 +68,18 @@ func (b *memberFollowerBackend) usageSnapshot() (team.OwnerUsage, bool) {
 		return team.OwnerUsage{}, false
 	}
 	b.usageMu.Lock()
-	if now := time.Now(); b.usageDoc == nil || now.Sub(b.usageReadAt) >= followerUsageReadInterval {
-		doc, ok, err := b.usage.ReadUsage(context.Background())
-		b.usageReadAt = now
-		if err != nil || !ok {
-			b.usageDoc = nil
-		} else {
-			b.usageDoc = &doc
+	// A host that refreshes this snapshot off the frame path owns it, so the band
+	// serves what that read installed. The throttle that follows is the fallback
+	// for a host with no refresher.
+	if !b.usageTicked {
+		if now := time.Now(); b.usageDoc == nil || now.Sub(b.usageReadAt) >= followerUsageReadInterval {
+			doc, ok, err := b.usage.ReadUsage(context.Background())
+			b.usageReadAt = now
+			if err != nil || !ok {
+				b.usageDoc = nil
+			} else {
+				b.usageDoc = &doc
+			}
 		}
 	}
 	doc := b.usageDoc
@@ -83,4 +88,29 @@ func (b *memberFollowerBackend) usageSnapshot() (team.OwnerUsage, bool) {
 		return team.OwnerUsage{}, false
 	}
 	return *doc, true
+}
+
+// refreshUsage reads the writer's document and installs it — off the Update
+// goroutine, which is the point: the status band answers these same numbers at
+// frame rate, and one small stat plus parse per second is still disk I/O on the
+// path that draws the frame. The roster tick refreshes every second, so the band
+// finds the observation in memory and never reads here.
+//
+// The document's own stamp still decides freshness (usageSnapshot): a writer that
+// stops publishing is hidden by the TTL, not by who did the read.
+func (b *memberFollowerBackend) refreshUsage(ctx context.Context) {
+	if b == nil || b.usage == nil {
+		return
+	}
+	doc, ok, err := b.usage.ReadUsage(ctx) // outside the lock: this is the I/O
+	now := time.Now()
+	b.usageMu.Lock()
+	b.usageTicked = true
+	b.usageReadAt = now
+	if err != nil || !ok {
+		b.usageDoc = nil
+	} else {
+		b.usageDoc = &doc
+	}
+	b.usageMu.Unlock()
 }

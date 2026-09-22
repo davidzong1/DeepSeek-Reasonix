@@ -6,7 +6,28 @@ import (
 	"reasonix/internal/i18n"
 	"strings"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
+
+// batchCmds is tea.Batch that collapses an all-nil list to nil so callers can
+// assert "no work" without false positives from Batch(nil, nil).
+func batchCmds(cmds ...tea.Cmd) tea.Cmd {
+	var out []tea.Cmd
+	for _, c := range cmds {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	switch len(out) {
+	case 0:
+		return nil
+	case 1:
+		return out[0]
+	default:
+		return tea.Batch(out...)
+	}
+}
 
 // ownerKey identifies the session that owns a piece of mounted view state: the
 // team a member belongs to and the member itself. The two components are the

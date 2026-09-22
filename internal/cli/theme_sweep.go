@@ -58,16 +58,25 @@ func (m *chatTUI) startThemeSweep(from, to cliPalette) tea.Cmd {
 
 // frameWithTheme renders the whole view under a palette other than the active
 // one. The value receiver keeps the swapped-in sweep state local to this call.
+// A frame that loses the palette to a background replay render (team_replay.go)
+// is rendered under the active palette instead of waiting: the sweep's next tick
+// retries the step, and the frame that would have been frozen stays live.
 func (m chatTUI) frameWithTheme(p cliPalette) string {
 	m.themeSweep = nil
-	prev := activeCLITheme
-	activeCLITheme = p
-	refreshCLIStyles()
-	defer func() {
-		activeCLITheme = prev
+	var frame string
+	if !tryMaterializeTheme(func() {
+		prev := activeCLITheme
+		activeCLITheme = p
 		refreshCLIStyles()
-	}()
-	return m.View().Content
+		defer func() {
+			activeCLITheme = prev
+			refreshCLIStyles()
+		}()
+		frame = m.View().Content
+	}) {
+		return m.View().Content
+	}
+	return frame
 }
 
 func (s *themeSweep) advance() bool {

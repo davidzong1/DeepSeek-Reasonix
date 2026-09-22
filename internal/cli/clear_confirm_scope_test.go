@@ -30,7 +30,7 @@ func boundClearTUI(t *testing.T, member string) (chatTUI, *control.Controller, *
 	}
 
 	built := map[string]*control.Controller{}
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		dir := t.TempDir()
 		exec := agent.New(nil, nil, agent.NewSession("member-sys"), agent.Options{}, event.Discard)

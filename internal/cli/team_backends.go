@@ -17,21 +17,17 @@ import (
 var errBackendStopped = errors.New("cli: team member backend stopped while assembling")
 
 // memberEvent tags one agent event with the member whose backend emitted it.
-// Every member backend writes into one shared channel, so the TUI keeps its
-// single waitForAgentEvent goroutine and still knows whose turn produced the
-// event: the bound member's events render into the transcript, another member's
-// terminal events only count as unread.
+// Every member backend writes into the shared event pump, so the TUI keeps its
+// single waitForMemberEvent pump goroutine and still knows whose turn produced
+// the event: the bound member's events render into the transcript, another
+// member's terminal events only count as unread.
 type memberEvent struct {
 	member string
 	ev     event.Event
-}
-
-// memberSink adapts one member's backend onto the shared tagged channel. The
-// send blocks like the main path's eventSink does — a generously buffered
-// channel is what keeps a streaming burst from backpressuring the agent
-// goroutine, not a drop policy that would lose turn-final events.
-func memberSink(member string, ch chan<- memberEvent) event.Sink {
-	return event.FuncSink(func(e event.Event) { ch <- memberEvent{member: member, ev: e} })
+	// seq is the pump's arrival stamp, set when the event is queued. It is what
+	// keeps the drain in global arrival order across members (see
+	// memberEventPump.seq).
+	seq int64
 }
 
 // backendKey identifies one member instance. Team and member id are validated
@@ -69,6 +65,19 @@ type teamBackends struct {
 	// the registry's lifetime, like the board: every assembled backend's tools
 	// hold it, so a reopen must keep, never rebuild, it.
 	tasks *teamTaskService
+	// workers is the per-member worker set every owner-history publication runs
+	// on (team_member_cockpit.go). Its lifetime is the registry's, like the
+	// board's, because the members it writes for are these backends.
+	workers *memberCockpit
+}
+
+// cockpit returns the registry's per-member workers. Nil receiver included: a
+// caller with no registry has no worker and runs its own work inline.
+func (r *teamBackends) cockpit() *memberCockpit {
+	if r == nil {
+		return nil
+	}
+	return r.workers
 }
 
 // inbox returns the shared board wire, or nil when none was installed. Nil
@@ -131,6 +140,7 @@ func newTeamBackends(build func(team.MemberBinding) (control.SessionAPI, error),
 		live:     map[string]control.SessionAPI{},
 		fps:      map[string]string{},
 		building: map[string]*buildCall{},
+		workers:  newMemberCockpit(),
 	}
 }
 
@@ -379,10 +389,13 @@ func (r *teamBackends) liveTeamCount(teamName string) int {
 }
 
 // closeAll retires every backend and abandons every in-flight assembly; the
-// registry is reusable afterwards.
+// registry is reusable afterwards. The member cockpit stops here too: a write in
+// flight finishes, a queued one does not start, and the registry this worker set
+// belongs to is gone.
 func (r *teamBackends) closeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.workers.close()
 	for _, key := range slices.Clone(r.order) {
 		r.retire(key)
 	}

@@ -36,6 +36,7 @@ func (m *chatTUI) clearTranscriptDisplay() {
 	}
 	m.transcript = nil
 	m.transcriptSources = nil
+	m.replay.reset() // the replay block goes with the transcript
 	m.clearWrapCache()
 	m.viewport.SetContent("")
 	m.shellOutputs = make(map[string]string)

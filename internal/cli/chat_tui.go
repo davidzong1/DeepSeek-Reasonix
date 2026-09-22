@@ -39,14 +39,16 @@ type chatTUI struct {
 	teamPick *teamPicker
 
 	// teamBackends holds one assembled Agent backend per team member; binding a
-	// member swaps m.ctrl to its backend. memberEvents is its tagged channel.
+	// member swaps m.ctrl to its backend. memberEvents is its event pump.
 	teamBackends *teamBackends
 
 	// teamEscalations is the decider for a member's out-of-scope write: it queues
 	// the request for the leader agent and settles the blocked member. Window-
 	// scoped, because member backends outlive the overlay.
 	teamEscalations *writeAccessEscalations
-	memberEvents    chan memberEvent
+	memberEvents    *memberEventPump
+	// replay is the bound backend's replay bundle and its pending render.
+	replay replayWindow
 	// memberBackendBase yields the boot options a member backend inherits from
 	// this session's launch wiring; the member builder overrides model and sink.
 	memberBackendBase func() boot.Options
@@ -519,11 +521,16 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cm.syncInputHeightLimit()
 	cm.viewport.SetHeight(cm.transcriptHeight())
 	widthChanged := cm.width != prevWidth
+	var replayCmd tea.Cmd
 	if widthChanged {
 		cm.reflowTranscript(cm.width)
 		// Selection coordinates are visual-line based and cannot survive a
 		// semantic reflow without selecting unrelated text.
 		cm.sel = selection{}
+		// A member's replay block reflows through its newest window (bounded, like a
+		// bind); the rest re-renders off the loop, so a resize never re-renders a
+		// long member history on this goroutine (reflowReplayBundle).
+		replayCmd = cm.reflowReplayBundle()
 	}
 	// Wrap sync: full rebuild only on width change or history shrink. Streaming
 	// answer/tool rewrites use invalidateWrapFrom → suffix-only re-wrap; the
@@ -578,29 +585,10 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// strand stale rows. Every other terminal relies on Bubble Tea's renderer.
 	if cm.legacyScrollClear && cm.viewport.YOffset() != prevYOff && !cm.nativeScrollback && !cm.sessionSwitch {
 		cm.sessionSwitch = false
-		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd)
+		return cm, batchCmds(tea.ClearScreen, mouseCmd, cmd, replayCmd)
 	}
 	cm.sessionSwitch = false
-	return cm, batchCmds(mouseCmd, cmd)
-}
-
-// batchCmds is tea.Batch that collapses an all-nil list to nil so callers can
-// assert "no work" without false positives from Batch(nil, nil).
-func batchCmds(cmds ...tea.Cmd) tea.Cmd {
-	var out []tea.Cmd
-	for _, c := range cmds {
-		if c != nil {
-			out = append(out, c)
-		}
-	}
-	switch len(out) {
-	case 0:
-		return nil
-	case 1:
-		return out[0]
-	default:
-		return tea.Batch(out...)
-	}
+	return cm, batchCmds(mouseCmd, cmd, replayCmd)
 }
 
 // update runs the model's message handling. Update wraps it to keep the

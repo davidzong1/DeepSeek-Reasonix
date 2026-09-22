@@ -106,7 +106,7 @@ func TestMemberModelRebindsAgentUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed := 0
-	m.memberEvents = make(chan memberEvent, 4)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.AgentUserRef, closed: &closed}, nil
 	}, 4)

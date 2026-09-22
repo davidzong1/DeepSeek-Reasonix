@@ -135,7 +135,7 @@ func TestMemberHandoffPersistFailureReturnsError(t *testing.T) {
 func TestExitTeamRestoresAmbientHistoryReplaysOwnTalk(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, history: []provider.Message{userMessage("LEAD-HISTORY")}}, nil
 	}, 4)

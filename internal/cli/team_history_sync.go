@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/control"
-	"reasonix/internal/provider"
 	"reasonix/internal/team"
 )
 
@@ -79,9 +78,9 @@ func (m *chatTUI) syncBoundHistory() tea.Cmd {
 		// leader stepped down. There is nothing left to read, so the window goes
 		// to the empty state instead of keeping a history that no longer exists.
 		session.syncStamp, session.syncPending, session.syncInFlight = stamp, false, ""
-		m.replayBoundHistory()
+		replayCmd := m.replayBoundHistory()
 		m.notice("team member " + session.current + "'s history was cleared elsewhere")
-		return nil
+		return replayCmd
 	}
 	if session.syncInFlight == stamp {
 		return nil // a read for this change is already running
@@ -116,14 +115,15 @@ func (m *chatTUI) loadBoundHistoryCmd(syncer control.HistorySync, member, stamp 
 // handleHistorySyncDone applies one off-goroutine read's result. A result whose
 // stamp is no longer the one in flight belongs to a window that has moved on —
 // a rebind, a newer change, a closed session — so it is dropped rather than
-// rendered over whatever the window shows now.
-func (m *chatTUI) handleHistorySyncDone(msg historySyncDone) {
+// rendered over whatever the window shows now. It returns the command carrying
+// the rebuilt transcript's pending work, if the reload has any.
+func (m *chatTUI) handleHistorySyncDone(msg historySyncDone) tea.Cmd {
 	if m == nil || !m.teamSessionBound() {
-		return
+		return nil
 	}
 	session := &m.teamPick.session
 	if session.current != msg.member || session.syncInFlight != msg.stamp {
-		return
+		return nil
 	}
 	session.syncInFlight = ""
 	if msg.err != nil {
@@ -132,16 +132,16 @@ func (m *chatTUI) handleHistorySyncDone(msg historySyncDone) {
 		session.syncPending = true
 		m.reportHistorySyncFailure("read:"+msg.member,
 			"team member "+msg.member+"'s history could not be read: "+pickerErrMsg(msg.err))
-		return
+		return nil
 	}
 	session.syncErrKey = ""
 	if !msg.reloaded {
 		// Nothing to render: the controller had already adopted this stamp.
 		session.syncPending = false
-		return
+		return nil
 	}
 	session.syncStamp, session.syncPending = msg.stamp, false
-	m.replayBoundHistory()
+	return m.replayBoundHistory()
 }
 
 // reportHistorySyncFailure records a cross-window failure where the user can
@@ -217,12 +217,56 @@ func (m *chatTUI) publishBoundOwnerHistory() {
 			"team member "+member+"'s history change was not published: "+pickerErrMsg(err))
 		return
 	}
-	if err := recordMemberOwnerHistory(context.Background(), p.owners, binding, m.ctrl, true); err != nil {
-		m.reportHistorySyncFailure("publish:"+member,
-			"team member "+member+"'s history change was not published: "+pickerErrMsg(err))
+	m.publishOwnerHistory(cockpitCommand{
+		owners: p.owners, binding: binding, stamper: m.ctrl, bump: true, errKey: "publish:" + member,
+	})
+}
+
+// publishOwnerHistory hands one publication to the member's cockpit worker, so
+// the store write happens off the Update goroutine (team_member_cockpit.go). A
+// window with no registry has no worker and runs it here, which is the historical
+// inline path — tests and non-interactive hosts take it, and they observe the
+// same result synchronously.
+func (m *chatTUI) publishOwnerHistory(cmd cockpitCommand) {
+	if m != nil && m.teamBackends != nil && m.teamBackends.cockpit().submit(cmd) {
 		return
 	}
-	p.session.syncErrKey = ""
+	m.applyCockpitResults([]cockpitResult{runOwnerHistoryPublication(context.Background(), cmd)})
+}
+
+// applyCockpitResults folds the members' finished publications into the window,
+// on the Update goroutine: a failure is reported once per cause, a success clears
+// the failure it superseded.
+func (m *chatTUI) applyCockpitResults(results []cockpitResult) {
+	if m == nil {
+		return
+	}
+	for _, res := range results {
+		if res.errMsg != "" {
+			m.reportHistorySyncFailure(res.errKey, res.errMsg)
+			continue
+		}
+		if m.teamPick != nil {
+			m.teamPick.session.syncErrKey = ""
+		}
+	}
+}
+
+// collectCockpitResults drains the members' finished publications so the roster
+// tick can apply them. It is non-blocking by design: nothing ready means no
+// message and no new command, and the next tick collects whatever landed since.
+func (m *chatTUI) collectCockpitResults() tea.Cmd {
+	if m == nil || m.teamBackends == nil {
+		return nil
+	}
+	cockpit := m.teamBackends.cockpit()
+	return func() tea.Msg {
+		results := cockpit.drain()
+		if len(results) == 0 {
+			return nil
+		}
+		return teamRosterRefreshMsg{super: results}
+	}
 }
 
 // publishTurnOwnerHistory advances the generation of whichever member's turn
@@ -256,7 +300,7 @@ func (m *chatTUI) publishTurnOwnerHistory(member string) {
 		return
 	}
 	stamper, ok := backend.(memberHistoryStamper)
-	if !ok || stamper.HistoryStamp() == "" {
+	if !ok {
 		return
 	}
 	binding, err := p.store.Binding(p.sessionTeamName(), member)
@@ -265,12 +309,13 @@ func (m *chatTUI) publishTurnOwnerHistory(member string) {
 			"team member "+member+"'s history change was not published: "+pickerErrMsg(err))
 		return
 	}
-	if err := recordMemberOwnerHistory(context.Background(), p.owners, binding, stamper, true); err != nil {
-		m.reportHistorySyncFailure("publish:"+member,
-			"team member "+member+"'s history change was not published: "+pickerErrMsg(err))
-		return
-	}
-	p.session.syncErrKey = ""
+	// The identity read and the advance both happen on the member's cockpit
+	// worker: requireIdentity is what keeps a member that cannot name its own
+	// history from being published under a made-up one.
+	m.publishOwnerHistory(cockpitCommand{
+		owners: p.owners, binding: binding, stamper: stamper, bump: true,
+		requireIdentity: true, errKey: "publish:" + member,
+	})
 }
 
 // replayBoundHistory rebuilds the displayed transcript from the bound backend's
@@ -282,9 +327,12 @@ func (m *chatTUI) publishTurnOwnerHistory(member string) {
 // it: the clear below is a whole-screen replacement, and the legacy scroll-clear
 // workaround (see chat_tui.go) would answer it with a second ClearScreen
 // mid-refresh.
-func (m *chatTUI) replayBoundHistory() {
+//
+// It paints through the same bounded path a member switch uses, so a peer's
+// change to a heavy member's history cannot freeze the frame either.
+func (m *chatTUI) replayBoundHistory() tea.Cmd {
 	if m == nil || m.ctrl == nil {
-		return
+		return nil
 	}
 	m.finalizeStreamed()
 	m.pending.Reset()
@@ -293,8 +341,5 @@ func (m *chatTUI) replayBoundHistory() {
 	m.sessionSwitch = true
 	m.transcriptDirty = true
 	m.forceGotoBottom = true
-	m.commitTranscriptSource(transcriptSource{
-		kind:    transcriptSourceReplayBundle,
-		history: append([]provider.Message(nil), m.ctrl.History()...),
-	})
+	return m.commitBackendReplay(m.ctrl, replayBounded)
 }

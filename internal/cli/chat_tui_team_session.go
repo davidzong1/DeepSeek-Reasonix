@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"time"
@@ -18,8 +19,13 @@ import (
 // sync carries the result of the tick's off-goroutine durable-history read back
 // through the same message: the read is scheduled by the tick, so its result
 // rides the tick instead of needing a second update branch (see syncBoundHistory).
+// replay does the same for a member's off-goroutine transcript render
+// (team_replay.go), and super for the members' cockpit reports
+// (team_member_cockpit.go) — neither is a tick of its own.
 type teamRosterRefreshMsg struct {
-	sync *historySyncDone
+	sync   *historySyncDone
+	replay *teamReplayReadyMsg
+	super  []cockpitResult
 }
 
 const teamRosterRefreshInterval = time.Second
@@ -39,15 +45,48 @@ func teamRosterRefresh() tea.Cmd {
 // owner is read, or the window reads the fingerprint of a member it is about to
 // leave and reports its own rebind as a remote clear.
 func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
-	if m == nil || m.teamPick == nil || m.teamPick.store == nil {
+	if m == nil {
 		return nil
 	}
+	if len(msg.super) > 0 {
+		// A member's cockpit report: the tick that armed this collection is still
+		// pending, so this path applies the report and arms no second tick.
+		m.applyCockpitResults(msg.super)
+		return nil
+	}
+	if m.teamPick == nil || m.teamPick.store == nil {
+		return nil
+	}
+	var replayCmd tea.Cmd
+	if msg.replay != nil {
+		replayCmd = m.handleTeamReplayReady(*msg.replay)
+	}
 	if msg.sync != nil {
-		m.handleHistorySyncDone(*msg.sync)
+		replayCmd = batchCmds(replayCmd, m.handleHistorySyncDone(*msg.sync))
 	}
 	m.syncAmbientOwnerUsage()
 	next := m.refreshTeamRosterView()
-	return batchCmds(m.syncBoundHistory(), next)
+	return batchCmds(replayCmd, m.syncBoundHistory(), m.refreshBoundMemberUsage(), m.collectCockpitResults(), next)
+}
+
+// refreshBoundMemberUsage hands the bound member's published usage to the tick's
+// off-goroutine read, so the status band stops reading that document on the frame
+// path (see refreshUsage). A follower is the only backend whose usage lives on
+// disk: when the window owns the writer's own controller, its numbers are already
+// in memory and there is nothing to refresh.
+//
+// The read answers no message. The tick that armed it is already in flight, and a
+// second result would arm a second tick — the same reason the tick carries the
+// results that do need delivering (see refreshTeamRoster).
+func (m *chatTUI) refreshBoundMemberUsage() tea.Cmd {
+	follower, ok := m.ctrl.(*memberFollowerBackend)
+	if !ok || follower == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		follower.refreshUsage(context.Background())
+		return nil
+	}
 }
 
 // syncAmbientOwnerUsage keeps the usage channel of the member this window's own

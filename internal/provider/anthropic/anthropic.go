@@ -252,6 +252,11 @@ func (c *client) deepSeekThinkingEnabled() bool {
 	return c != nil && c.deepseek && c.thinking != "disabled" && c.effort != "disabled"
 }
 
+// inclusiveInput reports whether this endpoint's input_tokens already covers
+// its cache counters. DeepSeek's Anthropic-compatible route reports the whole
+// input there; the native API reports only the uncached part. See messagesUsage.
+func (c *client) inclusiveInput() bool { return c != nil && c.deepseek }
+
 func (c *client) RequiresAssistantReasoningReplay(m provider.Message) bool {
 	if c == nil {
 		return false
@@ -646,16 +651,8 @@ finalize:
 		if cacheCreate > 0 && c.endpoint.native {
 			cacheWriteBilledTokens = float64(cacheCreate) * cacheWrite5MinuteInputMultiplier
 		}
-		usage := &provider.Usage{
-			PromptTokens:           inTok + cacheCreate + cacheRead,
-			CompletionTokens:       outTok,
-			TotalTokens:            inTok + cacheCreate + cacheRead + outTok,
-			CacheHitTokens:         cacheRead,
-			CacheMissTokens:        inTok + cacheCreate,
-			CacheWriteTokens:       cacheCreate,
-			CacheWriteBilledTokens: cacheWriteBilledTokens,
-			FinishReason:           mapStopReason(stopReason),
-		}
+		usage := messagesUsage(inTok, outTok, cacheCreate, cacheRead, cacheWriteBilledTokens, c.inclusiveInput())
+		usage.FinishReason = mapStopReason(stopReason)
 		provider.ApplyRequestAttemptCount(ctx, usage)
 		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
 			return

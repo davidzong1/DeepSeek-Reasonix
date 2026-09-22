@@ -423,15 +423,18 @@ func TestMemberBackendFingerprintResolvesFromPool(t *testing.T) {
 	}
 }
 
-// TestMemberSinkTagsEveryEvent pins the attribution the tagged channel exists
-// for: one shared channel, every event labelled with its member.
+// TestMemberSinkTagsEveryEvent pins the attribution the shared pump exists
+// for: one consumer, every event labelled with the member that emitted it.
 func TestMemberSinkTagsEveryEvent(t *testing.T) {
-	ch := make(chan memberEvent, 4)
-	memberSink("lead", ch).Emit(event.Event{Kind: event.Notice, Text: "one"})
-	memberSink("alice", ch).Emit(event.Event{Kind: event.Notice, Text: "two"})
+	pump := newMemberEventPump()
+	pump.sink("lead").Emit(event.Event{Kind: event.Notice, Text: "one"})
+	pump.sink("alice").Emit(event.Event{Kind: event.Notice, Text: "two"})
 	got := map[string]string{}
 	for range 2 {
-		e := <-ch
+		e, ok := pump.next()
+		if !ok {
+			t.Fatal("pump closed before both events were drained")
+		}
 		got[e.member] = e.ev.Text
 	}
 	if got["lead"] != "one" || got["alice"] != "two" {
@@ -493,7 +496,7 @@ func TestMemberBackendBuildsWithGatewayEffort(t *testing.T) {
 			"wan": {UserID: "wan-gpt-5.6", Provider: "openai", Model: "gpt-5.6-sol[1m]",
 				BaseURL: "https://api.wanapis.com/v1", APIKey: "sk-x", Effort: "high"},
 		}},
-		events:        make(chan memberEvent, memberEventBuffer),
+		events:        newMemberEventPump(),
 		workspaceRoot: workspace,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
@@ -558,7 +561,7 @@ func TestMemberBackendCarriesItsRolePosture(t *testing.T) {
 					"u": {UserID: "u", Provider: "openai", Model: "gpt-5.6",
 						BaseURL: "https://example.invalid/v1", APIKey: "k"},
 				}},
-				events:        make(chan memberEvent, memberEventBuffer),
+				events:        newMemberEventPump(),
 				workspaceRoot: t.TempDir(),
 				base: func() boot.Options {
 					return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
@@ -695,7 +698,7 @@ func TestMemberBackendBuilderRefusesBadBindings(t *testing.T) {
 		"bad":  {UserID: "bad", Provider: "nope", Model: "m"},
 	}}
 	build := newMemberBackendBuilder(memberBackendDeps{
-		ctx: t.Context(), users: pool, events: make(chan memberEvent, memberEventBuffer),
+		ctx: t.Context(), users: pool, events: newMemberEventPump(),
 		base: func() boot.Options { return boot.Options{} },
 	})
 
@@ -714,7 +717,7 @@ func TestMemberBackendBuilderRefusesBadBindings(t *testing.T) {
 
 	boom := errors.New("pool unreadable")
 	failing := newMemberBackendBuilder(memberBackendDeps{
-		ctx: t.Context(), users: fakePool{err: boom}, events: make(chan memberEvent, memberEventBuffer),
+		ctx: t.Context(), users: fakePool{err: boom}, events: newMemberEventPump(),
 		base: func() boot.Options { return boot.Options{} },
 	})
 	if _, err := failing(team.MemberBinding{Team: "t", MemberID: "m", AgentUserRef: "good"}); !errors.Is(err, boom) {

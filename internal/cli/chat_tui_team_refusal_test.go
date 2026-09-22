@@ -24,7 +24,7 @@ func TestMemberBindFailureReachesTranscript(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = next.(chatTUI)
 	ambient := m.ctrl.Label()
-	m.memberEvents = make(chan memberEvent, 4)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(team.MemberBinding) (control.SessionAPI, error) {
 		return nil, errors.New(`openai: provider "wanapi": effort "hight" must be low, medium, or high`)
 	}, 4)

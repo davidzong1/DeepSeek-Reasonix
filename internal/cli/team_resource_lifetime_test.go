@@ -108,7 +108,7 @@ func overlayWithWiredRegistry(t *testing.T, closed ...*int) chatTUI {
 	if len(closed) > 0 {
 		counter = closed[0]
 	}
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, closed: counter}, nil
 	}, 4)
