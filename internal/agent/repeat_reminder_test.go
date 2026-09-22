@@ -23,6 +23,32 @@ func TestRepeatReminderAtThreeFiveEightNeverBlocks(t *testing.T) {
 	}
 }
 
+// TestRepeatReminderExemptsTheLeadersWait pins the exemption: a run of identical
+// waits is the tool working, not the "is another call useful?" shape the reminder
+// asks about. The streak is still tracked, so an intervening wait breaks a
+// genuine streak of a following tool rather than hiding it.
+func TestRepeatReminderExemptsTheLeadersWait(t *testing.T) {
+	a := &Agent{}
+	wait := provider.ToolCall{Name: "leader_wait", Arguments: `{"timeout_seconds":120}`}
+	for count := 1; count <= 8; count++ {
+		results := []string{"ok"}
+		a.applyRepeatReminders([]provider.ToolCall{wait}, results)
+		if strings.Contains(results[0], "[repeat reminder]") {
+			t.Fatalf("count %d: the leader's wait must never carry the reminder: %q", count, results[0])
+		}
+	}
+	if a.turn.repeatCount != 8 {
+		t.Fatalf("an exempt tool must still advance the streak: count=%d", a.turn.repeatCount)
+	}
+	read := provider.ToolCall{Name: "read_file", Arguments: `{"path":"a"}`}
+	for range 3 {
+		a.applyRepeatReminders([]provider.ToolCall{read}, []string{"ok"})
+	}
+	if a.turn.repeatCount != 3 {
+		t.Fatalf("the read streak after an intervening wait = %d, want 3", a.turn.repeatCount)
+	}
+}
+
 func TestRepeatReminderCanonicalizesJSONAndResetsOnChange(t *testing.T) {
 	a := &Agent{}
 	for _, args := range []string{`{"path":"a","limit":1}`, `{"limit":1,"path":"a"}`, `{"path":"a", "limit":1}`} {

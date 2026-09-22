@@ -1262,6 +1262,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				default:
 					m.notice(fmt.Sprintf("queued #%s", shortID(rec.ItemID)))
 				}
+				m.signalTeamInput(body)
 				m.resetComposerInput()
 				m.pastedBlocks = nil
 				m.resetQueueNavigation()
@@ -1300,6 +1301,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, finalize(m, cmds)
 					}
 					m.notice(fmt.Sprintf("durable follow-up queued #%s — will run when idle", shortID(rec.ItemID)))
+					m.signalTeamInput(body)
 					m.resetQueueNavigation()
 				}
 				m.resetComposerInput()

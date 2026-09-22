@@ -34,8 +34,11 @@ type teamRosterRefreshMsg struct {
 	replay *teamReplayReadyMsg
 	super  []cockpitResult
 	read   *replayReadReady
-	tick   bool
-	gen    uint64
+	// wake carries the leader wakeups the tick's off-frame read collected, so the
+	// notices land without a second board read on the frame path.
+	wake []WaitEvent
+	tick bool
+	gen  uint64
 }
 
 const teamRosterRefreshInterval = time.Second
@@ -59,6 +62,30 @@ func (m *chatTUI) startRosterTick() tea.Cmd {
 	return m.rosterTick()
 }
 
+// drainTeamWakeups reads the focused team's leader wakeups off the frame path
+// and routes them back through the roster message for the window's notices. The
+// read advances the leader's board cursor, so it goes through the board's one
+// dispatcher — the same owner a waiting leader is served from — never a second
+// reader of the same cursor.
+func (m *chatTUI) drainTeamWakeups() tea.Cmd {
+	if m == nil || m.teamPick == nil || m.teamPick.board == nil {
+		return nil
+	}
+	p := m.teamPick
+	dispatcher := p.board.wakeDispatcher()
+	if dispatcher == nil {
+		return nil
+	}
+	team, leader := p.sessionTeamName(), p.firstLeader()
+	return func() tea.Msg {
+		events := dispatcher.drain(team, leader)
+		if len(events) == 0 {
+			return nil
+		}
+		return teamRosterRefreshMsg{wake: events}
+	}
+}
+
 // refreshTeamRoster re-reads the registry and keeps the active session's
 // member list aligned with disk. A removed current member falls back to the
 // first remaining leader; a new member becomes immediately switchable.
@@ -80,6 +107,14 @@ func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 		m.applyCockpitResults(msg.super)
 		return nil
 	}
+	if msg.wake != nil {
+		// A wakeup batch the tick's off-frame read produced: the notices are
+		// applied here, where the window is, and no second tick is armed.
+		for _, ev := range msg.wake {
+			m.notice("wakeup: " + ev.Summary)
+		}
+		return nil
+	}
 	// A superseded chain's tick dies here instead of re-arming: session entry is
 	// the one place a chain is opened (startRosterTick).
 	if msg.tick && msg.gen != m.rosterTickGen {
@@ -98,6 +133,10 @@ func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 	if m.teamPick == nil || m.teamPick.store == nil {
 		return work
 	}
+	// The leader's wakeups ride the same tick: they used to be read only when the
+	// overlay opened, so a report arriving while it was up showed nothing until a
+	// reopen (§3.1). Off this goroutine, like every other read the tick schedules.
+	work = batchCmds(work, m.drainTeamWakeups())
 	// The roster settles before anything reads an owner: a member removed remotely
 	// must be rebound before its owner is read, or the window reads the fingerprint
 	// of a member it is about to leave and reports its own rebind as a remote clear.

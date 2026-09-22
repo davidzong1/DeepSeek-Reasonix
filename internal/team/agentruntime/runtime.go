@@ -41,6 +41,10 @@ type Runtime struct {
 	identity func(memberID string) team.Identity
 	store    team.TaskStore
 	wake     []WakeFunc
+	// attention reports a state move in-process, before its board write: the
+	// leader's interruptible wait is released by it even when the board is slow
+	// (see attention.go).
+	attention []AttentionFunc
 
 	mu       sync.Mutex
 	live     map[team.TaskID]*runEntry
@@ -171,6 +175,7 @@ func (r *Runtime) Cancel(taskID team.TaskID) error {
 		}
 	}
 	entry.api.Cancel()
+	r.notifyAttention(AttentionCancel, string(taskID), "task "+string(taskID)+" canceled")
 	r.record(context.Background(), task, "canceled", "")
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " canceled")
@@ -218,6 +223,8 @@ func (r *Runtime) failDispatch(ctx context.Context, task team.Task, reason strin
 	if r.store != nil {
 		_ = r.store.SaveTask(ctx, task) // best-effort: the refusal itself is the returned error
 	}
+	r.notifyAttention(AttentionDispatchFailed, string(task.ID),
+		"task "+string(task.ID)+" was refused by its member ("+reason+"); reassign or retry")
 	r.record(ctx, task, "failed", reason)
 	if err := team.TransitionTask(task.Status, team.TaskStatusAssigned); err == nil {
 		task.Status = team.TaskStatusAssigned
@@ -300,6 +307,7 @@ func (r *Runtime) Complete(taskID team.TaskID, summary string) error {
 			return err
 		}
 	}
+	r.notifyAttention(AttentionReport, string(taskID), "task "+string(taskID)+" reported")
 	r.record(context.Background(), task, "reported", summary)
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " reported")
@@ -320,6 +328,7 @@ func (r *Runtime) CancelTask(ctx context.Context, task team.Task) error {
 			return err
 		}
 	}
+	r.notifyAttention(AttentionCancel, string(task.ID), "task "+string(task.ID)+" canceled")
 	r.record(ctx, task, "canceled", "leader cancel")
 	r.wakeAll("task " + string(task.ID) + " canceled")
 	return nil

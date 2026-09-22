@@ -17,34 +17,50 @@ type escalationResolution struct {
 	scope      sandbox.ApprovalScope
 }
 
+// escalationRecorder is a list the escalation's own goroutine appends to and the
+// test reads. The service drives the member's turn from a worker, so reading the
+// raw slice from the test goroutine is a race in the test itself — which is what
+// the race gate reported, never a defect in the code under test.
+type escalationRecorder[T any] struct {
+	mu  sync.Mutex
+	got []T
+}
+
+func (r *escalationRecorder[T]) add(item T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, item)
+}
+
+func (r *escalationRecorder[T]) all() []T {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]T(nil), r.got...)
+}
+
 // escalationBackend records what the decider asked of it. Value receivers mean
-// the registry hands out a copy per bind; the shared slices aggregate.
+// the registry hands out a copy per bind; the shared recorder aggregates.
 type escalationBackend struct {
 	control.SessionAPI
 	member   string
-	mu       *sync.Mutex
-	resolved *[]escalationResolution
-	turns    *[]string
+	resolved *escalationRecorder[escalationResolution]
+	turns    *escalationRecorder[string]
 }
 
 func (b escalationBackend) ResolveApproval(id string, allow bool, scope sandbox.ApprovalScope) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	*b.resolved = append(*b.resolved, escalationResolution{member: b.member, id: id, allow: allow, scope: scope})
+	b.resolved.add(escalationResolution{member: b.member, id: id, allow: allow, scope: scope})
 	return nil
 }
 
 func (b escalationBackend) SubmitUserTurnOrError(input, display string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	*b.turns = append(*b.turns, input)
+	b.turns.add(input)
 	return nil
 }
 
 // escalationRig wires a real store and registry behind the service, the same
 // trio the window assembles. withLeader false models a team nobody can escalate
 // to.
-func escalationRig(t *testing.T, withLeader bool) (*writeAccessEscalations, *[]escalationResolution, *[]string, *team.TeamStore) {
+func escalationRig(t *testing.T, withLeader bool) (*writeAccessEscalations, *escalationRecorder[escalationResolution], *escalationRecorder[string], *team.TeamStore) {
 	t.Helper()
 	store, err := team.NewTeamStore(t.TempDir())
 	if err != nil {
@@ -59,10 +75,10 @@ func escalationRig(t *testing.T, withLeader bool) (*writeAccessEscalations, *[]e
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	var mu sync.Mutex
-	resolved, turns := new([]escalationResolution), new([]string)
+	resolved := &escalationRecorder[escalationResolution]{}
+	turns := &escalationRecorder[string]{}
 	backends := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
-		return escalationBackend{member: b.MemberID, mu: &mu, resolved: resolved, turns: turns}, nil
+		return escalationBackend{member: b.MemberID, resolved: resolved, turns: turns}, nil
 	}, 4)
 	svc := newWriteAccessEscalations(store)
 	svc.setHub(newTeamHub(store, backends, "alpha"))
@@ -116,7 +132,7 @@ func TestEscalationResolvesThroughTheHubAndAudits(t *testing.T) {
 	if !strings.Contains(out, "allowed") || !strings.Contains(out, "coder:3") {
 		t.Errorf("resolve reply = %q", out)
 	}
-	got := *resolved
+	got := resolved.all()
 	if len(got) != 1 || got[0].member != "coder" || got[0].id != "3" || !got[0].allow {
 		t.Fatalf("resolved = %+v, want coder's own prompt answered allowed", got)
 	}
@@ -155,7 +171,7 @@ func TestEscalationReleaseRetiresTheRequest(t *testing.T) {
 	if _, err := svc.resolve("alpha", "coder:3", true, sandbox.ApprovalScopeOnce); err == nil {
 		t.Error("resolving a released request must fail rather than audit a decision that never happened")
 	}
-	if len(*resolved) != 0 {
+	if len(resolved.all()) != 0 {
 		t.Error("nothing should have reached the member backend")
 	}
 	rows, err := store.AuthzEntries("alpha", 8)
@@ -180,8 +196,8 @@ func TestEscalationRefusesProjectScopeAndUnknownRequests(t *testing.T) {
 	if _, err := svc.resolve("alpha", "coder:99", true, sandbox.ApprovalScopeOnce); err == nil {
 		t.Error("an unknown request id must be refused")
 	}
-	if len(*resolved) != 0 {
-		t.Errorf("no refusal may reach the member backend, got %+v", *resolved)
+	if len(resolved.all()) != 0 {
+		t.Errorf("no refusal may reach the member backend, got %+v", resolved.all())
 	}
 }
 
@@ -193,7 +209,7 @@ func TestEscalationSkipsATeamWithoutALeader(t *testing.T) {
 	if entries := svc.list("alpha"); len(entries) != 0 {
 		t.Errorf("nothing may be queued for a team with no leader, got %+v", entries)
 	}
-	if len(*turns) != 0 {
+	if len(turns.all()) != 0 {
 		t.Error("no turn may be driven on a member when there is no leader to wake")
 	}
 }
@@ -201,8 +217,8 @@ func TestEscalationSkipsATeamWithoutALeader(t *testing.T) {
 func TestEscalationWakeNamesTheQueue(t *testing.T) {
 	svc, _, turns, _ := escalationRig(t, true)
 	svc.begin("alpha", "coder", escalationFor("coder", "3", "/srv/data"))
-	waitForCondition(t, func() bool { return len(*turns) > 0 })
-	wake := (*turns)[0]
+	waitForCondition(t, func() bool { return len(turns.all()) > 0 })
+	wake := turns.all()[0]
 	for _, want := range []string{"coder:3", "/srv/data", "leader_resolve_member_approval"} {
 		if !strings.Contains(wake, want) {
 			t.Errorf("wake text must carry %q so the leader can act:\n%s", want, wake)
