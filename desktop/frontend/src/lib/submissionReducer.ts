@@ -1,6 +1,6 @@
-import type { Action, State } from "./useController";
+import type { Action, Item, State } from "./useController";
 import { sessionIdentityStableKey } from "./sessionIdentity";
-import { beginLocalSubmission, canonicalUserConfirmations, settleLocalSubmissions, updateLocalSubmission } from "./localSubmissionState";
+import { beginLocalSubmission, canonicalUserConfirmations, orderedLocalSubmissions, settleLocalSubmissions, updateLocalSubmission, type LocalSubmission } from "./localSubmissionState";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 
 export function submissionBindingCurrent(current: State | undefined, expected: State): boolean {
@@ -38,6 +38,39 @@ export function confirmPendingUser(s: State, submissionId: string | undefined): 
 }
 
 
+function retainResidentTurnId(update: Item, resident: Item): Item {
+  if (update.turnId || !resident.turnId) return update;
+  return { ...update, turnId: resident.turnId };
+}
+
+function submissionForInstalledUser(s: State, item: Item): LocalSubmission | undefined {
+  if (item.kind !== "user") return undefined;
+  const direct = item.submissionId ? s.localSubmissions[item.submissionId] : undefined;
+  if (direct && (!direct.messageId || !item.messageId || direct.messageId === item.messageId)) return direct;
+  if (!item.messageId) return undefined;
+  return orderedLocalSubmissions(s).find(submission => submission.messageId === item.messageId);
+}
+
+/** Pull same-turn output back behind its user when a published batch listed it first. */
+function userBeforeSameTurnOutput(items: readonly Item[]): Item[] {
+  const next = [...items];
+  for (let userIndex = next.length - 1; userIndex >= 0; userIndex -= 1) {
+    const user = next[userIndex];
+    if (user.kind !== "user" || !user.turnId) continue;
+    const ownedIds = new Set<string>();
+    for (let index = 0; index < userIndex; index += 1) {
+      const item = next[index];
+      if (item.kind !== "user" && item.turnId === user.turnId) ownedIds.add(item.id);
+    }
+    if (ownedIds.size === 0) continue;
+    const owned = next.filter(item => ownedIds.has(item.id));
+    const rest = next.filter(item => !ownedIds.has(item.id));
+    const at = rest.findIndex(item => item.id === user.id);
+    next.splice(0, next.length, ...rest.slice(0, at + 1), ...owned, ...rest.slice(at + 1));
+  }
+  return next;
+}
+
 export function installTranscriptRecords(s: State, a: Extract<Action, { type: "transcript_records" }>): State {
   const ids = new Set<string>();
   for (const item of a.projection.items) {
@@ -47,7 +80,7 @@ export function installTranscriptRecords(s: State, a: Extract<Action, { type: "t
     });
     return s;
   }
-  const projected = a.projection.items;
+  const projected = userBeforeSameTurnOutput(a.projection.items);
   const projectedIds = new Set(projected.map(item => item.id));
   const removed = new Set(a.projection.removeIds);
   const current = new Map<string, (typeof s.items)[number]>();
@@ -78,6 +111,7 @@ export function installTranscriptRecords(s: State, a: Extract<Action, { type: "t
       merged = { ...update, turnFinal: true, turnDurationMs: item.turnDurationMs, turnUsage: item.turnUsage,
         samplingCount: item.samplingCount, toolCount: item.toolCount };
     }
+    merged = retainResidentTurnId(merged, item);
     return JSON.stringify(item) === JSON.stringify(merged) ? item : merged;
   });
   // Preserve local/live rows at their nearest persisted anchors. The previous
@@ -87,19 +121,19 @@ export function installTranscriptRecords(s: State, a: Extract<Action, { type: "t
   if (previousProjected.size === 0) {
     for (const item of s.items) if (projectedIds.has(item.id)) previousProjected.add(item.id);
   }
-  const localRows: Array<{ item: (typeof s.items)[number]; left?: string; right?: string }> = [];
+  const localRows: Array<{ item: (typeof s.items)[number]; index: number; left?: string; right?: string }> = [];
   for (let index = 0; index < s.items.length; index += 1) {
     const item = s.items[index];
     if (previousProjected.has(item.id) || projectedIds.has(item.id) || removed.has(item.id)) continue;
     let left: string | undefined;
     let right: string | undefined;
     for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      if (previousProjected.has(s.items[cursor].id)) { left = s.items[cursor].id; break; }
+      if (projectedIds.has(s.items[cursor].id)) { left = s.items[cursor].id; break; }
     }
     for (let cursor = index + 1; cursor < s.items.length; cursor += 1) {
-      if (previousProjected.has(s.items[cursor].id)) { right = s.items[cursor].id; break; }
+      if (projectedIds.has(s.items[cursor].id)) { right = s.items[cursor].id; break; }
     }
-    localRows.push({ item, left, right });
+    localRows.push({ item, index, left, right });
   }
   // A durable user record can replace a local submission between two
   // projections. Live process/assistant rows from that turn were previously
@@ -107,16 +141,49 @@ export function installTranscriptRecords(s: State, a: Extract<Action, { type: "t
   // is owned outside `items`. Move that anchor to the durable user record so
   // the already-mounted turn stays in user -> process -> assistant order.
   const turnAnchors = new Map<string, string>();
-  for (const item of projected) {
+  const userOwners = new Map<string, string | undefined>();
+  let userId: string | undefined;
+  for (const item of items) {
+    if (item.kind === "user") userId = item.id;
+    userOwners.set(item.id, userId);
     if (item.kind === "user" && item.turnId) turnAnchors.set(item.turnId, item.id);
   }
   for (const local of Object.values(s.localSubmissions)) {
     const id = local.messageId ? `m:${local.messageId}` : undefined;
     if (local.turnId && id && projectedIds.has(id)) turnAnchors.set(local.turnId, id);
   }
+  // A published user row can arrive without turnId. The send-time anchor still
+  // owns every live row that appeared after that send.
+  const submissionTails = new Map<string, string>();
+  const anchoredSubmissions = new Set<string>();
+  for (const item of projected) {
+    if (item.kind !== "user") continue;
+    const submission = submissionForInstalledUser(s, item);
+    if (!submission || submission.placement === "latest" || anchoredSubmissions.has(submission.submissionId)) continue;
+    anchoredSubmissions.add(submission.submissionId);
+    submissionTails.set(submission.submissionId, item.id);
+  }
+  const tailAnchor = (row: (typeof localRows)[number]): string | undefined => {
+    let owner: string | undefined;
+    for (const submission of orderedLocalSubmissions(s)) {
+      const userId = submissionTails.get(submission.submissionId);
+      if (!userId) continue;
+      if (!submission.anchorItemId && submission.placement !== "after") {
+        if (!s.historyHasOlder && s.historyStartTurn === 0) owner = userId;
+        continue;
+      }
+      if (!submission.anchorItemId) continue;
+      const anchorIndex = s.items.findIndex(candidate => candidate.id === submission.anchorItemId);
+      if (anchorIndex >= 0 && row.index > anchorIndex) owner = userId;
+    }
+    return owner;
+  };
   const tails = new Map<string, string>();
   for (const row of localRows) {
-    const anchor = (row.item.turnId && turnAnchors.get(row.item.turnId)) || row.left;
+    const owner = (row.item.turnId && turnAnchors.get(row.item.turnId)) || tailAnchor(row);
+    // The user bounds the turn; a surviving (or newly formal) predecessor
+    // within that turn still owns this row's position among samples and tools.
+    const anchor = owner && (!row.left || userOwners.get(row.left) !== owner) ? owner : row.left;
     const left = anchor && (tails.get(anchor) ?? anchor);
     const leftIndex = left ? items.findIndex(item => item.id === left) : -1;
     if (leftIndex >= 0) {
@@ -196,4 +263,22 @@ export function startLocalSubmission(s: State, a: Extract<Action, { type: "user"
     anchorItemId: s.historyHasNewer ? undefined : s.items[s.items.length - 1]?.id,
     placement: s.historyHasNewer ? "latest" : s.items.length ? "after" : "start",
   });
+}
+
+/** Stamp this event's turn onto rows that just arrived or still belong to the live answer. */
+export function stampArrivingTurnId<T extends { items: Item[]; currentAssistant?: string; activeTurnId?: string }>(state: T, before: readonly Item[], turnId: string | undefined, messageId?: string): T {
+  if (!turnId) return state;
+  const foreign = Boolean(state.activeTurnId) && state.activeTurnId !== turnId;
+  const prior = new Set(before);
+  let stamped = false;
+  const items = state.items.map(item => {
+    if (item.turnId) return item;
+    const createdNow = !prior.has(item);
+    const liveAssistant = !foreign && item.kind === "assistant" && item.id === state.currentAssistant;
+    const liveTool = !foreign && item.kind === "tool" && Boolean(messageId) && item.messageId === messageId;
+    if (!createdNow && !liveAssistant && !liveTool) return item;
+    stamped = true;
+    return { ...item, turnId };
+  });
+  return stamped ? { ...state, items } : state;
 }

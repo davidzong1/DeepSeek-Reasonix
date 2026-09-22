@@ -195,19 +195,6 @@ func (c *desktopShutdownCoordinator) setPhase(phase string) {
 	c.mu.Unlock()
 }
 
-func (c *desktopShutdownCoordinator) runStep(name string, run func()) {
-	c.mu.Lock()
-	done := c.finished[name]
-	c.mu.Unlock()
-	if done {
-		return
-	}
-	run()
-	c.mu.Lock()
-	c.finished[name] = true
-	c.mu.Unlock()
-}
-
 func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -222,14 +209,17 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 	if !frozen {
 		c.setPhase("cancelling_background")
 		a.lifecycle.tracker.markShutdown(reason, "cancelling_background", "in_progress")
+		a.manualCreationMu.Lock()
 		a.shuttingDown.Store(true)
-		a.flushRuntimeProjections()
-		a.flushTabLayoutWrites()
-		a.stopHistoricalImports()
-		a.cancelSessionExports()
-		a.cancelSessionNavigation()
-		a.cancelAllTabBuilds()
-		a.stopSessionCatalog(250 * time.Millisecond)
+		a.manualCreationMu.Unlock()
+		c.runStep("cancel-session-navigation", a.cancelSessionNavigation)
+		c.runStep("cancel-tab-builds", a.cancelAllTabBuilds)
+		c.runStep("manual-session-creation", a.manualCreationTasks.Wait)
+		c.runStep("cancel-session-exports", a.cancelSessionExports)
+		c.runStep("runtime-projections", a.flushRuntimeProjections)
+		c.runStep("tab-layout", a.flushTabLayoutWrites)
+		c.runStep("historical-imports", a.stopHistoricalImports)
+		c.runStep("session-catalog", func() { a.stopSessionCatalog(250 * time.Millisecond) })
 		c.mu.Lock()
 		c.frozen = true
 		c.mu.Unlock()
@@ -292,7 +282,9 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 
 	c.setPhase("closing")
 	a.lifecycle.tracker.markShutdown(reason, "closing", "in_progress")
-	a.shutdownBody(c, items)
+	if err := a.shutdownBody(c, items); err != nil {
+		return err
+	}
 	a.lifecycle.tracker.markShutdown(reason, "completed", "success")
 	if reason == shutdownReasonUserQuit || reason == shutdownReasonUpdateRestart {
 		a.lifecycle.tracker.clean()
@@ -309,9 +301,16 @@ func completeDesktopShutdown(tracker *desktopLifecycleTracker, body func()) {
 	tracker.clean()
 }
 
-func (a *App) shutdownBody(c *desktopShutdownCoordinator, items []desktopShutdownItem) {
+func (a *App) shutdownBody(c *desktopShutdownCoordinator, items []desktopShutdownItem) error {
+	if a.sessionUI != nil {
+		if err := c.runErrorStep("session-ui", a.sessionUI.Close); err != nil {
+			return &shutdownStepError{code: "session_ui_close_failed", err: err}
+		}
+	}
 	if a.desktopDrafts != nil {
-		c.runStep("desktop-drafts", func() { _ = a.desktopDrafts.Close() })
+		if err := c.runErrorStep("desktop-drafts", a.desktopDrafts.Close); err != nil {
+			return &shutdownStepError{code: "draft_close_failed", err: err}
+		}
 	}
 	c.runStep("workspace-preview", a.stopWorkspacePreviewOrigin)
 	if a.desktopShell.coordinator != nil {
@@ -375,5 +374,8 @@ func (a *App) shutdownBody(c *desktopShutdownCoordinator, items []desktopShutdow
 	if a.topicState != nil {
 		c.runStep("topic-state", a.topicState.close)
 	}
-	c.runStep("session-services", a.closeSessionServices)
+	if err := c.runErrorStep("session-services", a.closeSessionServicesResult); err != nil {
+		return &shutdownStepError{code: "session_service_close_failed", err: err}
+	}
+	return nil
 }

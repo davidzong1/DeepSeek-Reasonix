@@ -8,7 +8,7 @@ import (
 	"reasonix/internal/config"
 )
 
-// Archiving the only visible session hands the surface to the draft landing.
+// Archiving the only visible session hands the surface to the empty welcome.
 // A replacement blank session would be registered as a real sidebar row that
 // the user can archive again, so the workspace could never become empty.
 func TestArchiveLastVisibleSessionLeavesNoReplacementBlankSession(t *testing.T) {

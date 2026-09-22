@@ -11,6 +11,13 @@
   background: var(--bg-elev);
 }
 
+.browser-responsive { padding: 4px 8px; border-bottom: 1px solid var(--border-soft); font-size: var(--font-size-small, 12px); }
+.browser-responsive summary { cursor: pointer; color: var(--fg-dim); }
+.browser-responsive__controls, .browser-responsive form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.browser-responsive__controls { padding: 6px 0; }
+.browser-responsive input { width: 72px; }
+.browser-responsive input, .browser-responsive select { color: var(--fg); background: var(--bg-elev); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 3px; }
+
 .browser-panel__tabs {
   display: flex;
   align-items: stretch;
@@ -301,3 +308,6 @@
   height: 3px;
   accent-color: var(--accent);
 }
+.browser-evidence { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; font-size: var(--font-size-sm, 12px); }
+.browser-evidence details { width: 100%; }
+.browser-evidence pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

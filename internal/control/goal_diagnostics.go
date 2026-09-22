@@ -122,18 +122,10 @@ func (c *Controller) WriteSessionDiagnostics(ctx context.Context, dst io.Writer,
 		extra["exportSnapshot"] = exportSnapshot
 	}
 	for name, value := range extra {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		redacted := json.RawMessage(secrets.Redact(string(encoded)))
-		if !json.Valid(redacted) {
-			return errors.New("invalid redacted diagnostic field")
-		}
 		fields = append(fields, struct {
 			name  string
 			value any
-		}{name, redacted})
+		}{name, value})
 	}
 	for _, field := range fields {
 		if err := writeGoalDiagnosticField(dst, field.name, field.value, true); err != nil {
@@ -156,10 +148,15 @@ func writeSessionDiagnosticCommits(ctx context.Context, dst io.Writer, store *se
 		if err != nil {
 			return err
 		}
-		encoded = []byte(secrets.Redact(string(encoded)))
-		if !json.Valid(encoded) {
-			return errors.New("redacted goal diagnostic commit is not valid JSON")
+		encoded, err = secrets.RedactJSON(encoded)
+		if err != nil {
+			return err
 		}
+		var formatted bytes.Buffer
+		if err := json.Indent(&formatted, encoded, "    ", "  "); err != nil {
+			return err
+		}
+		encoded = formatted.Bytes()
 		separator := "\n    "
 		if !first {
 			separator = ",\n    "
@@ -229,10 +226,19 @@ func visitAcceptedGoalDiagnosticCommits(ctx context.Context, store *session.Sess
 }
 
 func writeGoalDiagnosticField(dst io.Writer, name string, value any, comma bool) error {
-	encoded, err := json.MarshalIndent(value, "  ", "  ")
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
+	encoded, err = secrets.RedactJSON(encoded)
+	if err != nil {
+		return err
+	}
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, encoded, "  ", "  "); err != nil {
+		return err
+	}
+	encoded = formatted.Bytes()
 	if _, err := fmt.Fprintf(dst, "  %q: ", name); err != nil {
 		return err
 	}

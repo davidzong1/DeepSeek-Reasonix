@@ -133,11 +133,11 @@ default = "model-a"
 	if err := os.WriteFile(filepath.Join(rootB, "reasonix.toml"), []byte(`default_model = "local/model-b"`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	draftA, err := a.OpenSessionDraftForTarget("project", rootA)
+	draftA, err := a.seedPreviousDraftForTarget("project", rootA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	draftB, err := a.OpenSessionDraftForTarget("project", rootB)
+	draftB, err := a.seedPreviousDraftForTarget("project", rootB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestOpenSessionDraftDoesNotCreateRuntimeArtifacts(t *testing.T) {
 	root := t.TempDir()
 	var id string
 	for range 20 {
-		draft, err := a.OpenSessionDraftForTarget("project", root)
+		draft, err := a.seedPreviousDraftForTarget("project", root)
 		if err != nil {
 			t.Fatalf("OpenSessionDraftForTarget() error = %v", err)
 		}
@@ -225,11 +225,11 @@ func TestOpenSessionDraftDoesNotCreateRuntimeArtifacts(t *testing.T) {
 func TestDraftsStayIsolatedAcrossWorkspaces(t *testing.T) {
 	a := newDraftTestApp(t)
 	rootA, rootB := t.TempDir(), t.TempDir()
-	draftA, err := a.OpenSessionDraftForTarget("project", rootA)
+	draftA, err := a.seedPreviousDraftForTarget("project", rootA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	draftB, err := a.OpenSessionDraftForTarget("project", rootB)
+	draftB, err := a.seedPreviousDraftForTarget("project", rootB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestDraftsStayIsolatedAcrossWorkspaces(t *testing.T) {
 
 func TestLateSaveReportsDiscardedWithoutRevivingDraft(t *testing.T) {
 	a := newDraftTestApp(t)
-	draft, err := a.OpenSessionDraftForTarget("project", t.TempDir())
+	draft, err := a.seedPreviousDraftForTarget("project", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestLateSaveReportsDiscardedWithoutRevivingDraft(t *testing.T) {
 func TestMissingDraftAttachmentFailsBeforeSessionReservation(t *testing.T) {
 	a := newDraftTestApp(t)
 	root := t.TempDir()
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestMissingDraftAttachmentFailsBeforeSessionReservation(t *testing.T) {
 func TestMissingDraftImageReturnsStableErrorWithoutHostPath(t *testing.T) {
 	a := newDraftTestApp(t)
 	root := t.TempDir()
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestInvalidDraftModelFailsBeforeSessionReservation(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	a := newDraftTestApp(t)
 	root := t.TempDir()
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestInvalidDraftModelFailsBeforeSessionReservation(t *testing.T) {
 
 func TestDraftManagementCommandCannotCreateSession(t *testing.T) {
 	a := newDraftTestApp(t)
-	draft, err := a.OpenSessionDraftForTarget("project", t.TempDir())
+	draft, err := a.seedPreviousDraftForTarget("project", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ args = ["serve"]
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,11 +427,11 @@ args = ["serve"]
 func TestTargetedAttachmentsDoNotFollowActiveWorkspace(t *testing.T) {
 	a := newDraftTestApp(t)
 	rootA, rootB := t.TempDir(), t.TempDir()
-	draftA, err := a.OpenSessionDraftForTarget("project", rootA)
+	draftA, err := a.seedPreviousDraftForTarget("project", rootA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	draftB, err := a.OpenSessionDraftForTarget("project", rootB)
+	draftB, err := a.seedPreviousDraftForTarget("project", rootB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestDraftRetryReplacesOnlyTerminalWorkspaceReservation(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	a := newDraftTestApp(t)
 	root := t.TempDir()
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestDraftSubmissionRefusesArchivedReservedSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	a := newDraftTestApp(t)
 	root := t.TempDir()
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}

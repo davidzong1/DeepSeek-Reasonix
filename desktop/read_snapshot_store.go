@@ -35,6 +35,7 @@ type readSnapshotStore struct {
 	cancel       context.CancelFunc
 	closed       bool
 	memory, disk int64
+	accessOrder  uint64
 }
 
 type readSnapshotBuild struct {
@@ -64,6 +65,7 @@ type readSnapshot struct {
 type readSnapshotLifetime struct {
 	created time.Time
 	used    time.Time
+	order   uint64
 }
 
 type readSnapshotCursor struct {
@@ -195,6 +197,7 @@ func (s *readSnapshotStore) publishBuild(binding string, job *readSnapshotBuild,
 		if len(s.entries) >= 64 {
 			victims = append(victims, s.evictOldestLocked())
 		}
+		s.touchLocked(snap)
 		s.entries[snap.id] = snap
 		job.snapshot = snap
 	} else if job.err == nil {
@@ -222,7 +225,8 @@ func (s *readSnapshotStore) acquireBuildHandle(binding string, root *readSnapsho
 		return nil, snapshotStale("evicted")
 	}
 	root.leases++
-	handle := &readSnapshot{id: hex.EncodeToString(id[:]), binding: binding, lifetime: readSnapshotLifetime{created: root.lifetime.created, used: time.Now()}, data: root}
+	handle := &readSnapshot{id: hex.EncodeToString(id[:]), binding: binding, lifetime: readSnapshotLifetime{created: root.lifetime.created}, data: root}
+	s.touchLocked(handle)
 	var victim *readSnapshot
 	if len(s.entries) >= 64 {
 		victim = s.evictOldestLocked()
@@ -247,10 +251,17 @@ func (s *readSnapshotStore) evictExpiredLocked() []*readSnapshot {
 	return victims
 }
 
+// Access order owns LRU eviction; wall-clock samples only own expiration.
+func (s *readSnapshotStore) touchLocked(snap *readSnapshot) {
+	s.accessOrder++
+	snap.lifetime.used = time.Now()
+	snap.lifetime.order = s.accessOrder
+}
+
 func (s *readSnapshotStore) evictOldestLocked() *readSnapshot {
 	var oldest *readSnapshot
 	for _, snap := range s.entries {
-		if oldest == nil || snap.lifetime.used.Before(oldest.lifetime.used) {
+		if oldest == nil || snap.lifetime.order < oldest.lifetime.order {
 			oldest = snap
 		}
 	}
@@ -380,7 +391,7 @@ func (s *readSnapshotStore) page(ctx context.Context, binding, cursor string, fi
 		s.dispose(snap)
 		return "", "", 0, nil, snapshotStale("expired")
 	}
-	snap.lifetime.used = time.Now()
+	s.touchLocked(snap)
 	s.mu.Unlock()
 	if snap.data != nil {
 		snap = snap.data

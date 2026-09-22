@@ -356,16 +356,20 @@ func (p *FilesystemPersistence) Delete(ctx context.Context, sessionID string) er
 		return fmt.Errorf("session: delete ownership: %w", err)
 	}
 	release()
-	trashRoot := filepath.Join(p.Root, ".trash")
-	if err := os.MkdirAll(trashRoot, 0o700); err != nil {
+	root, err := os.OpenRoot(p.Root)
+	if err != nil {
 		return err
 	}
-	tombstone := filepath.Join(trashRoot, sessionID+"-"+randomID())
-	if err := os.Rename(source, tombstone); err != nil {
+	defer root.Close()
+	if err := root.MkdirAll(".trash", 0o700); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(filepath.Join(p.Root, ".query-cache", sessionID))
-	return os.RemoveAll(tombstone)
+	tombstone := filepath.Join(".trash", sessionID+"-"+randomID())
+	if err := root.Rename(sessionID, tombstone); err != nil {
+		return err
+	}
+	_ = root.RemoveAll(filepath.Join(".query-cache", sessionID))
+	return root.RemoveAll(tombstone)
 }
 
 func (s *Service) Export(ctx context.Context, ref SessionRef, destination string) error {
@@ -477,15 +481,15 @@ func (p *FilesystemPersistence) importDirectory(ctx context.Context, source stri
 		if err := writeManifestFile(filepath.Join(staging, "manifest.json"), manifest); err != nil {
 			return "", err
 		}
-		// Storage generations are scoped to the manifest identity. The imported
-		// event prefix remains valid, but a remapped SessionID must publish a new
-		// generation before any recovery/query projection can be trusted.
-		if _, err := ensureStorageIdentity(staging, manifest); err != nil {
-			return "", err
-		}
 	}
 	if _, err := Replay(staging, nil); err != nil {
 		return "", fmt.Errorf("validate imported events: %w", err)
+	}
+	// Pre-recovery archives (Desktop 1.38.8) need an identity before history reads.
+	// Keep valid identities and create missing/remapped generations in staging;
+	// the source archive remains untouched and no runtime is needed.
+	if _, err := ensureStorageIdentity(staging, manifest); err != nil {
+		return "", err
 	}
 	if options.SessionID == "" {
 		options.SessionID = targetID

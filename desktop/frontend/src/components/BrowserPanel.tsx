@@ -11,6 +11,8 @@ import { useToast } from "../lib/toast";
 import { useBrowserSurfaceLayout } from "../lib/useBrowserSurfaceLayout";
 import { openResource, performResourceAction, refreshBrowserResource } from "../lib/fileNavigationCommands";
 import { useFileBrowserPreview } from "../lib/fileBrowserPreviewBindings";
+import { BrowserResponsiveControls } from "./BrowserResponsiveControls";
+import { BrowserEvidenceControls } from "./BrowserEvidenceControls";
 
 const DOWNLOAD_STRIP_LIMIT = 5;
 
@@ -30,6 +32,10 @@ export function BrowserDockTab({ active, onSelect }: { active: boolean; onSelect
 
 export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
   const copy = useBrowserCopy();
+  const chinese = useI18n().locale !== "en";
+  const operationLabels: Record<string, string> = chinese
+    ? { queued: "等待浏览器", preparing: "准备页面", reading: "AI 正在读取", interacting: "AI 正在操作", capturing: "AI 正在截图", picking: "请选择页面元素，Esc 退出", completed: "浏览器操作完成" }
+    : { queued: "Waiting for browser", preparing: "Preparing page", reading: "AI is reading", interacting: "AI is interacting", capturing: "AI is capturing", picking: "Select an element; Esc to exit", completed: "Browser operation completed" };
   const t = useT();
   const { showToast } = useToast();
   const host = desktopHost().browser;
@@ -118,21 +124,30 @@ export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
             <button type="button" className="browser-panel__icon-btn" aria-label={t("present.openNative")}
               onClick={() => void runFileAction("open-native")}><ExternalLink size={14} /></button>
           </>}
-          <button type="button" className="browser-panel__icon-btn" aria-label={copy.zoomOut} disabled={!activeTab}
+          <button type="button" className="browser-panel__icon-btn" aria-label={copy.zoomOut} disabled={!activeTab || Boolean(activeTab.viewport)}
             onClick={() => activeTab && void store().zoom(activeTab.id, -1)}><ZoomOut size={14} /></button>
-          <button type="button" className="browser-panel__zoom" aria-label={copy.zoomReset(zoomPercent(activeTab?.zoom ?? 1))} disabled={!activeTab}
+          <button type="button" className="browser-panel__zoom" aria-label={copy.zoomReset(zoomPercent(activeTab?.zoom ?? 1))} disabled={!activeTab || Boolean(activeTab.viewport)}
             onClick={() => activeTab && void store().zoom(activeTab.id, 0)}>{zoomPercent(activeTab?.zoom ?? 1)}%</button>
-          <button type="button" className="browser-panel__icon-btn" aria-label={copy.zoomIn} disabled={!activeTab}
+          <button type="button" className="browser-panel__icon-btn" aria-label={copy.zoomIn} disabled={!activeTab || Boolean(activeTab.viewport)}
             onClick={() => activeTab && void store().zoom(activeTab.id, 1)}><ZoomIn size={14} /></button>
           <button type="button" className="browser-panel__icon-btn" aria-label={copy.devTools} disabled={!activeTab}
             onClick={() => activeTab && void store().toggleDevTools(activeTab.id)}><Bug size={14} /></button>
         </div>
       )}
+      {activeTab && <BrowserResponsiveControls tab={activeTab} />}
+      {activeTab && <BrowserEvidenceControls key={activeTab.id} tabId={activeTab.id} />}
+      {activeTab?.operation && <div className="browser-panel__takeover" role="status">
+        <span>{activeTab.operation.phase === "failed" ? activeTab.operation.message : operationLabels[activeTab.operation.phase] ?? activeTab.operation.phase}</span>
+        {activeTab.operation.phase === "failed" && <>
+          <button type="button" className="btn btn--small" onClick={() => void host?.activate(activeTab.id)}>{chinese ? "显示页面" : "Show page"}</button>
+          <button type="button" className="btn btn--small" title={activeTab.operation.id} onClick={() => { void navigator.clipboard.writeText(activeTab.operation!.id); }}>{chinese ? "复制诊断编号" : "Copy diagnostic ID"}</button>
+        </>}
+      </div>}
       {activeTab?.mode === "human" && (
         <div className="browser-panel__takeover" role="status">
           <Hand size={14} aria-hidden="true" />
           <span>{copy.takeover}</span>
-          <button type="button" className="btn btn--small" onClick={() => void store().resume(activeTab.id)}>{copy.resume}</button>
+          <button type="button" className="btn btn--small" disabled={activeTab.operation?.phase === "picking"} onClick={() => void store().resume(activeTab.id)}>{copy.resume}</button>
         </div>
       )}
       <div className="browser-panel__content">

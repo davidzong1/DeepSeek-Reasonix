@@ -833,6 +833,37 @@
       ]
     }
   },
+  "BeginManualSessionCreation": {
+    "domain": "desktop/manual_session_creation.go",
+    "owner": "App.BeginManualSessionCreation",
+    "sources": [
+      "desktop/manual_session_creation.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.BeginManualSessionCreation",
+      "inputs": [
+        "req"
+      ]
+    }
+  },
+  "BeginSessionComposerSubmission": {
+    "domain": "desktop/session_composer_state.go",
+    "owner": "App.BeginSessionComposerSubmission",
+    "sources": [
+      "desktop/session_composer_state.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.BeginSessionComposerSubmission",
+      "inputs": [
+        "ref",
+        "revision",
+        "submissionID",
+        "requestJSON"
+      ]
+    }
+  },
   "BeginSessionExportForTarget": {
     "domain": "desktop/session_export.go",
     "owner": "App.BeginSessionExportForTarget",
@@ -1549,6 +1580,22 @@
       "inputs": [
         "tabID",
         "instructions"
+      ]
+    }
+  },
+  "CompleteSessionComposerSubmission": {
+    "domain": "desktop/session_composer_state.go",
+    "owner": "App.CompleteSessionComposerSubmission",
+    "sources": [
+      "desktop/session_composer_state.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.CompleteSessionComposerSubmission",
+      "inputs": [
+        "ref",
+        "submissionID",
+        "outcome"
       ]
     }
   },
@@ -2796,6 +2843,20 @@
       "inputs": []
     }
   },
+  "GetManualSessionCreation": {
+    "domain": "desktop/manual_session_creation.go",
+    "owner": "App.GetManualSessionCreation",
+    "sources": [
+      "desktop/manual_session_creation.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.GetManualSessionCreation",
+      "inputs": [
+        "operationID"
+      ]
+    }
+  },
   "GetModelSettingsApplication": {
     "domain": "desktop/model_settings_api.go",
     "owner": "App.GetModelSettingsApplication",
@@ -2937,6 +2998,20 @@
       "kind": "owner-state",
       "resolver": "App.GetSessionCatalogStatus",
       "inputs": []
+    }
+  },
+  "GetSessionComposerState": {
+    "domain": "desktop/session_composer_state.go",
+    "owner": "App.GetSessionComposerState",
+    "sources": [
+      "desktop/session_composer_state.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.GetSessionComposerState",
+      "inputs": [
+        "ref"
+      ]
     }
   },
   "GetSessionDraft": {
@@ -3749,6 +3824,18 @@
       ]
     }
   },
+  "ListManualSessionCreations": {
+    "domain": "desktop/manual_session_recovery.go",
+    "owner": "App.ListManualSessionCreations",
+    "sources": [
+      "desktop/manual_session_recovery.go"
+    ],
+    "scope": {
+      "kind": "owner-state",
+      "resolver": "App.ListManualSessionCreations",
+      "inputs": []
+    }
+  },
   "ListProjectGroups": {
     "domain": "desktop/project_tree_organization.go",
     "owner": "App.ListProjectGroups",
@@ -3831,6 +3918,20 @@
       "kind": "owner-state",
       "resolver": "App.ListRemoteProjects",
       "inputs": []
+    }
+  },
+  "ListSessionComposerConflicts": {
+    "domain": "desktop/session_composer_conflicts.go",
+    "owner": "App.ListSessionComposerConflicts",
+    "sources": [
+      "desktop/session_composer_conflicts.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ListSessionComposerConflicts",
+      "inputs": [
+        "ref"
+      ]
     }
   },
   "ListSessionDraftSummaries": {
@@ -7320,6 +7421,20 @@
       "inputs": []
     }
   },
+  "RetryManualSessionCreation": {
+    "domain": "desktop/manual_session_creation.go",
+    "owner": "App.RetryManualSessionCreation",
+    "sources": [
+      "desktop/manual_session_creation.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RetryManualSessionCreation",
+      "inputs": [
+        "operationID"
+      ]
+    }
+  },
   "RetryModelSettingsApplication": {
     "domain": "desktop/model_settings_api.go",
     "owner": "App.RetryModelSettingsApplication",
@@ -7955,6 +8070,20 @@
         "hostID",
         "toolCallID",
         "remotePath"
+      ]
+    }
+  },
+  "SaveSessionComposerState": {
+    "domain": "desktop/session_composer_state.go",
+    "owner": "App.SaveSessionComposerState",
+    "sources": [
+      "desktop/session_composer_state.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SaveSessionComposerState",
+      "inputs": [
+        "req"
       ]
     }
   },

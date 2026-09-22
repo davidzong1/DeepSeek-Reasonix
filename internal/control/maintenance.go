@@ -323,9 +323,14 @@ func (c *Controller) signalMaintenanceCancel() (id string, present, cancelled bo
 	// Signal first. Event delivery and every queue/disk operation happen after
 	// the provider/adapter has observed cancellation.
 	cancel()
+	c.recordLifecycle("cancel_signalled", "maintenance", id, 0, "")
 	c.startMaintenanceCancellationWatchdog(op)
-	_ = c.emitMaintenanceOperation(op, "cancelling", "", "", c.ContextMaintenanceSnapshot(), applied)
-	c.refreshRuntimeState(event.Event{})
+	// Cancellation receipts must not wait for the event lane or a runtime
+	// sampler. Publication revalidates this exact operation and its phase.
+	go func() {
+		_ = c.emitMaintenanceOperation(op, "cancelling", "", "", c.ContextMaintenanceSnapshot(), applied)
+		c.refreshRuntimeState(event.Event{})
+	}()
 	return id, true, true
 }
 

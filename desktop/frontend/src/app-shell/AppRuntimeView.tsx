@@ -49,6 +49,7 @@ const DockLauncher = lazy(() => import("../components/DockLauncher").then((modul
 const WORKSPACE_RESIZER_WIDTH = 8;
 const SHOW_CONTEXT_DOCK = true;
 
+const ManualSessionRecovery = lazy(() => import("../components/ManualSessionRecovery").then(module => ({ default: module.ManualSessionRecovery })));
 type Runtime = ReturnType<typeof useAppRuntimeAdapter>;
 type Shell = ReturnType<typeof useAppShellStores>;
 type SessionComposition = ReturnType<typeof useAppSessionComposition>;
@@ -281,7 +282,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               title: t("draft.badge"),
               workspaceLabel: draft.surface.draft.scope === "project"
                 ? draft.surface.draft.workspaceRoot.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || draft.surface.draft.workspaceRoot
-                : t("draft.globalWorkspace"),
+                : t("workspace.defaultName"),
             } : undefined,
           })} commands={{
             openAutomation: () => shell.openPage({ kind: "automation" }), toggleSidebar: shellGeometry.toggleSidebar,
@@ -337,6 +338,8 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
             captureNavigation: () => { const intent = runtime.navigation.currentNavigationIntent(); return () => runtime.navigation.isNavigationIntentCurrent(intent); },
           }} />}
 
+          {draft.summaryError && <div role="alert" className="management-notice">{draft.summaryError}<button className="btn btn--small" onClick={() => void draft.refreshSummaries()}>{t("common.retry")}</button></div>}
+          <Suspense fallback={null}><ManualSessionRecovery /></Suspense>
           <ChatPaneRegion
             // Local navigation is now history-first: keep the transcript
             // mounted while the controller is rebuilt in the background.  The
@@ -417,6 +420,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
             undo={draft.surface ? undefined : footerUndo}
             decision={draft.surface ? undefined : decisionFooterSurface}
             composer={buildComposerSurface({
+              empty: { onCreate: () => void navigationCommands.handleNewTab(), onChooseProject: () => void navigation.projectTopicCommands.onAddProject() },
               view: {
                 hidden: composerSurfaceHidden,
                 inert: runtimeTransitioning,
@@ -463,6 +467,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
                 workspaceName: workspaceContextProject
                   ? activeTab?.workspaceName ?? state.meta?.workspaceName
                   : undefined,
+                defaultWorkspaceName: activeTab?.scope === "global" && !activeTab.remote ? activeTab.workspaceName : undefined,
                 gitBranch: workspaceContextProject && !activeTab?.remote ? state.meta?.gitBranch : undefined,
                 tabId: activeTabId,
                 scopeKey: session.workspaceScopeKey,

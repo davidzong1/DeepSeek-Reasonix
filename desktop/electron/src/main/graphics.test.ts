@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { GraphicsSettingsStore, loadGraphicsBootstrap } from "./graphics.js";
+import { consumeGraphicsRecoveryArg, GRAPHICS_RECOVERY_ARG, GraphicsSettingsStore, loadGraphicsBootstrap } from "./graphics.js";
 
 const home = () => mkdtempSync(join(tmpdir(), "reasonix-graphics-"));
 
@@ -12,6 +12,20 @@ test("defaults to enabled without creating a config", () => {
   assert.equal(b.state.hardwareAcceleration, true);
   assert.equal(b.shouldDisable, false);
   assert.equal(existsSync(b.configPath), false);
+});
+
+test("compatibility launch leaves the saved preference untouched and can explicitly persist off", async () => {
+  const root = home();
+  const boot = loadGraphicsBootstrap(root, {}, [GRAPHICS_RECOVERY_ARG]);
+  assert.equal(boot.shouldDisable, true);
+  assert.equal(boot.state.hardwareAcceleration, true);
+  const argv = ["app", GRAPHICS_RECOVERY_ARG, "--workspace=test", GRAPHICS_RECOVERY_ARG];
+  assert.equal(consumeGraphicsRecoveryArg(argv), true);
+  assert.deepEqual(argv, ["app", "--workspace=test"]);
+  assert.equal(consumeGraphicsRecoveryArg(argv), false);
+  assert.equal(loadGraphicsBootstrap(root, {}, []).shouldDisable, false);
+  await new GraphicsSettingsStore(boot.configPath, boot).setHardwareAcceleration(false);
+  assert.equal(loadGraphicsBootstrap(root, {}, []).shouldDisable, true);
 });
 
 test("environment and command-line overrides disable without changing the saved preference", async () => {

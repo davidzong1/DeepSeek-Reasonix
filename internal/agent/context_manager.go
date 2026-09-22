@@ -112,7 +112,12 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 		InputTokens:       est,
 		ProjectionVersion: a.currentProjectionVersion(),
 	}
-	if a.contextWindow <= 0 || len(visible) == 0 {
+	if len(visible) == 0 {
+		return prepared, nil
+	}
+	// Disabling automatic maintenance must not bypass the shared recovery
+	// ladder for an explicit request, including when the window is unknown.
+	if a.contextWindow <= 0 && policy.Trigger != CompactionTriggerManual {
 		return prepared, nil
 	}
 	fold := a.compactTrigger()
@@ -150,7 +155,7 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 
 	// A manual compact over the hard ceiling is a rescue, not a convenience:
 	// prune first so the never-folded recent tail can shrink too.
-	if shouldPruneBeforeFold(policy.Trigger, est >= hard) {
+	if shouldPruneBeforeFold(policy.Trigger, hard > 0 && est >= hard) {
 		applied, err := a.pruneToolResultsToProjectionLocked(ctx, policy.Trigger)
 		if err != nil {
 			return PreparedContext{}, err
@@ -199,11 +204,13 @@ func maxSummariesFor(policy ContextPreparePolicy, overCeiling bool) int {
 
 func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContext, policy ContextPreparePolicy, inputHash string, est, fold, hard int, forceFold bool) (PreparedContext, error) {
 	a := m.agent
-	maxSummaries := maxSummariesFor(policy, est >= hard)
+	// Reserve the manual rescue budget when an overflow may reveal a window.
+	// With no known ceiling, the first successful fold completes the request.
+	maxSummaries := maxSummariesFor(policy, hard <= 0 || est >= hard)
 	ladder := newSummaryLadder(maxSummaries)
 	result := prepared
 	for ladder.next() {
-		mustFree := policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard
+		mustFree := policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard
 		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions,
 			ladder.request(forceFold, mustFree, policy.AllowChunkedFallback))
 		if err != nil {
@@ -211,6 +218,10 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 				return PreparedContext{}, err
 			}
 			if ladder.absorbOverflow(err) {
+				// Summary feedback may have learned both the physical window and
+				// a denser tokenizer. Re-plan against those measurements.
+				fold, hard = a.compactTrigger(), a.hardInputCeiling()
+				result = m.currentPrepared()
 				continue
 			}
 			return m.summaryFailed(ctx, policy, inputHash, hard, err)
@@ -234,7 +245,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	a.sess.compaction.stuck = true
 	a.sess.compaction.stuckInputHash = blockedInputHash
 	a.sess.compaction.consecutive += maxSummaries
-	if policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard {
+	if policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard {
 		return m.rescueByTruncation(ctx, policy, hard, errors.New(reason))
 	}
 	slog.Info("agent: context maintenance paused below hard ceiling", "reason", reason)
@@ -244,7 +255,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 func foldLanded(policy ContextPreparePolicy, tokens, fold, hard int) bool {
 	switch policy.Trigger {
 	case CompactionTriggerManual, CompactionTriggerOverflow:
-		return tokens < hard || tokens < fold
+		return hard <= 0 || tokens < hard || tokens < fold
 	default:
 		return tokens < fold
 	}
@@ -275,7 +286,7 @@ func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePo
 	reason := "context is above the maintenance threshold but no foldable region remains"
 	latest := m.currentPrepared()
 	switch {
-	case policy.Trigger == CompactionTriggerOverflow || latest.InputTokens >= hard:
+	case policy.Trigger == CompactionTriggerOverflow || hard > 0 && latest.InputTokens >= hard:
 		m.agent.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
 		return m.rescueByTruncation(ctx, policy, hard, errors.New(reason))
 	case policy.Force:
@@ -295,7 +306,7 @@ func (m ContextManager) rescueOrFail(ctx context.Context, policy ContextPrepareP
 		return PreparedContext{}, err
 	}
 	latest := m.currentPrepared()
-	if policy.Trigger != CompactionTriggerOverflow && latest.InputTokens < hard {
+	if policy.Trigger != CompactionTriggerOverflow && (hard <= 0 || latest.InputTokens < hard) {
 		if policy.Trigger == CompactionTriggerManual {
 			return PreparedContext{}, cause
 		}

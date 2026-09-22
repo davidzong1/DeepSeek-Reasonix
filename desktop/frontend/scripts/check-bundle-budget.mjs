@@ -541,6 +541,18 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // local Node 26 build measures 2100846 B. Preserve the established 186 B Linux
 // producer difference at the next decimal (2051.8 KiB); compressed, chunk, CSS,
 // locale, and resident-history gates stay fixed.
-const rawInitialBudgetKiB = 2_051.8;
+// Turn identity and settlement ordering measure 2102574 B versus 2100795 B
+// on the same base toolchain (+1779 B, 0.085%). Preserve the established 186 B
+// Linux producer difference at the next decimal; all other gates stay fixed.
+// Manual compaction admission feedback and its running summary hint measure
+// 2103022 B in the Linux Electron producer. Retain 69 B at the next one-decimal
+// ceiling; compressed, chunk, CSS, locale, and resident-history gates stay fixed.
+// Settled launch receipts and output-reader history states add 104 B over the
+// same-toolchain base (2102940 B versus 2102836 B). The Linux producer measures
+// 2103126 B; retain the next one-decimal ceiling with all other gates fixed.
+// Eager-session recovery adds 88 B with the same dependencies and embedded
+// commit: 2103296 B versus 2103208 B on main-v2. The latter already exceeds
+// the old gate by 15 B. Round to the next decimal; retain every other gate.
+const rawInitialBudgetKiB = 2_054.1;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

@@ -22,6 +22,27 @@ func businessFrame(t *testing.T, p *Projection, covered uint64, e event.Event) {
 	}
 }
 
+func TestAcceptBusinessPublishesTheTurnIDItAssigns(t *testing.T) {
+	p, initial := newFollowProjection(t)
+	p.AcceptBusiness([]Message{
+		{RecordID: "m:user", MessageID: "user", Role: "user", Content: "question"},
+		{RecordID: "m:answer", MessageID: "answer", Role: "assistant", Content: "answer"},
+		{RecordID: "m:kept", MessageID: "kept", Role: "user", Content: "other", TurnID: "kept-turn"},
+	}, 1, "turn-7", false)
+	suffix := followChanges(t, p, FollowRequest{Subscription: initial.Subscription, AfterRevision: initial.Snapshot.ProjectionRevision})
+	if len(suffix.Changes) != 1 || len(suffix.Changes[0].Records) != 3 {
+		t.Fatalf("published records = %+v", suffix.Changes)
+	}
+	records := suffix.Changes[0].Records
+	if records[0].TurnID != "turn-7" || records[1].TurnID != "turn-7" || records[2].TurnID != "kept-turn" {
+		t.Fatalf("published turn identity = %q %q %q", records[0].TurnID, records[1].TurnID, records[2].TurnID)
+	}
+	cut := snapshot(t, p)
+	if len(cut.Records) != 3 || cut.Records[0].Message.TurnID != "turn-7" || cut.Records[1].Message.TurnID != "turn-7" || cut.Records[2].Message.TurnID != "kept-turn" {
+		t.Fatalf("buffer turn identity diverged from the published change: %+v", cut.Records)
+	}
+}
+
 func TestBusinessSettlementUpdatesStreamingRowWithoutDuplicateOrPendingState(t *testing.T) {
 	p, err := NewProjection(testIdentity, nil, 0)
 	if err != nil {

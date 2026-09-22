@@ -39,6 +39,47 @@ fully quit Reasonix and start it once with `REASONIX_DISABLE_GPU=1`; this is a
 temporary override and does not change the saved preference. The override is
 supported on Windows, macOS, and Linux.
 
+The shell records GPU child-process failures separately from renderer failures
+and memory growth. Two GPU failures within 60 seconds offer a native recovery
+dialog; a renderer gets at most one reload in that interval. Renderer OOM and
+startup-page failures go directly to recovery. A continuously unresponsive
+window is offered recovery after 15 seconds, without claiming a GPU cause.
+Normal exits and externally killed processes do not trigger GPU recovery.
+After a healthy minute, recovery prompts are rearmed for later independent
+failures. Acknowledging a dialog cannot clear a newer GPU failure that arrived
+while it was open; transient stalls are rechecked before a delayed prompt.
+
+**Restart in compatibility mode** disables hardware acceleration for that launch
+only. After the renderer reports a healthy startup, a native dialog lets the user
+keep acceleration disabled in the existing setting. Ordinary subsequent launches
+otherwise use the saved preference. Restart interrupts active work, drains the Go
+service, and attempts to save the draft. If draft saving fails or exceeds five
+seconds during recovery, proceeding requires explicit confirmation of possible
+unsaved draft loss. Ordinary exit retains its existing save requirements.
+
+Recent explicit GPU failures are stored locally in `graphics-fault.json` in the
+shell profile. The next launch of the same build can offer recovery if the user
+has not acknowledged the failure and it is less than 24 hours old. A healthy
+minute clears pending recovery. An unclean exit alone never counts as GPU
+evidence. The versioned record preserves unknown fields; unsupported or corrupt
+records are left untouched. `shell.log` includes graphics state, device details,
+process exit reasons and process metrics; these additions do not upload data.
+
+中文：默认仍开启硬件加速。GPU 进程在 60 秒内连续异常两次时，提供原生恢复
+对话框；页面进程在同一时间窗口内最多自动刷新一次。页面内存不足、启动页崩溃
+直接进入恢复；持续 15 秒无响应只报告界面故障，不直接归因于 GPU。
+“以兼容模式重启”仅对本次启动关闭加速；成功启动后可选择保持关闭。
+重启会中断任务，并先保存草稿、关闭后台服务。恢复时保存失败或超过 5 秒，
+必须由用户确认可能丢失未保存草稿后才能继续。已保存的会话不会被清理。
+本地 `graphics-fault.json` 仅保存明确的 GPU 故障；同版本、24 小时内未确认
+的故障可在下次启动时提示，正常运行一分钟后解除待恢复状态。
+恢复稳定一分钟后，后续独立故障仍可再次提示；关闭旧弹窗不会清除弹窗期间
+发生的新 GPU 故障，已经恢复响应的短暂卡顿也不会触发排队的过期提示。
+
+Validation: `pnpm --dir desktop/electron test:graphics-recovery` exercises real
+Electron renderer termination and software rendering with scripted native-dialog
+responses; GPU child-process events are injected, not a real driver crash.
+
 The shell can host real websites next to the app UI (contract:
 [`docs/DESKTOP_BROWSER.md`](../../docs/DESKTOP_BROWSER.md)). Every tab is a
 sandboxed `WebContentsView` managed by `browser/surfaceManager.ts`; the React

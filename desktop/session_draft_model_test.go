@@ -44,7 +44,7 @@ func TestInheritedDraftModelFollowsDefaultUntilExplicitlySelected(t *testing.T) 
 	a := newDraftTestApp(t)
 	root := t.TempDir()
 
-	draft, err := a.OpenSessionDraftForTarget("project", root)
+	draft, err := a.seedPreviousDraftForTarget("project", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestDraftAdmissionPreservesModelAliasRequestIdentity(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	writeDraftDefaultModelConfig(t, "model-a")
 	a := newDraftTestApp(t)
-	draft, err := a.OpenSessionDraftForTarget("project", t.TempDir())
+	draft, err := a.seedPreviousDraftForTarget("project", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestDraftRecoveryProjectsFrozenModelUntilEditingResumes(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	writeDraftDefaultModelConfig(t, "model-a")
 	a := newDraftTestApp(t)
-	draft, err := a.OpenSessionDraftForTarget("project", t.TempDir())
+	draft, err := a.seedPreviousDraftForTarget("project", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

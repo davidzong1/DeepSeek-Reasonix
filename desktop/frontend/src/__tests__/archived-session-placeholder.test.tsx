@@ -57,8 +57,9 @@ assert.ok(row.textContent?.includes("Legacy session placeholder"));
 assert.equal((row.querySelector(".archived-sessions__open") as HTMLButtonElement).disabled, true, "placeholder has no transcript preview");
 assert.ok(document.body.textContent?.includes("2 legacy sessions still need verification."));
 
-await act(async () => (Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Recheck") as HTMLButtonElement).click());
-assert.equal(cleanupRetries, 1, "pending cleanup can be explicitly rechecked");
+assert.equal(Array.from(document.querySelectorAll("button")).some(button => button.textContent === "Recheck"), false,
+  "retired cleanup must not expose an action that archives more sessions");
+assert.equal(cleanupRetries, 0, "opening recovery must not resume cleanup");
 
 await act(async () => (row.querySelector('[aria-label="Restore session"]') as HTMLButtonElement).click());
 assert.equal(requests.length, 1);

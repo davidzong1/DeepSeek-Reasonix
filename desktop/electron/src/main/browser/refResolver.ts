@@ -3,6 +3,8 @@ import { staleReference } from "./errors.js";
 import type { GuestFrame, GuestPage } from "./guestView.js";
 import { LOCATE_SCRIPT_SOURCE, RESOLVE_SCRIPT_SOURCE, scriptCall, type LocateOutput, type ResolvedElement, type ResolveOutput } from "./pageScripts.js";
 import { findFrame, REGISTRY_KEY, runInFrame } from "./snapshot.js";
+import { FrameRuntime } from "./frameRuntime.js";
+import { RpcError } from "../rpc.js";
 
 export interface RefFrame {
   frame: GuestFrame;
@@ -38,10 +40,13 @@ export function frameForRef(page: GuestPage, binding: DocumentBinding, ref: stri
   return { frame, binding: frameBinding, isMainFrame: frame.frameTreeNodeId === page.mainFrame.frameTreeNodeId };
 }
 
-async function runRefScript(page: GuestPage, target: RefFrame, source: string, snapshotId: string, ref: string, extra: Record<string, unknown>): Promise<unknown> {
+async function runRefScript(page: GuestPage, target: RefFrame, source: string, snapshotId: string, ref: string, extra: Record<string, unknown>, runtime?: FrameRuntime): Promise<unknown> {
   try {
-    return await runInFrame(page, target.frame, scriptCall(source, { key: REGISTRY_KEY, snapshotId, docId: target.binding.docId, ref, ...extra }));
+    return await runInFrame(page, target.frame, scriptCall(source, { key: REGISTRY_KEY, snapshotId, docId: target.binding.docId, ref, ...extra }), runtime);
   } catch (error) {
+    // A protocol timeout or script failure does not prove that the ref is
+    // stale. Preserve the runtime classification for tool and export callers.
+    if (error instanceof RpcError) throw error;
     throw staleReference(`frame of ${ref} cannot run scripts: ${String(error)}`);
   }
 }
@@ -50,7 +55,13 @@ async function runRefScript(page: GuestPage, target: RefFrame, source: string, s
 // it. Stale refs throw -32010; a live ref that cannot be acted on reports why.
 export async function resolveRef(page: GuestPage, binding: DocumentBinding, ref: string, scroll: boolean): Promise<RefOutcome<ResolvedRef>> {
   const target = frameForRef(page, binding, ref);
-  const raw = await runRefScript(page, target, RESOLVE_SCRIPT_SOURCE, binding.snapshotId, ref, { scroll });
+  const runtime = target.isMainFrame ? undefined : new FrameRuntime(page);
+  try { return await resolveTarget(page, binding, ref, scroll, target, runtime); }
+  finally { await runtime?.close(); }
+}
+
+async function resolveTarget(page: GuestPage, binding: DocumentBinding, ref: string, scroll: boolean, target: RefFrame, runtime?: FrameRuntime): Promise<RefOutcome<ResolvedRef>> {
+  const raw = await runRefScript(page, target, RESOLVE_SCRIPT_SOURCE, binding.snapshotId, ref, { scroll, localCoordinates: true }, runtime);
   if (!hasOk(raw)) throw staleReference(`resolver returned nothing for ${ref}`);
   const out = raw as ResolveOutput;
   if (!out.ok) {
@@ -58,6 +69,17 @@ export async function resolveRef(page: GuestPage, binding: DocumentBinding, ref:
     return { ok: false, reason: out.reason };
   }
   if (!out.frameOffsetKnown) return { ok: false, reason: "element sits in a cross-origin frame; its position cannot be determined" };
+  let frame = target.frame;
+  while (frame.parent) {
+    const parent = frame.parent;
+    const siblings = parent.frames ?? parent.framesInSubtree.filter(child => child.parent?.frameTreeNodeId === parent.frameTreeNodeId);
+    const index = siblings.findIndex(child => child.frameTreeNodeId === frame.frameTreeNodeId);
+    const offset = await runInFrame(page, parent, scriptCall("pageFrameGeometry", { index, x: out.x + out.width / 2, y: out.y + out.height / 2, scroll }), runtime) as { x: number; y: number; scaleX: number; scaleY: number } | null;
+    if (!offset || index < 0) return { ok: false, reason: "frame is hidden, covered or has unsupported transform" };
+    out.width *= offset.scaleX; out.height *= offset.scaleY;
+    out.x = offset.x - out.width / 2; out.y = offset.y - out.height / 2;
+    frame = parent;
+  }
   return { ok: true, value: { ...target, element: out } };
 }
 

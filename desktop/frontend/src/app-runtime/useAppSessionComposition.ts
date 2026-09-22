@@ -192,6 +192,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   const insertCommands = useComposerInsertCommands({
     activeTabId,
     sessionKey: activeSessionIdentity,
+    browserSessionPath: activeTab?.sessionPath ?? state.meta?.sessionPath,
     approval: state.approval,
     operations: sessionOperations,
     t,
@@ -562,7 +563,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
       clearWorkspaceConflict: () => setWorkspaceConflict(null),
       setWorkspaceConflict: (value) => setWorkspaceConflict(value),
       setPendingClose: (value) => setPendingClose(value),
-      submitComposerTurn: (tab, display, submit, structured) => submitComposerTurn(tab, display, submit, structured),
+      submitComposerTurn: (tab, display, submit, structured, submissionId) => submitComposerTurn(tab, display, submit, structured, submissionId),
       steerForTab,
       isRemoteTab: (tabId) => tabMetas.some((tab) => tab.id === tabId && tab.remote),
     },
@@ -649,7 +650,7 @@ export function useAppSessionComposition(input: AppSessionCompositionInput) {
   // openTopic/blank/resume navigation uses, so rapidly clicking between two
   // running sessions can't run two switchTab() calls concurrently. Concurrent
   // switches race on the backend SetActiveTab/confirmBackendActiveTab ordering,
-  const availability = projectSessionAvailability({ local: state, remote: remoteSurfaceActive ? remoteSession : undefined });
+  const availability = projectSessionAvailability({ local: state, remote: remoteSurfaceActive ? remoteSession : undefined, empty: !activeTabId && !runtimeTransitioning });
   const presentationTransitioning = runtimeTransitioning && remoteSurfaceActive;
   const {
     transcriptHydrating, emptyHero,

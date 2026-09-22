@@ -4,7 +4,7 @@ import { isShellToolName } from "./shellToolIdentity";
 // useController is the frontend's state machine over the agent event stream. It keeps
 // per-tab output, tool state, and approvals while the user switches tabs; components
 // render the active tab's state.
-import { resetTurnTiming, confirmPendingUser, installTranscriptRecords, startLocalSubmission, submissionBindingCurrent } from "./submissionReducer";
+import { resetTurnTiming, confirmPendingUser, installTranscriptRecords, stampArrivingTurnId, startLocalSubmission, submissionBindingCurrent } from "./submissionReducer";
 import { runtimeStatusSnapshotIsStale } from "./runtimeStatusFreshness";
 import { useRuntimeSession } from "./useRuntimeState";
 import { acceptSessionRuntimeSnapshot, type RuntimeState } from "./runtimeStateStore";
@@ -2321,11 +2321,7 @@ function reduceState(s: State, a: Action): State {
         const next = reducer({ ...s, historyHasNewer: false, items: s.offscreenItems ?? [] }, a);
         return settleLocalSubmissions({ ...next, items: s.items, visibleSubmissionHandoffs: s.visibleSubmissionHandoffs, historyHasNewer: true, offscreenItems: next.items.slice(-96) }, s.items);
       }
-      let next = applyEvent(s, a.e, a.remote);
-      if (a.e.turnId && next.items !== s.items) {
-        const prior = new Set(s.items);
-        next = { ...next, items: next.items.map(item => prior.has(item) || item.turnId ? item : { ...item, turnId: a.e.turnId }) };
-      }
+      let next = stampArrivingTurnId(applyEvent(s, a.e, a.remote), s.items, a.e.turnId, a.e.messageId);
       if (a.e.messageId && a.e.tool?.id && next.items !== s.items) {
         const toolId = a.e.tool.id;
         const prior = s.items.find((item) => item.kind === "tool" && item.id === toolId);
@@ -2338,10 +2334,11 @@ function reduceState(s: State, a: Action): State {
     }
     case "stream_batch": {
       if (s.transcriptProtocol === 2 && s.historyHasNewer) {
-        const next = applyStreamBatch({ ...s, items: s.offscreenItems ?? [] }, a.segments);
+        const base = { ...s, items: s.offscreenItems ?? [] };
+        const next = stampArrivingTurnId(applyStreamBatch(base, a.segments), base.items, s.activeTurnId);
         return { ...next, items: s.items, offscreenItems: next.items.slice(-96) };
       }
-      const next = applyStreamBatch(s, a.segments);
+      const next = stampArrivingTurnId(applyStreamBatch(s, a.segments), s.items, s.activeTurnId);
       return next.items.length > s.items.length
         ? { ...next, historyMutation: { seq: s.historyMutation.seq + 1, kind: "append" } }
         : next;
@@ -3596,26 +3593,26 @@ export function useController() {
       collaborationMode: CollaborationMode;
       toolApprovalMode: ToolApprovalMode;
     },
+    composerSubmissionId?: string,
   ) => {
-    if (!tabId) throw new Error(t("composer.workspaceStarting"));
+    if (!tabId) throw new Error("reasonix_error:workspace_starting");
     let currentState = getOrCreateState(statesRef.current, tabId);
     if (currentState.transcriptProtocol !== 2 && !followers.current.has(tabId)) {
       await startTranscriptFollow(tabId, currentState.meta?.sessionPath ?? "");
       currentState = getOrCreateState(statesRef.current, tabId);
     }
     if (currentState.transcriptProtocol !== 2 || currentState.transcriptConnection !== "connected") {
-      throw new Error("Transcript v2 is not synchronized. Upgrade Desktop and Serve together, or reconnect.");
+      throw new Error("reasonix_error:inbox_not_submitted");
     }
     const runtime = currentState.meta?.runtime;
     if (currentState.meta && !runtimeReadyForSubmit(currentState.meta)) {
-      throw new Error(runtime?.issue?.message || currentState.meta.startupErr || t("composer.workspaceStarting"));
+      throw new Error("reasonix_error:inbox_not_submitted");
     }
     const seq = currentState.seq;
-    const submissionId = structured?.attachmentSubmissionId ?? createTurnSubmissionId(tabId, currentState.sessionGen, seq, runtimeEpochByTabRef.current.get(tabId) ?? runtime?.epoch);
+    const submissionId = structured?.attachmentSubmissionId ?? composerSubmissionId ?? createTurnSubmissionId(tabId, currentState.sessionGen, seq, runtimeEpochByTabRef.current.get(tabId) ?? runtime?.epoch);
     const submissionCurrent = () => submissionBindingCurrent(statesRef.current.get(tabId), currentState);
     const promptEpoch = currentState.promptEpoch;
     const { display, submit } = normalizeTurnSubmit(displayText, submitText);
-    const original = originalText?.trim() ?? "";
     bumpCancelHydrateSeq(tabId);
     if (currentState.hydrateReason === "rewind") dispatchTo(tabId, { type: "hydrate_done" });
     // A compact request never starts a conversational turn. Runtime snapshots
@@ -3627,7 +3624,7 @@ export function useController() {
     }
     invalidateCache();
     try {
-      const [outcome, detail] = await import("./turnSubmit").then(module => module.submitTurn(app, tabId, submissionId, display, submit, original, structured, initialGoal));
+      const [outcome, detail] = await import("./turnSubmit").then(module => module.submitTurn(app, tabId, submissionId, display, submit, originalText?.trim() ?? "", structured, initialGoal));
       if (!submissionCurrent()) return;
       if (outcome === 1) {
         dispatchTo(tabId, { type: "send_confirmed", submissionId });

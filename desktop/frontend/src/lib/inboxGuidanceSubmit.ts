@@ -20,7 +20,7 @@ export async function enqueueComposerGuidance(binding: AppBindings, request: Pen
     if (result.reason === "unsupported") throw new Error("reasonix_error:inbox_not_submitted — update the service to guide the current turn");
     return result.receipt;
   }
-  return enqueueInboxGuidanceForActiveTurn(binding, tabId, display, submit, structured, turnId);
+  return enqueueInboxGuidanceForActiveTurn(binding, tabId, display, submit, structured, turnId, key);
 }
 
 export async function enqueueInboxGuidanceForActiveTurn(
@@ -30,11 +30,12 @@ export async function enqueueInboxGuidanceForActiveTurn(
   submit: string,
   structured?: StructuredInvocationSubmit,
   knownTurnId?: string,
+  idempotency?: string,
 ) {
   const turnId = !structured && typeof binding.EnqueueInboxSteerForTurn === "function"
     ? await resolveActiveTurnId(binding, tabId, knownTurnId)
     : knownTurnId;
-  return enqueueInboxGuidance(binding, tabId, display, submit, structured, { steer: true, turnId });
+  return enqueueInboxGuidance(binding, tabId, display, submit, structured, { steer: true, turnId, idempotency });
 }
 
 export function enqueueInboxGuidance(
@@ -70,9 +71,9 @@ export function enqueueInboxGuidance(
   if (opts?.steer && typeof binding.EnqueueInboxSteer === "function") {
     if (typeof binding.EnqueueInboxSteerForTurn === "function") {
       if (!opts.turnId) return Promise.reject(new Error("active turn id is unavailable; refresh and try again"));
-      return binding.EnqueueInboxSteerForTurn(tabId, opts.turnId, display, submit || display, "");
+      return binding.EnqueueInboxSteerForTurn(tabId, opts.turnId, display, submit || display, opts.idempotency ?? "");
     }
-    return binding.EnqueueInboxSteer(tabId, display, submit || display, "");
+    return binding.EnqueueInboxSteer(tabId, display, submit || display, opts.idempotency ?? "");
   }
   return binding.EnqueueInboxFollowup(tabId, display, submit || display, opts?.idempotency ?? "");
 }

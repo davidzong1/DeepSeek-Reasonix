@@ -110,6 +110,7 @@ await reloadProjectTreeTopicLists(reloadProject, "needle", knownGroupStates, asy
 assert.deepEqual(reloadCalls, ["search"], "search refresh reloads only the project search list");
 
 const limiter = createProjectTreeRequestLimiter(4);
+assert.deepEqual(limiter.stats(), { active: 0, queued: 0 });
 let running = 0;
 let peak = 0;
 const releases: Array<() => void> = [];
@@ -123,11 +124,14 @@ const tasks = Array.from({ length: 8 }, () => limiter.run(() => new Promise<void
 })));
 await Promise.resolve();
 assert.equal(peak, 4, "sidebar pagination is capped at four concurrent requests");
+assert.equal(limiter.stats().active, 4, "diagnostic snapshot reports active list requests");
+assert.equal(limiter.stats().queued, 4, "diagnostic snapshot reports queued list requests");
 while (releases.length > 0) {
   releases.shift()?.();
   await Promise.resolve();
 }
 await Promise.all(tasks);
+assert.deepEqual(limiter.stats(), { active: 0, queued: 0 }, "request limiter drains after all pages finish");
 
 const pageCalls: Array<{ cursor: string; limit: number }> = [];
 const pagedTopics = topics(250);

@@ -30,7 +30,32 @@ func NewHTTPHandler(exec Executor, token string) http.Handler {
 	h.mux.HandleFunc("POST "+httpRoutePrefix+"act", h.act)
 	h.mux.HandleFunc("POST "+httpRoutePrefix+"downloads", h.downloads)
 	h.mux.HandleFunc("POST "+httpRoutePrefix+"close", h.close)
+	h.mux.HandleFunc("POST "+httpRoutePrefix+"capability", h.capability)
 	return h
+}
+
+func (h *httpHandler) capability(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	exec, ok := h.exec.(CapabilityExecutor)
+	if !ok {
+		writeWireError(w, http.StatusNotImplemented, "capability_unsupported", "browser enhancements unavailable")
+		return
+	}
+	// Only published tools can cross this boundary; host RPC names are not input.
+	for _, candidate := range CapabilityTools(h.exec) {
+		if candidate.Name() == "browser_"+in.Name {
+			result, err := exec.BrowserCapability(sessionContext(r), in.Name, in.Args)
+			writeResult(w, result, err)
+			return
+		}
+	}
+	writeWireError(w, http.StatusNotImplemented, "capability_unsupported", "unknown browser capability")
 }
 
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

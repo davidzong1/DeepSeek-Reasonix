@@ -755,6 +755,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		for _, t := range browser.Tools(browserExec) {
 			reg.Add(t)
 		}
+		for _, t := range browser.CapabilityTools(browserExec) {
+			reg.Add(t)
+		}
 	}
 	for _, extra := range opts.ExtraTools {
 		if extra != nil {

@@ -1601,6 +1601,72 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/manual_session_creation.go",
+      "name": "BeginManualSessionCreation",
+      "owner": "App.BeginManualSessionCreation",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.ManualSessionCreationRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.ManualSessionCreationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.BeginManualSessionCreation"
+      },
+      "sources": [
+        "desktop/manual_session_creation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_composer_state.go",
+      "name": "BeginSessionComposerSubmission",
+      "owner": "App.BeginSessionComposerSubmission",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "session.SessionRef"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionComposerState"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "ref",
+          "revision",
+          "submissionID",
+          "requestJSON"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.BeginSessionComposerSubmission"
+      },
+      "sources": [
+        "desktop/session_composer_state.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/session_export.go",
       "name": "BeginSessionExportForTarget",
       "owner": "App.BeginSessionExportForTarget",
@@ -2882,6 +2948,41 @@
       },
       "sources": [
         "desktop/remote_tab_commands.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_composer_state.go",
+      "name": "CompleteSessionComposerSubmission",
+      "owner": "App.CompleteSessionComposerSubmission",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "session.SessionRef"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionComposerState"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "ref",
+          "submissionID",
+          "outcome"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.CompleteSessionComposerSubmission"
+      },
+      "sources": [
+        "desktop/session_composer_state.go"
       ]
     },
     {
@@ -5269,6 +5370,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/manual_session_creation.go",
+      "name": "GetManualSessionCreation",
+      "owner": "App.GetManualSessionCreation",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.ManualSessionCreationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "operationID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.GetManualSessionCreation"
+      },
+      "sources": [
+        "desktop/manual_session_creation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/model_settings_api.go",
       "name": "GetModelSettingsApplication",
       "owner": "App.GetModelSettingsApplication",
@@ -5517,6 +5644,33 @@
       },
       "sources": [
         "desktop/session_catalog_runtime.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_composer_state.go",
+      "name": "GetSessionComposerState",
+      "owner": "App.GetSessionComposerState",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "session.SessionRef"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionComposerState"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "ref"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.GetSessionComposerState"
+      },
+      "sources": [
+        "desktop/session_composer_state.go"
       ]
     },
     {
@@ -7057,6 +7211,29 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/manual_session_recovery.go",
+      "name": "ListManualSessionCreations",
+      "owner": "App.ListManualSessionCreations",
+      "params": [],
+      "result": {
+        "elem": {
+          "kind": "object",
+          "ref": "main.ManualSessionCreationView"
+        },
+        "kind": "array"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.ListManualSessionCreations"
+      },
+      "sources": [
+        "desktop/manual_session_recovery.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/project_tree_organization.go",
       "name": "ListProjectGroups",
       "owner": "App.ListProjectGroups",
@@ -7226,6 +7403,35 @@
       },
       "sources": [
         "desktop/remote_project_registry.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_composer_conflicts.go",
+      "name": "ListSessionComposerConflicts",
+      "owner": "App.ListSessionComposerConflicts",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "session.SessionRef"
+        }
+      ],
+      "result": {
+        "elem": {
+          "kind": "string"
+        },
+        "kind": "array"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "ref"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ListSessionComposerConflicts"
+      },
+      "sources": [
+        "desktop/session_composer_conflicts.go"
       ]
     },
     {
@@ -13764,6 +13970,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/manual_session_creation.go",
+      "name": "RetryManualSessionCreation",
+      "owner": "App.RetryManualSessionCreation",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.ManualSessionCreationView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "operationID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.RetryManualSessionCreation"
+      },
+      "sources": [
+        "desktop/manual_session_creation.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/model_settings_api.go",
       "name": "RetryModelSettingsApplication",
       "owner": "App.RetryModelSettingsApplication",
@@ -14960,6 +15192,33 @@
       },
       "sources": [
         "desktop/remote_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_composer_state.go",
+      "name": "SaveSessionComposerState",
+      "owner": "App.SaveSessionComposerState",
+      "params": [
+        {
+          "kind": "object",
+          "ref": "main.SessionComposerSaveRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionComposerState"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SaveSessionComposerState"
+      },
+      "sources": [
+        "desktop/session_composer_state.go"
       ]
     },
     {
@@ -32358,6 +32617,97 @@
         }
       ]
     },
+    "main.ManualSessionCreationRequest": {
+      "fields": [
+        {
+          "name": "operationId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "workspaceId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "scope",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "workspaceRoot",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "main.ManualSessionCreationView": {
+      "fields": [
+        {
+          "name": "operationId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "workspaceId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "scope",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "workspaceRoot",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "ref",
+          "type": {
+            "kind": "object",
+            "ref": "session.SessionRef"
+          }
+        },
+        {
+          "name": "topicId",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "phase",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "error",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "settings",
+          "type": {
+            "kind": "object",
+            "ref": "main.SessionDraftSettings"
+          }
+        }
+      ]
+    },
     "main.MarkdownImageView": {
       "fields": [
         {
@@ -38235,6 +38585,124 @@
           "name": "sessionGeneration",
           "type": {
             "kind": "integer"
+          }
+        }
+      ]
+    },
+    "main.SessionComposerSaveRequest": {
+      "fields": [
+        {
+          "name": "ref",
+          "type": {
+            "kind": "object",
+            "ref": "session.SessionRef"
+          }
+        },
+        {
+          "name": "expectedRevision",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "contentJson",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "contentVersion",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "acknowledgeHistory",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        }
+      ]
+    },
+    "main.SessionComposerState": {
+      "fields": [
+        {
+          "name": "ref",
+          "type": {
+            "kind": "object",
+            "ref": "session.SessionRef"
+          }
+        },
+        {
+          "name": "revision",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "contentJson",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "contentVersion",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "baseline",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "submissionId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "submissionPhase",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "submissionRequest",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "submissionFingerprint",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "submissionRevision",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "historyChanged",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "conflict",
+          "type": {
+            "kind": "boolean"
           }
         }
       ]

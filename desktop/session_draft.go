@@ -228,40 +228,23 @@ func (a *App) defaultDraftSettings(scope, workspaceRoot string) SessionDraftSett
 	return settings
 }
 
-// OpenSessionDraft creates no Topic, Session, Controller, runtime, or lease.
+// OpenSessionDraft opens an existing pre-rollback draft without allocating one.
 func (a *App) OpenSessionDraft(workspaceID string) (SessionDraftView, error) {
-	started := time.Now()
-	state, err := a.workspaceRegistry().Load(a.bootContext())
+	records, err := a.draftStore().ListActive(a.bootContext())
 	if err != nil {
 		return SessionDraftView{}, err
 	}
-	workspaceID = strings.TrimSpace(workspaceID)
-	workspace, ok := state.Workspaces[workspaceID]
-	if !ok {
-		return SessionDraftView{}, workspacestate.ErrWorkspaceNotFound
-	}
-	scope, root := "project", workspace.Root
-	if workspaceID == workspacestate.GlobalWorkspaceID {
-		scope, root = "global", ""
-	}
-	settings, err := json.Marshal(a.defaultDraftSettings(scope, root))
-	if err != nil {
-		return SessionDraftView{}, err
-	}
-	record, created, err := a.draftStore().Open(a.bootContext(), workspaceID, scope, root,
-		"draft-"+strings.TrimPrefix(newTabID(), "tab_"), string(settings))
-	if err != nil {
-		return SessionDraftView{}, err
-	}
-	if !created {
+	for _, record := range records {
+		if record.WorkspaceID != strings.TrimSpace(workspaceID) {
+			continue
+		}
 		record, err = a.migrateLegacyUntouchedDraftModel(record)
 		if err != nil {
 			return SessionDraftView{}, err
 		}
+		return a.draftView(record)
 	}
-	slog.Debug("desktop: session draft opened", "draft", record.ID, "workspace", workspaceID,
-		"created", created, "duration_ms", time.Since(started).Milliseconds())
-	return a.draftView(record)
+	return SessionDraftView{}, errors.New("no previous draft exists; use New Conversation to create a session")
 }
 
 func (a *App) OpenSessionDraftForTarget(scope, workspaceRoot string) (SessionDraftView, error) {
@@ -387,6 +370,7 @@ func draftHasContent(contentJSON string) bool {
 	}
 	var content struct {
 		Text             string            `json:"text"`
+		GoalDraft        bool              `json:"goalDraft"`
 		Invocations      []json.RawMessage `json:"invocations"`
 		Attachments      []json.RawMessage `json:"attachments"`
 		WorkspaceRefs    []json.RawMessage `json:"workspaceRefs"`
@@ -398,7 +382,7 @@ func draftHasContent(contentJSON string) bool {
 		// Unknown shapes stay visible rather than silently hiding saved work.
 		return true
 	}
-	return strings.TrimSpace(content.Text) != "" || len(content.Invocations) > 0 || len(content.Attachments) > 0 ||
+	return content.GoalDraft || strings.TrimSpace(content.Text) != "" || len(content.Invocations) > 0 || len(content.Attachments) > 0 ||
 		len(content.WorkspaceRefs) > 0 || len(content.PastedBlocks) > 0 || len(content.SessionRefs) > 0 ||
 		len(content.SelectedTextRefs) > 0
 }
@@ -1182,6 +1166,30 @@ func (a *App) reconcileDraftSubmissionOperations() {
 }
 
 func (a *App) composerTargetWorkspace(target ComposerTarget) (string, control.SessionAPI, error) {
+	if target.Kind == "session" && target.Session != nil {
+		if err := validateLocalSessionRef(*target.Session); err != nil {
+			return "", nil, err
+		}
+		var ctrl control.SessionAPI
+		if target.TabID != "" {
+			a.mu.RLock()
+			tab := a.tabs[target.TabID]
+			matches := tab != nil && !tab.removed && tab.SessionID == target.Session.SessionID
+			if matches {
+				ctrl = tab.Ctrl
+			}
+			a.mu.RUnlock()
+			if !matches {
+				return "", nil, errors.New("composer target changed")
+			}
+		}
+		info, err := a.desktopSessionService("").Query().Stat(a.bootContext(), *target.Session)
+		if err != nil {
+			return "", nil, err
+		}
+		base, err := workspaceBaseFromRoot(info.CWD)
+		return base, ctrl, err
+	}
 	if target.Kind == "draft" {
 		record, err := a.draftStore().Get(a.bootContext(), strings.TrimSpace(target.DraftID))
 		if err != nil {

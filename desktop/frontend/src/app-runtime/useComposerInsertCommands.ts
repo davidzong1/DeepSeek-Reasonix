@@ -1,6 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
-import { formatTerminalOutputForComposer } from "../lib/terminalOutput";
 import { formatSelectionReference, type SelectedTextInsertRequest } from "../lib/selectedTextContext";
 import type { ComposerInsertRequest } from "../lib/types";
 import type { Translator } from "../lib/i18n";
@@ -11,6 +10,7 @@ export type WorkspaceInsertTarget = "composer" | "planRevision";
 export type ComposerInsertCommandsInput = {
   activeTabId: string | undefined;
   sessionKey: string;
+  browserSessionPath?: string;
   approval: { id: string; tool: string } | undefined | null;
   operations: ReturnType<typeof useSessionOperations>;
   t: Translator;
@@ -33,6 +33,18 @@ export function useComposerInsertCommands(input: ComposerInsertCommandsInput) {
   const [composerInsertRequestsByTab, setComposerInsertRequestsByTab] = useState<Record<string, ComposerInsertRequest>>({});
   const [selectedTextRequestsByTab, setSelectedTextRequestsByTab] = useState<Record<string, SelectedTextInsertRequest>>({});
   const selectedTextRequestIdRef = useRef(0);
+  const browserRequestKey = JSON.stringify([activeTabId, input.sessionKey]);
+  useEffect(() => {
+    if (!activeTabId || !input.browserSessionPath) return;
+    let closed = false, off: (() => void) | undefined;
+    void import("./browserComposerBridge").then(module => {
+      if (!closed) off = module.attachBrowserComposer(activeTabId, input.browserSessionPath!, text => {
+        const id = ++selectedTextRequestIdRef.current;
+        setSelectedTextRequestsByTab(current => ({ ...current, [browserRequestKey]: { id, text, source: "browser" } }));
+      });
+    });
+    return () => { closed = true; off?.(); };
+  }, [activeTabId, input.browserSessionPath, browserRequestKey]);
   const [planRevisionInsertRequest, setPlanRevisionInsertRequest] = useState<{
     tabId: string;
     approvalId: string;
@@ -47,7 +59,9 @@ export function useComposerInsertCommands(input: ComposerInsertCommandsInput) {
       ? planRevisionInsertRequest.request
       : null;
   const composerInsertRequest = activeTabId ? composerInsertRequestsByTab[activeTabId] ?? null : null;
-  const selectedTextRequest = activeTabId ? selectedTextRequestsByTab[activeTabId] ?? null : null;
+  const browserRequest = selectedTextRequestsByTab[browserRequestKey];
+  const otherRequest = activeTabId ? selectedTextRequestsByTab[activeTabId] : undefined;
+  const selectedTextRequest = activeTabId ? ((browserRequest?.id ?? 0) > (otherRequest?.id ?? 0) ? browserRequest : otherRequest) ?? null : null;
 
   const setInsertTarget = useCommittedCommand((target: WorkspaceInsertTarget) => setWorkspaceInsertTarget(target));
   const handleRevisionActiveChange = useCommittedCommand((active: boolean) => {
@@ -85,11 +99,13 @@ export function useComposerInsertCommands(input: ComposerInsertCommandsInput) {
   const addTerminalOutputToComposer = useCommittedCommand(async (sessionId: string) => {
     if (!activeTabId) return;
     const target = { tabId: activeTabId, sessionKey: input.sessionKey };
-    const outcome = await input.operations(target, `terminal-output:${sessionId}`, {}, async (_operationInput, authority) =>
-      (await import("./sessionRuntimeOwner")).executeTerminalOutputInsertion(target, sessionId, {
+    const outcome = await input.operations(target, `terminal-output:${sessionId}`, {}, async (_operationInput, authority) => {
+      const [runtime, formatter] = await Promise.all([import("./sessionRuntimeOwner"), import("../lib/terminalOutput")]);
+      return runtime.executeTerminalOutputInsertion(target, sessionId, {
         read: (tabId, terminalSessionId) => ports.terminalOutput(tabId, terminalSessionId),
         apply: addWorkspaceTextToComposer,
-      }, formatTerminalOutputForComposer, authority),
+      }, formatter.formatTerminalOutputForComposer, authority);
+    },
     );
     if (outcome.status === "completed" && !outcome.value) showToast(t("terminal.noOutput"), "info");
     if (outcome.status === "failed") showToast(outcome.error instanceof Error ? outcome.error.message : String(outcome.error), "error");

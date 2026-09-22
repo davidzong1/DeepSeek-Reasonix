@@ -79,10 +79,13 @@ func (p *Projection) acceptBusiness(rows []Message, removed []string, covered ui
 	published := make([]Message, 0, len(rows))
 	for _, message := range rows {
 		p.ensureRecordIdentity(&message)
-		published = append(published, message)
+		// The published change is a copy. Fill turn identity before that copy,
+		// or the follower installs the user row with no turn and leaves live
+		// output above it. The buffer below must see the same value.
 		if message.TurnID == "" {
 			message.TurnID = turnID
 		}
+		published = append(published, message)
 		var row *bufferedMessage
 		for _, existing := range p.buffer.messages {
 			if existing.message.RecordID == message.RecordID {

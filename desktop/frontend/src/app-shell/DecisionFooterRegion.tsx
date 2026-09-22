@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentProps, type CSSProperties, type ReactNode } from "react";
 
 import { Composer } from "../components/Composer";
+import { useT } from "../lib/i18n";
 
 const TodoPanel = lazy(() => import("../components/TodoPanel").then((module) => ({ default: module.TodoPanel })));
 const UndoRewindBanner = lazy(() => import("../components/UndoRewindBanner").then((module) => ({ default: module.UndoRewindBanner })));
@@ -47,6 +48,7 @@ export type DecisionFooterRegionProps = {
   undo?: { identity: string; props: UndoProps };
   decision?: DecisionFooterSurface;
   composer: {
+    empty?: { onCreate: () => void; onChooseProject: () => void };
     hidden: boolean;
     inert: boolean;
     hero: boolean;
@@ -83,6 +85,7 @@ export function DecisionFooterRegion({
   decision,
   composer,
 }: DecisionFooterRegionProps) {
+  const t = useT();
   if (hidden) return null;
 
   return (
@@ -104,7 +107,10 @@ export function DecisionFooterRegion({
         aria-hidden={composer.hidden ? true : undefined}
       >
         {composer.hero && composer.headline ? <h2 className="welcome-creation__headline">{composer.headline}</h2> : null}
-        <Composer {...composer.props} />
+        {composer.empty ? <div className="welcome-creation">
+          <button className="btn btn--primary" onClick={composer.empty.onCreate}>{t("topbar.newSession")}</button>
+          <button className="btn" onClick={composer.empty.onChooseProject}>{t("projectTree.addProjectTooltip")}</button>
+        </div> : <Composer {...composer.props} />}
         {composer.hero && composer.hint ? <p className="composer-decision-host__hint">{composer.hint}</p> : null}
       </div>
     </footer>

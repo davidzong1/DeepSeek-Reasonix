@@ -6,6 +6,9 @@ import { JSDOM } from "jsdom";
 import { initialState } from "../lib/useController";
 import { applyHydrateErrorState } from "../lib/hydrateErrorState";
 import { projectSessionAvailability, type SessionAvailability } from "../lib/sessionAvailability";
+
+assert.deepEqual(projectSessionAvailability({empty:true}),{kind:"ready",source:"history"},"an empty welcome has no runtime to wait for");
+assert.equal(projectSessionAvailability({}).kind,"loading","an unresolved selected source still reports loading");
 import { useTranscriptSurfaceProjection, type TranscriptSurfaceProjectionInput } from "../app-runtime/useTranscriptSurfaceProjection";
 import { projectNavigationSurfaceTarget } from "../app-runtime/conversationProjection";
 import { SessionRecoveryBanner } from "../components/SessionRecoveryBanner";

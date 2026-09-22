@@ -43,3 +43,20 @@ test("revoke removes the grant and a generation change revokes every grant", () 
   assert.deepEqual(revoked, ["a", "b"]);
   assert.throws(() => grants.install({ grantId: "c", taskId: "t", sessionId: "" }), noGrant);
 });
+
+test("diagnostic lookup never guesses between scopes or stale generations", () => {
+  let generation = "g1";
+  const grants = new GrantRegistry({ generation: () => generation });
+  const a = "a".repeat(64), b = "b".repeat(64);
+  grants.install({ grantId: "a", taskId: "task", sessionId: "s", diagnosticScope: a });
+  assert.equal(grants.diagnosticScopeForTab("task", "s"), a);
+  assert.equal(grants.diagnosticScopeForTab("other", "s"), undefined);
+  assert.equal(grants.diagnosticScopeForTab("task", "other"), undefined);
+  grants.install({ grantId: "b", taskId: "task", sessionId: "s", diagnosticScope: b });
+  assert.equal(grants.diagnosticScopeForTab("task", "s"), undefined);
+  grants.revoke("b");
+  assert.equal(grants.diagnosticScopeForTab("task", "s"), a);
+  generation = "g2";
+  assert.equal(grants.diagnosticScopeForTab("task", "s"), undefined);
+  assert.equal(grants.size, 1, "diagnostic lookup is read-only");
+});

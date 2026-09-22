@@ -66,7 +66,15 @@ func (a *App) localReceiptTarget(path string) (localReceiptOwner, error) {
 }
 
 func (a *App) localReceiptOwnerCurrent(owner localReceiptOwner) bool {
-	if sessionRuntimeKey(owner.ctrl.SessionPath()) != sessionRuntimeKey(owner.path) {
+	path := owner.ctrl.SessionPath()
+	if lifecycle, ok := owner.ctrl.(control.IdentityLifecycle); ok && lifecycle.UsesExclusiveSession() {
+		ref, bound := lifecycle.SessionRef()
+		if !bound {
+			return false
+		}
+		path = "session-id:" + ref.SessionID
+	}
+	if sessionRuntimeKey(path) != sessionRuntimeKey(owner.path) {
 		return false
 	}
 	a.mu.RLock()

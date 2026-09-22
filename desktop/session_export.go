@@ -60,6 +60,7 @@ type sessionExportJob struct {
 	client         *http.Client
 	base, route    string
 	observation    json.RawMessage
+	browserScope   string // Fixed with the export source, before the save dialog.
 	prepared       bool
 	records, pages int
 	pageOffset     int64
@@ -471,6 +472,7 @@ func (a *App) captureSessionExportSource(job *sessionExportJob, selector Session
 		if selector.Ref != nil && selector.Ref.SessionID != job.handle.Snapshot.Ref.SessionID {
 			return errors.New("export target changed")
 		}
+		job.browserScope = browserDiagnosticScope(job.sourceHostID, job.handle.Snapshot.Ref.SessionID)
 	} else {
 		if selector.Ref == nil && selector.Source == nil && selector.SessionPath == "" && selector.TopicID == "" {
 			a.mu.RLock()
@@ -492,6 +494,7 @@ func (a *App) captureSessionExportSource(job *sessionExportJob, selector Session
 		}
 		job.query = a.desktopSessionService("").Query()
 		job.controller = target.Controller
+		job.browserScope = browserDiagnosticScope(localDesktopHostID, target.SessionRef.SessionID)
 		job.workspaceRoot = target.WorkspaceRoot
 		if format == "diagnostic" {
 			job.handle.Snapshot, err = job.query.CaptureDiagnosticSnapshot(ctx, target.SessionRef)

@@ -557,7 +557,7 @@ func (a *Agent) SessionCache() (hit, miss int) {
 }
 
 // ContextWindow returns the configured context-window size in tokens. 0
-// means compaction is disabled for this agent.
+// means automatic compaction is disabled for this agent.
 func (a *Agent) ContextWindow() int { return a.contextWindow }
 
 // mid-turn steer marker.
@@ -829,7 +829,7 @@ type Options struct {
 	// files outside the workspace roots. nil keeps fail-closed behavior.
 	ConfigWriteApprover tool.ConfigWriteApprover
 
-	// Context management. ContextWindow <= 0 disables compaction. Ratios and
+	// Context management. ContextWindow <= 0 disables automatic compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
 	CompactRatio  float64

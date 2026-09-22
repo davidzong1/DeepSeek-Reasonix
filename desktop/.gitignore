@@ -21,6 +21,7 @@
 !/build/darwin/entitlements.plist
 !/build/darwin/icon.icns
 !/build/darwin/appicon.svg
+!/build/darwin/appicon.png
 
 # Commit the hand-written Linux .deb packaging inputs and app icon assets. The
 # .deb is built by scripts/desktop-build.sh's linux branch via nfpm. Parent

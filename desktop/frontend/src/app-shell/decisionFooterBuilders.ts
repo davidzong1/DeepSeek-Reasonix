@@ -240,6 +240,7 @@ export function buildDecisionFooterSurface(input: DecisionFooterSurfaceInput): D
 }
 
 export type ComposerSurfaceInput = {
+  empty?: { onCreate: () => void; onChooseProject: () => void };
   view: {
     hidden: boolean;
     inert: boolean;
@@ -256,7 +257,7 @@ export type ComposerSurfaceInput = {
     draftHint?: string;
   };
   base: ComposerBase;
-  tab: { readOnly?: boolean; sessionPath?: string; workspaceRoot?: string; authentication?: ComposerProps["authentication"]; modelSettingsPending?: boolean; remote?: { hostId: string; workspace: string } } | undefined;
+  tab: { readOnly?: boolean; session?: import("../lib/sessionRef").SessionRef | null; sessionPath?: string; workspaceRoot?: string; authentication?: ComposerProps["authentication"]; modelSettingsPending?: boolean; remote?: { hostId: string; workspace: string } } | undefined;
   tabId: string | undefined;
   profile: ReturnType<typeof useComposerProfileProjection>;
   router: { handleSend: ComposerProps["onSend"]; handleSteer: ComposerProps["onSteer"] };
@@ -289,6 +290,7 @@ export type ComposerSurfaceInput = {
 export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFooterRegionProps["composer"] {
   const { base, view, profile, router, modes, goals, remoteGoal, modelSwitch, inserts, control, remoteComposer } = input;
   const surface: DecisionFooterRegionProps["composer"] = {
+    empty: !input.tabId && !input.draft?.surface ? input.empty : undefined,
     hidden: view.hidden,
     inert: view.inert,
     hero: view.hero,
@@ -300,6 +302,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       toolApprovalMode: profile.toolApprovalMode,
       goal: profile.goal,
       tabId: input.tabId,
+      formalSessionRef: view.remote ? undefined : input.tab?.session ?? undefined,
       workspaceRoot: input.tab?.workspaceRoot,
       onSend: view.remote ? remoteComposer.send : router.handleSend,
       onInvocationMetadataChange: input.onInvocationMetadataChange,

@@ -5,6 +5,73 @@ import { QuitSequencer } from "./lifecycle.js";
 const silent = { info() {}, warn() {}, error() {} };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test("recovery bounds a wedged draft save, confirms loss, and shuts down before relaunch", async () => {
+  const events: string[] = [];
+  let q!: QuitSequencer;
+  const { app, calls } = fakeApp(() => q);
+  q = new QuitSequencer({
+    app, log: silent, recoveryDraftTimeoutMs: 5,
+    service: { beforeClose: async () => false, shutdown: async () => { events.push("shutdown"); } },
+    flushRenderer: () => new Promise(() => {}),
+    confirmRecoveryDraftLoss: async () => { events.push("confirm"); return true; },
+    onCloseAllowed: () => { events.push("closed"); },
+  });
+  q.recoverRenderer(["--reasonix-graphics-recovery"]);
+  q.recoverRenderer(["duplicate"]);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(q.currentPhase, "completed");
+  assert.deepEqual(events, ["confirm", "shutdown", "closed"]);
+  assert.equal(calls.filter(c => c.startsWith("relaunch:")).length, 1);
+  assert.ok(calls.includes("relaunch:--reasonix-graphics-recovery"));
+});
+
+test("cancelled recovery releases editing without leaving a stale relaunch armed", async () => {
+  let q!: QuitSequencer, fail = true, shutdowns = 0, resumed = 0;
+  const { app, calls } = fakeApp(() => q);
+  q = new QuitSequencer({
+    app, log: silent,
+    service: { beforeClose: async () => false, shutdown: async () => { shutdowns++; } },
+    flushRenderer: async () => { if (fail) throw new Error("renderer gone"); },
+    confirmRecoveryDraftLoss: async () => false,
+    resumeRenderer: async () => { resumed++; },
+    onPrepareFailed: () => { assert.fail("recovery cancellation must not open another failure prompt"); },
+    onCloseAllowed() {},
+  });
+  q.recoverRenderer(["--reasonix-graphics-recovery"]);
+  await tick(); await tick();
+  assert.equal(q.currentPhase, "idle"); assert.equal(shutdowns, 0);
+  assert.equal(resumed, 1);
+  fail = false; app.quit(); await tick(); await tick();
+  assert.equal(shutdowns, 1);
+  assert.equal(calls.some(c => c.startsWith("relaunch:")), false);
+});
+
+for (const lateFailure of [false, true]) {
+  test(`a cancelled recovery's late draft ${lateFailure ? "failure" : "success"} cannot complete a newer quit`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const oldFlush = deferred(), nextFlush = deferred();
+    let q!: QuitSequencer, saves = 0, shutdowns = 0;
+    const { app, calls } = fakeApp(() => q);
+    q = new QuitSequencer({
+      app, log: silent, recoveryDraftTimeoutMs: 5,
+      service: { beforeClose: async () => false, shutdown: async () => { shutdowns++; } },
+      flushRenderer: () => ++saves === 1 ? oldFlush.promise : nextFlush.promise,
+      confirmRecoveryDraftLoss: async () => false,
+      resumeRenderer: async () => {}, onCloseAllowed() {},
+    });
+    q.recoverRenderer(["--reasonix-graphics-recovery"]);
+    t.mock.timers.tick(5); await tick();
+    assert.equal(q.currentPhase, "idle");
+    app.quit();
+    if (lateFailure) oldFlush.reject(new Error("late draft failure")); else oldFlush.resolve();
+    await tick();
+    assert.equal(shutdowns, 0, "the new quit must wait for its own draft flush");
+    nextFlush.resolve(); await tick(); await tick();
+    assert.equal(shutdowns, 1);
+    assert.equal(calls.some(c => c.startsWith("relaunch:")), false);
+  });
+}
+
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;

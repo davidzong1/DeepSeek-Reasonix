@@ -2,6 +2,8 @@ import type { ActResult } from "./actions.js";
 import type { GuestDebugger, GuestPage } from "./guestView.js";
 import type { LocatedRef } from "./refResolver.js";
 import { REGISTRY_KEY } from "./snapshot.js";
+import { acquireDebugger, type DebuggerSender } from "./debuggerLease.js";
+import { runChildFrame } from "./frameRuntime.js";
 
 const OBJECT_GROUP = "reasonix-upload";
 
@@ -26,7 +28,7 @@ function objectIdOf(result: unknown): string | null {
 
 // Runtime.enable replays executionContextCreated for every live context
 // before its own reply, so a listener registered around it sees them all.
-async function executionContexts(dbg: GuestDebugger): Promise<ExecutionContext[]> {
+async function executionContexts(dbg: GuestDebugger, send: DebuggerSender): Promise<ExecutionContext[]> {
   const contexts: ExecutionContext[] = [];
   const listener = (_event: unknown, method: string, params: unknown) => {
     if (method !== "Runtime.executionContextCreated") return;
@@ -35,7 +37,7 @@ async function executionContexts(dbg: GuestDebugger): Promise<ExecutionContext[]
   };
   dbg.on("message", listener);
   try {
-    await dbg.sendCommand("Runtime.enable");
+    await send("Runtime.enable");
   } finally {
     dbg.removeListener("message", listener);
   }
@@ -45,20 +47,20 @@ async function executionContexts(dbg: GuestDebugger): Promise<ExecutionContext[]
 // Find the original registry node in its execution context, including the
 // main frame's isolated world. A CSS path would silently select a replacement
 // input after a rerender or a navigation.
-async function findObjectId(dbg: GuestDebugger, located: LocatedRef): Promise<string | null> {
+async function findObjectId(dbg: GuestDebugger, located: LocatedRef, owned: boolean, send: DebuggerSender): Promise<string | null> {
   const args = [REGISTRY_KEY, located.binding.docId, located.snapshotId, located.ref].map((value) => ({ value }));
   try {
-    for (const context of await executionContexts(dbg)) {
+    for (const context of await executionContexts(dbg, send)) {
       if (located.isMainFrame && context.auxData?.isDefault) continue;
       try {
-        const objectId = objectIdOf(await dbg.sendCommand("Runtime.callFunctionOn", { functionDeclaration: FIND_UPLOAD_NODE, executionContextId: context.id, arguments: args, objectGroup: OBJECT_GROUP }));
+        const objectId = objectIdOf(await send("Runtime.callFunctionOn", { functionDeclaration: FIND_UPLOAD_NODE, executionContextId: context.id, arguments: args, objectGroup: OBJECT_GROUP }));
         if (objectId) return objectId;
       } catch {
         // A context that vanished mid-walk is simply not the one we want.
       }
     }
   } finally {
-    await dbg.sendCommand("Runtime.disable").catch(() => undefined);
+    if (owned) await send("Runtime.disable").catch(() => undefined);
   }
   return null;
 }
@@ -66,17 +68,28 @@ async function findObjectId(dbg: GuestDebugger, located: LocatedRef): Promise<st
 export async function uploadFiles(page: GuestPage, located: LocatedRef, files: string[], verify: () => void, dispatch: () => void): Promise<ActResult> {
   if (located.tag !== "input" || located.type !== "file") return { executed: false, reason: "element is not a file input" };
   const dbg = page.debugger;
-  const attached = dbg.isAttached();
-  if (!attached) dbg.attach("1.3");
+  if (!located.isMainFrame) {
+    return await runChildFrame(page, located.frame, "", async (contextId, sessionId, send) => {
+      const args = [REGISTRY_KEY, located.binding.docId, located.snapshotId, located.ref].map(value => ({ value }));
+      try {
+        const objectId = objectIdOf(await send("Runtime.callFunctionOn", { functionDeclaration: FIND_UPLOAD_NODE, executionContextId: contextId, arguments: args, objectGroup: OBJECT_GROUP }, sessionId));
+        if (!objectId) return { executed: false, reason: "file input reference expired" };
+        verify(); dispatch();
+        await send("DOM.setFileInputFiles", { objectId, files }, sessionId);
+        return { executed: true };
+      } finally { await send("Runtime.releaseObjectGroup", { objectGroup: OBJECT_GROUP }, sessionId).catch(() => undefined); }
+    }) as ActResult;
+  }
+  const release = acquireDebugger(dbg);
   try {
-    const objectId = await findObjectId(dbg, located);
+    const objectId = await findObjectId(dbg, located, release.owned, release.send);
     if (!objectId) return { executed: false, reason: "file input could not be located in the page" };
     verify();
     dispatch();
-    await dbg.sendCommand("DOM.setFileInputFiles", { objectId, files });
-    await dbg.sendCommand("Runtime.releaseObjectGroup", { objectGroup: OBJECT_GROUP }).catch(() => undefined);
+    await release.send("DOM.setFileInputFiles", { objectId, files });
+    await release.send("Runtime.releaseObjectGroup", { objectGroup: OBJECT_GROUP }).catch(() => undefined);
     return { executed: true };
   } finally {
-    if (!attached && dbg.isAttached()) dbg.detach();
+    release();
   }
 }

@@ -20,6 +20,9 @@ import (
 // the shell writes are far smaller, and the HTTP wire already caps replies.
 const browserRelayMaxBytes = 32 << 20
 
+// Completed recordings may be larger than uploads; do not widen upload access.
+const browserArtifactRelayMaxBytes = 64 << 20
+
 // FileRelay stages a desktop-side capture file (screenshot, download) onto
 // the remote host through the existing SFTP channel, so the remote serve's
 // tools read a path local to them. A desktop path is never handed to the
@@ -128,8 +131,8 @@ func (r sftpFileRelay) Stage(ctx context.Context, workspace, localPath string) (
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("browser relay: %s is not a regular file", localPath)
 	}
-	if info.Size() > browserRelayMaxBytes {
-		return "", fmt.Errorf("browser relay: %s exceeds %d bytes", localPath, browserRelayMaxBytes)
+	if info.Size() > browserArtifactRelayMaxBytes {
+		return "", fmt.Errorf("browser relay: %s exceeds %d bytes", localPath, browserArtifactRelayMaxBytes)
 	}
 	fs, err := r.conn.SFTP()
 	if err != nil {
@@ -149,7 +152,7 @@ func (r sftpFileRelay) Stage(ctx context.Context, workspace, localPath string) (
 	}
 	defer f.Close()
 	remote := path.Join(dir, relayFileName(localPath))
-	if _, err := fs.UploadAtomic(ctx, remote, io.LimitReader(f, browserRelayMaxBytes), 0o600); err != nil {
+	if _, err := fs.UploadAtomic(ctx, remote, io.LimitReader(f, browserArtifactRelayMaxBytes), 0o600); err != nil {
 		return "", fmt.Errorf("browser relay: upload %s: %w", localPath, err)
 	}
 	return relayAgentPath(remote, home), nil

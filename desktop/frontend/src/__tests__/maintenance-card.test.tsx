@@ -18,10 +18,14 @@ const render = (value: CompactionItem) => renderToStaticMarkup(
 const running = render(item("running", true));
 assert.match(running, /class="compaction compaction--pending"/);
 assert.match(running, /Compacting conversation/);
+assert.match(running, /Generating summary/);
+assert.match(running, /compaction__spinner/);
+assert.match(running, /role="status"/);
 assert.doesNotMatch(running, /<button/);
 
 const cancelling = render(item("cancelling", true));
 assert.match(cancelling, /Stopping compaction/);
+assert.doesNotMatch(cancelling, /Generating a summary/);
 
 const saving = render(item("finalizing", true));
 assert.match(saving, /Saving compaction result/);
@@ -40,6 +44,7 @@ assert.match(failed, /<button/);
 
 const noop = render(item("noop", false));
 assert.match(noop, /No history to compact/);
+assert.doesNotMatch(noop, /compaction__spinner/);
 assert.doesNotMatch(noop, /<button/);
 
 const unknown = render(item("future_state", false));

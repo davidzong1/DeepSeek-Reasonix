@@ -109,9 +109,34 @@ func (s *Store) openLocked() error {
 		_ = db.Close()
 		return err
 	}
-	if version > SchemaVersion {
+	if version < 0 || version > SchemaVersion {
 		_ = db.Close()
 		return fmt.Errorf("%w: %d", ErrUnsupportedVersion, version)
+	}
+	if version == 0 {
+		var tables int
+		if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if tables != 0 {
+			// A concurrent first opener may have committed the schema after our
+			// first read. Only an identifiable committed format may be opened.
+			if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+				_ = db.Close()
+				return err
+			}
+			if version < 1 || version > SchemaVersion {
+				_ = db.Close()
+				return fmt.Errorf("%w: %d", ErrUnsupportedVersion, version)
+			}
+		}
+	}
+	if version > 0 && version < SchemaVersion {
+		if err := backupBeforeUpgrade(db, s.path, version); err != nil {
+			_ = db.Close()
+			return err
+		}
 	}
 	// Even changing journal mode writes the database header. Check the version
 	// first so an older binary leaves an unknown future file byte-for-byte intact.

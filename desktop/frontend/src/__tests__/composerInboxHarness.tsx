@@ -97,7 +97,8 @@ export async function renderComposer(props: Partial<Parameters<typeof Composer>[
     onSetCollaborationMode: () => {},
     onSetToolApprovalMode: () => {},
         onClearGoal: () => {},
-    onSwitchModel: () => {},
+    onEditGoal: () => {}, onPauseGoal: () => {}, onResumeGoal: () => {},
+    onSwitchModel: () => true,
     onSetEffort: () => {},
 
     ready: true,

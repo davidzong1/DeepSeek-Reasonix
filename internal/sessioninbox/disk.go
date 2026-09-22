@@ -409,6 +409,9 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func agentBranchID(sessionPath string) string {
+	if id, canonical := strings.CutPrefix(sessionPath, "session-id:"); canonical {
+		return id
+	}
 	base := filepath.Base(sessionPath)
 	return strings.TrimSuffix(base, ".jsonl")
 }

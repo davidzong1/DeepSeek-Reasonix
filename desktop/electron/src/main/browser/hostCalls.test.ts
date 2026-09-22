@@ -7,12 +7,12 @@ import { DownloadTracker } from "./downloads.js";
 import { BROWSER_ERR_NO_GRANT, BROWSER_ERR_STALE_REFERENCE, BROWSER_ERR_TAKEN_OVER } from "./errors.js";
 import { FakeViewFactory, silentLog } from "./fakeGuestViews.js";
 import { GrantRegistry } from "./grants.js";
-import { buildBrowserHostCalls, type HostBrowserTab } from "./hostCalls.js";
+import { buildBrowserHostCalls, type HostBrowserTab, type BrowserHostDeps } from "./hostCalls.js";
 import { BrowserSurfaceManager } from "./surfaceManager.js";
 
 const code = (value: number) => (error: unknown) => error instanceof RpcError && error.code === value;
 
-async function setup() {
+async function setup(overrides: Partial<BrowserHostDeps> = {}) {
   const factory = new FakeViewFactory();
   const surfaces = new BrowserSurfaceManager({ views: factory, contentSize: () => null, onTakeover() {}, onCrash() {}, log: silentLog, openWaitMs: 5 });
   const grants = new GrantRegistry({ generation: () => "gen-1" });
@@ -34,6 +34,7 @@ async function setup() {
     downloads,
     snapshot: async (tab, selector) => ({ tabId: tab.id, selector }) as never,
     screenshot: async (tab, request) => ({ tabId: tab.id, ...request }) as never,
+    ...overrides,
   });
   const call = async (method: keyof typeof table, params: Record<string, unknown> = {}): Promise<unknown> => table[method](params);
   const setDirs = downloads.setTaskDirectory.bind(downloads);
@@ -57,6 +58,80 @@ test("grant, list and open are scoped to the grant's task", async () => {
 
   const listed = (await s.call("host/browser.tabs.list", { grantId: "g" })) as { tabs: HostBrowserTab[] };
   assert.deepEqual(listed.tabs.map((tab) => tab.id), [opened.id], "another task's tabs are invisible");
+});
+
+test("cancel and takeover release a capture lease before a late capture reply", async () => {
+  for (const reason of ["cancel", "takeover", "revoke", "resize", "close"]) {
+    let respond!: (value: never) => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const s = await setup({ screenshot: async () => { entered(); return new Promise(resolve => { respond = resolve; }); } });
+    await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "s" });
+    const tab = await s.surfaces.open("https://test.example", { taskId: "task", sessionId: "s", temporary: false });
+    let released = 0;
+    tab.view.prepareCapture = async () => () => { released++; };
+    const request = s.call("host/browser.screenshot", { grantId: "g", tabId: tab.id, requestId: "r1" });
+    await started;
+    if (reason === "cancel") await s.call("host/browser.cancel", { grantId: "g", requestId: "r1" });
+    if (reason === "takeover") s.surfaces.takeover(tab.id, "user");
+    if (reason === "revoke") s.grants.revoke("g");
+    if (reason === "resize") s.surfaces.setLayout({ x: 0, y: 0, width: 700, height: 500 });
+    if (reason === "close") s.surfaces.close(tab.id);
+    await assert.rejects(request);
+    assert.equal(released, 1, reason);
+    respond({ path: "late.png" } as never);
+    await Promise.resolve();
+    assert.equal(released, 1, "late completion cannot release another request's lease");
+  }
+});
+
+test("operation trace records failure phase and timing without page contents or credentials", async () => {
+  const trace: unknown[] = [];
+  const s = await setup({ trace: event => trace.push(event), snapshot: async () => { throw new RpcError(-32013, "password=DO_NOT_LOG https://example.test/?token=DO_NOT_LOG", { kind: "script_runtime_error" }); } });
+  await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "s" });
+  const tab = await s.surfaces.open("https://example.test/?token=DO_NOT_LOG", { taskId: "task", sessionId: "s", temporary: false });
+  await assert.rejects(s.call("host/browser.snapshot", { grantId: "g", tabId: tab.id, requestId: "trace" }));
+  const final = trace.at(-1) as { phase: string; elapsedMs: number; errorKind: string };
+  assert.equal(final.phase, "failed"); assert.equal(final.errorKind, "script_runtime_error"); assert.ok(final.elapsedMs >= 0);
+  assert.equal(JSON.stringify(trace).includes("DO_NOT_LOG"), false);
+  assert.equal(JSON.stringify(trace).includes("example.test"), false);
+});
+
+test("panel resize preserves fixed CSS observations but invalidates natural viewport observations", async () => {
+  for (const fixed of [true, false]) {
+    let entered!: () => void, finish!: (value: never) => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const s = await setup({ snapshot: async () => { entered(); return new Promise(resolve => { finish = resolve; }); } });
+    await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "s" });
+    const tab = await s.surfaces.open("https://example.test", { taskId: "task", sessionId: "s", temporary: true });
+    if (!fixed) tab.viewport = null;
+    const before = tab.viewportRevision;
+    const request = s.call("host/browser.snapshot", { grantId: "g", tabId: tab.id });
+    const outcome = request.then(value => ({ value }), error => ({ error }));
+    await started;
+    s.surfaces.setLayout({ x: 0, y: 0, width: 700, height: 500 });
+    finish({ tree: "fixture" } as never);
+    const result = await outcome;
+    if (fixed) { assert.deepEqual(result, { value: { tree: "fixture" } }); assert.equal(tab.viewportRevision, before); }
+    else { assert.ok("error" in result); assert.ok(tab.viewportRevision > before); }
+    s.surfaces.destroyAll();
+  }
+});
+
+test("cancel releases a navigation waiter without replaying the dispatched navigation", async () => {
+  const s = await setup();
+  await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "s" });
+  const tab = await s.surfaces.open("https://test.example", { taskId: "task", sessionId: "s", temporary: false });
+  let finish!: () => void;
+  const page = tab.view.page as import("./fakeGuestViews.js").FakePage;
+  page.loadResult = new Promise(resolve => { finish = resolve; });
+  const request = s.call("host/browser.tabs.navigate", { grantId: "g", tabId: tab.id, requestId: "nav", url: "https://next.example" });
+  await s.call("host/browser.cancel", { grantId: "g", requestId: "nav" });
+  await assert.rejects(request, /outcome is unknown/);
+  assert.equal(page.getURL(), "https://next.example/");
+  finish();
+  await Promise.resolve();
+  assert.equal(s.surfaces.tabsForSession("task", "s").length, 1);
 });
 
 test("a new session grant cannot list or control the task's earlier session tabs", async () => {

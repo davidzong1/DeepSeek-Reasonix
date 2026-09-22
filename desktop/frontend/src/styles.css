@@ -6260,6 +6260,18 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 560;
   border-radius: 6px;
 }
+.compaction__spinner {
+  animation: spin 0.9s linear infinite;
+}
+.compaction__hint {
+  margin-inline-start: 8px;
+  color: var(--fg-faint);
+}
+@media (prefers-reduced-motion: reduce) {
+  .compaction__spinner {
+    animation: none;
+  }
+}
 .compaction__head:hover {
   color: var(--fg);
   background: color-mix(in srgb, var(--fg) 5%, transparent);

@@ -4,18 +4,20 @@ import { isShellToolName, isPowerShellToolName } from "./shellToolIdentity";
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type ToolPresentationKind = "search" | "web" | "shell" | "agent" | "file" | "present" | "tool";
 
-/** Execution metadata is authoritative, including old timeouts carrying a false zero exit code. */
+/** Shell execution metadata is authoritative for shell calls, not output readers. */
 export function toolPresentation(item: ToolItem): {
   state: ToolItem["status"]; dot: "ongoing" | "done" | "error" | "warning" | "idle";
   label: "chat.running" | "chat.done" | "chat.failed" | "chat.stopped" | "chat.timedOut" | "chat.notRun" | "chat.background" | "chat.unknown";
   exitCode?: number;
 } {
-  const execution = item.execution;
+  const execution = classifyTool(item) === "shell" ? item.execution : undefined;
   switch (execution?.state) {
     case "timed_out": return { state: "error", dot: "error", label: "chat.timedOut" };
     case "cancelled": return { state: "stopped", dot: "warning", label: "chat.stopped" };
     case "not_run": return { state: "stopped", dot: "warning", label: "chat.notRun" };
-    case "background_started": return { state: "stopped", dot: "ongoing", label: "chat.background" };
+    // This is the settled launch receipt, not a live observation of the job.
+    // Job progress is reported by its own output/status tools across turns.
+    case "background_started": return { state: "done", dot: "done", label: "chat.background" };
     case "failed": return { state: "error", dot: "error", label: "chat.failed", exitCode: execution.exitCode };
     case "completed":
       if (execution.exitCode == null) return { state: "unknown", dot: "idle", label: "chat.unknown" };

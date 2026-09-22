@@ -32,9 +32,14 @@ Agent 工具调用 ─▶ Go BrowserExecutor ─▶ ledger.reserve ─▶ host/b
 ## 面板
 
 右侧工作区加入浏览器面板：任务内标签栏、地址栏、前进/后退、刷新、缩放、可重试的
-加载错误、下载列表、DevTools 开关。恢复的标签只保留安全导航条目 `{url, title}`；不
-持久化表单状态、凭据或可重放提交。标签元数据与操作日志是桌面状态目录下新增的带
-版本文件（`browser/tabs-v1.json`、`browser/operations-v1.json`）。
+加载错误、下载列表、DevTools、响应式视口、元素选择、页面诊断和录制。标签元数据保存
+到 Electron userData 下的 `browser-tabs-v1.json`，包含任务/会话、地址、标题、顺序和
+视口偏好；不保存 grant、表单、DOM ref 或未完成操作。启动恢复占位标签，明确访问后
+才加载；临时标签不恢复。本地 HTML 保存原文件引用，重新授权后生成新预览地址，不
+持久化旧 token URL。现有操作日志保持不变。每窗口最多 32 个逻辑标签，不自动驱逐。
+
+本轮运行时升级、验证证据和发布限制见
+[浏览器升级验收记录](BROWSER_RUNTIME_UPGRADE_ACCEPTANCE.md)。
 
 本地 `.html` / `.htm` 文件默认在该面板运行。聊天文件链接、成果卡片、文件树与 Agent
 按需预览共用一条链路：按文件来源重新授权，生成带随机令牌的 loopback HTTP URL，并

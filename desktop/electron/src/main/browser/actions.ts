@@ -132,18 +132,22 @@ export class ActionExecutor {
     const resolved = await resolveRef(tab.view.page, binding, ref, true);
     if (!resolved.ok) return resolved;
     this.checkpoint(tab, binding, verify);
-    const zoom = tab.view.page.getZoomFactor() || 1;
+    const zoom = tab.view.inputScale?.() ?? (tab.view.page.getZoomFactor() || 1);
     const { element } = resolved.value;
     const centre = { x: Math.round((element.x + element.width / 2) * zoom), y: Math.round((element.y + element.height / 2) * zoom) };
     return { ok: true, element, centre, frame: resolved.value.frame, binding: resolved.value.binding };
   }
 
-  private mouseClick(tab: BrowserTab, at: Point): void {
+  private async mouseClick(tab: BrowserTab, at: Point, verify: () => void): Promise<void> {
     const page = tab.view.page;
     this.deps.surfaces.markAgentInput(tab);
-    page.sendInputEvent({ type: "mouseMove", x: at.x, y: at.y });
-    page.sendInputEvent({ type: "mouseDown", x: at.x, y: at.y, button: "left", clickCount: 1 });
-    page.sendInputEvent({ type: "mouseUp", x: at.x, y: at.y, button: "left", clickCount: 1 });
+    const move = { type: "mouseMove" as const, x: at.x, y: at.y };
+    if (tab.view.sendMouseInput) await tab.view.sendMouseInput(move, verify); else page.sendInputEvent(move);
+    for (const type of ["mouseDown", "mouseUp"] as const) {
+      verify();
+      const event = { type, x: at.x, y: at.y, button: "left" as const, clickCount: 1 };
+      if (tab.view.sendMouseInput) await tab.view.sendMouseInput(event, verify); else page.sendInputEvent(event);
+    }
   }
 
   private sendKeys(tab: BrowserTab, keys: string): string | null {
@@ -167,7 +171,7 @@ export class ActionExecutor {
     if (target.element.disabled) return { executed: false, reason: "element is disabled" };
     if (target.element.tag === "option") return { executed: false, reason: "use the select action for <option> elements" };
     dispatch();
-    this.mouseClick(tab, target.centre);
+    await this.mouseClick(tab, target.centre, verify);
     return { executed: true };
   }
 
@@ -177,7 +181,7 @@ export class ActionExecutor {
     if (target.element.disabled) return { executed: false, reason: "element is disabled" };
     if (!target.element.editable) return { executed: false, reason: "element is not editable" };
     dispatch();
-    this.mouseClick(tab, target.centre);
+    await this.mouseClick(tab, target.centre, verify);
     await this.sleep(30);
     this.checkpoint(tab, binding, verify);
     this.deps.surfaces.markAgentInput(tab);
@@ -199,7 +203,7 @@ export class ActionExecutor {
       if (!target.ok) return { executed: false, reason: target.reason };
       if (target.element.editable) {
         dispatch();
-        this.mouseClick(tab, target.centre);
+        await this.mouseClick(tab, target.centre, verify);
         await this.sleep(30);
         this.checkpoint(tab, binding, verify);
       } else {
@@ -239,7 +243,7 @@ export class ActionExecutor {
   }
 
   private async viewport(tab: BrowserTab): Promise<{ width: number; height: number }> {
-    const zoom = tab.view.page.getZoomFactor() || 1;
+    const zoom = tab.view.inputScale?.() ?? (tab.view.page.getZoomFactor() || 1);
     const raw = await tab.view.page.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: "({ width: window.innerWidth, height: window.innerHeight })" }]);
     const size = typeof raw === "object" && raw !== null ? (raw as { width?: unknown; height?: unknown }) : {};
     return { width: (typeof size.width === "number" ? size.width : 0) * zoom, height: (typeof size.height === "number" ? size.height : 0) * zoom };

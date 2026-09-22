@@ -205,12 +205,12 @@ await click(document.querySelector('.composer-git-graph__actions button[aria-lab
 assert.equal(document.querySelector('.composer-git-graph'), null);
 assert.equal(document.activeElement, document.querySelector('button[aria-label="Current Git branch: feature/other"]'), "closing the Git graph restores focus to the branch trigger");
 
-await click(document.querySelector('button[aria-label="Work without a project"]'));
+await click(document.querySelector('button[aria-label="Use default workspace"]'));
 assert.equal(calls.globals, 1);
 
 await render({ scope: "global", workspaceRoot: "/stale-cwd", workspaceName: "Stale workspace", remote: false });
-assert(document.querySelector('button[aria-label="Project: No project"]'), "global sessions never inherit a stale cwd label");
-assert.equal(document.querySelector('button[aria-label="Work without a project"]'), null, "global sessions do not render a redundant clear action");
+assert(document.querySelector('button[aria-label="Project: Default workspace"]'), "global sessions never inherit a stale cwd label");
+assert.equal(document.querySelector('button[aria-label="Use default workspace"]'), null, "global sessions do not render a redundant clear action");
 
 await render(draftContext);
 assert(document.querySelector('button[aria-label="Project: repo"]'), "drafts show their own project");

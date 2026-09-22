@@ -12,6 +12,7 @@ export interface WorkspaceReference {
 export type PastedBlock = { label: string; text: string };
 
 export type PersistentComposerDraft = {
+  goalDraft?: boolean;
   text: string;
   invocations: ComposerInvocation[];
   attachments: Attachment[];

@@ -40,10 +40,14 @@ user input on the page ─▶ guest preload ─▶ shell: epoch++ ─▶ desktop
 
 The right workspace gains a browser panel: tab strip per task, address bar,
 back/forward, reload, zoom, load errors with retry, download list, DevTools
-toggle. Restored tabs keep only `{url, title}` for safe navigation entries;
-no form state, credentials or replayable submissions are persisted. Tab
-metadata and the operation log are new versioned files under the desktop
-state directory (`browser/tabs-v1.json`, `browser/operations-v1.json`).
+toggle, responsive viewports, element selection, diagnostics and recording.
+Restored tabs keep task/session ownership, URL/title/order and viewport preferences;
+no grants, form state, DOM refs or replayable submissions are persisted. The shell
+stores metadata in `browser-tabs-v1.json` under Electron userData. Tabs restore as
+placeholders and load on explicit access. Temporary tabs are excluded. Local HTML
+previews retain their original file reference and require fresh authorization;
+their expiring preview URL is never persisted. The existing operation ledger is
+unchanged. Each window allows at most 32 logical tabs, without automatic eviction.
 
 Local `.html` and `.htm` files run in this panel by default. Chat file links,
 present cards, the file tree and on-demand agent preview share one path: the
@@ -116,6 +120,30 @@ system.
 desktop executor provides the shared file-preview service. It does not enter
 the always-on tool schema or inject URLs, ports or tab state into the system
 prompt.
+
+Enhanced hosts additionally expose `browser_query`, `browser_wait`,
+`browser_viewport`, `browser_pointer`, `browser_diagnostics`, and `browser_record`
+through the on-demand inventory. They use an optional executor interface and
+per-capability negotiation; an older host explicitly reports unsupported.
+Existing tool descriptions/schemas and the permanent provider prefix are unchanged.
+Query uses current document refs, reports ambiguous matches, and can scope to a
+container or to the frame containing an existing ref. Wait is bounded (default
+3 seconds, maximum 8), cancellable, and does not require network idle.
+Coordinate actions require a current screenshot observation token. Unknown
+write outcomes are never replayed.
+
+The page runtime is built independently with the qualified Playwright 1.62.1
+injection resource; it is not serialized from main-process functions. Snapshot
+and screenshot replies optionally carry document/viewport identity and timing.
+PNG data must pass generation-side and Go-side decoding before model delivery.
+Background capture currently requires macOS; unqualified platforms return a
+show-page-and-retry error. Recording captures the existing page without audio,
+defaults to 20 seconds, and is limited to 90 seconds / 64 MiB. Only a completed,
+decoded WebM is published. The View menu and Ctrl/Command+Shift+R stop recording
+even when the panel is closed.
+
+See the [implementation and acceptance record](BROWSER_RUNTIME_UPGRADE_ACCEPTANCE.md)
+for evidence, platform gates and outstanding installed-package verification.
 
 Snapshot format: an accessibility-style tree (`role "name" [state] ref=e12`)
 produced in an isolated world of the main frame and each reachable frame.

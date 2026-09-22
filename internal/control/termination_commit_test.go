@@ -221,13 +221,12 @@ func TestTerminationCommitFallbackAndSynthetic(t *testing.T) {
 }
 
 func TestTerminationCommitWatchdogRejectsLateWorker(t *testing.T) {
-	states := make(chan event.RuntimeStateSnapshot, 32)
 	terminals := make(chan event.Event, 4)
-	c, _, _ := exclusiveTestController(t, &runtimeStateTestSink{Sink: event.FuncSink(func(e event.Event) {
+	c, _, _ := exclusiveTestController(t, event.FuncSink(func(e event.Event) {
 		if e.Kind == event.TurnDone {
 			terminals <- e
 		}
-	}), states: states})
+	}))
 	c.testCancelGrace = time.Nanosecond
 	started, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -244,8 +243,13 @@ func TestTerminationCommitWatchdogRejectsLateWorker(t *testing.T) {
 	idleDone := c.turns.finishingBound.idleDone
 	c.mu.Unlock()
 	c.CancelSession()
-	runtimeStateAwait(t, states, func(s event.RuntimeStateSnapshot) bool { return s.Phase == "recovery_required" })
-	awaitPromptLedgerTest(t, terminals, "watchdog terminal publication")
+	// Terminal publication follows the durable commit and runtime publication.
+	// Wait for that barrier: a five-second observer deadline also measures host
+	// fsync latency, which is not this test's late-worker exclusion contract.
+	terminal := <-terminals
+	if state := c.PublishedRuntimeStateSnapshot(); state.Phase != "recovery_required" || terminal.Status != event.TurnRecoveryRequired {
+		t.Fatalf("watchdog terminal did not publish recovery: terminal=%+v state=%+v", terminal, state)
+	}
 	before := terminationCommitHistory(t, c)
 	var turnID string
 	for _, commit := range before {

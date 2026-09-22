@@ -29,7 +29,20 @@ type attachmentTarget struct {
 
 func (a *App) attachmentTargetForComposerTarget(composer ComposerTarget) (attachmentTarget, error) {
 	if composer.Kind != "draft" {
-		return a.attachmentTargetForTab(composer.TabID)
+		target, err := a.attachmentTargetForTab(composer.TabID)
+		if err != nil || composer.Session == nil {
+			return target, err
+		}
+		if err := validateLocalSessionRef(*composer.Session); err != nil {
+			return attachmentTarget{}, err
+		}
+		a.mu.RLock()
+		matches := target.tab != nil && target.tab.SessionID == composer.Session.SessionID
+		a.mu.RUnlock()
+		if !matches || !a.attachmentTargetCurrent(target) {
+			return attachmentTarget{}, fmt.Errorf("attachment session changed; please retry")
+		}
+		return target, nil
 	}
 	record, err := a.draftStore().Get(a.bootContext(), strings.TrimSpace(composer.DraftID))
 	if err != nil {

@@ -26,3 +26,6 @@
 *.yml text eol=lf
 .githooks/** text eol=lf
 benchmarks/**/*.sh text eol=lf
+# Tagged storage fixtures include byte digests and offsets; never rewrite EOLs.
+desktop/testdata/session-history-upgrade/** -text
+desktop/testdata/manual-session-upgrade/** -text

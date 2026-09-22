@@ -23,6 +23,19 @@ function setup(options: { now?: () => number } = {}) {
   return { factory, manager, takeovers, crashes, broadcasts, viewOf };
 }
 
+test("logical tab limit never evicts a live page and viewport changes invalidate observations", async () => {
+  const { manager } = setup();
+  for (let n = 0; n < 32; n++) await manager.open("https://example.test", { taskId: "task", temporary: false });
+  await assert.rejects(manager.open("https://example.test", { taskId: "task", temporary: false }), /limit/);
+  assert.equal(manager.all().length, 32);
+  const tab = manager.all()[0], epoch = tab.epoch;
+  tab.view.setViewport = () => {};
+  manager.setViewport(tab.id, { width: 393, height: 852, scale: "fit" });
+  assert.ok(tab.epoch > epoch);
+  assert.throws(() => manager.setViewport(tab.id, { width: 1, height: 852, scale: "fit" }), /viewport/);
+  manager.destroyAll();
+});
+
 test("URLs are normalised to http(s) and bare hosts get https", () => {
   assert.equal(normaliseBrowserURL("example.com"), "https://example.com/");
   assert.equal(normaliseBrowserURL(" http://a.b/c?d=1 "), "http://a.b/c?d=1");

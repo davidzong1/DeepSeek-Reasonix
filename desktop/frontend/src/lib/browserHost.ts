@@ -3,6 +3,8 @@
 export type BrowserTabMode = "agent" | "human";
 
 export interface BrowserTabView {
+  restorePreview?: boolean;
+  sessionId?: string;
   id: string;
   taskId: string;
   url: string;
@@ -14,6 +16,8 @@ export interface BrowserTabView {
   mode: BrowserTabMode;
   epoch: number;
   zoom: number;
+  viewport?: { width: number; height: number; scale: "fit" | number } | null;
+  operation?: { id: string; phase: string; message?: string };
   error: { code: number; description: string } | null;
 }
 
@@ -49,6 +53,12 @@ export interface DesktopBrowserHost {
   activate(tabId: string | null): Promise<void>;
   navigate(tabId: string, target: BrowserNavigationTarget): Promise<void>;
   setZoom(tabId: string, factor: number): Promise<void>;
+  setViewport?(tabId: string, viewport: { width: number; height: number; scale: "fit" | number } | null): Promise<void>;
+  pickElement?(tabId: string): Promise<{ taskId: string; sessionId: string; tabId: string; epoch: number; url: string; time: number; element: unknown } | null>;
+  record?(tabId: string, action: "start" | "status" | "stop" | "cancel"): Promise<{ id: string; state: string; bytes: number; path?: string; error?: string } | null>;
+  diagnostics?(tabId: string): Promise<{ available: boolean; entries?: unknown[] }>;
+  screenshot?(tabId: string): Promise<{ path: string; width: number; height: number }>;
+  restorePreview?(tabId: string): Promise<void>;
   toggleDevTools(tabId: string): Promise<void>;
   resume(tabId: string): Promise<void>;
   takeover(tabId: string): Promise<void>;

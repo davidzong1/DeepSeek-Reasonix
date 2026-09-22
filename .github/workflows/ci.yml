@@ -644,6 +644,17 @@ jobs:
       - name: Install isolated native input driver
         if: matrix.group == 'transcript'
         run: sudo apt-get update && sudo apt-get install -y xdotool
+      - name: Test native browser foreground runtime
+        if: matrix.group == 'transcript'
+        timeout-minutes: 3
+        run: xvfb-run -a node electron/scripts/browser-runtime-smoke.mjs
+      - name: Upload Linux browser runtime evidence
+        if: always() && matrix.group == 'transcript'
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-runtime-linux
+          path: desktop/electron/artifacts/browser-runtime/
+          if-no-files-found: warn
       - name: Test submission handoff in Chromium
         if: matrix.group == 'transcript'
         timeout-minutes: 4
@@ -896,7 +907,8 @@ jobs:
         run: go build ./...
 
       - name: test
-        run: go test ./...
+        # Keep every test, with independent package alarms for history versions.
+        run: node ../scripts/desktop-windows-go-tests.mjs --all
 
       # Only main-v2 pushes save, one job per OS and module, so the cache
       # stays a few pushes deep instead of churning on every pull request.
@@ -916,7 +928,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [A-B, C, D, E-H, I-P, Q-S, T-Z]
+        group: [A-B, C, D, E-H, I-P, Q-S, T-Z, history-3-5, history-6-7, history-8-9, history-10-11]
     defaults:
       run:
         working-directory: desktop
@@ -1024,9 +1036,47 @@ jobs:
       - name: Test native macOS signing coverage
         run: node --test packaging/sign-macos.test.mjs
 
+      - name: Test native graphics recovery
+        timeout-minutes: 3
+        run: node electron/scripts/graphics-recovery-smoke.mjs
+
+      - name: Test native browser runtime and 100 capture lifecycles
+        timeout-minutes: 5
+        env:
+          REASONIX_BROWSER_CYCLES: "100"
+        run: node electron/scripts/browser-runtime-smoke.mjs
+
+      - name: Upload macOS browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-runtime-macos
+          path: desktop/electron/artifacts/browser-runtime/
+          if-no-files-found: warn
+
       - name: Test bounded Electron diagnostics
         timeout-minutes: 3
-        run: node electron/scripts/performance-smoke.mjs
+        run: |
+          # @electron/get downloads the platform binary lazily. GitHub's
+          # release endpoint occasionally returns a transient 504; retry only
+          # that dependency fetch and keep all product/test failures fatal.
+          set +e
+          for attempt in 1 2 3; do
+            output="$(node electron/scripts/performance-smoke.mjs 2>&1)"
+            status=$?
+            printf '%s\n' "$output"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! printf '%s\n' "$output" | grep -Eq 'HTTPError: Response code (429|5[0-9][0-9])|Electron failed to install correctly'; then
+              exit "$status"
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Electron binary fetch failed transiently; retrying ($attempt/3)"
+              sleep 5
+            fi
+          done
+          exit "$status"
 
       # The production desktop build uses CGO. Keep the explicit unavailable
       # backend buildable as a fail-closed portability contract instead of
@@ -1197,6 +1247,22 @@ jobs:
         timeout-minutes: 2
         run: node electron/scripts/window-geometry-smoke.mjs
 
+      - name: Test native graphics recovery
+        timeout-minutes: 3
+        run: node electron/scripts/graphics-recovery-smoke.mjs
+
+      - name: Test native browser foreground runtime
+        timeout-minutes: 3
+        run: node electron/scripts/browser-runtime-smoke.mjs
+
+      - name: Upload Windows browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-runtime-windows
+          path: desktop/electron/artifacts/browser-runtime/
+          if-no-files-found: warn
+
       - name: Test transcript content bounds in native Electron
         timeout-minutes: 5
         env:
@@ -1233,7 +1299,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [A-B, C, D, E-H, I-P, Q-S, T-Z]
+        group: [A-B, C, D, E-H, I-P, Q-S, T-Z, history-3-5, history-6-7, history-8-9, history-10-11]
     defaults:
       run:
         shell: bash

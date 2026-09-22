@@ -24,12 +24,12 @@ const (
 	maxManifestBytes = 8 << 20
 )
 
-// Store is the transactional durable inbox for one session path.
+// Store is the transactional durable inbox for one session locator.
 // Disk I/O runs under store.mu only; callers must not hold Controller locks.
 type Store struct {
 	mu       sync.Mutex
 	dir      string
-	session  string // session transcript path
+	session  string // logical locator: transcript path or canonical session route
 	runID    string
 	limits   Limits
 	man      *manifest
@@ -43,11 +43,19 @@ type Store struct {
 // for its transaction lock; body blobs remain lazy. Cross-process recovery
 // marks uncertain items and pauses.
 func Open(sessionPath string, limits Limits) (*Store, error) {
+	return OpenAt(sessionPath, store.SessionInboxDir(sessionPath), limits)
+}
+
+// OpenAt separates the logical session locator from its physical inbox directory.
+// Canonical runtimes have an immutable identity, not a transcript file path.
+func OpenAt(sessionPath, dir string, limits Limits) (*Store, error) {
 	sessionPath = strings.TrimSpace(sessionPath)
 	if sessionPath == "" {
 		return nil, fmt.Errorf("sessioninbox: empty session path")
 	}
-	dir := store.SessionInboxDir(sessionPath)
+	if strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("sessioninbox: empty inbox directory")
+	}
 	s := &Store{
 		dir:     dir,
 		session: sessionPath,
@@ -71,7 +79,7 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
-// SessionPath returns the bound session transcript path.
+// SessionPath returns the bound logical session locator.
 func (s *Store) SessionPath() string {
 	if s == nil {
 		return ""

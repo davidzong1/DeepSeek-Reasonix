@@ -35,6 +35,10 @@ viewport or change which history is resident.
 - **Business state lives in its owner**: the controller and the history stores
   own state; `ChatSource` is a reconstructable view projection. Structural
   changes batch in microtasks.
+- **Turn order survives settlement**: a delayed user record precedes its own
+  output, while later answers and tools retain their surviving or newly formal
+  predecessors within that turn. Turn identity must not pull every live row
+  directly behind the user and reverse the order of sampling rounds.
 
 ## Single writer
 
@@ -66,6 +70,9 @@ History is a bounded window, not an ever-growing list.
   still findable, searchable and exportable. Do not treat "all history is
   mounted" as a correctness property; assert reachability and bounded residency
   instead.
+- Live events and batched stream deltas update the offscreen tail while the
+  reader is on an older page. They preserve the visible rows and the newer-page
+  flag until history navigation actually reaches that tail.
 - Paging is bidirectional (`loadOlder` / `loadNewer`). A binding that reports no
   newer cursor keeps its forward paging rather than being asked to simulate one
   through full downloads.

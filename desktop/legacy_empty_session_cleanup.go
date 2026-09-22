@@ -257,15 +257,11 @@ func legacyCleanupStatus(state legacycleanup.State) LegacyEmptySessionCleanupSta
 }
 
 func (a *App) RetryLegacyEmptySessionCleanup() (LegacyEmptySessionCleanupStatus, error) {
-	a.registerLegacyCleanupUpgradeBatch()
 	status, err := a.GetLegacyEmptySessionCleanupStatus()
 	if err != nil {
-		return LegacyEmptySessionCleanupStatus{}, err
+		return status, err
 	}
-	a.goSafe("retryLegacyEmptySessionCleanup", func() {
-		a.runLegacyEmptySessionCleanup(true)
-	})
-	return status, nil
+	return status, errors.New("automatic empty conversation cleanup has been retired; existing trash entries can still be restored")
 }
 
 func (a *App) runLegacyEmptySessionCleanup(includeUnknown bool) {

@@ -6,6 +6,22 @@ branch.
 
 ## Unreleased
 
+### Desktop conversation creation
+
+- Local **New Conversation** creates a distinct formal session immediately,
+  including when another empty conversation already exists. First send uses
+  that identity. Closing or archiving the last conversation leaves the welcome
+  page; it does not create a replacement.
+- Unsent local inputs are saved independently of chat history. Previous project
+  drafts remain available through **Previous drafts**. Unconfirmed submissions
+  are retained for inspection and are never automatically replayed.
+- Automatic historical empty-session cleanup is retired. Existing trash and
+  manual restore remain available. Session v5 and workspace registry v3 remain
+  unchanged. Downgrading to 1.38.9 is unsupported; 1.38.10 also cannot read
+  revision-3 sessions introduced by #10545. Returning from 1.38.11 preserves
+  new input files and requires review when session history has advanced. See
+  [compatibility and recovery](docs/manual-session-rollback.md).
+
 ### Added
 
 - **Editable message queue (Desktop):** full-text editing in the original queue row,

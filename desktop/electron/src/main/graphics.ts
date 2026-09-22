@@ -2,6 +2,13 @@ import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from "
 import { dirname, join } from "node:path";
 
 export type GraphicsOverride = "none" | "environment" | "command-line";
+// Removed from process.argv after bootstrap so update/restart flows cannot inherit it.
+export const GRAPHICS_RECOVERY_ARG = "--reasonix-graphics-recovery";
+export function consumeGraphicsRecoveryArg(argv: string[]): boolean {
+  const temporary = argv.includes(GRAPHICS_RECOVERY_ARG);
+  for (let i = argv.length - 1; i >= 0; i--) if (argv[i] === GRAPHICS_RECOVERY_ARG) argv.splice(i, 1);
+  return temporary;
+}
 export type GraphicsWarning = "invalid-config" | "unreadable-config" | "unsupported-version";
 export interface GraphicsSettingsState {
   hardwareAcceleration: boolean;
@@ -40,7 +47,7 @@ export function loadGraphicsBootstrap(dataHome: string, env: NodeJS.ProcessEnv, 
   const environmentOverride = env.REASONIX_DISABLE_GPU === "1";
   const commandLineOverride = argv.includes("--disable-gpu");
   const override: GraphicsOverride = environmentOverride ? "environment" : commandLineOverride ? "command-line" : "none";
-  const startupEnabled = override === "none" ? hardwareAcceleration : false;
+  const startupEnabled = override === "none" && !argv.includes(GRAPHICS_RECOVERY_ARG) ? hardwareAcceleration : false;
   return {
     configPath,
     shouldDisable: !startupEnabled,

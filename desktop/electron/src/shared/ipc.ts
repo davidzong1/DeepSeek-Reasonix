@@ -36,6 +36,12 @@ export const IPC = {
   browserActivate: "reasonix:browser:activate",
   browserNavigate: "reasonix:browser:navigate",
   browserSetZoom: "reasonix:browser:set-zoom",
+  browserSetViewport: "reasonix:browser:set-viewport",
+  browserPickElement: "reasonix:browser:pick-element",
+  browserRecord: "reasonix:browser:record",
+  browserDiagnostics: "reasonix:browser:diagnostics",
+  browserScreenshot: "reasonix:browser:screenshot",
+  browserRestorePreview: "reasonix:browser:restore-preview",
   browserToggleDevTools: "reasonix:browser:toggle-devtools",
   browserResume: "reasonix:browser:resume",
   browserUserTakeover: "reasonix:browser:user-takeover",
@@ -111,6 +117,8 @@ export function hostOS(platform: string): HostOS {
 export type BrowserTabMode = "agent" | "human";
 
 export interface BrowserTabView {
+  restorePreview?: boolean;
+  sessionId?: string;
   id: string;
   taskId: string;
   url: string;
@@ -122,6 +130,8 @@ export interface BrowserTabView {
   mode: BrowserTabMode;
   epoch: number;
   zoom: number;
+  viewport?: { width: number; height: number; scale: "fit" | number } | null;
+  operation?: { id: string; phase: string; message?: string };
   active: boolean;
   error: { code: number; description: string } | null;
 }

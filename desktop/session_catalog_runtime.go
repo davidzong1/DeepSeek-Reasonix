@@ -224,9 +224,12 @@ func (a *App) runtimeProjectTopicNodes(scope, workspaceRoot string, snapshots []
 				label = pathLabel
 			}
 		}
-		status, running := catalogControllerStatus(snapshot.ctrl, snapshot.activity)
+		var status string
+		var running bool
 		if snapshot.state != nil {
 			status, running = catalogStateStatus(*snapshot.state, snapshot.activity)
+		} else {
+			status, running = catalogControllerStatus(snapshot.ctrl, snapshot.activity)
 		}
 		preview := ""
 		if previews {

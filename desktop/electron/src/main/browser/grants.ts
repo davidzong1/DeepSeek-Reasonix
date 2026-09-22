@@ -4,6 +4,7 @@ export interface BrowserGrant {
   grantId: string;
   taskId: string;
   sessionId: string;
+  diagnosticScope?: string;
   generation: string;
   createdAt: number;
 }
@@ -20,10 +21,16 @@ export interface GrantRegistryDeps {
 export class GrantRegistry {
   private readonly grants = new Map<string, BrowserGrant>();
   private generation = "";
+  private readonly revokedListeners = new Set<(grant: BrowserGrant) => void>();
 
   constructor(private readonly deps: GrantRegistryDeps) {}
 
-  install(input: { grantId: string; taskId: string; sessionId: string }): BrowserGrant {
+  onRevoke(listener: (grant: BrowserGrant) => void): () => void {
+    this.revokedListeners.add(listener);
+    return () => { this.revokedListeners.delete(listener); };
+  }
+
+  install(input: { grantId: string; taskId: string; sessionId: string; diagnosticScope?: string }): BrowserGrant {
     if (input.grantId === "" || input.taskId === "") throw noGrant("grantId and tabId are required");
     const generation = this.deps.generation();
     if (generation === "") throw noGrant("desktop service is not running");
@@ -38,6 +45,7 @@ export class GrantRegistry {
     if (!grant) return null;
     this.grants.delete(grantId);
     this.deps.onRevoked?.(grant);
+    for (const listener of this.revokedListeners) listener(grant);
     return grant;
   }
 
@@ -69,5 +77,18 @@ export class GrantRegistry {
 
   get size(): number {
     return this.grants.size;
+  }
+
+  // Diagnostic attribution follows live grants, not a separately evicted
+  // cache. This read does not authorize access or revoke stale generations.
+  diagnosticScopeForTab(taskId: string, sessionId: string): string | undefined {
+    let scope: string | undefined;
+    const generation = this.deps.generation();
+    for (const grant of this.grants.values()) {
+      if (grant.generation !== generation || grant.taskId !== taskId || grant.sessionId !== sessionId || !grant.diagnosticScope || !/^[a-f0-9]{64}$/.test(grant.diagnosticScope)) continue;
+      if (scope && scope !== grant.diagnosticScope) return undefined;
+      scope = grant.diagnosticScope;
+    }
+    return scope;
   }
 }

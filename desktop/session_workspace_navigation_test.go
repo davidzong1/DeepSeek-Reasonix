@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -41,13 +42,19 @@ func TestCanonicalNavigationLastRequestWins(t *testing.T) {
 }
 
 func TestTicketedCanonicalNavigationKeepsOriginalIntent(t *testing.T) {
-	app, _, target, _, _ := canonicalWorkspaceOpenFixture(t)
-	if _, err := app.StartTopicActivation(TopicActivationRequest{SessionPath: sessionRoute(target.Ref().SessionID)}); err != nil {
+	app, source, target, _, _ := canonicalWorkspaceOpenFixture(t)
+	app.readyHook = func() {}
+	installNoopRuntimeEvents(app, source.sink)
+	events := newActivationEventRecorder(app)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	ticket, err := app.StartTopicActivation(TopicActivationRequest{SessionPath: sessionRoute(target.Ref().SessionID)})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := app.desktopSessions.navigationSeq.Load(); got != 1 {
 		t.Fatalf("one navigation claimed %d intents; a nested open can overtake a newer queued request", got)
 	}
+	events.waitFor(t, activationEventFor(ticket.RequestID, "ready"))
 }
 
 func TestDelayedCanonicalNavigationCannotReclaimSupersededIntent(t *testing.T) {

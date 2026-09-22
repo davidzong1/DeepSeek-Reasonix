@@ -194,7 +194,7 @@ export class RpcClient {
       (error: unknown) => {
         const code = error instanceof RpcError ? error.code : -32000;
         const message = error instanceof Error ? error.message : String(error);
-        this.reply({ jsonrpc: "2.0", id, error: { code, message } });
+        this.reply({ jsonrpc: "2.0", id, error: { code, message, ...(error instanceof RpcError && error.data !== undefined ? { data: error.data } : {}) } });
       },
     );
   }

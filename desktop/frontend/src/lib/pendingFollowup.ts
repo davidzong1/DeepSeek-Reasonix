@@ -45,5 +45,5 @@ export async function confirmFollowup(binding: AppBindings, request: PendingFoll
 }
 
 export function followupNotSubmitted(error: unknown): boolean {
-  return /reasonix_error:(inbox_not_submitted|inbox_capacity_items|inbox_capacity_bytes|inbox_item_too_large|inbox_empty|inbox_schema_readonly|channel_read_only)(?:$|\b)/.test(String(error));
+  return /reasonix_error:(?:inbox_(?:not_submitted|capacity_items|capacity_bytes|item_too_large|empty|schema_readonly)|channel_read_only|workspace_start(?:ing|_failed)|image_attachment_unreadable)(?:$|\b)/.test(String(error));
 }

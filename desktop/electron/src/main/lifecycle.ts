@@ -26,6 +26,8 @@ export interface QuitSequencerDeps {
   resumeRenderer?: () => Promise<void>;
   onWindowClosePrevented?: () => void;
   onPrepareFailed?: (message: string) => Promise<void> | void;
+  confirmRecoveryDraftLoss?: (message: string) => Promise<boolean>;
+  recoveryDraftTimeoutMs?: number;
   onShutdownFailed?: (message: string) => Promise<boolean>;
   onCloseAllowed(): void;
   cleanup?: Array<{ name: string; run(): void }>;
@@ -48,6 +50,7 @@ export class QuitSequencer {
   private finishing: Promise<void> | null = null;
   private quitRequested = false;
   private rendererFlushed = false;
+  private recoveryRestart = false;
   private attemptStartedAt = 0;
   private draftSaveMs = 0;
 
@@ -126,6 +129,12 @@ export class QuitSequencer {
     this.relaunchExecPath = execPath;
     this.claimReason("update_restart");
     this.approve();
+  }
+
+  recoverRenderer(args: string[]): void {
+    if (this.phase !== "idle") return;
+    this.recoveryRestart = true;
+    this.relaunch(args);
   }
 
   private async ask(): Promise<void> {
@@ -269,26 +278,54 @@ export class QuitSequencer {
   private async flushRenderer(cancelled: string): Promise<boolean> {
     if (this.rendererFlushed) return true;
     const startedAt = this.now();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.deps.flushRenderer?.();
+      const flush = this.deps.flushRenderer?.();
+      if (this.recoveryRestart) {
+        await Promise.race([flush, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("Draft save timed out during recovery")), this.deps.recoveryDraftTimeoutMs ?? 5000);
+        })]);
+      } else await flush;
       this.draftSaveMs = this.now() - startedAt;
       this.rendererFlushed = true;
       this.deps.log.info(`exit ${this.attempt}: draft saved draft_ms=${this.draftSaveMs}`);
       return true;
     } catch (error) {
       const message = errorText(error);
+      const recoveryCancelled = this.recoveryRestart;
+      if (this.recoveryRestart) {
+        let proceed = false;
+        try { proceed = await this.deps.confirmRecoveryDraftLoss?.(message) === true; }
+        catch (promptError) { this.deps.log.warn(`recovery draft confirmation failed: ${errorText(promptError)}`); }
+        if (proceed) {
+          this.rendererFlushed = true;
+          this.deps.log.warn("recovery restart: user accepted unsaved draft loss");
+          return true;
+        }
+        this.recoveryRestart = false;
+        this.relaunchArgs = null;
+        this.relaunchExecPath = undefined;
+      }
       this.deps.log.warn(`exit ${this.attempt}: draft flush failed; ${cancelled}: ${message}`);
       this.phase = "preparing";
       this.approved = false;
       this.quitRequested = false;
       this.rendererFlushed = false;
-      try {
-        await this.deps.onPrepareFailed?.(message);
-      } catch (promptError) {
-        this.deps.log.warn(`exit ${this.attempt}: draft failure prompt failed: ${errorText(promptError)}`);
+      if (recoveryCancelled) {
+        // Queue barrier release even if the page is still hung; do not make
+        // cancellation wait for that same unresponsive page a second time.
+        void this.resumeRenderer();
+      } else {
+        try {
+          await this.deps.onPrepareFailed?.(message);
+        } catch (promptError) {
+          this.deps.log.warn(`exit ${this.attempt}: draft failure prompt failed: ${errorText(promptError)}`);
+        }
       }
       if (!this.quitRequested && !this.approved) this.resetTrigger();
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

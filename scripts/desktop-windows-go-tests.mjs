@@ -2,7 +2,13 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const groups = ["A-B", "C", "D", "E-H", "I-P", "Q-S", "T-Z"];
+export const historyTests = {
+  "history-3-5": "TestTaggedHistory1383To1385",
+  "history-6-7": "TestTaggedHistory1386To1387",
+  "history-8-9": "TestTaggedHistory1388To1389",
+  "history-10-11": "TestTaggedHistory13810To13811",
+};
+export const groups = ["A-B", "C", "D", "E-H", "I-P", "Q-S", "T-Z", ...Object.keys(historyTests)];
 export const conptyProbe = "TestWindowsTerminalProcessConPTYSmoke";
 export const filters = {
   "A-B": { skip: "^Test[C-Z]" },
@@ -11,7 +17,8 @@ export const filters = {
   "E-H": { run: "^Test[E-H]" },
   "I-P": { run: "^Test[I-P]" },
   "Q-S": { run: "^Test[Q-S]" },
-  "T-Z": { run: "^Test[T-Z]", skip: `^${conptyProbe}$` },
+  "T-Z": { run: "^Test[T-Z]", skip: `^(${[conptyProbe, ...Object.values(historyTests)].join("|")})$` },
+  ...Object.fromEntries(Object.entries(historyTests).map(([group, name]) => [group, { run: `^${name}$` }])),
 };
 
 export function owners(name) {
@@ -59,7 +66,8 @@ export function testArgs(group, race = false) {
 function main(group, mode) {
   if (mode && mode !== "--race") throw new Error(`Unknown test mode: ${mode}`);
   const race = mode === "--race";
-  const args = group === "--verify" ? null : testArgs(group, race);
+  const selected = group === "--all" ? groups : group === "--verify" ? [] : [group];
+  const commands = selected.map(name => testArgs(name, race));
   // Ask Go for the current platform's inventory, including build-tagged tests,
   // examples and fuzz seeds. JSON is used only for listing, not test execution.
   const listed = spawnSync("go", ["test", ...(race ? ["-race"] : []), "-list", ".", "-json", "./..."], { encoding: "utf8", maxBuffer: 16 << 20 });
@@ -69,11 +77,13 @@ function main(group, mode) {
     return listed.status ?? 1;
   }
   console.log("Desktop test partition:", verifyInventory(inventoryFromJSON(listed.stdout)));
-  if (!args) return 0;
-  console.log(`go ${args.join(" ")}`);
-  const result = spawnSync("go", args, { stdio: "inherit" });
-  if (result.error) throw result.error;
-  return result.status ?? 1;
+  for (const args of commands) {
+    console.log(`go ${args.join(" ")}`);
+    const result = spawnSync("go", args, { stdio: "inherit" });
+    if (result.error) throw result.error;
+    if (result.status !== 0) return result.status ?? 1;
+  }
+  return 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

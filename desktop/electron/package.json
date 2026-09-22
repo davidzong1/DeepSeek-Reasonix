@@ -9,7 +9,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.preload.json",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test": "node scripts/build-browser-page.mjs && node --import tsx --test \"src/**/*.test.ts\"",
+    "test:graphics-recovery": "node scripts/graphics-recovery-smoke.mjs",
     "start": "node scripts/build.mjs && node scripts/start.mjs",
     "dev": "node scripts/build.mjs && node scripts/start.mjs --dev",
     "smoke": "node scripts/build.mjs && node scripts/smoke.mjs"

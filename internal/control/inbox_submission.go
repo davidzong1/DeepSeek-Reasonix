@@ -67,12 +67,16 @@ func (c *Controller) EnqueueInboxContext(ctx context.Context, req InboxRequest) 
 	if intent != sessioninbox.IntentSteer {
 		intent = sessioninbox.IntentFollowup
 	}
+	sessionID := agent.BranchID(st.SessionPath())
+	if id, canonical := strings.CutPrefix(st.SessionPath(), "session-id:"); canonical {
+		sessionID = id
+	}
 	rec, err := st.Enqueue(sessioninbox.EnqueueRequest{
 		Intent:      intent,
 		Envelope:    env,
 		Source:      req.Source,
 		Idempotency: req.Idempotency,
-		SessionID:   agent.BranchID(st.SessionPath()),
+		SessionID:   sessionID,
 	})
 	if err != nil {
 		if errors.Is(err, sessioninbox.ErrCapacityItems) || errors.Is(err, sessioninbox.ErrCapacityBytes) || errors.Is(err, sessioninbox.ErrItemTooLarge) {

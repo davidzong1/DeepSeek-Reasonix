@@ -113,6 +113,9 @@ func (e *httpExecutor) call(ctx context.Context, method string, in, out any) err
 	if resp.StatusCode == http.StatusConflict {
 		return decodeWireError(method, data)
 	}
+	if method == "capability" && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented) {
+		return errCapabilityUnsupported
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("browser broker: %s: status %d: %s", method, resp.StatusCode, wireMessage(data))
 	}
@@ -123,6 +126,28 @@ func (e *httpExecutor) call(ctx context.Context, method string, in, out any) err
 		return fmt.Errorf("browser broker: decode %s reply: %w", method, err)
 	}
 	return nil
+}
+
+var errCapabilityUnsupported = errors.New("capability_unsupported: remote browser enhancement unavailable")
+
+func (e *httpExecutor) BrowserCapability(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	var out json.RawMessage
+	var params struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	in := struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}{name, args}
+	err := e.call(ctx, "capability", in, &out)
+	write := name == "pointer" || name == "viewport" && params.Action != "get" || name == "record" && params.Action != "status"
+	if write && err != nil && !errors.Is(err, errCapabilityUnsupported) && !errors.Is(err, ErrStaleReference) && !errors.Is(err, ErrTakenOver) && !errors.Is(err, ErrNoGrant) && !errors.Is(err, ErrUnknownOutcome) {
+		err = fmt.Errorf("%w: %w", ErrUnknownOutcome, err)
+	}
+	return out, err
 }
 
 type transportError struct {

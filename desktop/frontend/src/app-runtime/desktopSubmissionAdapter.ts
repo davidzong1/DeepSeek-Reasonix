@@ -6,12 +6,12 @@ import type { ControllerProfileResource } from "./controllerProfileOwner";
 import type { InitialGoal, SubmissionPorts, SubmissionResource } from "./sessionSubmissionOwner";
 
 export function createSubmissionPorts(input: {
-  send(tab: string, display: string, submit?: string, original?: string, structured?: StructuredInvocationSubmit, initialGoal?: InitialGoal): Promise<void>;
+  send(tab: string, display: string, submit?: string, original?: string, structured?: StructuredInvocationSubmit, initialGoal?: InitialGoal, submissionId?: string): Promise<void>;
   setGoal(tab: string, goal: string): Promise<void>; clearGoal(tab: string): Promise<void>;
   clearUndo: SubmissionPorts["clearUndo"]; patchGoal: SubmissionPorts["patchGoal"]; profile: SubmissionPorts["profile"];
 }): SubmissionPorts {
   return { clearUndo: input.clearUndo, patchGoal: input.patchGoal, profile: input.profile,
-    send: (tab, display, submit, structured, goal) => input.send(tab, display, submit, undefined, structured, goal),
+    send: (tab, display, submit, structured, goal, submissionId) => submissionId ? input.send(tab, display, submit, undefined, structured, goal, submissionId) : input.send(tab, display, submit, undefined, structured, goal),
     setGoal: (tab, goal, remote) => remote ? app.SetRemoteTabGoal(tab, goal) : goal ? input.setGoal(tab, goal) : input.clearGoal(tab),
   };
 }

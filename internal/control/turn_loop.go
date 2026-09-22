@@ -317,6 +317,7 @@ func (c *Controller) signalTurnCancelIdentity() (uint64, string, bool) {
 		return token, turnID, false
 	}
 	cancel()
+	c.recordLifecycle("cancel_signalled", "turn", turnID, 0, "")
 	if first {
 		c.startCancellationWatchdog(done)
 	}

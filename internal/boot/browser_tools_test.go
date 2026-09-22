@@ -159,6 +159,11 @@ func TestUseCapabilityListsAndCallsBrowserTools(t *testing.T) {
 	if !strings.Contains(toolOut[0], "tool:browser_snapshot") {
 		t.Fatalf("use_capability list omits browser_snapshot:\n%s", toolOut[0])
 	}
+	for _, name := range []string{"query", "wait", "viewport", "pointer", "diagnostics", "record"} {
+		if !strings.Contains(toolOut[0], "tool:browser_"+name) {
+			t.Fatalf("use_capability list omits browser_%s:\n%s", name, toolOut[0])
+		}
+	}
 	if !strings.Contains(toolOut[1], "tab tab-1: https://example.test") {
 		t.Fatalf("use_capability call did not reach the executor:\n%s", toolOut[1])
 	}

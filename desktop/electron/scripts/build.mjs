@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildBrowserPage } from "./build-browser-page.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dist = resolve(root, "dist");
@@ -21,6 +22,7 @@ const common = {
   logLevel: "info",
 };
 
+await buildBrowserPage();
 await build({ ...common, entryPoints: [resolve(root, "src/main/index.ts")], outfile: resolve(dist, "main.cjs") });
 await build({ ...common, entryPoints: [resolve(root, "src/main/profileAnalysisWorker.ts")], outfile: resolve(dist, "profile-analysis.cjs") });
 await build({ ...common, entryPoints: [resolve(root, "src/preload/index.ts")], outfile: resolve(dist, "preload.cjs") });

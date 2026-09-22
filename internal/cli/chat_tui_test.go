@@ -828,13 +828,6 @@ func TestClearCommandFailureKeepsDisplayAndDoesNotClearScreen(t *testing.T) {
 	}
 	ctrl.Send("active turn")
 	<-runner.started
-	t.Cleanup(func() {
-		ctrl.Cancel()
-		deadline := time.Now().Add(2 * time.Second)
-		for ctrl.Running() && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-	})
 
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.commitLine("visible transcript sentinel")

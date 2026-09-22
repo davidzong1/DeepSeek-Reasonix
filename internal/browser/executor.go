@@ -122,6 +122,16 @@ type Snapshot struct {
 	Title         string
 	Tree          string
 	Refs          int
+	Observation   *Observation `json:"observation,omitempty"`
+}
+
+type Observation struct {
+	URL              string `json:"url"`
+	TimeMS           int64  `json:"timeMs"`
+	DocumentEpoch    int64  `json:"documentEpoch"`
+	ViewportRevision int64  `json:"viewportRevision"`
+	CSSWidth         int    `json:"cssWidth"`
+	CSSHeight        int    `json:"cssHeight"`
 }
 
 type ScreenshotRequest struct {
@@ -133,10 +143,14 @@ type ScreenshotRequest struct {
 // Screenshot names the task-owned file the host wrote; image bytes never
 // travel through control frames.
 type Screenshot struct {
-	Path   string
-	MIME   string
-	Width  int
-	Height int
+	Observation      *Observation `json:"observation,omitempty"`
+	Path             string
+	MIME             string
+	Width            int
+	Height           int
+	ObservationToken string `json:"observationToken,omitempty"`
+	CSSWidth         int    `json:"cssWidth,omitempty"`
+	CSSHeight        int    `json:"cssHeight,omitempty"`
 }
 
 // ActRequest is one reserved write. OperationID is minted by the model,
