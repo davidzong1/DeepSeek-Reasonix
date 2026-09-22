@@ -34,20 +34,30 @@ func TestP2MemberEventPumpPreservesPerSenderOrder(t *testing.T) {
 		}(member)
 	}
 
+	// The producers finish first so the queue is a closed set: the batch the
+	// window carries is then deterministic, and this test measures loss and
+	// order rather than timing.
+	wg.Wait()
+
 	seen := map[string][]string{}
 	got := 0
 	for got < 2*n {
-		msg, ok := m.memberEvents.next()
-		if !ok {
-			t.Fatal("the pump closed before every event was drained")
+		// One batch off the queue, one re-arm — the contract handleMemberEvent
+		// now has: it routes whatever is queued and arms the wait exactly once,
+		// however many events that was.
+		batch := m.memberEvents.drainReady(memberEventBatchLimit)
+		if len(batch) == 0 {
+			t.Fatalf("the pump drained early: %d of %d events seen", got, 2*n)
 		}
-		if cmd := m.handleMemberEvent(memberEventMsg(msg)); cmd == nil {
-			t.Fatal("the pump must re-arm after every event")
+		for _, msg := range batch {
+			m.routeMemberEvent(msg)
+			seen[msg.member] = append(seen[msg.member], msg.ev.Text)
+			got++
 		}
-		seen[msg.member] = append(seen[msg.member], msg.ev.Text)
-		got++
 	}
-	wg.Wait()
+	if cmd := waitForMemberEvent(m.memberEvents, m.boundMember()); cmd == nil {
+		t.Fatal("the pump must re-arm after every batch")
+	}
 
 	for _, member := range []string{"alice", "bob"} {
 		if un := m.teamPick.session.unread[member]; un != n {

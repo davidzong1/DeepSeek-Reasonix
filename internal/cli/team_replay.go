@@ -324,20 +324,5 @@ func (m *chatTUI) installReplayPaint(paint replayPaint) {
 // (a test host that never presented a frame, a width the cache was not built at)
 // is left to the lazy path, which rebuilds from this block onward.
 func (m *chatTUI) installWrappedBlock(index int, paint replayPaint) {
-	if m.wrapBlockCount == 0 && index == 0 && len(m.transcript) == 1 {
-		// A bind cleared the display, so this block is the whole transcript.
-		m.wrapBlockLines = [][]string{paint.wrapped}
-		m.wrapBlockCount = 1
-		m.wrapWidth = paint.contentW
-		m.wrappedLines = flattenBlockWraps(m.wrapBlockLines)
-		m.feedViewportContent()
-		return
-	}
-	if m.wrapWidth != paint.contentW || index >= m.wrapBlockCount || len(m.wrapBlockLines) != m.wrapBlockCount {
-		m.invalidateWrapFrom(index)
-		return
-	}
-	m.wrapBlockLines[index] = paint.wrapped
-	m.wrappedLines = flattenBlockWraps(m.wrapBlockLines)
-	m.feedViewportContent()
+	m.setWrappedBlock(index, paint.wrapped, paint.contentW)
 }

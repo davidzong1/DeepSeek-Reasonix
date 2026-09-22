@@ -8,7 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"reasonix/internal/event"
 	"reasonix/internal/team"
 )
 
@@ -333,10 +332,9 @@ type sessionState struct {
 	current  string
 	members  []string
 	focus    int
-	errMsg   string                   // session-scoped error, separate from the roster's errMsg
-	unread   map[string]int           // non-current members' terminal events, per member
-	prompts  map[string]memberPrompt  // non-current members' pending approval/ask, per member
-	live     map[string][]event.Event // non-current members' in-flight turn, replayed on switch
+	errMsg   string                  // session-scoped error, separate from the roster's errMsg
+	unread   map[string]int          // non-current members' terminal events, per member
+	prompts  map[string]memberPrompt // non-current members' pending approval/ask, per member
 	// syncStamp is the durable history identity the window last rendered for
 	// the bound member. The 1s tick compares it to the member's current stamp,
 	// so a history another window changed is adopted without a rebind.
@@ -364,7 +362,6 @@ func newSessionState(teamName, current string) sessionState {
 		active: true, teamName: teamName, current: current,
 		unread:  map[string]int{},
 		prompts: map[string]memberPrompt{},
-		live:    map[string][]event.Event{},
 	}
 }
 

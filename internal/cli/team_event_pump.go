@@ -34,6 +34,10 @@ type memberEventPump struct {
 	// refused the incoming one or evicted a queued one. The UI path never reads
 	// it; tests use it to pin the policy, and diagnostics can surface it.
 	dropped int
+	// held is the retain area for events the bound window should not see yet:
+	// background members' streamed deltas, parked so they cost no frame. See
+	// team_member_event_batch.go.
+	held map[string][]memberEventHeld
 }
 
 // memberEventQueueCap bounds one member's pending queue before eviction starts.
@@ -44,7 +48,11 @@ const memberEventQueueCap = 4096
 
 // newMemberEventPump returns an empty pump.
 func newMemberEventPump() *memberEventPump {
-	return &memberEventPump{queues: map[string][]memberEvent{}, wake: make(chan struct{}, 1)}
+	return &memberEventPump{
+		queues: map[string][]memberEvent{},
+		held:   map[string][]memberEventHeld{},
+		wake:   make(chan struct{}, 1),
+	}
 }
 
 // sink adapts one member's backend onto the pump. The returned sink never

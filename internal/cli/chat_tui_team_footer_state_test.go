@@ -69,7 +69,7 @@ func TestTurnPhaseRestoredWhenSwitchingBackToRunningMember(t *testing.T) {
 		member: "lead",
 		ev:     event.Event{Kind: event.TurnPhase, PhaseName: "working", Text: "lead still working"},
 	})
-	if got := len(m.teamPick.session.live["lead"]); got == 0 {
+	if got := len(m.memberEvents.heldTurn("lead")); got == 0 {
 		t.Fatal("lead's in-flight TurnPhase must buffer while the window shows alice")
 	}
 

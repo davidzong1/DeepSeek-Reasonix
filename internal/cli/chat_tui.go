@@ -269,15 +269,15 @@ type chatTUI struct {
 	// transcriptSources runs parallel to transcript and retains raw, semantic
 	// content for blocks whose layout depends on terminal width. Fixed blocks
 	// keep their already-rendered text; markdown, user bubbles, reasoning, tool
-	// cards, and replay bundles are regenerated after a resize.
+	// cards, and replay bundles are regenerated after a resize. The wrap cache
+	// fields beside it keep wrappedLines incremental (wrap_cache.go).
 	transcriptSources []transcriptSource
-	// wrappedLines is the viewport line cache; wrapBlockLines / wrapWidth /
-	// wrapBlockCount support append-only updates without re-wrapping the full
-	// history on every streaming commit (#6978).
-	wrappedLines   []string
-	wrapBlockLines [][]string
-	wrapWidth      int
-	wrapBlockCount int
+	wrappedLines      []string
+	wrapBlockLines    [][]string
+	wrapBlockOffsets  []int
+	wrapWidth         int
+	wrapBlockCount    int
+	wrapDirty         wrapSpan
 	// lastMouseReenable rate-limits ConPTY mouse re-enable sequences (#7583).
 	// mouseReenablePending + timer cover trailing-edge fires after a resize storm.
 	lastMouseReenable       time.Time
