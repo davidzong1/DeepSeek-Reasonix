@@ -5101,6 +5101,25 @@ func (c *Controller) WorkspaceLeaseHeldKeys() []string {
 	return c.workspaceLease.HeldKeys()
 }
 
+// WorkspaceLeaseMetrics is the process-local wait accounting for this session's
+// write lease: how often it queued, for which scope, and how often it gave up.
+// It is diagnostic only and never gates a lease decision.
+func (c *Controller) WorkspaceLeaseMetrics() workspacelease.LeaseMetrics {
+	if c == nil {
+		return workspacelease.LeaseMetrics{}
+	}
+	return c.workspaceLease.Metrics()
+}
+
+// WorkspaceLeaseDiagnostics renders those metrics as one printable block, for a
+// diagnostics artifact or a log line.
+func (c *Controller) WorkspaceLeaseDiagnostics() string {
+	if c == nil {
+		return "workspace lease: unavailable"
+	}
+	return c.workspaceLease.MetricsReport()
+}
+
 // SetToolApprovalMode changes the runtime approval posture for permission-gated
 // tools. It does not answer business asks or plan approval. Sub-agents (task,
 // writer-capable skill sub-agents, the planner) have no UI to prompt through,

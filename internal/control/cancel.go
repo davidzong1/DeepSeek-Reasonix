@@ -28,15 +28,15 @@ func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 	if c == nil {
 		return CancelReceipt{Accepted: true, AlreadyIdle: true}
 	}
+	c.recordLifecycle("cancel_received", source, "", 0, "")
 	c.mu.Lock()
 	alreadyIdle := c.turns.cancel == nil && !c.bodyActiveLocked() && !c.finalizingLocked() && c.maintenance == nil
 	sessionRef := c.sessionPath
 	c.mu.Unlock()
 	headID := agent.BranchID(sessionRef)
-	c.runtimeState.mu.Lock()
-	epoch := c.runtimeState.snapshot.RuntimeEpoch
-	recoveryRequired := c.runtimeState.snapshot.Phase == "recovery_required"
-	c.runtimeState.mu.Unlock()
+	// Receipt metadata must not wait for a producer that is itself stalled on
+	// execution. Stop signals the owner independently of state observation.
+	state := c.PublishedRuntimeStateSnapshot()
 	_, runtime, exclusive := c.v3Binding()
 	if exclusive && runtime != nil {
 		sessionRef = runtime.Ref().SessionID
@@ -60,8 +60,8 @@ func (c *Controller) CancelSessionFrom(source string) CancelReceipt {
 		go c.finishCancellation(token, turnID, cancelled)
 	}
 	receipt := CancelReceipt{
-		SessionRef: sessionRef, HeadID: headID, RuntimeEpoch: epoch,
-		Accepted: true, AlreadyIdle: alreadyIdle, RecoveryRequired: recoveryRequired,
+		SessionRef: sessionRef, HeadID: headID, RuntimeEpoch: state.RuntimeEpoch,
+		Accepted: true, AlreadyIdle: alreadyIdle, RecoveryRequired: state.Phase == "recovery_required",
 	}
 	c.recordLifecycle("cancel_acknowledged", source, turnID, 0, "")
 	return receipt

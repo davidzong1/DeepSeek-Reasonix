@@ -142,7 +142,10 @@ export function CompactionCard({ item }: { item: CompactionItem }) {
     : status === "unavailable" ? t("compaction.unavailable")
     : item.pending ? t("compaction.working") : t("compaction.title");
   if (item.pending || status === "noop" || status === "cancelled" || status === "interrupted" || status === "unavailable") {
-    return <div className={`compaction${item.pending ? " compaction--pending" : ""}`} data-entrance={item.id} data-transcript-layout-variant="static"><ProcessCompactIcon size={12} /><span>{stateLabel}</span></div>;
+    return <div className={`compaction${item.pending ? " compaction--pending" : ""}`} data-entrance={item.id} data-transcript-layout-variant="static" role="status">
+      <ProcessCompactIcon className={item.pending ? "compaction__spinner" : undefined} size={item.pending ? 14 : 12} />
+      <span>{stateLabel}{status === "running" || (!status && item.pending) ? <span className="compaction__hint">{t("compaction.workingHint")}</span> : null}</span>
+    </div>;
   }
   const tokenMeta = item.inputTokens != null && item.resultTokens != null
     ? t("compaction.tokens", { before: item.inputTokens, after: item.resultTokens }) : "";

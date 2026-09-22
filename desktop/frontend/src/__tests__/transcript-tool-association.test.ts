@@ -6,6 +6,18 @@ import { FakeBackend } from "./helpers/transcriptFakeBackend";
 
 const toolsOf = (items: Item[]) => items.filter((item): item is Extract<Item, { kind: "tool" }> => item.kind === "tool");
 
+test("a persisted background-output read does not restart when its job snapshot was running", () => {
+  const store = new TranscriptStore(new FakeBackend([]));
+  const projection = store.installSlice("poll", "session-id:poll", {
+    entries: [
+      { entryId: "m:call", turn: 1, order: 0, message: { role: "assistant", content: "", toolCalls: [{ id: "poll", name: "job_output", arguments: "{}", resultObservation: { state: "completed", messageId: "result" } }] }, refs: [] },
+      { entryId: "m:result", turn: 1, order: 1, message: { role: "tool", toolCallId: "poll", toolName: "job_output", messageId: "result", content: "[status: running]", execution: { state: "running" } }, refs: [] },
+    ], nextCursor: "", newerCursor: "", hasOlder: false, hasNewer: false, totalTurns: 1, startTurn: 1, endTurn: 1,
+    revision: 1, revisionKnown: true, digest: "poll", stale: false,
+  });
+  assert.equal(toolsOf(projection.items)[0].status, "done");
+});
+
 test("formal message aliases retain one canonical result", () => {
   const store = new TranscriptStore(new FakeBackend([]));
   const projection = store.installSlice("formal-representation-alias", "/formal-representation-alias", {

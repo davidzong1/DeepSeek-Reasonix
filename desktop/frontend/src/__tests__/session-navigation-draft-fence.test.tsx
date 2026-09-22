@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
+import { installDesktopHostStub } from "./desktopHostStub";
+import { makeSessionUIMock } from "../lib/sessionUIMock";
 
 import { useSessionNavigationCommands, type SessionNavigationCommandsInput } from "../app-runtime/useSessionNavigationCommands";
 
@@ -22,7 +24,9 @@ let intent = 0;
 let commands!: ReturnType<typeof useSessionNavigationCommands>;
 const firstDismiss = deferred();
 const secondDismiss = deferred();
-const dismissals = [firstDismiss, secondDismiss];
+const dismissals: ReturnType<typeof deferred>[] = [];
+const created: string[] = [];
+installDesktopHostStub(makeSessionUIMock(async (_scope,_root,id) => { created.push(id); }));
 const enqueued: Array<{ request: unknown; intent: number }> = [];
 const openedDrafts: Array<[string, string]> = [];
 
@@ -52,7 +56,7 @@ function Probe() {
     switchWorkspace: async () => {},
     draft: {
       open: async (scope, workspaceRoot) => { openedDrafts.push([scope, workspaceRoot]); },
-      dismiss: () => dismissals.shift()!.promise,
+      dismiss: () => dismissals.shift()?.promise ?? Promise.resolve(),
     },
     ports: {
       openTaskSessionForTab: async () => ({ ok: false }),
@@ -70,9 +74,11 @@ try {
     await commands.openBlankSession("project", "/workspace");
     await commands.handleNewTab();
   });
-  assert.deepEqual(openedDrafts, [["global", ""], ["project", "/workspace"], ["project", "/workspace"]],
-    "global, project and new-tab entry points open drafts without creating formal sessions");
-  assert.deepEqual(enqueued, []);
+  assert.deepEqual(openedDrafts, [], "manual new never opens or creates a project draft");
+  assert.equal(new Set(created).size, 3, "each click has its own formal identity");
+  assert.equal(enqueued.length,3);
+  enqueued.length=0;
+  dismissals.push(firstDismiss,secondDismiss);
 
   let stale!: Promise<void>;
   let latest!: Promise<void>;
@@ -88,7 +94,7 @@ try {
   secondDismiss.resolve();
   await act(async () => { await latest; });
   assert.equal(enqueued.length, 1);
-  assert.equal(enqueued[0]?.intent, 2, "the winning request keeps the intent captured before its first await");
+  assert.equal(enqueued[0]?.intent, 5, "the winning request keeps the intent captured before its first await");
   assert.deepEqual(enqueued[0]?.request, {
     kind: "canonical-session",
     ref: { hostId: "local", sessionId: "session-b" },

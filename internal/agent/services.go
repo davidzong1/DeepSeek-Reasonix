@@ -95,6 +95,13 @@ type agentServices struct {
 	// session, acquired lazily on the first mutation and held through the final
 	// participating run so verification stays isolated.
 	workspaceLease *workspacelease.Owner
+	// hookWriteSurface sizes that lease from what the tool-call hooks firing for
+	// one tool can write. nil keeps the conservative whole-workspace coverage.
+	hookWriteSurface ToolHookWriteSurfaceFunc
+	// writeIntentGate lets in-process peers (team members) queue before racing
+	// the cross-process lease. It is a performance token, never a safety
+	// boundary: nil or a failing gate leaves every acquisition as before.
+	writeIntentGate WriteIntentGateFunc
 	// memQueue lets the remember/forget tools fold a turn-tail note about a
 	// just-made memory change into the next turn, so it applies this session
 	// without touching the cache-stable prefix.
@@ -140,6 +147,8 @@ func newAgentServices(
 		sessionCheckpointer:   opts.SessionCheckpointer,
 		writeScheduler:        opts.WriteScheduler,
 		workspaceLease:        opts.WorkspaceLease,
+		hookWriteSurface:      opts.HookWriteSurface,
+		writeIntentGate:       opts.WriteIntentGate,
 		warnState:             missingReasoningWarnStateFor(opts.MissingReasoningWarnStateDir),
 		mutationObserver:      opts.MutationObserver,
 		writeRoots:            opts.WriteRoots,

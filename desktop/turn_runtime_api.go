@@ -50,9 +50,13 @@ func (a *App) stoppableCtrl(tabID, turnID string) (control.SessionAPI, error) {
 	if ctrl == nil {
 		return nil, a.workspaceNotReadyErr(tab)
 	}
-	status := ctrl.RuntimeStatus()
-	if turnID = strings.TrimSpace(turnID); turnID != status.TurnID {
-		slog.Info("desktop: stop targeted a stale turn id; interrupting the active turn", "tab", tabID, "requested", turnID, "active", status.TurnID)
+	// Logging must never refresh execution state before delivering Stop. An
+	// empty ID is the ordinary session-scoped command, not a stale turn.
+	if reader, ok := ctrl.(control.PublishedRuntimeStateReader); ok && strings.TrimSpace(turnID) != "" {
+		state := reader.PublishedRuntimeStateSnapshot()
+		if turnID = strings.TrimSpace(turnID); turnID != state.TurnID {
+			slog.Info("desktop: stop targeted a stale turn id; interrupting the active turn", "tab", tabID, "requested", turnID, "active", state.TurnID)
+		}
 	}
 	return ctrl, nil
 }
@@ -70,8 +74,17 @@ func (a *App) CancelSessionForTab(tabID string) (control.CancelReceipt, error) {
 	if session, ok := ctrl.(interface{ CancelSession() control.CancelReceipt }); ok {
 		return session.CancelSession(), nil
 	}
-	status := ctrl.RuntimeStatus()
 	ctrl.Cancel()
+	if reader, ok := ctrl.(control.PublishedRuntimeStateReader); ok {
+		state := reader.PublishedRuntimeStateSnapshot()
+		return control.CancelReceipt{
+			SessionRef: ctrl.SessionPath(), HeadID: agent.BranchID(ctrl.SessionPath()),
+			RuntimeEpoch: state.RuntimeEpoch, Accepted: true,
+			AlreadyIdle:      !state.Running && !state.PendingPrompt && state.BackgroundJobs == 0,
+			RecoveryRequired: state.Phase == "recovery_required",
+		}, nil
+	}
+	status := ctrl.RuntimeStatus()
 	return control.CancelReceipt{SessionRef: ctrl.SessionPath(), HeadID: agent.BranchID(ctrl.SessionPath()), Accepted: true, AlreadyIdle: !status.Running && !status.PendingPrompt}, nil
 }
 

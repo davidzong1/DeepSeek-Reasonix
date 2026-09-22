@@ -45,10 +45,11 @@ type hostBrowserExecutor struct {
 	grantID string
 	// sessionKey overrides the grant's session binding when set; remote
 	// broker executors use it because their tabs are not workspace tabs.
-	sessionKey string
-	granted    atomic.Bool
-	revoked    atomic.Bool
-	grantMu    sync.Mutex
+	sessionKey      string
+	diagnosticScope string // Opaque export identity; never used to authorize operations.
+	granted         atomic.Bool
+	revoked         atomic.Bool
+	grantMu         sync.Mutex
 }
 
 // tabBrowserExecutor is the stable executor held by a long-lived Controller.
@@ -133,7 +134,7 @@ func (a *App) hostBrowserExecutorForBinding(tabID string, sink *tabEventSink) *h
 			return exec
 		}
 		delete(a.browserExecutors, tabID)
-		replacement := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey}
+		replacement := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey, diagnosticScope: browserDiagnosticScope(localDesktopHostID, tab.SessionID)}
 		a.browserExecutors[tabID] = replacement
 		a.browserExecMu.Unlock()
 		a.mu.RUnlock()
@@ -141,7 +142,7 @@ func (a *App) hostBrowserExecutorForBinding(tabID string, sink *tabEventSink) *h
 		a.revokeBrowserExecutor(exec)
 		return replacement
 	}
-	exec := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey}
+	exec := &hostBrowserExecutor{app: a, host: a.hostShell.server, tabID: tabID, grantID: newBrowserGrantID(), sessionKey: sessionKey, diagnosticScope: browserDiagnosticScope(localDesktopHostID, tab.SessionID)}
 	a.browserExecutors[tabID] = exec
 	a.browserExecMu.Unlock()
 	a.mu.RUnlock()
@@ -346,6 +347,7 @@ func (e *hostBrowserExecutor) ensureGrant(ctx context.Context) error {
 		return nil
 	}
 	params := map[string]string{"grantId": e.grantID, "tabId": e.tabID, "sessionId": e.browserSessionKey()}
+	params["diagnosticScope"] = e.diagnosticScope
 	if err := e.host.Request(ctx, "host/browser.grant", params, nil); err != nil {
 		return mapHostBrowserError(err)
 	}
@@ -378,7 +380,22 @@ func (e *hostBrowserExecutor) call(ctx context.Context, method string, params ma
 	params["grantId"] = e.grantID
 	ctx, cancel := context.WithTimeout(ctx, hostBrowserReadTimeout)
 	defer cancel()
+	requestID := make([]byte, 16)
+	if _, err := rand.Read(requestID); err != nil {
+		return err
+	}
+	params["requestId"] = hex.EncodeToString(requestID)
+	if deadline, ok := ctx.Deadline(); ok {
+		params["deadline"] = deadline.UnixMilli()
+	}
 	if err := e.host.Request(ctx, method, params, result); err != nil {
+		if ctx.Err() != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+			defer cleanupCancel()
+			// Old shells may not implement cancellation; preserve the original
+			// unknown write outcome rather than retrying the operation.
+			_ = e.host.Request(cleanupCtx, "host/browser.cancel", map[string]any{"grantId": e.grantID, "requestId": params["requestId"]}, nil)
+		}
 		return mapHostBrowserError(err)
 	}
 	return nil
@@ -477,14 +494,27 @@ func (e *hostBrowserExecutor) write(ctx context.Context, id, action, tabID strin
 	if err != nil {
 		return err
 	}
-	if err := ledger.Reserve(browserops.Operation{ID: id, SessionID: e.browserSessionKey(), Generation: e.grantID, TabID: tabID, Action: action, Digest: digest}); err != nil {
+	if err := ledger.Reserve(browserops.Operation{ID: id, SessionID: e.browserSessionKey(), Generation: e.grantID, TabID: tabID, Action: action, Digest: digest, DiagnosticScope: e.diagnosticScope}); err != nil {
 		if errors.Is(err, browserops.ErrDuplicateOperation) {
 			return fmt.Errorf("%w: operationId already recorded", browser.ErrUnknownOutcome)
 		}
 		return err
 	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["operationId"] = id
 	err = e.call(ctx, method, params, out)
 	if err == nil {
+		if raw, ok := out.(*json.RawMessage); ok {
+			var receipt struct {
+				Outcome string `json:"outcome"`
+			}
+			if json.Unmarshal(*raw, &receipt) == nil && receipt.Outcome == "unknown" {
+				e.settle(ledger, id, browserops.StateUnknown, "host reported an interrupted operation")
+				return browser.ErrUnknownOutcome
+			}
+		}
 		e.settle(ledger, id, browserops.StateExecuted, "")
 		return nil
 	}
@@ -498,14 +528,15 @@ func (e *hostBrowserExecutor) write(ctx context.Context, id, action, tabID strin
 
 func (e *hostBrowserExecutor) Snapshot(ctx context.Context, req browser.SnapshotRequest) (browser.Snapshot, error) {
 	var out struct {
-		DocumentToken string `json:"documentToken"`
-		URL           string `json:"url"`
-		Title         string `json:"title"`
-		Tree          string `json:"tree"`
-		Refs          int    `json:"refs"`
+		Observation   *browser.Observation `json:"observation"`
+		DocumentToken string               `json:"documentToken"`
+		URL           string               `json:"url"`
+		Title         string               `json:"title"`
+		Tree          string               `json:"tree"`
+		Refs          int                  `json:"refs"`
 	}
 	err := e.call(ctx, "host/browser.snapshot", map[string]any{"tabId": req.TabID, "selector": req.Selector}, &out)
-	return browser.Snapshot{DocumentToken: out.DocumentToken, URL: out.URL, Title: out.Title, Tree: out.Tree, Refs: out.Refs}, err
+	return browser.Snapshot{DocumentToken: out.DocumentToken, URL: out.URL, Title: out.Title, Tree: out.Tree, Refs: out.Refs, Observation: out.Observation}, err
 }
 
 func (e *hostBrowserExecutor) Screenshot(ctx context.Context, req browser.ScreenshotRequest) (browser.Screenshot, error) {
@@ -514,13 +545,17 @@ func (e *hostBrowserExecutor) Screenshot(ctx context.Context, req browser.Screen
 		return browser.Screenshot{}, err
 	}
 	var out struct {
-		Path   string `json:"path"`
-		MIME   string `json:"mime"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
+		Observation      *browser.Observation `json:"observation"`
+		Path             string               `json:"path"`
+		MIME             string               `json:"mime"`
+		Width            int                  `json:"width"`
+		Height           int                  `json:"height"`
+		ObservationToken string               `json:"observationToken"`
+		CSSWidth         int                  `json:"cssWidth"`
+		CSSHeight        int                  `json:"cssHeight"`
 	}
 	err = e.call(ctx, "host/browser.screenshot", map[string]any{"tabId": req.TabID, "ref": req.Ref, "fullPage": req.FullPage, "directory": dir}, &out)
-	return browser.Screenshot{Path: out.Path, MIME: out.MIME, Width: out.Width, Height: out.Height}, err
+	return browser.Screenshot{Path: out.Path, MIME: out.MIME, Width: out.Width, Height: out.Height, ObservationToken: out.ObservationToken, CSSWidth: out.CSSWidth, CSSHeight: out.CSSHeight, Observation: out.Observation}, err
 }
 
 // captureDir is the task-owned scratch directory the shell writes captures
@@ -570,13 +605,14 @@ func (e *hostBrowserExecutor) Act(ctx context.Context, req browser.ActRequest) (
 		return browser.ActResult{}, err
 	}
 	op := browserops.Operation{
-		ID:            req.OperationID,
-		SessionID:     e.browserSessionKey(),
-		Generation:    e.grantID,
-		TabID:         req.TabID,
-		DocumentToken: req.DocumentToken,
-		Action:        req.Action,
-		Digest:        digest,
+		DiagnosticScope: e.diagnosticScope,
+		ID:              req.OperationID,
+		SessionID:       e.browserSessionKey(),
+		Generation:      e.grantID,
+		TabID:           req.TabID,
+		DocumentToken:   req.DocumentToken,
+		Action:          req.Action,
+		Digest:          digest,
 	}
 	if err := ledger.Reserve(op); err != nil {
 		if errors.Is(err, browserops.ErrDuplicateOperation) {

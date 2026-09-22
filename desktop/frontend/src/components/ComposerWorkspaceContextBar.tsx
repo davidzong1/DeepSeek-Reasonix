@@ -3,6 +3,7 @@ import { Check, ChevronDown, Cloud, Folder, FolderOpen, GitBranch, GitGraph, Mes
 import { asArray } from "../lib/array";
 import { app, onProjectTreeChanged } from "../lib/bridge";
 import { useT } from "../lib/i18n";
+import { defaultWorkspaceTitle } from "../lib/sessionTitles";
 import { useBranchSwitcher } from "../lib/useBranchSwitcher";
 import { useToast } from "../lib/toast";
 import type { GitCommitView, ProjectNode } from "../lib/types";
@@ -13,6 +14,7 @@ export type ComposerWorkspaceContext = {
   scope: "global" | "project";
   workspaceRoot: string;
   workspaceName?: string;
+  defaultWorkspaceName?: string;
   gitBranch?: string;
   tabId?: string;
   scopeKey: string;
@@ -30,7 +32,7 @@ function projectTitle(project: ProjectNode): string {
 }
 
 function currentWorkspaceTitle(context: ComposerWorkspaceContext, noProject: string): string {
-  if (context.scope === "global" && !context.remote) return noProject;
+  if (context.scope === "global" && !context.remote) return defaultWorkspaceTitle(context.defaultWorkspaceName);
   const explicit = (context.workspaceName ?? "").trim();
   if (explicit) return explicit;
   const root = context.workspaceRoot.replace(/[\\/]+$/, "");
@@ -273,9 +275,9 @@ export function ComposerWorkspaceContextBar({ context }: { context: ComposerWork
     }
   };
 
-  const workspaceTitle = currentWorkspaceTitle(context, t("composer.workspace.noProject"));
+  const workspaceTitle = currentWorkspaceTitle(context, t("workspace.defaultName"));
   const projectSelected = context.scope === "project" || context.remote;
-  const workspaceTitleAttribute = projectSelected ? context.workspaceRoot || workspaceTitle : workspaceTitle;
+  const workspaceTitleAttribute = projectSelected ? context.workspaceRoot || workspaceTitle : t("workspace.defaultHint");
   const branchAvailable = Boolean(context.tabId && context.workspaceRoot && branch.activeBranch && !context.remote);
 
   return (

@@ -179,11 +179,12 @@ function pruneCleanEntries(entries: Map<string, DraftEntry>, visibleDraftId: str
 }
 
 export function useSessionDraftSurface(options: DraftSurfaceOptions) {
-  const { onAccepted, onChanged, claimNavigationIntent, currentNavigationIntent, isNavigationIntentCurrent } = options;
+  const { onAccepted, onChanged, claimNavigationIntent, isNavigationIntentCurrent } = options;
   const entriesRef = useRef(new Map<string, DraftEntry>());
   const visibleDraftIdRef = useRef<string | null>(null);
   const [surface, setSurface] = useState<SessionDraftSurface | null>(null);
   const [summaries, setSummaries] = useState<SessionDraftSummary[]>([]);
+  const [summaryError, setSummaryError] = useState<string>();
   const openSequence = useRef(0);
   const localIntent = useRef(0);
   const restoreChain = useRef<Promise<void>>(Promise.resolve());
@@ -225,12 +226,13 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
   const refreshSummaries = useCallback(async () => {
     try {
       const records = await app.ListSessionDraftSummaries();
+      setSummaryError(undefined);
       setSummaries(records.map((summary) => {
         const entry = entriesRef.current.get(summary.id);
         return entry ? { ...summary, state: saveState(entry) } : summary;
       }));
-    } catch {
-      // Keep the last successful projection on transient list failures.
+    } catch (error) {
+      setSummaryError(error instanceof Error ? error.message : String(error));
     }
   }, []);
 
@@ -524,21 +526,8 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
   }, [claimIntent, flushDraft, installDraft, intentCurrent, publish, queueRestoreTarget, refreshSummaries]);
 
   const initializeEmptySurface = useCallback(async () => {
-    const baselineIntent = currentNavigationIntent?.() ?? localIntent.current;
-    const sequence = ++openSequence.current;
-    const restored = await app.RestoreSessionDraft();
-    if (sequence !== openSequence.current || !intentCurrent(baselineIntent)) return;
-    if (restored) {
-      await installDraft(restored, sequence, claimIntent());
-      return;
-    }
-    const tabs = await app.ListTabs();
-    if (sequence !== openSequence.current || !intentCurrent(baselineIntent) || tabs.length > 0) return;
-    const intent = claimIntent(), draft = await app.OpenSessionDraftForTarget("global", "");
-    if (sequence !== openSequence.current || !intentCurrent(intent)) return;
-    await installDraft(draft, sequence, intent);
     await refreshSummaries();
-  }, [claimIntent, currentNavigationIntent, installDraft, intentCurrent, refreshSummaries]);
+  }, [refreshSummaries]);
 
   const dismiss = useCallback(() => {
     ++openSequence.current;
@@ -1011,6 +1000,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const flushAll = async () => {
       acceptingExit.current = true;
       try {
+        await (await import("../lib/sessionComposerPersistence")).flushAllSessionComposers();
         while (allTasks.current.size) await Promise.allSettled([...allTasks.current.values()]);
         await Promise.all([...preparationBarriers.current.values()].map((barrier) => barrier.promise));
         const entries = [...entriesRef.current.values()].filter((entry) => entry.lifecycle === "active");
@@ -1029,11 +1019,13 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
         await restoreChain.current;
       } catch (error) {
         acceptingExit.current = false;
+        (await import("../lib/sessionComposerPersistence")).resumeSessionComposerEditing();
         throw error;
       }
     };
     const resumeEditing = () => {
       acceptingExit.current = false;
+      void import("../lib/sessionComposerPersistence").then(module => module.resumeSessionComposerEditing());
     };
     window.__reasonixFlushSessionDraft = flushAll;
     window.__reasonixResumeSessionDraftEditing = resumeEditing;
@@ -1046,6 +1038,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
   return {
     surface,
     summaries,
+    summaryError,
     open,
     initializeEmptySurface,
     dismiss,

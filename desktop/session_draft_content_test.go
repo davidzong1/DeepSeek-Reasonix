@@ -11,6 +11,7 @@ func TestDraftHasContentIgnoresClearedComposerState(t *testing.T) {
 	}
 	for _, filled := range []string{
 		`{"text":"hello"}`,
+		`{"goalDraft":true}`,
 		`{"text":"","attachments":[{"path":"a.png"}]}`,
 		`{"text":"","workspaceRefs":[{"path":"src"}]}`,
 		`{"text":"","invocations":[{"name":"x"}]}`,
@@ -28,7 +29,7 @@ func TestDraftHasContentIgnoresClearedComposerState(t *testing.T) {
 func TestListSessionDraftSummariesReportsContentFromFields(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	a := newDraftTestApp(t)
-	draft, err := a.OpenSessionDraftForTarget("global", "")
+	draft, err := a.seedPreviousDraftForTarget("global", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,6 @@
 import type { KeyboardInputEvent, MouseInputEvent, MouseWheelInputEvent, Rectangle, WebPreferences } from "electron";
+import type { DiagnosticBuffer } from "./diagnostics.js";
+import type { BrowserViewport } from "./viewport.js";
 
 // The slice of Electron the browser modules touch. Production binds the real
 // WebContentsView (see electronGuestViews.ts); tests inject fakes.
@@ -9,6 +11,8 @@ export interface GuestFrame {
   readonly detached: boolean;
   readonly parent: GuestFrame | null;
   readonly framesInSubtree: GuestFrame[];
+  readonly frames?: GuestFrame[];
+  readonly name?: string;
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
 }
 
@@ -16,7 +20,7 @@ export interface GuestDebugger {
   isAttached(): boolean;
   attach(protocolVersion?: string): void;
   detach(): void;
-  sendCommand(method: string, params?: unknown): Promise<unknown>;
+  sendCommand(method: string, params?: unknown, sessionId?: string): Promise<unknown>;
   on(event: "message", listener: (event: unknown, method: string, params: unknown) => void): unknown;
   removeListener(event: "message", listener: (event: unknown, method: string, params: unknown) => void): unknown;
 }
@@ -65,6 +69,17 @@ export interface GuestViewEvents {
 
 export interface GuestView {
   readonly page: GuestPage;
+  prepareCapture?(signal: AbortSignal, recording?: boolean): Promise<() => void>;
+  presentForUser?(): void;
+  captureSurfaceSize?(): { width: number; height: number };
+  prepareObservation?(): () => void;
+  sendMouseInput?(event: MouseInputEvent, verify?: () => void): Promise<void>;
+  diagnostics?: DiagnosticBuffer;
+  setViewport?(viewport: BrowserViewport | null): void;
+  inputScale?(): number;
+  capturePixelRatio?(): number;
+  ensureLoaded?(): Promise<void>;
+  isPlaceholder?(): boolean;
   bind(events: GuestViewEvents): void;
   setBounds(bounds: Rectangle): void;
   setVisible(visible: boolean): void;

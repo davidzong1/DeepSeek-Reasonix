@@ -29,11 +29,12 @@ export function useSessionSubmission(options: {
       target: source.target, request, read, ports,
     }, executeSubmission);
     if (result.status === "failed") throw result.error;
+    if (result.status === "cancelled" && request.kind !== "goal" && request.content.submissionId) throw new Error("Submission result requires verification after navigation");
   });
   const commitThenSend = useCommittedCommand((tab: string, display: string, submit?: string,
     structured?: StructuredInvocationSubmit, initialGoal?: InitialGoal) => run(tab, { kind: "direct", content: { display, submit, structured, initialGoal } }));
-  const submit = useCommittedCommand((tab: string, display: string, content = display, structured?: StructuredInvocationSubmit) =>
-    run(tab, { kind: "composer", content: { display, submit: content, structured } }));
+  const submit = useCommittedCommand((tab: string, display: string, content = display, structured?: StructuredInvocationSubmit, submissionId?: string) =>
+    run(tab, { kind: "composer", content: { display, submit: content, structured, submissionId } }));
   const applyGoalForTab = useCommittedCommand((tab: string, goal: string) => run(tab, { kind: "goal", goal }));
   const applyGoal = useCommittedCommand((goal: string) => target.tabId ? applyGoalForTab(target.tabId, goal) : Promise.resolve());
   // A queue already owns its request and must retain resource failures before

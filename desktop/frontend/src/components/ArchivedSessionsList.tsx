@@ -29,7 +29,6 @@ export function ArchivedSessionsList({ active, onOpenSession }: {
   const [previewCursor, setPreviewCursor] = useState("");
   const [pendingRequest, setPendingRequest] = useState<SessionLifecycleRequest | null>(null);
   const [cleanupStatus, setCleanupStatus] = useState<LegacyEmptySessionCleanupStatus>();
-  const [cleanupRetrying, setCleanupRetrying] = useState(false);
   const [managementMenu, setManagementMenu] = useState<ContextMenuPoint | null>(null);
   const [sessionMenu, setSessionMenu] = useState<ContextMenuPoint | null>(null);
   const registryGeneration = useRef(0);
@@ -157,17 +156,6 @@ export function ArchivedSessionsList({ active, onOpenSession }: {
       cancelLabel: t("common.cancel"), tone: "danger" }) && surface === surfaceGeneration.current) await mutate(request);
   };
   const refresh = () => { if (!pendingRequest) setError(""); void reload().catch(() => {}); };
-  const retryCleanup = async () => {
-    if (cleanupRetrying) return;
-    setCleanupRetrying(true); setError("");
-    try {
-      setCleanupStatus(await app.RetryLegacyEmptySessionCleanup());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCleanupRetrying(false);
-    }
-  };
   const filtered = rows.filter(row => `${row.title}\n${row.workspace}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const visibleSelected = selected && filtered.some(row => row.key === selected.key) ? selected : undefined;
   const openMenu = (event: React.MouseEvent<HTMLButtonElement>, kind: "management" | "session") => {
@@ -188,7 +176,6 @@ export function ArchivedSessionsList({ active, onOpenSession }: {
     {notice && <div className="management-notice" role="status">{notice}</div>}
     {!!cleanupStatus?.pending && <div className="management-notice" role="status">
       {t("history.legacyCleanupPending", { n: cleanupStatus.pending })}
-      <button className="btn btn--small" disabled={cleanupRetrying} onClick={() => void retryCleanup()}>{t("history.recheckLegacyCleanup")}</button>
     </div>}
     {(error || pendingRequest) && <div className="management-notice" role="alert">{error}<button className="btn btn--small" disabled={busy} onClick={() => pendingRequest ? void mutate(pendingRequest) : refresh()}>{t(pendingRequest ? "history.retryFailed" : "common.retry")}</button></div>}
     {loadError && <div className="management-notice" role="alert">{loadError}<button className="btn btn--small" disabled={busy} onClick={refresh}>{t("common.retry")}</button></div>}

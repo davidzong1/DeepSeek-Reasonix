@@ -33,6 +33,10 @@ Desktop、Serve 和远程会话使用控制器提交的运行状态快照。正�
 
 Desktop 的 `GetRuntimeStateSnapshot` 和 `runtime-state:changed` 使用相同完整投影，包含投影 epoch/revision、sessions 和 topics。本地采样离开 App 锁读取控制器后，复验标签、控制器、会话代次、路径及打开/分离身份。旧项目树接口由同一投影适配。
 
+Desktop 状态观察优先使用 `PublishedRuntimeStateSnapshot`，取得控制器最近一次已提交状态的不可变副本。读取不会刷新状态来源，也不等待 controller 或采样锁，避免一个运行时卡住后通过状态汇总阻塞其他项目列表。生产者在每次语义提交（包括初始化）时替换快照，随后异步发送通知。原有即时采样接口继续供既有嵌入者和调用方使用；不改变传输协议或持久化格式。
+
+会话级“停止”会先向捕获的 controller 发出取消信号，再发布状态或维护事件；回执元数据读取已发布快照，因此采样器卡住时也不会延迟停止。关闭流程为每一步保留检查点；如果 session service 仍持有活动运行时，关闭会返回可重试的失败，只有绑定清理类错误作为警告保留，避免把仍在运行的会话报告成成功退出。
+
 标签 metadata 暴露 `sessionGeneration` 和同一次 controller 采样得到的 `runtimeStateSnapshot`；兼容字段 `canonicalTodos` 也从该快照转换。通过绑定校验的 metadata 可以建立新的 `projectionEpoch` 基线；普通晚到 runtime 帧只能在当前 epoch 内推进 `revision`，不能替换生产者。有版本的空待办数组表示有效清空，缺失快照只表示尚未取得基线。前端按 `hostId + sessionId` 保存快照，因此切换标签只改变可见内容，不会转移或清空其他会话的状态。
 
 Serve 的 `GET /runtime-states` 仅读取前台及 detached 控制器的内存快照；`/status` 增加 `runtimeState`。指定 session 时优先匹配真实拥有该 session 的实例。SSE 的 `runtime_state` 使用既有 session tagging，新的会话状态不会越过 `session_changed` 屏障。外部接管和只读镜像继续遵守原 ownership 规则。
@@ -45,7 +49,7 @@ Serve 的 `GET /runtime-states` 仅读取前台及 detached 控制器的内存�
 
 新快照可用时，旧的逐会话运行 watchdog 不再判定运行真值，十分钟沉默清理也不再决定项目活动状态。旧 Serve 的 404/501 能力缺失在当前连接代次内记住，使用原有状态接口。旧待办协议在一个绑定内只串行读取单一权威来源，变化通知只使该查询失效，不混合不可比较的来源。缺失字段不作为零值，也不猜测收尾阶段。所有旧协议字段保留；新增字段不改变持久化会话格式。
 
-诊断仅记录状态来源、匿名代次、版本、阶段、同步原因及丢弃/冲突/失败计数；不逐 token 输出，不记录提示词、凭据或完整路径。
+诊断仅记录状态来源、匿名代次、版本、阶段、同步原因及丢弃/冲突/失败计数。启用的前端诊断还会记录 `workspace.session-list` 请求阶段（`queued`、`started`、`completed`、`failed`、`discarded`）、耗时、排队/活动请求数和返回条数；不逐 token 输出，不记录提示词、凭据、会话正文或完整路径。
 
 ## 验证入口
 

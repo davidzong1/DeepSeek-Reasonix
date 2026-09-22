@@ -157,6 +157,15 @@ type Options struct {
 	// backend's /skills and skill invocation see only its role's playbook, the
 	// shared skills that admit it, and its special/<role> skills. Empty unscoped.
 	TeamRole string
+	// WorkspaceLeaseLabel names this build's writer in workspace-lease holder
+	// records, so a session queued behind it can see which team member is
+	// writing instead of only "another session". Diagnostic only: an empty label
+	// publishes no record and changes no lease outcome.
+	WorkspaceLeaseLabel string
+	// WriteIntentGate queues this build's write intents against in-process peers
+	// of the same workspace (a team's members) before the cross-process lease is
+	// attempted. It only delays acquisitions; a nil gate changes nothing.
+	WriteIntentGate agent.WriteIntentGateFunc
 	// TeamSkillsRoot is the user-global root owning the team skills tree
 	// (<root>/team/skills) this build reads; empty leaves the team tree unread.
 	// The workspace root keeps driving project skills, config, memory and hooks.
@@ -559,6 +568,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize workspace write lease: %w", err)
 	}
+	// Identity is diagnostic: it only lets a queued writer name this one.
+	workspaceLease.SetIdentity(opts.WorkspaceLeaseLabel)
 	jobOptions = append(jobOptions, jobs.WithJobStartObserver(workspaceLease.RetainUntil))
 	jm := jobs.NewManager(sink, jobOptions...)
 	sessionDir := opts.SessionDir
@@ -742,6 +753,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	browserExec, closeBrowser := browserBackend(opts.BrowserExecutor, cfg.Browser, writeRoots)
 	if browserExec != nil {
 		for _, t := range browser.Tools(browserExec) {
+			reg.Add(t)
+		}
+		for _, t := range browser.CapabilityTools(browserExec) {
 			reg.Add(t)
 		}
 	}
@@ -1704,7 +1718,12 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ModelRef:     modelRef,
 		Gate:         headlessGate,
 		Hooks:        hookRunner,
-		Jobs:         jm,
+		// The lease is sized from the hooks' own write surface, so a proven
+		// reader no longer forces a whole-workspace hold.
+		HookWriteSurface: hookLeaseSurface(hookRunner),
+		// The team's in-process write token, when this build is a member of one.
+		WriteIntentGate: opts.WriteIntentGate,
+		Jobs:            jm,
 		// Parent write reservation at the executor entry covers all writers
 		// (including late Economy/MCP adds) without wrapping tool schemas.
 		WriteScheduler:               subagentScheduler,

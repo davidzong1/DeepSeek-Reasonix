@@ -7,9 +7,9 @@ export type SubmissionResource = {
   target: SessionResource; remote: boolean; ready: boolean; unavailable: string; goalDraft: boolean;
   collaboration: CollaborationMode; approval: ToolApprovalMode;
 };
-export type Submission = { display: string; submit?: string; structured?: StructuredInvocationSubmit; initialGoal?: InitialGoal };
+export type Submission = { display: string; submit?: string; structured?: StructuredInvocationSubmit; initialGoal?: InitialGoal; submissionId?: string };
 export type SubmissionPorts = {
-  send(tab: string, display: string, submit?: string, structured?: StructuredInvocationSubmit, goal?: InitialGoal): Promise<void>;
+  send(tab: string, display: string, submit?: string, structured?: StructuredInvocationSubmit, goal?: InitialGoal, submissionId?: string): Promise<void>;
   clearUndo(tab: string): void;
   setGoal(tab: string, goal: string, remote: boolean): Promise<void>;
   patchGoal(tab: string, goal: string): void;
@@ -28,6 +28,7 @@ export function buildInitialGoalSubmission(
   const display = content.display.trim();
   const submit = (content.submit ?? content.display).trim();
   return {
+    ...(content.submissionId ? {submissionId:content.submissionId} : {}),
     display,
     submit: content.structured ? submit : `/goal ${submit}`,
     structured: content.structured,
@@ -57,9 +58,10 @@ async function applyGoal(input: SubmissionInput, goal: string, authority: Sessio
 async function send(input: SubmissionInput, content: Submission, authority: SessionOperationAuthority) {
   authority.checkpoint();
   const source = input.read(input.target);
-  if (!source.ready || source.unavailable) throw Error(source.unavailable);
+  if (!source.ready || source.unavailable) throw Error("reasonix_error:inbox_not_submitted " + source.unavailable);
   input.ports.clearUndo(input.target.tabId);
-  await input.ports.send(input.target.tabId, content.display, content.submit, content.structured, content.initialGoal);
+  if (content.submissionId) await input.ports.send(input.target.tabId, content.display, content.submit, content.structured, content.initialGoal, content.submissionId);
+  else await input.ports.send(input.target.tabId, content.display, content.submit, content.structured, content.initialGoal);
   authority.checkpoint();
 }
 
@@ -79,19 +81,19 @@ export async function executeSubmission(input: SubmissionInput, authority: Sessi
       else await applyGoal(input, command.value, authority);
     } else if (command.clear) await applyGoal(input, "", authority);
     authority.checkpoint();
-    if (input.read(input.target).ready) await send(input, { display, submit: submit.trim() }, authority);
+    if (input.read(input.target).ready) await send(input, { ...content, display, submit: submit.trim() }, authority);
     return;
   }
-  if (!source.ready) return;
+  if (!source.ready) throw new Error("reasonix_error:workspace_starting");
   if (source.goalDraft) {
 	await send(input, buildInitialGoalSubmission(
-	  { display, submit, structured: content.structured }, source.collaboration, source.approval,
+	  { ...content, display, submit }, source.collaboration, source.approval,
 	), authority);
     authority.checkpoint();
     input.ports.patchGoal(input.target.tabId, display);
     return;
   }
-  if (!await input.ports.profile(input.target.tabId, false)) return;
+  if (!await input.ports.profile(input.target.tabId, false)) throw new Error("reasonix_error:inbox_not_submitted — session settings could not be applied");
   authority.checkpoint();
-  await send(input, { display, submit: submit.trim(), structured: content.structured }, authority);
+  await send(input, { ...content, display, submit: submit.trim() }, authority);
 }

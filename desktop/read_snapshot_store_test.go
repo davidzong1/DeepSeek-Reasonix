@@ -295,3 +295,41 @@ func TestReadSnapshotEvictionKeepsBoundAndRejectsOldHandle(t *testing.T) {
 		t.Fatal("eviction leaked storage")
 	}
 }
+
+func TestReadSnapshotEvictionOrdersEqualTimestampsAndPageAccess(t *testing.T) {
+	var store readSnapshotStore
+	defer store.close()
+	var ordered []*readSnapshot
+	for i := range 32 {
+		handle, err := store.build(t.Context(), fmt.Sprint(i), func(ctx context.Context, snap *readSnapshot) error {
+			return store.append(ctx, snap, i)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ordered = append(ordered, handle.data, handle)
+	}
+	// Reading the oldest handle must refresh its position, even when every
+	// clock sample has the same value (as on a coarse platform clock).
+	first := ordered[1]
+	if _, _, _, _, err := store.page(t.Context(), "0", "", first, 1, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ordered = append(append(ordered[:1:1], ordered[2:]...), first)
+	sharedTime := time.Now()
+	store.mu.Lock()
+	for _, snap := range store.entries {
+		snap.lifetime.used = sharedTime
+	}
+	var victims []*readSnapshot
+	for range ordered {
+		victims = append(victims, store.evictOldestLocked())
+	}
+	store.mu.Unlock()
+	for i, victim := range victims {
+		store.dispose(victim)
+		if victim != ordered[i] {
+			t.Errorf("eviction %d did not follow insertion and page-access order", i)
+		}
+	}
+}

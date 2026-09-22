@@ -23,7 +23,7 @@ export function ensureAssistant(s: State, messageId?: string): State {
   }
   const ordinal = s.assistantSegmentOrdinal;
   const id = canonicalId ?? (s.activeTurnId ? `a:${s.activeTurnId}:${ordinal}` : `a${s.seq}`);
-  const item: AssistantItem = { kind: "assistant", id, text: "", reasoning: "", streaming: true, wasStreamed: true, searchSources: s.pendingSearchSources?.length ? s.pendingSearchSources : undefined };
+  const item: AssistantItem = { kind: "assistant", id, text: "", reasoning: "", streaming: true, wasStreamed: true, ...(s.activeTurnId ? { turnId: s.activeTurnId } : {}), searchSources: s.pendingSearchSources?.length ? s.pendingSearchSources : undefined };
   return {
     ...s,
     items: [...s.items, item],

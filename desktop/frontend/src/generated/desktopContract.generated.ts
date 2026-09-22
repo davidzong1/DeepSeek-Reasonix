@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:856aeb17926400a95c8eeebe0ded3e69e7ffa9e0184871c325ef615a8776e862";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:5dc7b0f6974eca29f173303b0a4c77d8893a7b5bc6e3eed581e13a24f50f650a";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -62,6 +62,8 @@ export const DESKTOP_COMMANDS = [
   "Balance",
   "BalanceForTab",
   "BeginDraftSubmission",
+  "BeginManualSessionCreation",
+  "BeginSessionComposerSubmission",
   "BeginSessionExportForTarget",
   "BotRuntimeStatus",
   "Cancel",
@@ -113,6 +115,7 @@ export const DESKTOP_COMMANDS = [
   "Compact",
   "CompactForTab",
   "CompactRemoteTab",
+  "CompleteSessionComposerSubmission",
   "ConfirmAction",
   "ConfirmRemoteHostKey",
   "ConfirmRemoteSecret",
@@ -199,6 +202,7 @@ export const DESKTOP_COMMANDS = [
   "GetHistoryIndexStatus",
   "GetHistorySearchContext",
   "GetLegacyEmptySessionCleanupStatus",
+  "GetManualSessionCreation",
   "GetModelSettingsApplication",
   "GetModelSettingsRequest",
   "GetPinnedFilesForTab",
@@ -210,6 +214,7 @@ export const DESKTOP_COMMANDS = [
   "GetSessionActivityBaseline",
   "GetSessionArchitectureDiagnostics",
   "GetSessionCatalogStatus",
+  "GetSessionComposerState",
   "GetSessionDraft",
   "GetSessionDraftState",
   "GetSessionOrganization",
@@ -268,12 +273,14 @@ export const DESKTOP_COMMANDS = [
   "ListDirForTarget",
   "ListHistoricalSessions",
   "ListHistorySessions",
+  "ListManualSessionCreations",
   "ListProjectGroups",
   "ListProjectTopics",
   "ListProjectTree",
   "ListRecoveryEntries",
   "ListRemoteDir",
   "ListRemoteProjects",
+  "ListSessionComposerConflicts",
   "ListSessionDraftSummaries",
   "ListSessions",
   "ListSessionsForTab",
@@ -515,6 +522,7 @@ export const DESKTOP_COMMANDS = [
   "RetryAuthenticationForTab",
   "RetryInboxItem",
   "RetryLegacyEmptySessionCleanup",
+  "RetryManualSessionCreation",
   "RetryModelSettingsApplication",
   "RetrySessionRecovery",
   "RevealBackgroundRuntime",
@@ -558,6 +566,7 @@ export const DESKTOP_COMMANDS = [
   "SaveReferencePathAsForTab",
   "SaveRemoteFileAs",
   "SaveRemotePresentedFileAs",
+  "SaveSessionComposerState",
   "SaveSessionDraft",
   "SaveSessionGroups",
   "SaveSessionGroupsVersioned",
@@ -2925,6 +2934,25 @@ export interface MCPServerInput {
   toolTimeoutSeconds: Record<string, number>;
 }
 
+export interface ManualSessionCreationRequest {
+  operationId: string;
+  workspaceId: string;
+  scope?: string;
+  workspaceRoot?: string;
+}
+
+export interface ManualSessionCreationView {
+  operationId: string;
+  workspaceId: string;
+  scope: string;
+  workspaceRoot: string;
+  ref: SessionRef;
+  topicId: string;
+  phase: string;
+  error?: string;
+  settings: SessionDraftSettings;
+}
+
 export interface MarkdownImageView {
   url: string;
   filename?: string;
@@ -4003,6 +4031,29 @@ export interface SessionClearResult {
   sessionRevision?: number;
   sessionDigest?: string;
   sessionGeneration: number;
+}
+
+export interface SessionComposerSaveRequest {
+  ref: SessionRef;
+  expectedRevision: string;
+  contentJson: string;
+  contentVersion: number;
+  acknowledgeHistory?: boolean;
+}
+
+export interface SessionComposerState {
+  ref: SessionRef;
+  revision: string;
+  contentJson: string;
+  contentVersion: number;
+  baseline: string;
+  submissionId?: string;
+  submissionPhase?: string;
+  submissionRequest?: string;
+  submissionFingerprint?: string;
+  submissionRevision?: string;
+  historyChanged: boolean;
+  conflict: boolean;
 }
 
 export interface SessionCreationResult {
@@ -5849,6 +5900,8 @@ export interface GeneratedDesktopCommands {
   Balance(): Promise<BalanceInfo>;
   BalanceForTab(arg0: string): Promise<BalanceInfo>;
   BeginDraftSubmission(arg0: SessionDraftSubmissionRequest): Promise<SessionDraftSubmissionView>;
+  BeginManualSessionCreation(arg0: ManualSessionCreationRequest): Promise<ManualSessionCreationView>;
+  BeginSessionComposerSubmission(arg0: SessionRef, arg1: string, arg2: string, arg3: string): Promise<SessionComposerState>;
   BeginSessionExportForTarget(arg0: SessionSelector, arg1: string, arg2: string, arg3: string, arg4: string): Promise<SessionExportHandle>;
   BotRuntimeStatus(): Promise<BotRuntimeStatusView>;
   Cancel(): Promise<void>;
@@ -5900,6 +5953,7 @@ export interface GeneratedDesktopCommands {
   Compact(): Promise<void>;
   CompactForTab(arg0: string): Promise<void>;
   CompactRemoteTab(arg0: string, arg1: string): Promise<void>;
+  CompleteSessionComposerSubmission(arg0: SessionRef, arg1: string, arg2: string): Promise<SessionComposerState>;
   ConfirmAction(arg0: NativeConfirmRequest): Promise<boolean>;
   ConfirmRemoteHostKey(arg0: string, arg1: boolean): Promise<void>;
   ConfirmRemoteSecret(arg0: string, arg1: string, arg2: string, arg3: boolean): Promise<void>;
@@ -5986,6 +6040,7 @@ export interface GeneratedDesktopCommands {
   GetHistoryIndexStatus(): Promise<historycatalog_Status>;
   GetHistorySearchContext(arg0: HistorySearchContextRequest): Promise<HistorySearchContextLine[]>;
   GetLegacyEmptySessionCleanupStatus(): Promise<LegacyEmptySessionCleanupStatus>;
+  GetManualSessionCreation(arg0: string): Promise<ManualSessionCreationView>;
   GetModelSettingsApplication(): Promise<ModelSettingsResult>;
   GetModelSettingsRequest(arg0: string): Promise<ModelSettingsResult>;
   GetPinnedFilesForTab(arg0: string): Promise<PinnedFileInfo[]>;
@@ -5997,6 +6052,7 @@ export interface GeneratedDesktopCommands {
   GetSessionActivityBaseline(arg0: SessionSelector): Promise<SessionActivityBaseline>;
   GetSessionArchitectureDiagnostics(): Promise<SessionArchitectureDiagnostics>;
   GetSessionCatalogStatus(): Promise<SessionCatalogStatus>;
+  GetSessionComposerState(arg0: SessionRef): Promise<SessionComposerState>;
   GetSessionDraft(arg0: string): Promise<SessionDraftView>;
   GetSessionDraftState(arg0: string): Promise<SessionDraftState>;
   GetSessionOrganization(arg0: SessionOrganizationWorkspace): Promise<SessionOrganizationSnapshot>;
@@ -6055,12 +6111,14 @@ export interface GeneratedDesktopCommands {
   ListDirForTarget(arg0: ComposerTarget, arg1: string): Promise<DirEntry[]>;
   ListHistoricalSessions(): Promise<HistoricalImportStatus>;
   ListHistorySessions(arg0: HistorySessionPageRequest): Promise<HistorySessionPage>;
+  ListManualSessionCreations(): Promise<ManualSessionCreationView[]>;
   ListProjectGroups(arg0: string, arg1: string): Promise<desktopGroup[]>;
   ListProjectTopics(arg0: ProjectTopicPageRequest): Promise<ProjectTopicPage>;
   ListProjectTree(): Promise<ProjectNode[]>;
   ListRecoveryEntries(arg0: string, arg1: string, arg2: number): Promise<RecoveryEntryPage>;
   ListRemoteDir(arg0: string, arg1: string): Promise<RemoteDirEntry[]>;
   ListRemoteProjects(): Promise<RemoteProjectView[]>;
+  ListSessionComposerConflicts(arg0: SessionRef): Promise<string[]>;
   ListSessionDraftSummaries(): Promise<SessionDraftSummary[]>;
   ListSessions(): Promise<SessionMeta[]>;
   ListSessionsForTab(arg0: string): Promise<SessionMeta[]>;
@@ -6302,6 +6360,7 @@ export interface GeneratedDesktopCommands {
   RetryAuthenticationForTab(arg0: string): Promise<AuthenticationState>;
   RetryInboxItem(arg0: string, arg1: string): Promise<void>;
   RetryLegacyEmptySessionCleanup(): Promise<LegacyEmptySessionCleanupStatus>;
+  RetryManualSessionCreation(arg0: string): Promise<ManualSessionCreationView>;
   RetryModelSettingsApplication(arg0: string): Promise<ModelSettingsResult>;
   RetrySessionRecovery(arg0: RecoveryPreferenceRequest): Promise<void>;
   RevealBackgroundRuntime(arg0: string): Promise<TabMeta>;
@@ -6345,6 +6404,7 @@ export interface GeneratedDesktopCommands {
   SaveReferencePathAsForTab(arg0: string, arg1: string): Promise<string>;
   SaveRemoteFileAs(arg0: string, arg1: string): Promise<string>;
   SaveRemotePresentedFileAs(arg0: string, arg1: string, arg2: string, arg3: string): Promise<string>;
+  SaveSessionComposerState(arg0: SessionComposerSaveRequest): Promise<SessionComposerState>;
   SaveSessionDraft(arg0: SessionDraftSaveRequest): Promise<SessionDraftSaveResult>;
   SaveSessionGroups(arg0: string, arg1: string, arg2: desktopGroup[]): Promise<void>;
   SaveSessionGroupsVersioned(arg0: string, arg1: string, arg2: number, arg3: desktopGroup[]): Promise<ProjectGroupsSnapshot>;

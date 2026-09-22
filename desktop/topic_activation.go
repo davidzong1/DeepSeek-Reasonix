@@ -259,7 +259,8 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 	// through singleSurfaceMu: either this completion runs entirely before the
 	// next activation's synchronous phase (its tabs are not there to prune),
 	// or after it (the generation no longer matches and nothing is pruned).
-	a.singleSurfaceMu.Lock()
+	unlockRuntime := a.lockTopicActivationPrune()
+	defer unlockRuntime()
 	defer a.singleSurfaceMu.Unlock()
 
 	a.mu.RLock()
@@ -272,7 +273,9 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 		return
 	}
 
-	if _, err := a.keepOnlyVisibleTab(tabID); err != nil {
+	_, err := a.pruneVisibleTabsRuntimeAdmissionHeld(tabID)
+	unlockRuntime()
+	if err != nil {
 		a.finishTopicActivation(gen, requestID)
 		if !emittedReady {
 			a.emitTopicActivation(TopicActivationEvent{
@@ -286,6 +289,7 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 		}
 		return
 	}
+	a.emitProjectTreeRuntimeChangedWithLegacy()
 
 	if emittedReady {
 		a.finishTopicActivation(gen, requestID)

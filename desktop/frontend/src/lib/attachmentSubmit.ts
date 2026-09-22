@@ -1,6 +1,22 @@
 import type { AppBindings } from "./bridge";
 import type { StructuredInvocationSubmit } from "./invocationDisplay";
 import type { ComposerTarget } from "../generated/desktopContract.generated";
+import type { WorkspaceReference } from "./composerDraftTypes";
+
+export async function restoreExternalFolderReferences(app: AppBindings, target: ComposerTarget, refs: WorkspaceReference[]) {
+  const external = refs.filter(ref => ref.isDir && ref.path.startsWith("__reasonix_external_folder/"));
+  if (!external.length) return;
+  const token = await captureAttachmentTarget(app, target, ["AttachDroppedForTarget"]);
+  try {
+    for (const ref of external) {
+      if (!ref.displayPath) throw new Error("External folder source is unavailable; reattach the folder before sending");
+      const restored = await app.AttachDroppedForTarget!(token, ref.displayPath);
+      if (restored.kind !== "workspace" || !restored.isDir || restored.path !== ref.path) {
+        throw new Error("External folder changed; reattach the folder before sending");
+      }
+    }
+  } finally { await app.ReleaseAttachmentTarget?.(token); }
+}
 
 const pendingImageSubmissions = new Map<string, { fingerprint: string; id: string }>();
 
@@ -21,13 +37,30 @@ export async function prepareImageSubmission(
   target: ComposerTarget,
   draftKey: string,
   fingerprint: string,
-  attachments: Array<{ draftId?: string; clientAttachmentId?: string }>,
+  attachments: Array<{ draftId?: string; clientAttachmentId?: string; recoveryPath?: string; displayName?: string }>,
   structured: StructuredInvocationSubmit | undefined,
   display: string,
   input: string,
 ) {
   const token = await captureImageTarget(app, target);
   const submissionId = imageSubmissionIdentity(draftKey, fingerprint);
+  const restored = [];
+  try {
+    for (const [index, item] of attachments.entries()) {
+      let draftId = item.draftId;
+      if (!draftId && item.recoveryPath) {
+        if (!app.AttachmentDataURLForTarget || !app.StageImageForTarget) throw new Error("unsupported: attachments-v2");
+        const data = await app.AttachmentDataURLForTarget(token, item.recoveryPath);
+        const staged = await app.StageImageForTarget(token, `${submissionId}:restore:${index}`, item.displayName || "image", "", data);
+        draftId = staged.draftId;
+      }
+      if (!draftId) throw new Error("Image source is unavailable; reattach the image before sending");
+      restored.push({ clientAttachmentId: item.clientAttachmentId || `image-${index + 1}`, draftId });
+    }
+  } catch (error) {
+    await app.ReleaseAttachmentTarget?.(token).catch(() => {});
+    throw error;
+  }
   return {
     token,
     submissionId,
@@ -37,10 +70,7 @@ export async function prepareImageSubmission(
       invocations: structured?.invocations ?? [],
       attachmentTarget: token,
       attachmentSubmissionId: submissionId,
-      attachments: attachments.map((item, index) => ({
-        clientAttachmentId: item.clientAttachmentId || `image-${index + 1}`,
-        draftId: item.draftId,
-      })),
+      attachments: restored,
     } satisfies StructuredInvocationSubmit,
   };
 }
@@ -82,7 +112,7 @@ export async function captureAttachmentTarget(
   return captured.token;
 }
 
-export async function stageImageFile(app: AppBindings, target: string, draftKey: string, file: File) {
+export async function stageImageFile(app: AppBindings, target: string, draftKey: string, file: File, persistentTarget?: ComposerTarget) {
   const dataURL = await readFileAsDataURL(file);
   const staged = await app.StageImageForTarget!(target, `${draftKey}:${file.name}:${file.lastModified}`, file.name, file.type, dataURL);
 	const path = staged.draftId ? `draft:${staged.draftId}` : staged.path;
@@ -90,5 +120,6 @@ export async function stageImageFile(app: AppBindings, target: string, draftKey:
 	const previewUrl = staged.draftId
 		? await app.ReadDraftImageForTarget!(target, staged.draftId)
 		: await app.AttachmentDataURLForTarget!(target, path);
-	return { path, previewUrl, displayName: file.name, draftId: staged.draftId || undefined, file };
+	const recoveryPath = persistentTarget && staged.draftId ? await app.SavePastedImageForComposerTarget(persistentTarget, dataURL) : undefined;
+	return { path, previewUrl, displayName: file.name, draftId: staged.draftId || undefined, recoveryPath, file };
 }

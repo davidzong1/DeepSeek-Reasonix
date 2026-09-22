@@ -5,8 +5,9 @@ import { ActionExecutor, type ActRequest } from "./actions.js";
 import { DocumentRegistry } from "./documents.js";
 import { BROWSER_ERR_NO_GRANT, BROWSER_ERR_STALE_REFERENCE, BROWSER_ERR_TAKEN_OVER, noGrant } from "./errors.js";
 import { FakeGuestView, FakeViewFactory, silentLog } from "./fakeGuestViews.js";
-import type { ResolveOutput } from "./pageScripts.js";
+import type { ResolveOutput, ResolvedElement } from "./pageScripts.js";
 import { BrowserSurfaceManager } from "./surfaceManager.js";
+import { DEBUGGER_IDLE_MS } from "./debuggerLease.js";
 
 const code = (value: number) => (error: unknown) => error instanceof RpcError && error.code === value;
 
@@ -28,13 +29,13 @@ async function setup() {
   const scripts: string[] = [];
   page.run = (source) => {
     scripts.push(source);
-    if (source.startsWith("(function pageResolve")) {
+    if (source.startsWith("/* reasonix:pageResolve */")) {
       answers.beforeResolve();
       return answers.resolve;
     }
-    if (source.startsWith("(function pageIdentity")) return answers.identity;
-    if (source.startsWith("(function pageSelect")) return answers.select;
-    if (source.startsWith("(function pageLocate")) return answers.locate;
+    if (source.startsWith("/* reasonix:pageIdentity */")) return answers.identity;
+    if (source.startsWith("/* reasonix:pageSelect */")) return answers.select;
+    if (source.startsWith("/* reasonix:pageLocate */")) return answers.locate;
     if (source.startsWith("({ width")) return { width: 800, height: 600 };
     return undefined;
   };
@@ -134,6 +135,30 @@ test("a navigation or document replacement during the act completes it without a
   assert.deepEqual(await s.actions.act(s.tab, s.request({ documentToken: token }), s.verify), { executed: true });
 });
 
+test("click and editable focus await mouse movement and recheck the grant before pressing", async () => {
+  for (const action of ["click", "type", "press"] as const) {
+    const s = await setup();
+    s.answers.resolve = { ...s.answers.resolve as ResolvedElement, editable: true };
+    let entered!: () => void, release!: () => void;
+    const preparing = new Promise<void>(resolve => { entered = resolve; });
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    const events: string[] = [];
+    s.tab.view.sendMouseInput = async (event, verify) => {
+      events.push(event.type);
+      if (event.type === "mouseMove") { entered(); await ready; }
+      verify?.();
+    };
+    const result = s.actions.act(s.tab, s.request({ action, text: "new text", keys: "Enter" }), s.verify);
+    await preparing;
+    assert.deepEqual(events, ["mouseMove"]);
+    assert.equal(s.page.inputs.length, 0, "the native and CDP channels must not be mixed");
+    s.revoke(); release();
+    assert.equal((await result).outcome, "unknown");
+    assert.deepEqual(events, ["mouseMove"], "no button press or replay after revocation");
+    assert.equal(s.page.inputs.length, 0);
+  }
+});
+
 test("non-interactable targets report executed:false with the same token", async () => {
   const s = await setup();
   s.answers.resolve = { ok: false, reason: "element is covered by another element" };
@@ -170,7 +195,7 @@ test("press sends chords, scroll sends inverted wheel deltas, select runs in the
   assert.equal((await s.actions.act(s.tab, s.request({ action: "scroll", ref: "", documentToken: "tok-3" }), s.verify)).reason, "scroll deltas are both zero");
 
   assert.deepEqual(await s.actions.act(s.tab, s.request({ action: "select", options: ["x"], documentToken: "tok-3" }), s.verify), { executed: true, documentToken: "tok-4" });
-  assert.ok(s.scripts.some((source) => source.startsWith("(function pageSelect") && source.includes('"options":["x"]')));
+  assert.ok(s.scripts.some((source) => source.startsWith("/* reasonix:pageSelect */") && source.includes('"options":["x"]')));
   s.answers.select = { ok: false, reason: "stale" };
   await assert.rejects(s.actions.act(s.tab, s.request({ action: "select", documentToken: "tok-4" }), s.verify), code(BROWSER_ERR_STALE_REFERENCE));
 });
@@ -178,13 +203,14 @@ test("press sends chords, scroll sends inverted wheel deltas, select runs in the
 test("press focuses a non-editable ref before sending keys", async () => {
   const s = await setup();
   s.answers.resolve = { ok: true, x: 0, y: 0, width: 10, height: 10, tag: "button", type: "", disabled: false, editable: false, frameOffsetKnown: true };
-  s.page.run = (source) => source.startsWith("(function pageFocus") ? true : source.startsWith("(function pageIdentity") ? true : s.answers.resolve;
+  s.page.run = (source) => source.startsWith("/* reasonix:pageFocus */") ? true : source.startsWith("/* reasonix:pageIdentity */") ? true : s.answers.resolve;
   const result = await s.actions.act(s.tab, s.request({ action: "press", ref: "e1", keys: "Enter" }), s.verify);
   assert.equal(result.executed, true);
   assert.equal(s.page.inputs.filter((event) => event.type === "keyDown").length, 1);
 });
 
-test("upload validates files and sets them through the DevTools protocol", async () => {
+test("upload validates files and sets them through the DevTools protocol", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const s = await setup();
   assert.equal((await s.actions.act(s.tab, s.request({ action: "upload" }), s.verify)).reason, "upload needs files");
   assert.match((await s.actions.act(s.tab, s.request({ action: "upload", files: ["relative.txt"] }), s.verify)).reason ?? "", /absolute/);
@@ -197,9 +223,13 @@ test("upload validates files and sets them through the DevTools protocol", async
   assert.deepEqual(result, { executed: true, documentToken: "tok-2" });
   assert.deepEqual(s.page.debugger.commands.map((command) => command.method), ["Runtime.enable", "Runtime.callFunctionOn", "Runtime.disable", "DOM.setFileInputFiles", "Runtime.releaseObjectGroup"]);
   assert.deepEqual(s.page.debugger.commands[3].params, { objectId: "obj-9", files: ["/tmp/a.txt"] });
-  assert.equal(s.page.debugger.attached, false, "the debugger is detached afterwards");
+  assert.equal(s.page.debugger.attached, true, "adjacent upload shares the root connection");
+  await s.actions.act(s.tab, s.request({ action: "upload", files: ["/tmp/a.txt"], documentToken: "tok-2" }), s.verify);
+  assert.equal(s.page.debugger.commands.filter(c => c.method === "Runtime.disable").length, 2, "owned Runtime state must reset even when the root connection is reused");
+  t.mock.timers.tick(DEBUGGER_IDLE_MS);
+  assert.equal(s.page.debugger.attached, false, "idle debugger is released");
   s.answers.locate = { ok: true, tag: "input", type: "text", path: "html" };
-  assert.equal((await s.actions.act(s.tab, s.request({ action: "upload", files: ["/tmp/a.txt"], documentToken: "tok-2" }), s.verify)).reason, "element is not a file input");
+  assert.equal((await s.actions.act(s.tab, s.request({ action: "upload", files: ["/tmp/a.txt"], documentToken: "tok-3" }), s.verify)).reason, "element is not a file input");
 });
 
 test("takeover after a focus click preserves an unknown receipt and stops typing", async () => {

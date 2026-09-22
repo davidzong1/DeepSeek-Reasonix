@@ -36,18 +36,21 @@ var operationIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 
 // Operation is one reserved browser write and its settlement.
 type Operation struct {
-	ID            string    `json:"id"`
-	SessionID     string    `json:"sessionId"`
-	Generation    string    `json:"generation"`
-	TabID         string    `json:"tabId"`
-	Epoch         uint64    `json:"epoch"`
-	DocumentToken string    `json:"documentToken"`
-	Action        string    `json:"action"`
-	Digest        string    `json:"digest"`
-	State         State     `json:"state"`
-	ReservedAt    time.Time `json:"reservedAt"`
-	SettledAt     time.Time `json:"settledAt,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
+	// Optional diagnostic attribution. Old writers may drop it; such records
+	// remain valid operations but must never be guessed into a session export.
+	DiagnosticScope string    `json:"diagnosticScope,omitempty"`
+	ID              string    `json:"id"`
+	SessionID       string    `json:"sessionId"`
+	Generation      string    `json:"generation"`
+	TabID           string    `json:"tabId"`
+	Epoch           uint64    `json:"epoch"`
+	DocumentToken   string    `json:"documentToken"`
+	Action          string    `json:"action"`
+	Digest          string    `json:"digest"`
+	State           State     `json:"state"`
+	ReservedAt      time.Time `json:"reservedAt"`
+	SettledAt       time.Time `json:"settledAt,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
 }
 
 type ledgerFile struct {

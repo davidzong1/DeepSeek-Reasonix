@@ -11,8 +11,9 @@ type LocalSession = Pick<State, "meta" | "backendActivationPending" | "hydrating
 type RemoteSession = Pick<RemoteSessionApi, "state" | "hydrated" | "error">;
 
 /** Navigation, welcome and recovery must agree on the active source's readiness. */
-export function projectSessionAvailability(input: { local?: LocalSession; remote?: RemoteSession }): SessionAvailability {
+export function projectSessionAvailability(input: { local?: LocalSession; remote?: RemoteSession; empty?: boolean }): SessionAvailability {
   const { local, remote } = input;
+  if (input.empty && !remote) return { kind: "ready", source: "history" };
   if (remote) {
     if (["error", "serve_down", "disconnected"].includes(remote.state)) {
       return { kind: "error", source: "connection", detail: remote.error };

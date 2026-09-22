@@ -144,6 +144,59 @@ test("a delayed user record precedes its already streaming answer", () => {
   assert.deepEqual(state.items.map(item => item.id), ["m:durable", "m:answer"]);
 });
 
+test("a start-of-session user record precedes streamed output without a turn id", () => {
+  let state = reducer(sent(), { type: "event", e: { kind: "text", messageId: "answer", text: "answer" } });
+  state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: projection([user("durable", "send")]) });
+  assert.deepEqual(state.items.map(item => item.id), ["m:durable", "m:answer"]);
+});
+
+test("a later turn's user record stays after its anchor and before the new live output", () => {
+  let state = reducer(sent(), { type: "transcript_records", confirmedUsers: [], projection: projection([user("first", "send")]) });
+  state = reducer(state, { type: "user", seq: 1, submissionId: "next", text: "next question" });
+  state = reducer(state, { type: "event", e: { kind: "text", messageId: "answer", text: "already streaming" } });
+  state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: projection([user("first", "send"), user("second", "next")]) });
+  assert.deepEqual(state.items.map(item => item.id), ["m:first", "m:second", "m:answer"]);
+});
+
+test("a reclaimed submission anchor does not place the user row before unrelated history", () => {
+  let state = reducer({ ...initialState, items: [user("old")] }, { type: "user", seq: 1, submissionId: "send", text: "new" });
+  state = { ...state, items: [user("other")], transcriptProjectedIds: ["m:other"], historyHasOlder: true, historyStartTurn: 4 };
+  state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: projection([user("other"), user("new", "send")]) });
+  assert.deepEqual(state.items.map(item => item.id), ["m:other", "m:new"]);
+});
+
+test("formal output published ahead of its user moves behind that user", () => {
+  const state = reducer(sent(), { type: "transcript_records", confirmedUsers: [], projection: projection([
+    { kind: "assistant", id: "m:answer", text: "answer", reasoning: "", streaming: false, turnId: "turn" },
+    { ...user("durable", "send"), turnId: "turn" },
+  ]) });
+  assert.deepEqual(state.items.map(item => item.id), ["m:durable", "m:answer"]);
+});
+
+test("a projection update without a turn id keeps the resident turn id", () => {
+  let state = reducer(sent(), { type: "event", e: { kind: "text", messageId: "answer", turnId: "turn", text: "answer" } });
+  state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: projection([
+    { kind: "assistant", id: "m:answer", text: "answer", reasoning: "", streaming: false },
+  ]) });
+  const assistant = state.items.find(item => item.id === "m:answer");
+  assert.equal(assistant?.kind === "assistant" ? assistant.turnId : undefined, "turn");
+});
+
+test("a later event stamps the live answer that arrived without a turn id", () => {
+  let state = reducer(sent(), { type: "event", e: { kind: "text", messageId: "answer", text: "answer" } });
+  assert.equal(state.items.find(item => item.kind === "assistant")?.turnId, undefined);
+  state = reducer(state, { type: "event", e: { kind: "stream_attempt", messageId: "answer", turnId: "turn", streamAttempt: { id: "sa", action: "begin", attempt: 1, max: 1 } } });
+  assert.equal(state.items.find(item => item.id === "m:answer")?.turnId, "turn");
+});
+
+test("a stream batch stamps the active turn onto the live answer", () => {
+  let state = reducer(sent(), { type: "event", e: { kind: "turn_started", status: "in_progress" } });
+  assert.equal(state.items.find(item => item.kind === "assistant")?.turnId, undefined);
+  state = reducer({ ...state, activeTurnId: "turn" }, { type: "stream_batch", segments: [{ kind: "reasoning", delta: "想" }] });
+  assert.equal(state.items.find(item => item.kind === "assistant")?.turnId, "turn");
+  assert.equal(state.live?.reasoning, "想");
+});
+
 test("reset clears echoes and presentation mappings", () => {
   let state = reducer(sent(), { type: "transcript_records", confirmedUsers: [], projection: projection([user("durable", "send")]) });
   state = reducer(state, { type: "user", seq: 1, submissionId: "pending", text: "pending" });

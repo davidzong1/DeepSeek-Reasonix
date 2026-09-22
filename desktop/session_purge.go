@@ -166,6 +166,9 @@ func (a *App) executeCanonicalPurge(ctx context.Context, ref session.SessionRef,
 		return fmt.Errorf("purge cleanup pending: %w", err)
 	}
 	a.lifecycleCheckpoint("after-file-cleanup")
+	if err := a.sessionUIStore().PurgeComposer(ctx, composerRecordKey(ref)); err != nil {
+		return err
+	}
 	if err := store.AdvancePurge(ctx, ref.SessionID, "content_removed"); err != nil {
 		return err
 	}

@@ -64,11 +64,42 @@ func TestScreenshotRefusesOversizeFile(t *testing.T) {
 	if err := f.Truncate(screenshotMaxBytes + 1); err != nil {
 		t.Fatal(err)
 	}
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
 	f.Close()
-	fake := &fakeExecutor{screenshot: Screenshot{Path: path}}
+	fake := &fakeExecutor{screenshot: Screenshot{Path: path, Width: 2, Height: 2}}
 	text, images, err := toolByName(t, fake, "browser_screenshot").(tool.ImageTool).ExecuteWithImages(context.Background(), json.RawMessage(`{"tabId":"t1"}`))
 	if err != nil || len(images) != 0 || !strings.Contains(text, "over the 8 MiB limit") {
 		t.Fatalf("text = %q, images = %d, err = %v", text, len(images), err)
+	}
+}
+
+func TestScreenshotRejectsInvalidImage(t *testing.T) {
+	var valid bytes.Buffer
+	if err := png.Encode(&valid, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		data          []byte
+		width, height int
+	}{
+		{"empty", nil, 0, 0},
+		{"not-png", []byte("not an image"), 2, 2},
+		{"truncated", valid.Bytes()[:33], 2, 2},
+		{"wrong-size", valid.Bytes(), 4, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "shot.png")
+			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, images, err := encodeScreenshot("t", Screenshot{Path: path, Width: tc.width, Height: tc.height})
+			if err == nil || !strings.Contains(err.Error(), "invalid_image") || len(images) != 0 {
+				t.Fatalf("invalid artifact admitted: images=%d err=%v", len(images), err)
+			}
+		})
 	}
 }
 

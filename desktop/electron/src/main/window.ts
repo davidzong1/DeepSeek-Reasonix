@@ -18,6 +18,9 @@ export interface MainWindowDeps {
   log: Logger;
   onAppDomReady(rendererGeneration: number): void;
   onRendererLost?(reason: string): void;
+  onRendererFailure?(details: { reason: string; exitCode: number }, canReload: boolean): boolean;
+  onUnresponsive?(): void;
+  onResponsive?(): void;
   isQuitting?(): boolean;
   onCloseRequested(): Promise<void>;
   onShellAction(action: ShellAction): void;
@@ -134,10 +137,19 @@ export class MainWindow {
       deps.onAppDomReady(this.rendererGeneration);
     });
     win.webContents.on("render-process-gone", (_event, details) => {
+      if (this.win !== win || this.deps.isQuitting?.()) return;
       deps.log.error(`renderer process gone: ${details.reason} (exit code ${details.exitCode})`);
       deps.onRendererLost?.(`app renderer ${details.reason}`);
-      if (!this.deps.isQuitting?.() && this.content === "app" && this.browserWindow) win.webContents.reload();
+      deps.onResponsive?.();
+      const retry = deps.onRendererFailure?.(details, this.content === "app") ?? true;
+      if (retry && !this.deps.isQuitting?.() && this.content === "app" && this.browserWindow) win.webContents.reload();
     });
+    win.on("unresponsive", () => {
+      if (this.win !== win || deps.isQuitting?.()) return;
+      deps.log.warn("main renderer unresponsive (cause unknown)");
+      deps.onUnresponsive?.();
+    });
+    win.on("responsive", () => { if (this.win === win) deps.onResponsive?.(); });
     win.on("close", (event) => {
       if (this.closeAllowed) return;
       event.preventDefault();

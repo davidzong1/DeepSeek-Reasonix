@@ -193,6 +193,10 @@ func sameSessionAPI(current, sampled control.SessionAPI) bool {
 }
 
 func controllerRuntimeState(ctrl control.SessionAPI) event.RuntimeStateSnapshot {
+	if reader, ok := ctrl.(control.PublishedRuntimeStateReader); ok {
+		return reader.PublishedRuntimeStateSnapshot()
+	}
+	// Compatibility for embedders without the committed observation boundary.
 	if reader, ok := ctrl.(control.RuntimeStateReader); ok {
 		return reader.RuntimeStateSnapshot()
 	}

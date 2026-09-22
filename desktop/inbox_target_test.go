@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -8,11 +9,56 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/serve"
+	"reasonix/internal/session"
+	"reasonix/internal/tool"
 )
+
+func TestCanonicalInboxTargetEnqueuesAndConfirmsReceipt(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	service, err := session.NewService("local", session.NewFilesystemPersistence(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := agent.New(nil, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Executor: executor, SessionService: service, Sink: event.Discard})
+	t.Cleanup(func() {
+		ctrl.Close()
+		<-ctrl.Closed()
+		_ = service.CloseAll(context.Background())
+	})
+	if _, err := ctrl.BindFreshSession(t.Context(), "queue-target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctrl.SetInboxPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	const path = "session-id:queue-target"
+	a := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", Ctrl: ctrl, SessionPath: path, SessionGeneration: 1, Ready: true}}}
+	target, err := a.CaptureInboxTarget("tab", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := a.EnqueueInboxFollowupForTarget(target, "queued input", "queued input", nil, "request")
+	if err != nil || receipt.ItemID == "" {
+		t.Fatalf("canonical enqueue: %+v %v", receipt, err)
+	}
+	confirmed, err := a.LookupInboxFollowupForTarget(target, "request")
+	if err != nil || confirmed.ItemID != receipt.ItemID {
+		t.Fatalf("canonical confirmation: %+v %v", confirmed, err)
+	}
+	a.tabs["tab"].SessionGeneration++
+	if _, err := a.EnqueueInboxFollowupForTarget(target, "stale input", "stale input", nil, "stale"); err == nil {
+		t.Fatal("stale generation accepted a new write")
+	}
+	if confirmed, err := a.LookupInboxFollowupForTarget(target, "request"); err != nil || confirmed.ItemID != receipt.ItemID {
+		t.Fatalf("same-session receipt after rebind: %+v %v", confirmed, err)
+	}
+}
 
 func TestRemoteInboxTargetLostReceiptOnlyQueriesOriginalRequest(t *testing.T) {
 	isolateDesktopUserDirs(t)

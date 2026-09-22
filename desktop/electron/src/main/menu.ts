@@ -9,6 +9,7 @@ export interface MenuDeps {
   zoomIn(): void;
   zoomOut(): void;
   resetZoom(): void;
+  stopBrowserRecording?(): void;
 }
 
 export function applicationMenuTemplate(deps: MenuDeps): MenuItemConstructorOptions[] {
@@ -29,6 +30,7 @@ export function applicationMenuTemplate(deps: MenuDeps): MenuItemConstructorOpti
       { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: () => deps.zoomIn() },
       { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: () => deps.zoomOut() },
       { label: "Reset Zoom", accelerator: "CmdOrCtrl+0", click: () => deps.resetZoom() },
+      ...(deps.stopBrowserRecording ? [{ label: "Stop Browser Recording / 停止浏览器录制", accelerator: "CmdOrCtrl+Shift+R", click: () => deps.stopBrowserRecording?.() }] : []),
     ] },
     { role: "windowMenu" },
   ];

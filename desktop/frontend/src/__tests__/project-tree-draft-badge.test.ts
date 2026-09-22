@@ -7,10 +7,13 @@ function summary(patch: Partial<SessionDraftSummary>): SessionDraftSummary {
   return { id: "draft", workspaceId: "ws", scope: "global", workspaceRoot: "", revision: 1, hasContent: false, updatedAt: 1, ...patch };
 }
 
-test("a clean empty draft does not badge its workspace", () => {
-  assert.equal(workspaceDraftBadge([summary({ state: "saved" })], "global", ""), undefined);
-  assert.equal(workspaceDraftBadge([summary({})], "global", ""), undefined);
-  assert.equal(workspaceDraftBadge([summary({ scope: "project", workspaceRoot: "/repo/agent" })], "project", "/repo/agent"), undefined);
+test("legacy drafts remain recoverable even without message content", () => {
+  assert.equal(workspaceDraftBadge([summary({ state: "saved" })], "global", "")?.id, "draft");
+  assert.equal(workspaceDraftBadge([summary({})], "global", "")?.id, "draft");
+  const project = summary({ scope: "project", workspaceRoot: "/repo/agent" });
+  assert.equal(workspaceDraftBadge([project], "project", "/repo/agent")?.id, "draft");
+  assert.equal(workspaceDraftBadge([project], "project", "/repo/other"), undefined);
+  assert.equal(workspaceDraftBadge([], "global", ""), undefined);
 });
 
 test("unsent content badges only the owning workspace", () => {

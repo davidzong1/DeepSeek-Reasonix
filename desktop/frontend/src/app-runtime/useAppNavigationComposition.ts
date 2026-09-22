@@ -5,6 +5,7 @@ import { showWorktreeCleanupNotice } from "../lib/worktreeCleanupNotice";
 import { desktopBridge } from "./desktopBridgeAdapter";
 import { desktopProjectAdapter } from "./desktopProjectAdapter";
 import { useHistoryCommands } from "./useHistoryCommands";
+import { useBrowserFirstOpen } from "./useBrowserFirstOpen";
 import { useSessionNavigationCommands } from "./useSessionNavigationCommands";
 import { usePaletteCommands } from "./usePaletteCommands";
 import { useTopicNavigationShortcuts } from "./useTopicNavigationShortcuts";
@@ -85,6 +86,7 @@ export function useAppNavigationComposition(input: AppNavigationCompositionInput
   const { openRemoteWorkspaceFromStatus, connectAndOpenRemoteWorkspace } = remoteWorkspaceCommands;
   const { enqueueNavigation, enqueueNavigationWithIntent, openRemoteProject } = desktopNavigationBag;
   const { toggleSidebar } = session.shellGeometry;
+  useBrowserFirstOpen(activeTabId, state.activeTurnId, () => session.workspacePanelCommands.openRightDockMode("browser"), state.meta?.sessionPath);
 
   const historyCommands = useHistoryCommands({
     running: state.running,

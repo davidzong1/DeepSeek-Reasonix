@@ -41,6 +41,12 @@ export interface BrowserRendererApi {
   activate(tabId: string | null): void;
   navigate(tabId: string, target: BrowserNavigateTarget): Promise<void>;
   setZoom(tabId: string, factor: number): void;
+  setViewport?(tabId: string, viewport: { width: number; height: number; scale: "fit" | number } | null): void;
+  pickElement?(tabId: string): Promise<unknown>;
+  record?(tabId: string, action: string): Promise<unknown>;
+  diagnostics?(tabId: string): unknown;
+  screenshot?(tabId: string): Promise<unknown>;
+  restorePreview?(tabId: string): Promise<void>;
   toggleDevTools(tabId: string): void;
   resume(tabId: string): void;
   takeover(tabId: string): void;
@@ -284,6 +290,17 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
     return value;
   };
   handle(IPC.browserList, () => browser.list());
+  handle(IPC.browserRecord, (id, action) => {
+    if (!browser.record || typeof action !== "string" || !["start", "status", "stop", "cancel"].includes(action)) throw new Error("invalid recording operation");
+    return browser.record(tabId(id), action);
+  });
+  handle(IPC.browserDiagnostics, id => browser.diagnostics?.(tabId(id)) ?? { available: false });
+  handle(IPC.browserScreenshot, id => { if (!browser.screenshot) throw new Error("screenshot unavailable"); return browser.screenshot(tabId(id)); });
+  handle(IPC.browserRestorePreview, id => { if (!browser.restorePreview) throw new Error("preview recovery unavailable"); return browser.restorePreview(tabId(id)); });
+  handle(IPC.browserPickElement, id => {
+    if (!browser.pickElement) throw new Error("element picker is unavailable");
+    return browser.pickElement(tabId(id));
+  });
   handle(IPC.browserOpen, (url, options) => {
     if (typeof url !== "string") throw new Error("url must be a string");
     const opts = record(options);
@@ -293,6 +310,11 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
   handle(IPC.browserActivate, (id) => browser.activate(id === null || id === undefined ? null : tabId(id)));
   handle(IPC.browserNavigate, (id, target) => browser.navigate(tabId(id), parseNavigateTarget(target)));
   handle(IPC.browserSetZoom, (id, factor) => browser.setZoom(tabId(id), finite(factor, Number.NaN)));
+  handle(IPC.browserSetViewport, (id, value) => {
+    if (!browser.setViewport) throw new Error("viewport controls are unavailable");
+    const viewport = record(value);
+    browser.setViewport(tabId(id), value === null ? null : { width: finite(viewport.width, Number.NaN), height: finite(viewport.height, Number.NaN), scale: viewport.scale === "fit" ? "fit" : finite(viewport.scale, Number.NaN) });
+  });
   handle(IPC.browserToggleDevTools, (id) => browser.toggleDevTools(tabId(id)));
   handle(IPC.browserResume, (id) => browser.resume(tabId(id)));
   handle(IPC.browserUserTakeover, (id) => browser.takeover(tabId(id)));

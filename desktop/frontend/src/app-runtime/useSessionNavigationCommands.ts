@@ -7,7 +7,7 @@ import type { useDesktopNavigation } from "./useDesktopNavigation";
 import type { WorkspaceNavigationPorts } from "./navigationOwner";
 import type { ControlResult, SessionMeta, TabMeta } from "../lib/types";
 import type { TopicShortcutEntry } from "../lib/topicShortcuts";
-import type { Dispatch, SetStateAction } from "react";
+import { useRef, type Dispatch, type SetStateAction } from "react";
 import type { SessionRef } from "../lib/sessionRef";
 
 const loadNavigationOwner = () => import("./navigationOwner");
@@ -41,25 +41,39 @@ export type SessionNavigationCommandsInput = {
 };
 
 /**
- * Owns the session-level navigation commands: local draft opening,
- * topic/resume/sidebar-IM enqueues, new-tab routing (remote hosts reopen
- * remotely), recovery refresh pairs, folder switching through the lazy
- * navigation owner and the task-monitor session lookup with its
- * navigation-intent fence. Formal-session navigation coalesces through the
- * shared navigation epoch from useDesktopNavigation; local drafts use their
- * own target/revision fencing.
+ * Owns explicit local creation and session navigation. Each creation is an
+ * independent mutation; only its selection follows the shared navigation
+ * epoch. Remote routing retains its own commands, and old drafts are opened
+ * exclusively for recovery with their existing target/revision fences.
  */
 export function useSessionNavigationCommands(input: SessionNavigationCommandsInput) {
   const { activeTab, showToast, navigation, ports } = input;
+  const lastLocalTarget = useRef(draftLandingTargetForTab(activeTab));
+  if (activeTab && !activeTab.remote) lastLocalTarget.current = draftLandingTargetForTab(activeTab);
 
-  const blankSessionTarget = useCommittedCommand(() => input.draft.target ?? draftLandingTargetForTab(activeTab));
+  const blankSessionTarget = useCommittedCommand(() => input.draft.target ?? lastLocalTarget.current);
 
-  const openBlankSession = useCommittedCommand((scope: string, workspaceRoot: string): Promise<void> => {
+  const openBlankSession = useCommittedCommand(async (scope: string, workspaceRoot: string): Promise<void> => {
+    const seq = input.noteNavigationIntent();
+    const operationId = `manual-${crypto.randomUUID()}`;
     const targetRoot = scope === "project" ? workspaceRoot : "";
+    lastLocalTarget.current = { scope: scope === "project" ? "project" : "global", workspaceRoot: targetRoot };
     // UI preferences use the actual directory; global navigation uses an empty wire root.
     input.prepareBlankWorkspace(workspaceRoot);
     input.enterConversation();
-    return input.draft.open(scope, targetRoot);
+    void Promise.resolve(input.draft.dismiss()).catch(error => showToast(String(error), "error"));
+    // Creation is an explicit mutation, not a coalescible navigation request.
+    // Even if another click wins selection, this accepted operation survives.
+    try {
+      const { createManualSession } = await import("../lib/manualCreationRequests");
+      const operation = await createManualSession({ operationId, workspaceId: "", scope, workspaceRoot: targetRoot });
+      input.markProjectChanged(value => value + 1);
+      if (operation.phase === "failed") throw new Error(operation.error || "Session creation failed");
+      if (!input.isNavigationIntentCurrent(seq)) return;
+      await navigation.enqueueNavigationWithIntent({ kind: "canonical-session", ref: operation.ref }, seq);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "error");
+    }
   });
 
   const handleNewTab = useCommittedCommand(async () => {

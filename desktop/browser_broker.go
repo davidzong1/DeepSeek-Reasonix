@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +16,46 @@ import (
 	"reasonix/internal/browser"
 	"reasonix/internal/remote/forward"
 )
+
+func (s *brokerSessionExecutor) BrowserCapability(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	res, err := s.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	exec, ok := res.exec.(browser.CapabilityExecutor)
+	if !ok {
+		return nil, fmt.Errorf("capability_unsupported: %s", name)
+	}
+	out, err := exec.BrowserCapability(ctx, name, args)
+	if err != nil {
+		return out, err
+	}
+	if current, err := s.resolve(ctx); err != nil || current.workspace != res.workspace {
+		return nil, browser.ErrUnknownOutcome
+	}
+	if name != "record" {
+		return out, nil
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, err
+	}
+	var localPath, state string
+	_ = json.Unmarshal(result["path"], &localPath)
+	_ = json.Unmarshal(result["state"], &state)
+	delete(result, "path")
+	if state == "completed" && localPath != "" {
+		remote, err := s.relay(ctx, res.workspace, localPath)
+		if err != nil {
+			return nil, err
+		}
+		result["path"], _ = json.Marshal(remote)
+	}
+	if current, err := s.resolve(ctx); err != nil || current.workspace != res.workspace {
+		return nil, browser.ErrUnknownOutcome
+	}
+	return json.Marshal(result)
+}
 
 // The desktop browser broker is the local end of the remote browser channel:
 // a loopback listener behind SSH reverse forwards, keyed by per-generation
@@ -478,35 +519,51 @@ func (a *App) resolveRemoteBrowserSession(hostID, sessionPath string) (browserSe
 		return browserSessionResolution{}, browser.ErrNoGrant
 	}
 	a.remoteTabMu.Lock()
-	var tab *remoteTab
+	defer a.remoteTabMu.Unlock()
 	for _, t := range a.remoteTabs {
 		if t == nil || t.ref.HostID != hostID {
 			continue
 		}
-		t.sessionMu.Lock()
 		path := strings.TrimSpace(t.session.path)
-		t.sessionMu.Unlock()
 		if path != "" && path == sessionPath {
-			tab = t
-			break
+			// Resolve identity and mint the immutable executor in the same lock
+			// epoch. sessionMu serializes transitions, not reads of these fields;
+			// acquiring it here would invert the resume path's lock order.
+			if exec := a.browserExecutorForRemoteTabLocked(t, sessionPath); exec != nil {
+				return browserSessionResolution{exec: exec, workspace: t.ref.Workspace}, nil
+			}
 		}
 	}
-	a.remoteTabMu.Unlock()
-	if tab == nil {
-		return browserSessionResolution{}, fmt.Errorf("%w: no desktop tab serves session %s", browser.ErrNoGrant, sessionPath)
-	}
-	return browserSessionResolution{
-		exec:      a.browserExecutorForRemoteTab(tab, sessionPath),
-		workspace: tab.ref.Workspace,
-	}, nil
+	return browserSessionResolution{}, fmt.Errorf("%w: no stable desktop tab serves session %s", browser.ErrNoGrant, sessionPath)
 }
 
 // browserExecutorForRemoteTab returns the cached executor for one remote
 // tab's browser surface; a session rotation re-scopes the grant.
 func (a *App) browserExecutorForRemoteTab(tab *remoteTab, sessionPath string) browser.Executor {
+	a.remoteTabMu.Lock()
+	defer a.remoteTabMu.Unlock()
+	return a.browserExecutorForRemoteTabLocked(tab, sessionPath)
+}
+
+// Caller holds remoteTabMu. A provisional foreground route is not evidence
+// that Serve has transferred this session's browser ownership.
+func (a *App) browserExecutorForRemoteTabLocked(tab *remoteTab, sessionPath string) browser.Executor {
 	if tab == nil || !a.hostMode() || a.browserControl.off() {
 		return nil
 	}
+	if a.remoteTabs[tab.id] != tab || tab.session.path != sessionPath || tab.routing.rehydratingPath != "" {
+		return nil
+	}
+	canonicalID := tab.session.sessionID
+	if canonicalID != "" {
+		if tab.routing.currentPath != remoteSessionIDRoutePrefix+canonicalID {
+			return nil
+		}
+	} else if tab.routing.currentPath != "" && tab.routing.currentPath != sessionPath {
+		// Legacy peers may only have a path; never infer an ID from UI intent.
+		return nil
+	}
+	diagnosticScope := browserDiagnosticScope(tab.ref.HostID, canonicalID)
 	key := "remote/" + tab.id
 	a.browserExecMu.Lock()
 	defer a.browserExecMu.Unlock()
@@ -514,7 +571,7 @@ func (a *App) browserExecutorForRemoteTab(tab *remoteTab, sessionPath string) br
 		a.browserExecutors = map[string]*hostBrowserExecutor{}
 	}
 	if exec, ok := a.browserExecutors[key]; ok {
-		if exec.sessionKey == sessionPath {
+		if exec.sessionKey == sessionPath && exec.diagnosticScope == diagnosticScope {
 			return exec
 		}
 		// A session rotation creates a new immutable owner; mutating the old
@@ -524,6 +581,7 @@ func (a *App) browserExecutorForRemoteTab(tab *remoteTab, sessionPath string) br
 	exec := &hostBrowserExecutor{
 		app: a, host: a.hostShell.server, tabID: tab.id,
 		grantID: newBrowserGrantID(), sessionKey: sessionPath,
+		diagnosticScope: diagnosticScope,
 	}
 	a.browserExecutors[key] = exec
 	return exec

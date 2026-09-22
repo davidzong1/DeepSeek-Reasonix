@@ -2318,8 +2318,18 @@ func (a *App) openGlobalTabInactive(topicID string) (TabMeta, error) {
 	return a.openTopicTabWithActivation("global", "", topicID, sessionPath, false)
 }
 
-func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath string, activate bool) (TabMeta, error) {
-	actualRoot, sessionPath := a.resolveOpenTopicSessionPath(scope, workspaceRoot, sessionPath)
+func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath string, activate bool, navigation ...uint64) (TabMeta, error) {
+	target, canonical, err := a.canonicalTopicOpen(sessionPath)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	var actualRoot string
+	if canonical != nil {
+		scope, workspaceRoot, topicID = target.Scope, target.WorkspaceRoot, target.TopicID
+		actualRoot = desktopWorkspaceRoot(scope, workspaceRoot)
+	} else {
+		actualRoot, sessionPath = a.resolveOpenTopicSessionPath(scope, workspaceRoot, sessionPath)
+	}
 	releaseAdmission, err := a.beginProjectRuntimeAdmission(scope, actualRoot)
 	if err != nil {
 		return TabMeta{}, err
@@ -2332,9 +2342,13 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	targetKey := sessionRuntimeKey(sessionPath)
 
 	a.mu.Lock()
+	if len(navigation) != 0 && a.desktopSessions.navigationSeq.Load() != navigation[0] {
+		a.mu.Unlock()
+		return TabMeta{}, errSessionNavigationSuperseded
+	}
 	if targetKey != "" {
 		for _, tab := range a.tabs {
-			if tab == nil {
+			if !topicTabReusableLocked(tab) {
 				continue
 			}
 			if sessionRuntimeKeysOverlap(tab, sessionPath) {
@@ -2350,7 +2364,7 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	}
 
 	for _, tab := range a.tabs {
-		if targetKey == "" && tabMatchesTopicTarget(tab, scope, workspaceRoot, topicID) {
+		if targetKey == "" && topicTabReusableLocked(tab) && tabMatchesTopicTarget(tab, scope, workspaceRoot, topicID) {
 			if activate {
 				a.activeTabID = tab.ID
 			}
@@ -2378,32 +2392,8 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 		source = nil
 	}
 
-	tabID := a.newUniqueTabIDLocked()
-	topicTitle := topicTitleForTab(scope, workspaceRoot, topicID)
-	if t, source, ok := topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath); ok {
-		topicTitle = t
-		_ = setTopicTitleWithSource(workspaceRoot, topicID, t, source)
-	}
-
-	// A new topic receives its immutable v3 identity when the controller build
-	// publishes. Do not pre-create an empty legacy transcript as an identity
-	// placeholder.
-	profile := defaultTabSessionProfile()
-	if sessionPath != "" {
-		profile = loadTabSessionProfile(sessionPath)
-	}
-	tab := &WorkspaceTab{
-		ID:               tabID,
-		Scope:            scope,
-		WorkspaceRoot:    actualRoot,
-		TopicID:          topicID,
-		TopicTitle:       topicTitle,
-		topicTitleSource: loadTopicTitleSource(topicTitleRoot(scope, workspaceRoot), topicID),
-		SessionPath:      sessionPath,
-		disabledMCP:      map[string]ServerView{},
-	}
-	applyTabSessionProfile(tab, profile)
-	tab.sink = &tabEventSink{tabID: tabID, app: a}
+	tab := a.newTopicTabLocked(scope, workspaceRoot, actualRoot, topicID, sessionPath, canonical)
+	tabID := tab.ID
 
 	a.tabs[tabID] = tab
 	a.tabOrder = append(a.tabOrder, tabID)
@@ -2475,19 +2465,8 @@ func (a *App) openTopicSessionWithNavigation(scope, workspaceRoot, topicID, sess
 		}
 		sessionPath = sessionRoute(target.SessionRef.SessionID)
 	}
-	if id, ok := parseSessionRoute(sessionPath); ok {
-		if _, err := a.openSessionWithNavigation(session.SessionRef{HostID: localDesktopHostID, SessionID: id}, navigation); err != nil {
-			return TabMeta{}, err
-		}
-		a.mu.RLock()
-		tab := a.tabs[a.activeTabID]
-		if tab == nil {
-			a.mu.RUnlock()
-			return TabMeta{}, errSessionNavigationSuperseded
-		}
-		meta := a.tabMeta(tab, true)
-		a.mu.RUnlock()
-		return enrichTabMeta(meta), nil
+	if _, ok := parseSessionRoute(sessionPath); ok {
+		return a.openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath, true, navigation)
 	}
 	scope = strings.TrimSpace(scope)
 	if scope != "project" {
@@ -3178,95 +3157,6 @@ func (a *App) closeTabRuntime(tabID string, allowDetach bool) error {
 		}
 	}
 	return nil
-}
-
-func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
-	type pruneCandidate struct {
-		id  string
-		tab *WorkspaceTab
-	}
-
-	// sessionRemovalMu covers snapshotting, pruning the hidden bindings, and
-	// closing the removed runtimes (a detached runtime must finish its
-	// in-flight autosave before DeleteSession can see the files). The
-	// project-tree event stays outside so a listener can never re-enter a
-	// removal path while the lock is held.
-	meta, err := func() (TabMeta, error) {
-		defer a.lockRuntimeMutation("prune-visible-tabs")()
-		a.sessionRemovalMu.Lock()
-		defer a.sessionRemovalMu.Unlock()
-
-		a.mu.Lock()
-		active := a.tabs[tabID]
-		if active == nil {
-			a.mu.Unlock()
-			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
-		}
-		candidates := make([]pruneCandidate, 0, len(a.tabs)-1)
-		for id, tab := range a.tabs {
-			if id == tabID {
-				continue
-			}
-			candidates = append(candidates, pruneCandidate{id: id, tab: tab})
-		}
-		a.mu.Unlock()
-
-		// Keep tab bindings in a.tabs while saving so DeleteSession still sees
-		// them, but do not hold a.mu: Snapshot can run recovery callbacks that
-		// re-enter App and need the same lock.
-		snapshotted := make(map[string]*WorkspaceTab, len(candidates))
-		for _, candidate := range candidates {
-			id, tab := candidate.id, candidate.tab
-			snapshotted[id] = tab
-			if err := a.persistHiddenTabBeforePrune(id, tab); err != nil {
-				return TabMeta{}, err
-			}
-		}
-
-		a.mu.Lock()
-		active = a.tabs[tabID]
-		if active == nil {
-			a.mu.Unlock()
-			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
-		}
-		for id, tab := range a.tabs {
-			if id != tabID && snapshotted[id] != tab {
-				a.mu.Unlock()
-				return TabMeta{}, fmt.Errorf("visible tabs changed while switching; retry")
-			}
-		}
-		a.activeTabID = tabID
-		removed := make([]*WorkspaceTab, 0, len(candidates))
-		for _, candidate := range candidates {
-			id, tab := candidate.id, candidate.tab
-			if tab == nil || a.tabs[id] != tab {
-				continue
-			}
-			if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
-				a.markTabRemovedLocked(tab)
-			}
-			removed = append(removed, tab)
-			delete(a.tabs, id)
-			a.removeTabOrderLocked(id)
-		}
-		a.tabOrder = []string{tabID}
-		a.saveTabsLocked()
-		meta := a.tabMeta(active, true)
-		a.mu.Unlock()
-
-		for _, tab := range removed {
-			a.removeVisibleTabRuntimeAdmissionHeld(tab)
-		}
-		return meta, nil
-	}()
-	if err != nil {
-		return TabMeta{}, err
-	}
-	// Visibility and detached/open ownership are runtime state. Snapshot saves
-	// above already enqueue exact-path catalog updates; a topic switch must not
-	// rescan every session directory and expose partial catalog generations.
-	a.emitProjectTreeRuntimeChangedWithLegacy()
-	return enrichTabMeta(meta), nil
 }
 
 func (a *App) applySingleSurfaceTabPolicy() error {

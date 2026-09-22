@@ -47,7 +47,7 @@ function weatherTurn(): Item[] {
     { ...end, id: "weather-final", text: "今天上海天气如下。以下为界面回放测试数据。\n\n## 上海 · 今日实况\n\n| 项目 | 数值 |\n|---|---|\n| 天气 | 晴 ☀️ |\n| 气温 | **25.5 °C** |\n| 湿度 | 66% |\n\n**全天**：多云转晴，23～30 °C。", reasoning: "" } as Item,
   ];
 }
-declare global { interface Window { chatFixture: { maintenance(stage: "start" | "refresh" | "completed" | "unknown"): void; authored(): void; toolAliasRegression(): void; weather(): void; replace(count: number): void; reset(count: number): void; older(): void; tick(index: number): void; settle(): void; switchSession(): void; prepend(): void; ready: number; pending(): number } } }
+declare global { interface Window { chatFixture: { maintenance(stage: "start" | "refresh" | "completed" | "unknown"): void; authored(): void; toolAliasRegression(): void; backgroundLaunch(): void; backgroundOutputHistory(): void; weather(): void; replace(count: number): void; reset(count: number): void; older(): void; tick(index: number): void; settle(): void; switchSession(): void; prepend(): void; ready: number; pending(): number } } }
 function Fixture() {
   const [items, setItems] = useState(() => new URLSearchParams(window.location.search).has("deliverables") ? weatherTurn() : makeTurns(20));
   const [session, setSession] = useState(0);
@@ -102,6 +102,27 @@ function Fixture() {
         clearLive(); setItems(historyMessagesToItems(messages, "authored").items); setRunning(false); setSession(value => value + 1);
       },
       weather: () => { clearLive(); setItems(weatherTurn()); setRunning(false); setSession(value => value + 1); },
+      backgroundLaunch: () => {
+        clearLive(); setItems([
+          { kind: "user", id: "launch-user", text: "Run the build" },
+          ...["pwsh", "bash"].map((name): Item => ({ kind: "tool", id: `launch-${name}`, name, args: "{}", status: "done", output: "Background job started", execution: { state: "background_started", shell: name } })),
+          { kind: "assistant", id: "launch-final", text: "Build started.", streaming: false },
+        ]); setRunning(false); setSession(value => value + 1);
+      },
+      backgroundOutputHistory: () => {
+        const calls = ["running", "failed", "cancelled", "completed"].map(state => ({
+          id: `poll-${state}`, name: "job_output", arguments: "{}",
+          resultObservation: { state: "completed" as const, messageId: `result-${state}`, version: 1 },
+        }));
+        const projected = historyMessagesToItems([
+          { role: "user", content: "Check the background jobs" },
+          { role: "assistant", content: "", toolCalls: calls },
+          ...calls.map(call => ({ role: "tool", messageId: call.resultObservation.messageId, toolName: call.name,
+            toolCallId: call.id, content: "Output retrieved", execution: { state: call.id.slice("poll-".length) } })),
+          { role: "assistant", content: "Output checked." },
+        ], "output-history");
+        clearLive(); setItems(projected.items); setRunning(false); setSession(value => value + 1);
+      },
       toolAliasRegression: () => {
         const user: Item = { kind: "user", id: "alias-user", text: "创建文件", checkpointTurn: 1 };
         const tool: Item = { kind: "tool", id: "alias-call", name: "bash", args: "printf ok", readOnly: false, status: "done", output: "ok",

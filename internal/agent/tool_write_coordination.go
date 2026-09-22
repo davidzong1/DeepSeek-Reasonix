@@ -11,7 +11,10 @@ import (
 func (a *Agent) prepareWriteCoordination(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
 	plan.runTool = plan.execTool
 	plan.runArgs = plan.execArgs
-	plan.hooksMayMutateWorkspace = toolHooksMayMutateWorkspace(a.svc.hooks)
+	plan.hookSurface = toolHookWriteSurface(a.svc.hooks, a.svc.hookWriteSurface, hookToolName(plan))
+	plan.hookWritePaths = workspaceWritePaths(a.writeWorkspaceRoot, plan.hookSurface.Paths)
+	plan.hooksMayMutateWorkspace = plan.hookSurface.WholeWorkspace ||
+		plan.hookSurface.ToolPathsScoped || len(plan.hookWritePaths) > 0
 	if plan.resolved.Target != nil {
 		plan.runTool = plan.resolved.Target
 		plan.runArgs = plan.resolved.Args
@@ -20,7 +23,7 @@ func (a *Agent) prepareWriteCoordination(ctx context.Context, plan *toolCallPlan
 		}
 	}
 	if (plan.effects.WorkspaceMutation || plan.hooksMayMutateWorkspace) && a.svc.workspaceLease != nil {
-		release, err := a.acquireWorkspaceLease(ctx, plan)
+		release, err := a.acquireCallWriteGuard(ctx, plan)
 		if err != nil {
 			return toolOutcome{
 				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
@@ -49,27 +52,55 @@ func (a *Agent) reserveCoordinatedParentWrite(plan *toolCallPlan) (func(), error
 	return a.reserveParentWrite(plan.runTool, plan.runArgs, !plan.effects.WorkspaceMutation)
 }
 
-func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (func(), error) {
+// acquireCallWriteGuard takes the in-process write token first, then the
+// workspace lease. Peers therefore queue among themselves before racing the
+// cross-process lock; the token never replaces that lease.
+func (a *Agent) acquireCallWriteGuard(ctx context.Context, plan *toolCallPlan) (func(), error) {
+	toolPaths, toolBounded := a.pathBoundWriteScope(plan)
+	scope, whole := writeLeaseScope(plan.hookSurface, plan.hookWritePaths, toolPaths, toolBounded)
+	intent := WriteIntent{
+		Paths: scope,
+		Whole: whole,
+		Label: writeIntentLabel(a.writeWorkspaceRoot, scope, whole),
+	}
+	token := a.acquireWriteIntent(ctx, intent)
+	release, err := a.acquireWorkspaceLease(ctx, plan, scope, whole)
+	if err != nil {
+		token()
+		return nil, err
+	}
+	return func() {
+		release()
+		token()
+	}, nil
+}
+
+func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan, scope []string, whole bool) (func(), error) {
 	noop := func() {}
 	if a == nil || a.svc.workspaceLease == nil || plan == nil || plan.runTool == nil {
 		return noop, nil
 	}
-	// Tool hooks are arbitrary user shell code, so their write surface cannot be
-	// narrowed to the concrete tool's path arguments.
-	if plan.hooksMayMutateWorkspace {
+	if whole {
 		return a.svc.workspaceLease.HoldWrite(ctx)
 	}
+	return a.svc.workspaceLease.HoldWriteForPaths(ctx, scope)
+}
+
+// pathBoundWriteScope returns the call's own write paths when the tool declares
+// them; ok is false when the tool cannot name what it writes.
+func (a *Agent) pathBoundWriteScope(plan *toolCallPlan) ([]string, bool) {
 	name := plan.runTool.Name()
-	if pathBoundWriterNames[name] {
-		paths, err := extractWritePathsFromArgs(name, a.writeWorkspaceRoot, plan.runArgs)
-		if err == nil && len(paths) > 0 {
-			for i := range paths {
-				paths[i] = resolveMaybeRelative(a.writeWorkspaceRoot, paths[i])
-			}
-			return a.svc.workspaceLease.HoldWriteForPaths(ctx, paths)
-		}
+	if !pathBoundWriterNames[name] {
+		return nil, false
 	}
-	return a.svc.workspaceLease.HoldWrite(ctx)
+	paths, err := extractWritePathsFromArgs(name, a.writeWorkspaceRoot, plan.runArgs)
+	if err != nil || len(paths) == 0 {
+		return nil, false
+	}
+	for i := range paths {
+		paths[i] = resolveMaybeRelative(a.writeWorkspaceRoot, paths[i])
+	}
+	return paths, true
 }
 
 func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {

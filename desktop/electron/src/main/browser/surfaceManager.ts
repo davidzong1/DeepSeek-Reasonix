@@ -2,6 +2,11 @@ import type { Rectangle } from "electron";
 import type { BrowserLayoutRect, BrowserNavigateTarget, BrowserTabMode, BrowserTabView, BrowserTakeoverKind } from "../../shared/ipc.js";
 import type { Logger } from "../log.js";
 import type { GuestView, GuestViewEvents, GuestViewFactory } from "./guestView.js";
+import { validateViewport, type BrowserViewport } from "./viewport.js";
+import { browserFailure } from "./errors.js";
+import { LazyGuestView } from "./lazyGuestView.js";
+import { abortable } from "./captureQueue.js";
+import type { RecoveredTab } from "./recoveryStore.js";
 
 export const SHARED_PARTITION = "persist:browser";
 export const USER_TASK_ID = "user";
@@ -22,6 +27,14 @@ export interface BrowserTab {
   partition: string;
   temporary: boolean;
   epoch: number;
+  // Page/service invalidation, independent of ordinary human control changes.
+  lifecycleEpoch: number;
+  viewportRevision: number;
+  surfaceRevision: number;
+  viewport: BrowserViewport | null;
+  operation?: { id: string; phase: string; message?: string };
+  fileReference?: import("./recoveryStore.js").FileReference;
+  fileReferenceURL?: string;
   mode: BrowserTabMode;
   loading: boolean;
   error: { code: number; description: string } | null;
@@ -119,12 +132,31 @@ export class BrowserSurfaceManager {
     return this.all().map((tab) => this.view(tab));
   }
 
+  restore(tabs: RecoveredTab[]): void {
+    for (const row of tabs.slice(0, 32)) {
+      if (this.tabs.has(row.id) || this.tabs.size >= 32) continue;
+      this.counter = Math.max(this.counter, Number(row.id.slice(4)));
+      const view = new LazyGuestView(this.deps.views, SHARED_PARTITION, row);
+      const tab = this.register(row.id, view, row.taskId, row.sessionId, SHARED_PARTITION, false);
+      tab.viewport = row.viewport;
+      view.setViewport(row.viewport);
+      tab.lastURL = row.url;
+      tab.fileReference = row.fileReference;
+    }
+  }
+
+  recoveryTabs(): RecoveredTab[] {
+    return this.all().filter(tab => !tab.temporary).map(tab => ({ id: tab.id, taskId: tab.taskId, sessionId: tab.sessionId, url: tab.view.page.getURL() || tab.lastURL, title: tab.view.page.getTitle(), viewport: tab.viewport, fileReference: tab.fileReference }));
+  }
+
   view(tab: BrowserTab): BrowserTabView {
     const page = tab.view.page;
     const gone = page.isDestroyed();
     return {
       id: tab.id,
       taskId: tab.taskId,
+      sessionId: tab.sessionId,
+      restorePreview: Boolean(tab.fileReference && tab.view.isPlaceholder?.()),
       url: gone ? tab.lastURL : page.getURL(),
       title: gone ? "" : page.getTitle(),
       loading: tab.loading,
@@ -134,6 +166,8 @@ export class BrowserSurfaceManager {
       mode: tab.mode,
       epoch: tab.epoch,
       zoom: tab.zoom,
+      viewport: tab.viewport,
+      operation: tab.operation,
       active: tab.id === this.activeId,
       error: tab.error,
     };
@@ -146,7 +180,9 @@ export class BrowserSurfaceManager {
     };
   }
 
-  async open(url: string, options: OpenOptions): Promise<BrowserTab> {
+  async open(url: string, options: OpenOptions, signal?: AbortSignal): Promise<BrowserTab> {
+    signal?.throwIfAborted();
+    if (this.tabs.size >= 32) throw new Error("browser tab limit reached (32); close an unused tab first");
     const href = normaliseBrowserURL(url);
     const id = this.nextId();
     const partition = options.temporary ? `temp:${id}` : SHARED_PARTITION;
@@ -162,7 +198,10 @@ export class BrowserSurfaceManager {
       tab.error = { code: 0, description: String(error) };
       this.broadcast();
     });
-    await Promise.race([load, new Promise<void>((resolve) => setTimeout(resolve, this.deps.openWaitMs ?? OPEN_WAIT_MS).unref?.())]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ready = Promise.race([load, new Promise<void>((resolve) => { timer = setTimeout(resolve, this.deps.openWaitMs ?? OPEN_WAIT_MS); timer.unref?.(); })]);
+    try { await (signal ? abortable(ready, signal) : ready); }
+    finally { clearTimeout(timer); }
     return tab;
   }
 
@@ -176,14 +215,25 @@ export class BrowserSurfaceManager {
 
   activate(tabId: string | null): void {
     if (tabId !== null) this.require(tabId);
+    if (tabId) this.require(tabId).view.presentForUser?.();
+    if (tabId) void this.require(tabId).view.ensureLoaded?.().catch(error => this.deps.log.warn(`Restored browser tab failed to load: ${String(error)}`));
     this.activeId = tabId;
     this.applyVisibility();
     this.broadcast();
   }
 
   setLayout(rect: BrowserLayoutRect | null): void {
-    this.layout = rect === null ? null : validateLayout(rect, this.deps.contentSize());
+    const next = rect === null ? null : validateLayout(rect, this.deps.contentSize());
+    if (next && (next.width !== this.layout?.width || next.height !== this.layout?.height)) {
+      for (const tab of this.tabs.values()) {
+        tab.surfaceRevision++;
+        // Fit changes presentation scale, not the emulated CSS viewport.
+        if (!tab.viewport) tab.viewportRevision++;
+      }
+    }
+    this.layout = next;
     this.applyVisibility();
+    this.broadcast();
   }
 
   setOverlay(active: boolean): void {
@@ -192,7 +242,26 @@ export class BrowserSurfaceManager {
     this.applyVisibility();
   }
 
-  async navigate(tabId: string, target: BrowserNavigateTarget): Promise<BrowserTab> {
+  setViewport(tabId: string, viewport: BrowserViewport | null): void {
+    const tab = this.require(tabId);
+    if (!tab.view.setViewport) throw browserFailure("capability_unsupported", "viewport emulation is unavailable");
+    const next = viewport ? validateViewport(viewport) : null;
+    tab.view.setViewport(next);
+    tab.viewport = next;
+    tab.viewportRevision++;
+    tab.epoch++;
+    tab.zoom = tab.view.page.getZoomFactor();
+    this.broadcast();
+  }
+
+  setOperation(tab: BrowserTab, operation: NonNullable<BrowserTab["operation"]>): void {
+    if (this.tabs.get(tab.id) !== tab) return;
+    tab.operation = operation;
+    this.broadcast();
+  }
+
+  async navigate(tabId: string, target: BrowserNavigateTarget, signal?: AbortSignal): Promise<BrowserTab> {
+    signal?.throwIfAborted();
     const tab = this.require(tabId);
     const page = tab.view.page;
     switch (target.action) {
@@ -212,17 +281,19 @@ export class BrowserSurfaceManager {
         break;
     }
     if (typeof target.url !== "string") throw new Error("navigate needs a url or an action");
-    await page.loadURL(normaliseBrowserURL(target.url)).catch((error: unknown) => {
+    const load = page.loadURL(normaliseBrowserURL(target.url)).catch((error: unknown) => {
       this.deps.log.warn(`browser tab ${tab.id} navigation failed: ${String(error)}`);
       tab.loading = false;
       tab.error = { code: 0, description: String(error) };
       this.broadcast();
     });
+    await (signal ? abortable(load, signal) : load);
     return tab;
   }
 
   setZoom(tabId: string, factor: number): void {
     const tab = this.require(tabId);
+    if (tab.viewport && tab.view.setViewport) throw new Error("use responsive display scale or exit responsive mode before changing page zoom");
     if (!Number.isFinite(factor)) throw new Error("zoom factor must be a finite number");
     tab.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, factor));
     tab.view.page.setZoomFactor(tab.zoom);
@@ -237,6 +308,7 @@ export class BrowserSurfaceManager {
 
   resume(tabId: string): void {
     const tab = this.require(tabId);
+    if (tab.operation?.phase === "picking") throw new Error("finish element selection or press Esc before returning control");
     if (tab.mode === "agent") return;
     tab.mode = "agent";
     tab.epoch += 1;
@@ -269,7 +341,10 @@ export class BrowserSurfaceManager {
     this.layout = null;
     this.activeId = null;
     this.applyVisibility();
-    for (const tab of this.all()) this.takeover(tab.id, reason);
+    for (const tab of this.all()) {
+      tab.lifecycleEpoch += 1;
+      this.takeover(tab.id, reason);
+    }
   }
 
   destroyAll(): void {
@@ -298,6 +373,10 @@ export class BrowserSurfaceManager {
       partition,
       temporary,
       epoch: 0,
+      lifecycleEpoch: 0,
+      viewportRevision: 0,
+      surfaceRevision: 0,
+      viewport: taskId === USER_TASK_ID ? null : { width: 1280, height: 720, scale: "fit" },
       mode: "agent",
       loading: false,
       error: null,
@@ -309,6 +388,7 @@ export class BrowserSurfaceManager {
     };
     this.tabs.set(id, tab);
     view.bind(this.events(tab));
+    if (tab.viewport && view.setViewport) view.setViewport(tab.viewport);
     return tab;
   }
 
@@ -323,7 +403,9 @@ export class BrowserSurfaceManager {
         this.broadcast();
       },
       onNavigate: (url, inPage) => {
+        if (tab.fileReference && tab.fileReferenceURL !== url) { tab.fileReference = undefined; tab.fileReferenceURL = undefined; }
         tab.epoch += 1;
+        tab.lifecycleEpoch += 1;
         tab.lastURL = url;
         if (!inPage) tab.error = null;
         this.broadcast();
@@ -340,8 +422,9 @@ export class BrowserSurfaceManager {
         this.broadcast();
       },
       onPopup: () => {
-        if (!this.tabs.has(tab.id)) return null;
+        if (!this.tabs.has(tab.id) || this.tabs.size >= 32) return null;
         return (view) => {
+          if (!this.tabs.has(tab.id) || this.tabs.size >= 32) { view.destroy(); return; }
           this.register(this.nextId(), view, tab.taskId, tab.sessionId, tab.partition, tab.temporary);
           this.broadcast();
         };
@@ -354,6 +437,7 @@ export class BrowserSurfaceManager {
   private recover(tab: BrowserTab, reason: string): void {
     tab.mode = "human";
     tab.epoch += 1;
+    tab.lifecycleEpoch += 1;
     tab.loading = false;
     tab.crashes += 1;
     tab.error = { code: 0, description: `renderer ${reason}` };

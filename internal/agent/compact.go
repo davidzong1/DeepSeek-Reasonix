@@ -318,7 +318,11 @@ func (a *Agent) planCompaction(msgs []provider.Message, min int, force bool) (he
 	if a.contextWindow > 0 {
 		budget := a.recentTailBudget()
 		if force {
-			if half := estimateMessagesTokens(modelInputMessages(msgs)) / 2; half > 0 && half < budget {
+			// Fixed instructions are not compressible history. Including them
+			// here can reserve the entire conversation as the recent tail and
+			// leave only a non-summarizable context snapshot in the fold.
+			_, history, _ := a.partitionFoldForProjectionAt(msgs[head:], head, latestSessionContextIndex(msgs))
+			if half := estimateMessagesTokens(modelInputMessages(history)) / 2; half > 0 && half < budget {
 				budget = half
 			}
 		}

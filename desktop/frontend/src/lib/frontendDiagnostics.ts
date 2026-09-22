@@ -64,6 +64,9 @@ export type FrontendDiagnosticEvent = {
   targetIndex?: number | "LAST";
   listHeight?: number;
   durationMs?: number;
+  itemCount?: number;
+  queueDepth?: number;
+  activeRequests?: number;
   scrollTop?: number;
   scrollHeight?: number;
   clientHeight?: number;
@@ -204,7 +207,7 @@ type Listener = () => void;
 type EventTargetListener = { target: EventTarget; type: string; listener: EventListener; options?: AddEventListenerOptions };
 
 const NUMBER_FIELDS = [
-  "width", "height", "x", "y", "deltaX", "deltaY", "targetTop", "listHeight", "durationMs", "scrollTop", "scrollHeight",
+  "width", "height", "x", "y", "deltaX", "deltaY", "targetTop", "listHeight", "durationMs", "itemCount", "queueDepth", "activeRequests", "scrollTop", "scrollHeight",
   "clientHeight", "bottomDistance", "mountedRows", "totalRows", "firstVisibleIndex", "firstVisibleTop",
   "rowIndex", "estimatedSize", "previousSize", "measuredSize", "sizeDelta", "relativeError", "disclosureCount", "contentRevision", "tabCount", "patchCount", "button", "modifiers", "intent",
   "sequence", "generation", "surfaceGeneration", "ownershipEpoch", "geometryRevision", "transactionId", "footerHeight", "viewport", "mounted", "total", "reverseDisplacement", "extentDelta", "stableFrames", "direction",

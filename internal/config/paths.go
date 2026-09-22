@@ -478,6 +478,15 @@ func DesktopDraftStatePath() string {
 	return filepath.Join(dir, "desktop", "drafts-v1.sqlite")
 }
 
+// DesktopSessionUIStatePath stores local composer input independently of history.
+func DesktopSessionUIStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "session-ui-v1.sqlite")
+}
+
 // DesktopLegacyEmptySessionCleanupPath stores the one-shot upgrade batch used
 // to retire historical empty default-title sessions. It is intentionally
 // separate from the workspace registry so older binaries can ignore it.

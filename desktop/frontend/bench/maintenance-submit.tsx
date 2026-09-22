@@ -27,6 +27,9 @@ let submissions = 0;
 let starts = 0;
 let lastInput = "";
 let revision = 0;
+let admission: Promise<void> | undefined;
+let releaseAdmission: (() => void) | undefined;
+let rejectAdmission: ((reason: Error) => void) | undefined;
 const noop = () => {};
 // The Composer captures the real submission target before asynchronous preparation.
 installDesktopHostStub({
@@ -36,6 +39,7 @@ installDesktopHostStub({
 });
 const bridge = { StartTurnForTab: async (tab: string, input: string) => {
   lastInput = input;
+  await admission;
   if (states.get(tab)!.runtimeStateSnapshot?.maintenance) return { disposition: "management_handled", operationId: operation.operationId, managementErrorCode: "maintenance_busy" };
   starts++;
   states.set(tab, reducer(states.get(tab)!, { type: "runtime_snapshot", snapshot: runtime(1, operation) }));
@@ -61,7 +65,7 @@ function paint() {
       <nav><button onClick={() => { active = active === "A" ? "B" : "A"; paint(); }}>Switch session</button><span data-active-session>{active}</span></nav>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}><Transcript items={state.items} tabId={active} geometrySessionKey={active}
         localSubmissions={orderedLocalSubmissions(state)} running={state.running} onPrompt={noop} /></div>
-      <div style={{ width: "100%", padding: "16px 24px", boxSizing: "border-box" }}><Composer key={active} tabId={active} sessionKey={active} inboxSessionPath={`fixture-${active}`} running={state.running} commandCatalog={[]}
+      <div style={{ width: "100%", padding: "16px 24px", boxSizing: "border-box" }}><Composer tabId={active} sessionKey={active} inboxSessionPath={`fixture-${active}`} running={state.running} commandCatalog={[]}
         ready collaborationMode="normal" toolApprovalMode="ask" modelLabel="Fixture" onSend={send}
         onCancel={async () => ({ discardedItemIds: [] })} onCycleMode={noop} onSetMode={noop} onSetCollaborationMode={noop}
         onSetToolApprovalMode={noop} onClearGoal={noop} onEditGoal={noop} onPauseGoal={noop} onResumeGoal={noop}
@@ -70,6 +74,9 @@ function paint() {
   </ToastProvider></LocaleProvider>));
 }
 Object.assign(window, { maintenanceProbe: {
+  holdAdmission: () => { admission = new Promise<void>((resolve, reject) => { releaseAdmission = resolve; rejectAdmission = reject; }); },
+  releaseAdmission: () => { releaseAdmission?.(); admission = undefined; },
+  rejectAdmission: () => { rejectAdmission?.(new Error("fixture admission failure")); admission = undefined; },
   stats: () => ({ starts, submissions }),
   lifecycle: () => ({ running: states.get("A")!.running, cancellable: states.get("A")!.cancellable, echoes: states.get("A")!.localSubmissionOrder.length }),
   lastInput: () => lastInput,

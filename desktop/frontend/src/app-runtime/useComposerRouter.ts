@@ -31,7 +31,7 @@ export type ComposerRouterInput = {
     clearWorkspaceConflict(): void;
     setWorkspaceConflict(value: { state: "local"; ownerTabId: string; ownerTitle: string; ownerWork: MockWorkView; canReveal: true; canCreateWorktree: true } | null): void;
     setPendingClose(value: { tabId: string; work: MockWorkView; stopping: boolean } | null): void;
-    submitComposerTurn(tabId: string, display: string, submit?: string, structured?: StructuredInvocationSubmit): Promise<void>;
+    submitComposerTurn(tabId: string, display: string, submit?: string, structured?: StructuredInvocationSubmit, submissionId?: string): Promise<void>;
     steerForTab(tabId: string, text: string): Promise<void>;
     isRemoteTab(tabId: string): boolean;
   };
@@ -50,7 +50,7 @@ function isThemeMode(value: string): value is "auto" | "light" | "dark" {
 export function useComposerRouter(input: ComposerRouterInput) {
   const { activeTabId, goalDraftActive, t, notice, showToast, ports } = input;
 
-  const handleSend = useCommittedCommand(async (displayText: string, submitText = displayText, requestedTabId = activeTabId, structured?: StructuredInvocationSubmit) => {
+  const handleSend = useCommittedCommand(async (displayText: string, submitText = displayText, requestedTabId = activeTabId, structured?: StructuredInvocationSubmit, _capture?: unknown, submissionId?: string) => {
     const sourceTabId = requestedTabId || activeTabId;
     if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
     const trimmed = displayText.trim();
@@ -66,21 +66,21 @@ export function useComposerRouter(input: ComposerRouterInput) {
     }
     const model = /^\/model\s+(\S+)$/.exec(trimmed);
     if (model) {
-      await ports.switchModel(model[1], sourceTabId);
+      if (await ports.switchModel(model[1], sourceTabId) === false) throw new Error("reasonix_error:inbox_not_submitted");
       return;
     }
     if (trimmed === "/memory") {
-      if (activeTabMirror().current !== sourceTabId) return;
+      if (activeTabMirror().current !== sourceTabId) throw new Error("reasonix_error:inbox_not_submitted");
       ports.setSettingsTarget("memory");
       return;
     }
     if (trimmed === "/clear") {
-      if (activeTabMirror().current !== sourceTabId) return;
+      if (activeTabMirror().current !== sourceTabId) throw new Error("reasonix_error:inbox_not_submitted");
       ports.setClearContextPending(true);
       return;
     }
     if (trimmed === "/new") {
-      if (activeTabMirror().current !== sourceTabId) return;
+      if (activeTabMirror().current !== sourceTabId) throw new Error("reasonix_error:inbox_not_submitted");
       await ports.newSession();
       return;
     }
@@ -88,7 +88,7 @@ export function useComposerRouter(input: ComposerRouterInput) {
       ? decisionSurfaceMockFromInput(trimmed)
       : null;
     if (decisionMock === "workspace_conflict" || decisionMock === "mode_jobs" || decisionMock === "close_active" || decisionMock === "clear_context") {
-      if (activeTabMirror().current !== sourceTabId) return;
+      if (activeTabMirror().current !== sourceTabId) throw new Error("reasonix_error:inbox_not_submitted");
       ports.clearWorkspaceConflict();
       ports.setPendingClose(null);
       ports.setClearContextPending(false);
@@ -118,7 +118,7 @@ export function useComposerRouter(input: ComposerRouterInput) {
       return;
     }
     if (goalDraftActive) {
-      await ports.submitComposerTurn(sourceTabId, displayText, submitText, structured);
+      await ports.submitComposerTurn(sourceTabId, displayText, submitText, structured, submissionId);
       return;
     }
     const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -136,6 +136,7 @@ export function useComposerRouter(input: ComposerRouterInput) {
           notice(t("settings.themeReset"));
         } catch (err) {
           showToast(err instanceof Error ? err.message : String(err), "error");
+          throw err;
         }
         return;
       }
@@ -148,6 +149,7 @@ export function useComposerRouter(input: ComposerRouterInput) {
           notice(t("settings.themeChanged", { theme: next, style }));
         } catch (err) {
           showToast(err instanceof Error ? err.message : String(err), "error");
+          throw err;
         }
         return;
       }
@@ -159,13 +161,14 @@ export function useComposerRouter(input: ComposerRouterInput) {
           notice(t("settings.themeChanged", { theme: cur, style: arg }));
         } catch (err) {
           showToast(err instanceof Error ? err.message : String(err), "error");
+          throw err;
         }
         return;
       }
       notice(t("settings.themeUnknown", { name: arg }), "warn");
       return;
     }
-    await ports.submitComposerTurn(sourceTabId, displayText, submitText, structured);
+    await ports.submitComposerTurn(sourceTabId, displayText, submitText, structured, submissionId);
   });
 
   const handleSteer = useCommittedCommand(async (text: string, requestedTabId = activeTabId) => {

@@ -557,7 +557,7 @@ func (a *Agent) SessionCache() (hit, miss int) {
 }
 
 // ContextWindow returns the configured context-window size in tokens. 0
-// means compaction is disabled for this agent.
+// means automatic compaction is disabled for this agent.
 func (a *Agent) ContextWindow() int { return a.contextWindow }
 
 // mid-turn steer marker.
@@ -829,7 +829,7 @@ type Options struct {
 	// files outside the workspace roots. nil keeps fail-closed behavior.
 	ConfigWriteApprover tool.ConfigWriteApprover
 
-	// Context management. ContextWindow <= 0 disables compaction. Ratios and
+	// Context management. ContextWindow <= 0 disables automatic compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
 	CompactRatio  float64
@@ -894,6 +894,14 @@ type Options struct {
 	// the same workspace. nil preserves source compatibility for direct Agent
 	// construction; boot always supplies it for writer-capable sessions.
 	WorkspaceLease *workspacelease.Owner
+	// HookWriteSurface reports what the tool-call hooks firing for one tool can
+	// write, so that lease stays as narrow as those hooks actually are. nil keeps
+	// the conservative whole-workspace coverage.
+	HookWriteSurface ToolHookWriteSurfaceFunc
+	// WriteIntentGate queues a tool's write intent against in-process peers
+	// before the cross-process lease is attempted; boot supplies the team token.
+	// Concurrency only, never authority: nil or an error changes nothing.
+	WriteIntentGate WriteIntentGateFunc
 
 	// ProjectChecks is a retired compatibility option. Project instructions
 	// remain in normal model context and are not compiled into host obligations.

@@ -62,3 +62,19 @@ assert.equal(historyToolStatus(undefined), "unknown", "unloaded results must not
 assert.equal(historyToolStatus(undefined, { id: "call", name: "bash", arguments: "{}", resultObservation: { state: "completed", messageId: "result", version: 1 } }), "done");
 assert.equal(toolPresentation(tool({ status: "unknown", resultMissing: true })).state, "unknown");
 assert.equal(historyToolStatus({ role: "tool", content: "", execution: { state: "cancelled" } }), "stopped");
+for (const state of ["running", "failed", "cancelled", "completed"]) {
+  const call = { id: "poll", name: "job_output", arguments: "{}", resultObservation: { state: "completed" as const, messageId: "poll-result", version: 1 } };
+  const result = { role: "tool", toolName: "job_output", toolCallId: "poll", content: `[status: ${state}]`, execution: { state } };
+  const projected = historyMessagesToItems([{ role: "assistant", content: "", toolCalls: [call] }, result], "poll");
+  const item = projected.items.find((item): item is ToolItem => item.kind === "tool")!;
+  assert.equal(item.status, "done", "the output read completed independently of the observed job state");
+  assert.equal(toolPresentation(item).dot, "done", "job state metadata must not override the output-read receipt");
+  assert.equal(toolPresentation({ ...item, status: "running" }).dot, "ongoing", "an in-flight output read still has its own running state");
+}
+for (const name of ["pwsh", "bash"]) {
+  const launch = tool({ name, execution: { state: "background_started" } });
+  assert.deepEqual(toolPresentation(launch), { state: "done", dot: "done", label: "chat.background" },
+    "a background launch receipt cannot remain a perpetual running indicator");
+  assert.equal(toolPresentation(tool({ name, status: "running" })).dot, "ongoing",
+    "a foreground call without a result still reports running");
+}

@@ -353,14 +353,6 @@ ok(
 );
 
 ok(
-  /const targetRoot = scope === "project" \? workspaceRoot : ""/.test(sessionNavigationSource) &&
-    /return input\.draft\.open\(scope, targetRoot\);/.test(sessionNavigationSource) &&
-    !/enqueueNavigation\(\{ kind: "blank", scope, workspaceRoot: targetRoot \}\)/.test(sessionNavigationSource) &&
-    /if \(activeTab\?\.remote\)[\s\S]*navigation\.openRemoteProject\(activeTab\.remote, \{ newSession: true \}\)/.test(sessionNavigationSource),
-  "local blank sessions open durable drafts while remote new-session keeps its runtime path",
-);
-
-ok(
   /projectTree:\s*\{[\s\S]*?activeTab:\s*draftActive \? undefined : activeTab/.test(appViewSource),
   "a draft surface clears the previous formal-session highlight in the project tree",
 );

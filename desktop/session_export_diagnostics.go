@@ -9,11 +9,13 @@ import (
 
 	"reasonix/desktop/internal/hostrpc"
 	"reasonix/internal/control"
+	"reasonix/internal/secrets"
 	"reasonix/internal/servecontract"
 	"reasonix/internal/session"
 )
 
 func (a *App) writeSessionDiagnosticExport(job *sessionExportJob) error {
+	browserDiagnostics := a.browserDiagnosticExport(job)
 	extra := map[string]any{"sessionIdentity": map[string]any{"session": job.handle.Snapshot.Ref, "source": "local", "workspaceRoot": job.workspaceRoot, "storageGeneration": job.handle.Snapshot.StorageGeneration}, "exportSnapshot": job.handle.Snapshot, "frontendObservation": job.observation}
 	var frontend map[string]json.RawMessage
 	_ = json.Unmarshal(job.observation, &frontend)
@@ -35,9 +37,20 @@ func (a *App) writeSessionDiagnosticExport(job *sessionExportJob) error {
 			if resp.StatusCode != http.StatusOK {
 				return errors.New("remote session diagnostics are unavailable; upgrade the remote service if the session was switched or taken over")
 			}
-			_, err = io.Copy(dst, resp.Body)
-			return err
+			if _, err = copyExportContext(job.ctx, dst, resp.Body); err != nil {
+				return err
+			}
+			encoded, err := json.Marshal(browserDiagnostics)
+			if err != nil {
+				return err
+			}
+			encoded = []byte(secrets.Redact(string(encoded)))
+			if !json.Valid(encoded) {
+				return errors.New("redacted browser diagnostics are invalid")
+			}
+			return appendBrowserDiagnosticSection(dst, encoded)
 		}
+		extra["browserDiagnostics"] = browserDiagnostics
 		metadata := control.GoalDiagnosticMetadata{ApplicationVersion: version, BuildCommit: buildCommit(), ProtocolVersion: hostrpc.ProtocolVersion, Capabilities: []string{servecontract.SessionExportV1, servecontract.GoalLifecycleV2}}
 		if a.sessionDiagnosticControllerCurrent(job.controller, job.handle.Snapshot.Ref) {
 			runtimeErr := job.controller.WriteSessionDiagnostics(job.ctx, dst, metadata, extra)

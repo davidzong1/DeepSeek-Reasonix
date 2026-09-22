@@ -76,6 +76,12 @@ try {
   assert.equal(calls[1][3], "/goal task bytes", "ordinary first Goal retains its existing prefix");
 
   calls.length = 0; await paint();
+  await commands.submit("A", "display", "unchanged provider bytes", undefined, "saved-input-receipt");
+  assert.deepEqual(calls.find(call => call[0] === "send"), ["send", "A", "display", "unchanged provider bytes", undefined, undefined, "saved-input-receipt"], "persisted submission identity travels separately from provider text");
+  adapterCalls.length = 0;
+  await adapter.send("A", "display", "unchanged provider bytes", undefined, undefined, "saved-input-receipt");
+  assert.deepEqual(adapterCalls[0], ["send", "A", "display", "unchanged provider bytes", undefined, undefined, undefined, "saved-input-receipt"]);
+  calls.length = 0;
   await commands.submit("A", "/goal pause"); await commands.submit("A", "/goal resume");
   assert.deepEqual(calls.filter(call => call[0] === "goal" || call[0] === "patch"), [], "pause and resume preserve Goal before backend command handling");
   assert.deepEqual(calls.filter(call => call[0] === "send").map(call => call[3]), ["/goal pause", "/goal resume"]);

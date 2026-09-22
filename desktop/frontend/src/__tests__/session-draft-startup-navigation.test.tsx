@@ -58,9 +58,9 @@ const stub = installDesktopHostStub({
   ListSessionDraftSummaries: async () => [],
   RestoreSessionDraft: () => restore(),
   ListTabs: async () => tabs,
-  OpenSessionDraftForTarget: async () => {
+  OpenSessionDraftForTarget: async (scope: string) => {
     globalOpenCalls++;
-    return structuredClone(globalDraft);
+    return structuredClone(scope === "project" ? restoredDraft : globalDraft);
   },
   GetDraftContext: async (id: string) => ({
     draft: structuredClone(id === globalDraft.id ? globalDraft : restoredDraft),
@@ -113,20 +113,25 @@ try {
 
   restore = async () => structuredClone(restoredDraft);
   await act(async () => { await owner.initializeEmptySurface(); });
-  assert.equal(owner.surface?.draft.id, restoredDraft.id, "a saved draft restore target wins over passive formal hydration");
-  assert.equal(claimCalls, 1, "a confirmed draft restore claims exactly one navigation intent");
-  assert.equal(restoreTargets.at(-1), restoredDraft.id, "the installed draft remains the durable restore target");
+  assert.equal(owner.surface, null, "a saved legacy draft must not replace normal startup navigation");
+  assert.equal(claimCalls, 0, "legacy recovery is explicit and never claims startup navigation");
+  assert.equal(restoreTargets.length, 0, "startup must not overwrite the legacy restore marker");
 
   await act(async () => { await owner.dismiss(); });
   restore = async () => null;
   tabs = [];
   await act(async () => { await owner.initializeEmptySurface(); });
-  assert.equal(owner.surface?.draft.id, globalDraft.id, "startup without a formal or restored surface opens the global draft");
-  assert.equal(claimCalls, 2, "only the confirmed empty startup path claims another navigation intent");
-  assert.equal(globalOpenCalls, 1, "the empty startup path creates or restores one global draft");
+  assert.equal(owner.surface, null, "startup without a formal session keeps the welcome page empty");
+  assert.equal(claimCalls, 0, "empty startup must not claim a draft navigation intent");
+  assert.equal(globalOpenCalls, 0, "empty startup must not create a new legacy draft");
+
+  await act(async () => { await owner.open(restoredDraft.scope, restoredDraft.workspaceRoot); });
+  assert.equal(owner.surface?.draft.id, restoredDraft.id, "the explicit recovery entry still opens the original draft");
+  assert.equal(claimCalls, 1, "only explicit recovery claims navigation");
+  assert.equal(restoreTargets.at(-1), restoredDraft.id);
 
   await act(async () => { root.unmount(); });
-  console.log("session draft startup navigation: passive hydration, restore precedence and stale reads passed");
+  console.log("session draft startup navigation: no implicit creation or startup takeover; explicit recovery retained");
 } finally {
   stub.uninstall();
   dom.window.close();

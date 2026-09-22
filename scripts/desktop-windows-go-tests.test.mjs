@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { conptyProbe, groups, inventoryFromJSON, owners, testArgs, verifyInventory } from "./desktop-windows-go-tests.mjs";
+import { conptyProbe, groups, historyTests, inventoryFromJSON, owners, testArgs, verifyInventory } from "./desktop-windows-go-tests.mjs";
 
 test("every test prefix, example and fuzz seed has exactly one execution owner", () => {
   const names = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].map(letter => `Test${letter}Feature`);
-  names.push("Test", "Test_Compatibility", "Test中文", "Example", "ExampleController_Open", "FuzzSession", conptyProbe);
+  names.push("Test", "Test_Compatibility", "Test中文", "Example", "ExampleController_Open", "FuzzSession", conptyProbe, ...Object.values(historyTests));
   for (const name of names) assert.equal(owners(name).length, 1, name);
   assert.deepEqual(owners("ExampleController_Open"), ["A-B"]);
   assert.deepEqual(owners("FuzzSession"), ["A-B"]);
@@ -14,6 +14,16 @@ test("every test prefix, example and fuzz seed has exactly one execution owner",
   assert.equal(Object.values(counts).reduce((sum, count) => sum + count, 0), names.length);
   assert.throws(() => testArgs("missing"), /Unknown/);
   assert.throws(() => verifyInventory(new Map()), /Empty/);
+});
+
+test("all historical releases have an independent bounded execution owner", () => {
+  for (const [group, name] of Object.entries(historyTests)) {
+    assert.deepEqual(owners(name), [group]);
+    assert.deepEqual(testArgs(group, true), ["test", "-race", "-run", `^${name}$`, "./..."]);
+  }
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const ordinary = source.match(/\n  desktop-go:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|$)/)?.[1];
+  assert.match(ordinary, /node \.\.\/scripts\/desktop-windows-go-tests\.mjs --all/);
 });
 
 test("inventory keeps same-named tests from different packages and rejects missing output", () => {

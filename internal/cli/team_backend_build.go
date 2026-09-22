@@ -219,6 +219,28 @@ func memberSystemPromptIdentity(b team.MemberBinding) string {
 	return identity + "\n" + team.CollaborationDiscipline(b.Leader)
 }
 
+// memberWriteLabel names one member in workspace-lease holder records and in
+// write-queue reports: a teammate queued behind it should read a person, not a
+// pid. Diagnostic only — no lease or token decision reads it.
+func memberWriteLabel(memberID, teamName string) string {
+	member := strings.TrimSpace(memberID)
+	if member == "" {
+		return ""
+	}
+	if team := strings.TrimSpace(teamName); team != "" {
+		return "member " + member + " of team " + team
+	}
+	return "member " + member
+}
+
+// memberWorkspaceLeaseLabel labels this member's workspace-lease holder records.
+// It shares the token's label, so a wait notice reads the same whether the peer
+// was reached through the token or through the lease; an unbound member
+// publishes nothing.
+func memberWorkspaceLeaseLabel(b team.MemberBinding) string {
+	return memberWriteLabel(b.MemberID, b.Team)
+}
+
 // memberProxySpec maps one member's resolved team proxy onto a transport spec.
 // The team form is address-only (IP:port, no auth), so a disabled proxy is an
 // explicit off rather than a fall-through to the ambient environment: a member
@@ -435,6 +457,10 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// a team's recorded workspace cannot steer it.
 		opts.TeamSkillsRoot = teamSkillsBase()
 		opts.TeamRole = string(roleForLeader(b.Leader))
+		opts.WorkspaceLeaseLabel = memberWorkspaceLeaseLabel(b)
+		// The team's in-process write token. It must follow the workspace-root
+		// assignment above: that root is what the token compares scopes against.
+		opts.WriteIntentGate = memberWriteIntentGate(b.Team, opts.WorkspaceRoot, b.MemberID)
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = deps.events.sink(b.MemberID)

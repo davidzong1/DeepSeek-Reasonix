@@ -361,7 +361,11 @@ func TestLeaseWaitsForLastRun(t *testing.T) {
 	second.EndRun()
 }
 
-func TestBackgroundRetentionOutlivesRun(t *testing.T) {
+// Retention is a loan against re-acquisition churn, not a claim on the
+// workspace: a writer that blocks on the retained domain repays it at once
+// (yield.go) instead of waiting the job out or waiting the grace window. The
+// job keeps its hold only while nobody needs it.
+func TestBackgroundRetentionYieldsToABlockedPeer(t *testing.T) {
 	root, locks := t.TempDir(), t.TempDir()
 	first, _ := New(root, locks, nil)
 	second, _ := New(root, locks, nil)
@@ -373,22 +377,34 @@ func TestBackgroundRetentionOutlivesRun(t *testing.T) {
 	done := make(chan struct{})
 	first.RetainUntil(done)
 	first.EndRun()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	if err := second.AcquireWrite(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		cancel()
-		t.Fatalf("second acquired while background job was running: %v", err)
+	if !first.State().Acquired {
+		t.Fatal("the hold was released despite a running background job")
 	}
-	cancel()
-	close(done)
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+
+	// The peer is blocked on the retained workspace. It must not wait the job
+	// out: the deadline is a deadlock guard around a wait that should never
+	// happen, not a duration this test tolerates.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := second.AcquireWrite(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("blocked peer did not repay the retained hold: %v", err)
+	}
+	if first.State().Acquired {
+		t.Fatal("the retained hold outlived the peer that needed the workspace")
+	}
+
+	// The job ending after the repayment must not release a lease it no longer
+	// owns.
+	close(done)
+	if !second.State().Acquired {
+		t.Fatal("the finished background job released the peer's lease")
 	}
 	second.EndRun()
 }
 
-func TestLeaseWaitsForEveryRetainedBackgroundJob(t *testing.T) {
+// One blocked peer repays every retained job at once: the jobs share one Owner's
+// hold set, and a peer that needs the workspace needs all of it.
+func TestBlockedPeerRepaysEveryRetainedBackgroundJob(t *testing.T) {
 	root, locks := t.TempDir(), t.TempDir()
 	first, _ := New(root, locks, nil)
 	second, _ := New(root, locks, nil)
@@ -402,17 +418,15 @@ func TestLeaseWaitsForEveryRetainedBackgroundJob(t *testing.T) {
 	first.RetainUntil(two)
 	first.EndRun()
 	close(one)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-	if err := second.AcquireWrite(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		cancel()
-		t.Fatalf("lease released before final background job: %v", err)
-	}
-	cancel()
-	close(two)
-	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := second.AcquireWrite(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("blocked peer waited out a retained background job: %v", err)
+	}
+	close(two)
+	if !second.State().Acquired {
+		t.Fatal("a finishing background job released the peer's lease")
 	}
 	second.EndRun()
 }

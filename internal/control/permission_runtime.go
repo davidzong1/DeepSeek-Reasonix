@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/permissionpreset"
 	"reasonix/internal/sandbox"
 )
@@ -97,7 +96,7 @@ func (c *Controller) PermissionSnapshot() PermissionSnapshot {
 		grants = append(grants, SessionGrantSummary{Scope: "command-prefix", Target: target})
 	}
 	return PermissionSnapshot{
-		SessionID: agent.BranchID(c.SessionPath()), Generation: c.runtimeGeneration,
+		SessionID: c.parentSessionID(), Generation: c.runtimeGeneration,
 		Revision: c.permissionRevision.Load(), Preset: c.ToolApprovalMode(),
 		WorkspaceRoot: strings.TrimSpace(c.workspaceRoot), Grants: grants,
 		Capabilities: platformPermissionCapabilities(),

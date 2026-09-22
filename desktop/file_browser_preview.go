@@ -173,6 +173,11 @@ func (a *App) openFileBrowserPreview(ctx context.Context, tabID string, request 
 		_ = exec.Close(context.Background(), browser.CloseRequest{OperationID: request.OperationID + "-stale-close", TabID: browserTab.ID})
 		return FileBrowserPreviewResult{}, currentErr
 	}
+	if recovery, ok := exec.(interface {
+		rememberFilePreview(context.Context, string, FileBrowserPreviewRequest)
+	}); ok {
+		recovery.rememberFilePreview(ctx, browserTab.ID, request)
+	}
 	status := "opened"
 	errorText := browserTab.Error
 	if browserTab.Loading {

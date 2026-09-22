@@ -82,7 +82,7 @@ require(join(frontendDist, "index.html"), "frontend dist");
 console.log("==> shell build");
 runBuildScript(join(desktop, "electron"), "build.mjs");
 const shellDist = join(desktop, "electron", "dist");
-for (const name of ["main.cjs", "preload.cjs"]) require(join(shellDist, name), "shell bundle");
+for (const name of ["main.cjs", "preload.cjs", "browser-page.js", "browser-page.json", "browser-playwright-LICENSE", "browser-playwright-NOTICE", "browser-recorder.js", "recorder-preload.cjs"]) require(join(shellDist, name), "shell bundle");
 if (!existsSync(join(shellDist, "desktopContract.json")) && process.env.REASONIX_ELECTRON_ALLOW_MISSING_CONTRACT !== "1") {
   throw new Error(`desktop contract is missing from ${shellDist}; run: cd desktop && go run . -emit-contract frontend/src/generated`);
 }

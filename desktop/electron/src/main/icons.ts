@@ -11,6 +11,7 @@ export interface IconLookup {
 export interface IconCandidates {
   tray: string[];
   window: string[];
+  dock: string[];
 }
 
 export function iconCandidates(input: IconLookup): IconCandidates {
@@ -20,6 +21,9 @@ export function iconCandidates(input: IconLookup): IconCandidates {
   return {
     tray: input.platform === "darwin" ? [appicon, hicolor("32x32")] : [hicolor("32x32"), appicon],
     window: [hicolor("256x256"), appicon],
+    // Packaged macOS apps keep their bundle's ICNS. Development uses the same
+    // inset artwork instead of the full-canvas Windows/Linux window icon.
+    dock: input.platform === "darwin" && !input.packaged ? [join(build, "darwin", "appicon.png")] : [],
   };
 }
 

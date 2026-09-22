@@ -84,7 +84,15 @@ func runSnapshot(ctx context.Context, exec Executor, args json.RawMessage) (stri
 	if err != nil {
 		return "", translate(err, "browser_snapshot")
 	}
-	return fmt.Sprintf("documentToken: %s\nurl: %s\ntitle: %s\nrefs: %d\n\n%s", snap.DocumentToken, snap.URL, snap.Title, snap.Refs, snap.Tree), nil
+	return fmt.Sprintf("documentToken: %s\nurl: %s\ntitle: %s\nrefs: %d%s\n\n%s", snap.DocumentToken, snap.URL, snap.Title, snap.Refs, observationText(snap.Observation), snap.Tree), nil
+}
+
+func observationText(observation *Observation) string {
+	if observation == nil {
+		return ""
+	}
+	data, _ := json.Marshal(observation)
+	return "\nobservation: " + string(data)
 }
 
 func downloadTool(exec Executor) tool.Tool {
@@ -175,14 +183,17 @@ func encodeScreenshot(tabID string, shot Screenshot) (string, []string, error) {
 	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("screenshot %s is not a regular file", shot.Path)
 	}
-	if info.Size() > screenshotMaxBytes {
-		return oversizeText(shot.Path, info.Size()), nil, nil
-	}
 	f, err := os.Open(shot.Path)
 	if err != nil {
 		return "", nil, fmt.Errorf("read screenshot %s: %w", shot.Path, err)
 	}
 	defer f.Close()
+	if err := validateScreenshot(f, shot); err != nil {
+		return "", nil, err
+	}
+	if info.Size() > screenshotMaxBytes {
+		return oversizeText(shot.Path, info.Size()), nil, nil
+	}
 	data, err := io.ReadAll(io.LimitReader(f, screenshotMaxBytes+1))
 	if err != nil {
 		return "", nil, fmt.Errorf("read screenshot %s: %w", shot.Path, err)
@@ -195,6 +206,10 @@ func encodeScreenshot(tabID string, shot Screenshot) (string, []string, error) {
 		mime = "image/png"
 	}
 	text := fmt.Sprintf("[image: %s, %dx%d] screenshot of tab %s saved at %s", mime, shot.Width, shot.Height, tabID, shot.Path)
+	text += observationText(shot.Observation)
+	if shot.ObservationToken != "" {
+		text += fmt.Sprintf("\nobservationToken: %s\nCSS viewport: %dx%d; coordinate actions use CSS pixels, not image pixels.", shot.ObservationToken, shot.CSSWidth, shot.CSSHeight)
+	}
 	return text, []string{"data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)}, nil
 }
 

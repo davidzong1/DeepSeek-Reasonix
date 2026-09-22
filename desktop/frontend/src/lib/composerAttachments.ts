@@ -4,6 +4,7 @@ export interface Attachment {
   previewUrl?: string;
   displayName?: string;
   draftId?: string;
+  recoveryPath?: string;
   file?: File;
 }
 
@@ -22,7 +23,7 @@ export function attachmentExt(name: string): string {
 }
 
 export function hasImageAttachments(items: Attachment[]): boolean {
-  return items.some((attachment) => Boolean(attachment.previewUrl));
+  return items.some((attachment) => Boolean(attachment.previewUrl || attachment.draftId || attachment.recoveryPath));
 }
 
 export function displayRefName(name: string): string {

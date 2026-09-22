@@ -103,11 +103,12 @@ type wireSnapshotRequest struct {
 }
 
 type wireSnapshot struct {
-	DocumentToken string `json:"documentToken"`
-	URL           string `json:"url"`
-	Title         string `json:"title,omitempty"`
-	Tree          string `json:"tree"`
-	Refs          int    `json:"refs"`
+	DocumentToken string       `json:"documentToken"`
+	URL           string       `json:"url"`
+	Title         string       `json:"title,omitempty"`
+	Tree          string       `json:"tree"`
+	Refs          int          `json:"refs"`
+	Observation   *Observation `json:"observation,omitempty"`
 }
 
 type wireScreenshotRequest struct {
@@ -117,10 +118,14 @@ type wireScreenshotRequest struct {
 }
 
 type wireScreenshot struct {
-	Path   string `json:"path"`
-	MIME   string `json:"mime,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
+	Observation      *Observation `json:"observation,omitempty"`
+	Path             string       `json:"path"`
+	MIME             string       `json:"mime,omitempty"`
+	Width            int          `json:"width,omitempty"`
+	Height           int          `json:"height,omitempty"`
+	ObservationToken string       `json:"observationToken,omitempty"`
+	CSSWidth         int          `json:"cssWidth,omitempty"`
+	CSSHeight        int          `json:"cssHeight,omitempty"`
 }
 
 type wireActRequest struct {

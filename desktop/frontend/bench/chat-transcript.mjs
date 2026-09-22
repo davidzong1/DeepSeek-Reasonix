@@ -417,6 +417,14 @@ try {
       await page.locator('[data-web="search"]').waitFor();
       assert.equal(await page.locator('[data-web="search"] a').count(), 1, 'web sources retain safe host links');
       report.weatherRows = weatherRows;
+      await page.evaluate(() => window.chatFixture.backgroundLaunch()); await frame();
+      await page.locator('.chat-process').click(); await frame();
+      assert.equal(await page.locator('.chat-tool[data-state="done"]').count(), 2, 'background launch receipts settle for PowerShell and Bash');
+      assert.equal(await page.locator('.chat-tool [data-state="ongoing"]').count(), 0, 'settled launches have no perpetual running animation');
+      await page.evaluate(() => window.chatFixture.backgroundOutputHistory()); await frame();
+      await page.locator('.chat-process').click(); await frame();
+      assert.equal(await page.locator('.chat-tool[data-state="done"]').count(), 4, 'restored output reads settle independently of sampled job state');
+      assert.equal(await page.locator('.chat-tool [data-state="ongoing"], .chat-tool[data-state="error"], .chat-tool[data-state="stopped"]').count(), 0, 'job snapshots cannot restart or fail a completed output read');
       await page.evaluate(() => window.chatFixture.toolAliasRegression()); await frame();
       const aliasProcess = page.locator('.chat-process');
       assert.equal(await aliasProcess.getAttribute('aria-expanded'), 'false', 'recovered alias regression folds after completion');

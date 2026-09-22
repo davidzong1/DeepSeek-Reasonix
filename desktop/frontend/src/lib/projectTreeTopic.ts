@@ -15,8 +15,7 @@ export function workspaceDraftBadge(
   workspaceRoot: string,
 ): SessionDraftSummary | undefined {
   return summaries.find((draft) => draft.scope === scope
-    && (scope === "global" || draft.workspaceRoot === workspaceRoot)
-    && (draft.hasContent || (Boolean(draft.state) && draft.state !== "saved")));
+    && (scope === "global" || draft.workspaceRoot === workspaceRoot));
 }
 
 export type ProjectTreeVariant = "workbench" | "creation";

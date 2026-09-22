@@ -1,10 +1,12 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
@@ -23,7 +25,7 @@ func TestGoalDiagnosticExportReadsCompleteDurableV3Log(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolPayload := json.RawMessage(`{"id":"call-1","name":"bash","output":"full diagnostic output; Authorization: Bearer secret-token-123456; api_key=sk-proj-1234567890abcdef"}`)
+	toolPayload := json.RawMessage(`{"id":"call-1","name":"bash","output":"full diagnostic output; Authorization: Bearer secret-token-123456; api_key=sk-proj-1234567890abcdef\nTOKEN=这是很长的中文测试凭证内容"}`)
 	if _, err := runtime.Session().AppendBatch(t.Context(), "tool-evidence", []session.Event{{Kind: "tool/result", Payload: toolPayload}}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +48,9 @@ func TestGoalDiagnosticExportReadsCompleteDurableV3Log(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(payload)
+	if !utf8.Valid(payload) {
+		t.Fatal("diagnostic export contains invalid UTF-8")
+	}
 	var document map[string]any
 	if err := json.Unmarshal(payload, &document); err != nil {
 		t.Fatalf("diagnostic export is not valid JSON: %v\n%s", err, text)
@@ -59,5 +64,16 @@ func TestGoalDiagnosticExportReadsCompleteDurableV3Log(t *testing.T) {
 		if strings.Contains(text, secret) {
 			t.Fatalf("diagnostic export leaked credential %q", secret)
 		}
+	}
+	if strings.Contains(text, "accepted event traversal failed") {
+		t.Fatal("redaction truncated the accepted history")
+	}
+}
+
+func TestDiagnosticFieldRedactionPreservesNumericCounters(t *testing.T) {
+	var output bytes.Buffer
+	err := writeGoalDiagnosticField(&output, "test", map[string]any{"token_count": uint64(9007199254740993), "api_key": "secret value"}, false)
+	if err != nil || !json.Valid([]byte("{"+output.String()+"}")) || !strings.Contains(output.String(), `"token_count": 9007199254740993`) || strings.Contains(output.String(), "secret value") {
+		t.Fatalf("invalid redacted diagnostic field: %s, %v", output.String(), err)
 	}
 }
