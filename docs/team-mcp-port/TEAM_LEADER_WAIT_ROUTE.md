@@ -412,6 +412,49 @@ internal/cli/chat_tui.go                    （两处 composer 入队点各一�
 事件内容）。调用点本身是两行直插，靠编译与 `TestTeamTurnInjectsInboxAtSubmit` 一类的既有提交路径用例
 间接保证；若要更硬的证据，需要另造一个「绑定 leader + 处于 running 态」的窗口 fixture。
 
+### 5.3.1 收尾缺陷：调用点覆盖不全，leader 在 `leader_wait` 里收不到输入（2026-09-22）
+
+**现象**：leader 处于 `leader_wait` 时输入对话不会被唤醒，输入一直留在队列里，直到等待自己的超时
+（默认 120s）。上一条「验收范围的诚实说明」预判的正是这个缺口，实际发生了。
+
+**根因（三条，互相独立）**：
+
+1. **普通 Enter 的信号挂在窗口本地的 `m.state == tuiRunning` 分支里**。`m.state` 是窗口自己的标志，
+   `bindBackend` 每次绑定成员都写 `tuiIdle`（`chat_tui_team_switch.go:393`），而成员后端的 turn 跨切换
+   存活；成员自己的 `TurnStarted` 也不会把窗口置为 running（只有 ambient 路径会，`turn_lifecycle.go:190`）。
+   于是「成员在跑、窗口显示 idle」是常态，Enter 走 `prepareControllerTurn` 的 already-running 分支
+   （`turn_lifecycle.go:94-107`），那条路径**没有** `signalTeamInput`。
+2. **`/steer` 这条路径根本没有信号**：`handleQueueSlash` → `enqueueSteer` 成功后被接受，但
+   `chat_tui.go` 的调用点在 `case "enter": if m.state == tuiRunning` 内部，`/steer` 走不到。
+3. **信号与写入的次序**：调用点在 `enqueue*` 返回之后，而 `enqueue*` 的错误分支提前 return，
+   失败时本就不该发信号——这条本来是对的，收尾时把它固化进用例。
+
+**修法（把信号下沉到写入成功的那一处）**：`enqueueFollowup` / `enqueueSteer`
+（`internal/cli/inbox_queue.go`）在 `TryEnqueue*` 返回 nil error 之后各自调一次 `signalTeamInput(submit)`，
+`chat_tui.go` 里的两个调用点随之删除。这样三条入口（mid-turn Enter、already-running Enter、`/steer`）
+与 Ctrl+Enter 全部自动统一，且信号只在真正入队成功时发出。
+
+**新增用例**（`internal/cli/team_wake_composer_test.go`，7 条，均已做变异验证）：
+
+| 用例 | 钉住的事实 | 变异验证 |
+| --- | --- | --- |
+| `TestEnterOnABusyLeaderWakesItsWait` | 窗口 running 时 Enter 入队并发信号 | 去掉 `enqueue*` 里的 signal → 红 |
+| `TestEnterOnAnIdleWindowWithABusyLeaderWakesItsWait` | 窗口 idle、后端 running 的 already-running 分支同样发信号（本次缺陷的主路径） | 同上 → 红 |
+| `TestSlashSteerWakesItsWait` | `/steer` 被接受时发信号 | 同上 → 红 |
+| `TestCtrlEnterOnABusyLeaderWakesItsWait` | Ctrl+Enter 发信号（原调用点，回归保护） | 同上 → 红 |
+| `TestQueuedInputOfANonLeaderStaysOffTheBus` | 绑定普通成员时**不**发（作用域端到端） | 去掉 team/leader 判定 → 红 |
+| `TestQueuedInputOnAFailedWriteStaysOffTheBus` | 写入失败时不发（次序） | 把 signal 提到 error 检查之前 → 红 |
+| `TestMemberTurnStartedLeavesTheWindowIdle` | 记录「成员 TurnStarted 不置窗口 running」这个状态分裂本身 | 断言型，无变异 |
+
+**门禁实跑（本机，改动后）**：`gofmt -l` 干净；`go build ./...` 通过；`go vet ./internal/cli/` 干净；
+`go test ./internal/cli/ -count=1` 全绿（73s/75s/72s 三次）；`go test -race ./internal/cli/
+-run 'ComposerInput|EnterOnA|SlashSteer|CtrlEnter|QueuedInput|MemberTurnStartedLeaves|LeaderWait|WaitBus|Wake' -count=2`
+绿（3.9s）；`repolint` 相对改动前**零新增**（与 baseline 逐行 diff 比对）。
+
+**既有的偶发（与本改动无关，改动前后同现）**：`TestTeamTurnInjectsInboxAtSubmit` 在整包跑时偶发红
+（`the acknowledged batch must not inject twice, sent=2`），隔离跑 8/8 绿，改动前的树整包跑同样命中；
+`TEAM_MEMBER_PARALLELISM_ROUTE.md` §5.1 已记录该用例为既有偶发。
+
 **门禁实跑（2026-09-22，本机，含 Part 1 合并后的工作区）**：
 
 ```
@@ -466,7 +509,7 @@ golangci-lint run ./internal/cli/...                   # 本段改动文件零�
 | W1 | 等待循环（订阅、ctx 取消立即返回、整批返回、afterSeq 过滤与重放不假醒） | Part 1 | **已完成** | `internal/cli/team_leader_wait.go` 的 `awaitLeaderWait`/`afterWaitSeq`；`team_leader_wait_test.go` 的取消/超时/订阅前事件/整批/跨 team/无总线/不重报 7 条用例（去掉对应实现即红，已验） |
 | W2 | 进程内信号总线（挂 `teamBackends`，含订阅前 retain、跨订阅可见） | Part 1 原定，**由 Part 2 owner 落地** | **已完成** | `internal/cli/team_wake_signal.go` 的 `waitBus`/`retainLocked`/`retainedForLocked`（retain 语义见 §5.1-5：保留窗口交给每个新订阅、不被首个订阅取走）；`team_backends.go` 的 `bus` 字段、`newTeamBackends` 创建、`closeAll` 关闭；收敛用例 `team_leader_wait_test.go` 的 `TestWaitBusHeldWindowReachesEveryWaiter`（改回「取走」即红，已验） |
 | W3 | `leader_wait` 工具注册与分类（I1/I2/I8 + §8.4 分类器） | Part 1 | **已完成** | `team_member_tools.go` 的 `newLeaderWaitTool` + `newLeaderTaskTools` 末位注册；`team_leader_wait.go` 的 `ReadOnly`/`PlanModeSafe`/`TeamLifecycleStateWriter`/`EffectHint`/`ClassifyCall`；租约、并行批、leader-only、参数边界、**plan 边界显式绕过**（`TestLeaderWaitBypassesThePlanBoundary`，走 `planmode.Policy.Decide`）、**I3 不持帧路径的锁**（`TestLeaderWaitHoldsNoLockTheFramePathNeeds`）共 6 条用例（变异验证已验） |
-| W4 | `wakeAll` / 升级 / 用户输入接上 `Signal` | Part 2 | **已完成** | 任务状态移动走 `agentruntime.AttentionFunc`（`attention.go` + `runtime.go` 的 `notifyAttention`，挂在 `SaveTask` 之后、board 写之前，**不是** `wakeAll`——见 §5.3 落地结果 3）；`team_task_signals.go` 的 `attention`；`team_escalation.go` 的 `begin`；`chat_tui_team.go` 的 `signalTeamInput`（+ `chat_tui.go` 两个入队点）。用例：`attention_test.go` 的慢 board 顺序用例与三类 reason 用例、`team_wake_producers_test.go` 的 4 条；变异验证见 §5.3 表 |
+| W4 | `wakeAll` / 升级 / 用户输入接上 `Signal` | Part 2 | **已完成**（含 §5.3.1 收尾缺陷） | 任务状态移动走 `agentruntime.AttentionFunc`（`attention.go` + `runtime.go` 的 `notifyAttention`，挂在 `SaveTask` 之后、board 写之前，**不是** `wakeAll`——见 §5.3 落地结果 3）；`team_task_signals.go` 的 `attention`；`team_escalation.go` 的 `begin`；`chat_tui_team.go` 的 `signalTeamInput`。**用户输入的发信号点已从 `chat_tui.go` 的两个按键分支下沉到 `inbox_queue.go` 的 `enqueueFollowup`/`enqueueSteer`**（写入成功后），因为原调用点漏掉了 already-running Enter 与 `/steer`，leader 在 `leader_wait` 里收不到输入（§5.3.1）。用例：`attention_test.go` 的慢 board 顺序用例与三类 reason 用例、`team_wake_producers_test.go` 的 4 条、`team_wake_composer_test.go` 的 7 条；变异验证见 §5.3 与 §5.3.1 的表 |
 | W5 | board 游标 `drain()` 兜底（唯一 dispatcher） | Part 2 | **已完成** | `internal/cli/team_wake_dispatcher.go`（`drain` 在自有锁下调用 `consumeWakeups`，读一次/推进一次，publish 进总线并把批次交给窗口）；`chat_tui_team_inbox.go` 的 `wakes`/`attachSignals`/`wakeDispatcher`。用例：`team_wake_dispatcher_test.go` 的 5 条（含 4 并发只推进一次、无生产者信号的 board 兜底、逐 leader 游标） |
 | W6 | tick 消费 wakeup（§3.1 缺口） | Part 2 | **已完成** | `chat_tui_team_session.go` 的 `drainTeamWakeups`（`tea.Cmd`，离开帧线程）+ `teamRosterRefreshMsg.wake` 载荷；`chat_tui_team.go` 的 overlay-open drain 改走 dispatcher。用例：`TestTeamTickConsumesWakeupsWhileTheOverlayIsOpen`（去掉 tick 武装即红，已验）。**原缺陷 D1 已修复**：`p.board` 为 nil 时的字段选择 panic 改由 `wakeDispatcher()` 的 nil 安全访问器承担，`TestStepDownLeaderStrictOrder` 已由 panic 转绿 |
 

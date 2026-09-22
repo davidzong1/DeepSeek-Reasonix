@@ -63,6 +63,13 @@ func (m *chatTUI) queueIndicatorRows() int {
 
 // enqueueFollowup persists a follow-up and kicks dispatch if the controller is
 // already idle. Only clears the composer on success.
+//
+// The durable write is also where a team leader's interruptible wait is told
+// there is input: signalling here rather than at the call sites is what makes
+// every entry point carry it — the mid-turn composer, the idle-looking window
+// whose backend still runs (prepareControllerTurn), and /queue's own paths. A
+// signal at the call sites covered only the ones that had been remembered, so a
+// leader blocked in leader_wait slept through input that was already queued.
 func (m *chatTUI) enqueueFollowup(display, submit string) (sessioninbox.InboxReceipt, error) {
 	if m.ctrl == nil {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrClosed
@@ -70,16 +77,27 @@ func (m *chatTUI) enqueueFollowup(display, submit string) (sessioninbox.InboxRec
 	if ensurer, ok := m.ctrl.(interface{ EnsureSessionPath() }); ok {
 		ensurer.EnsureSessionPath()
 	}
-	return m.ctrl.TryEnqueueFollowup(control.InboxRequest{
+	rec, err := m.ctrl.TryEnqueueFollowup(control.InboxRequest{
 		Intent:  sessioninbox.IntentFollowup,
 		Display: display,
 		Raw:     submit,
 		Submit:  submit,
 		Source:  "cli",
 	})
+	if err != nil {
+		return rec, err
+	}
+	m.signalTeamInput(submit)
+	return rec, nil
 }
 
 // enqueueSteer persists then attempts mid-turn steer.
+//
+// Signalled like the follow-up above: /steer is the composer's own "insert into
+// the running turn" gesture, so a leader waiting on the team must be released by
+// it exactly as Ctrl+Enter releases it. Whether the steer is admitted mid-turn
+// or falls back to a durable follow-up is the controller's call; either way the
+// input is now durable and the leader's wait is what has to end for it to run.
 func (m *chatTUI) enqueueSteer(display, submit string) (sessioninbox.InboxReceipt, error) {
 	if m.ctrl == nil {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrClosed
@@ -87,13 +105,18 @@ func (m *chatTUI) enqueueSteer(display, submit string) (sessioninbox.InboxReceip
 	if ensurer, ok := m.ctrl.(interface{ EnsureSessionPath() }); ok {
 		ensurer.EnsureSessionPath()
 	}
-	return m.ctrl.TryEnqueueAndSteer(control.InboxRequest{
+	rec, err := m.ctrl.TryEnqueueAndSteer(control.InboxRequest{
 		Intent:  sessioninbox.IntentSteer,
 		Display: display,
 		Raw:     submit,
 		Submit:  submit,
 		Source:  "cli",
 	})
+	if err != nil {
+		return rec, err
+	}
+	m.signalTeamInput(submit)
+	return rec, nil
 }
 
 // seedInbox is a test helper to push durable queue rows.
