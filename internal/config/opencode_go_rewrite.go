@@ -140,7 +140,16 @@ func rawTOMLValue(v any) (string, error) {
 	case reflect.Int, reflect.Int64, reflect.Int32:
 		return strconv.FormatInt(rv.Int(), 10), nil
 	case reflect.Float64, reflect.Float32:
-		return strconv.FormatFloat(rv.Float(), 'g', -1, 64), nil
+		encoded := strconv.FormatFloat(rv.Float(), 'g', -1, 64)
+		if strings.HasSuffix(encoded, "Inf") || encoded == "NaN" {
+			return strings.ToLower(encoded), nil
+		}
+		// Retain TOML's float type when rewriting an inline table containing
+		// a whole-number rate, including fields unrelated to the migration.
+		if !strings.ContainsAny(encoded, ".eE") {
+			encoded += ".0"
+		}
+		return encoded, nil
 	case reflect.Slice, reflect.Array:
 		var parts []string
 		for i := range rv.Len() {

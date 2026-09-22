@@ -1,182 +1,104 @@
 import assert from "node:assert/strict";
-import { OutlineUnsupported, TranscriptOutlineStore, type OutlineRead } from "../lib/transcriptOutlineStore";
-import type { TranscriptOutlineEntry, TranscriptOutlinePage, TranscriptOutlineRequest } from "../lib/transcriptProtocol";
+import { TranscriptOutlineStore, type OutlineRead } from "../lib/transcriptOutlineStore";
+import type { HistoryOutlinePage, HistoryOutlineRequest } from "../generated/desktopContract.generated";
 
-function entry(index: number, extra: Partial<TranscriptOutlineEntry> = {}): TranscriptOutlineEntry {
-  return { id: `m:${index}`, messageId: `${index}`, turn: index, order: index, prompt: `prompt ${index}`, answer: `answer ${index}`, ...extra };
+const requests: HistoryOutlineRequest[] = [];
+const page = (start = 1): HistoryOutlinePage => ({ status: "ready", generation: "cut", snapshotSequence: 12,
+  coverageSequence: 12, totalTurns: 25000, nextTurn: start + 128, done: false,
+  entries: Array.from({ length: 128 }, (_, i) => ({ messageId: `u${start + i}`, turn: start + i, position: start + i, prompt: `question ${start + i}` })) });
+const read: OutlineRead = async (_tab, req) => { requests.push(req); return page(req.startTurn); };
+const store = new TranscriptOutlineStore();
+const off = store.activate("tab", "session", read, 25000);
+await store.refresh("tab");
+assert.equal(store.getView("tab").totalTurns, 25000);
+assert.equal(requests.length, 1, "initial read is one page, not the whole history");
+await Promise.all([store.ensure("tab", 20001), store.ensure("tab", 20001)]);
+assert.equal(requests.length, 2, "range requests deduplicate");
+assert.equal(requests[1].generation, "cut");
+assert.equal(requests[1].snapshotSequence, 12);
+for (let turn = 1000; turn < 10000; turn += 1000) await store.ensure("tab", turn);
+assert.ok(store.getView("tab").entries.size <= 6 * 128, "summary cache is bounded");
+assert.equal(store.getView("tab").totalTurns, 25000, "eviction preserves the rail extent");
+await store.ensure("tab", 1);
+assert.equal(store.getView("tab").entries.get(1)?.messageId, "u1");
+off();
+
+let resolve!: (page: HistoryOutlinePage) => void;
+const stale = new Promise<HistoryOutlinePage>(done => { resolve = done; });
+const oldOff = store.activate("same-tab", "old-session", () => stale, 2);
+const pending = store.refresh("same-tab");
+await Promise.resolve();
+const newOff = store.activate("same-tab", "new-session", async () => ({ ...page(), totalTurns: 1, entries: [] }), 1);
+await store.refresh("same-tab");
+resolve(page()); await pending; oldOff();
+assert.equal(store.getView("same-tab").totalTurns, 1, "old response and cleanup cannot replace the new session");
+newOff();
+
+const failing = store.activate("failed", "session", async () => { throw new Error("network"); }, 5);
+await store.refresh("failed");
+assert.equal(store.getView("failed").mode, "error");
+assert.equal(store.getView("failed").totalTurns, 5);
+failing();
+const unsupported = store.activate("old-host", "session", async () => ({ ...page(), status: "unsupported", entries: [] }), 5);
+await store.refresh("old-host");
+assert.equal(store.getView("old-host").mode, "unsupported"); unsupported();
+console.log("durable outline: sparse pages, fixed cut, eviction, generation and capability passed");
+
+{
+  let fail = true;
+  const reads: number[] = [];
+  const cache = new TranscriptOutlineStore();
+  const release = cache.activate("retry-page", "session", async (_tab, req) => {
+    reads.push(req.startTurn ?? 1);
+    if (req.startTurn === 129 && fail) throw new Error("page offline");
+    return page(req.startTurn);
+  }, 25000);
+  try {
+    await cache.refresh("retry-page");
+    await cache.ensure("retry-page", 129);
+    await cache.ensure("retry-page", 257);
+    assert.equal(cache.getView("retry-page").mode, "error", "another successful page cannot hide a failed page");
+    fail = false;
+    await cache.retry("retry-page");
+    assert.equal(cache.getView("retry-page").entries.get(129)?.messageId, "u129", "retry reloads the failed range even when the cut is unchanged");
+    assert.equal(cache.getView("retry-page").mode, "ready");
+    assert.equal(reads.filter(start => start === 129).length, 2);
+  } finally { release(); }
 }
-
-function page(snapshotId: string, entries: TranscriptOutlineEntry[], nextOffset: number, done: boolean): TranscriptOutlinePage {
-  return { protocolVersion: 1, snapshotId, entries, nextOffset, done, total: entries.length, stale: false };
+{
+  let cut = 12;
+  let finish!: (value: HistoryOutlinePage) => void;
+  const cache = new TranscriptOutlineStore();
+  const release = cache.activate("cut-race", "session", async (_tab, req) => {
+    if (req.startTurn === 129 && req.snapshotSequence === 12) return new Promise(resolve => { finish = resolve; });
+    return { ...page(req.startTurn), snapshotSequence: cut };
+  }, 25000);
+  try {
+    await cache.refresh("cut-race");
+    const old = cache.ensure("cut-race", 129);
+    await Promise.resolve(); await Promise.resolve();
+    cut = 13;
+    await cache.refresh("cut-race");
+    finish(page(129)); await old;
+    await cache.ensure("cut-race", 129);
+    assert.equal(cache.getView("cut-race").snapshotSequence, 13);
+    assert.equal(cache.getView("cut-race").mode, "ready", "an obsolete page cannot poison the fresh directory");
+    assert.equal(cache.getView("cut-race").entries.get(129)?.messageId, "u129");
+  } finally { release(); }
 }
-
-/** Answers from a scripted page table and records every request. */
-function scripted(snapshotId: string, pages: Map<number, TranscriptOutlinePage>) {
-  const requests: TranscriptOutlineRequest[] = [];
-  const read: OutlineRead = async (_tabId, request) => {
-    requests.push(request);
-    const found = pages.get(request.offset ?? 0);
-    if (!found) throw new Error(`unexpected outline offset ${request.offset}`);
-    return found;
-  };
-  return { read, requests, snapshotId };
+{
+  let finish!: (value: HistoryOutlinePage) => void;
+  let reads = 0;
+  const gate = new Promise<HistoryOutlinePage>(resolve => { finish = resolve; });
+  const cache = new TranscriptOutlineStore();
+  const release = cache.activate("slow", "session", () => { reads++; return gate; }, 25000);
+  try {
+    const first = cache.refresh("slow");
+    await Promise.resolve();
+    const second = cache.refresh("slow");
+    await Promise.resolve();
+    assert.equal(reads, 1, "slow refresh is shared instead of continually invalidated");
+    finish(page()); await Promise.all([first, second]);
+    assert.equal(cache.getView("slow").mode, "ready");
+  } finally { release(); }
 }
-
-async function main() {
-  {
-    // Complete multi-page outline, assembled in offset order regardless of how
-    // the host ordered the pages.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", scripted("s1", new Map([
-      [0, page("s1", [entry(1), entry(2)], 2, false)],
-      [2, page("s1", [entry(3)], 3, true)],
-    ])).read);
-    await store.sync("tab", "s1");
-    const view = store.getView("tab");
-    assert.equal(view.mode, "ready", "multi-page outline is ready");
-    assert.deepEqual(view.entries.map(item => item.id), ["m:1", "m:2", "m:3"], "every page is assembled in order");
-  }
-
-  {
-    // Re-reading the same snapshot must not issue another request.
-    const plan = scripted("s1", new Map([[0, page("s1", [entry(1)], 1, true)]]));
-    const store = new TranscriptOutlineStore();
-    store.register("tab", plan.read);
-    await store.sync("tab", "s1");
-    await store.sync("tab", "s1");
-    assert.equal(plan.requests.length, 1, "an unchanged snapshot reuses the index");
-    await store.sync("tab", "s2").catch(() => undefined);
-    assert.equal(plan.requests.length, 2, "a replaced snapshot re-reads");
-  }
-
-  {
-    // Duplicate identity would make the rail ambiguous.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => page("s1", [entry(1), entry(1, { prompt: "duplicate" })], 2, true));
-    await store.sync("tab", "s1");
-    assert.deepEqual(store.getView("tab").entries.map(item => item.id), ["m:1"], "duplicate entries collapse to one mark");
-  }
-
-  {
-    // A recycled cut must be reported, never silently answered from the newest
-    // revision: the caller has to re-resolve the target against a fresh one.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => ({ ...page("s1", [], 0, true), stale: true }));
-    await store.sync("tab", "s1");
-    const view = store.getView("tab");
-    assert.equal(view.mode, "error", "a recycled cut is an error, not an empty outline");
-    assert.equal(view.entries.length, 0);
-  }
-
-  {
-    // A cursor that does not advance would page forever.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => page("s1", [entry(1)], 0, false));
-    await store.sync("tab", "s1");
-    assert.equal(store.getView("tab").mode, "error", "a stalled cursor ends the read");
-  }
-
-  {
-    // Unimplemented capability is compatibility, not failure.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => { throw new OutlineUnsupported("missing"); });
-    await store.sync("tab", "s1");
-    const view = store.getView("tab");
-    assert.equal(view.mode, "legacy", "an absent capability falls back to loaded turns");
-    assert.equal(view.error, undefined, "an absent capability is not shown as a retryable error");
-  }
-
-  {
-    // A real failure keeps its message so the rail can offer a retry.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => { throw new Error("network down"); });
-    await store.sync("tab", "s1");
-    assert.equal(store.getView("tab").mode, "error");
-    assert.equal(store.getView("tab").error, "network down");
-  }
-
-  {
-    // Releasing a tab fences a read still in flight: its result must not
-    // resurrect the outline of a session that is gone.
-    let release!: () => void;
-    const barrier = new Promise<void>(resolve => { release = resolve; });
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async () => {
-      await barrier;
-      return page("s1", [entry(1)], 1, true);
-    });
-    const pending = store.sync("tab", "s1");
-    store.release("tab");
-    release();
-    await pending;
-    assert.equal(store.getView("tab").mode, "legacy", "a released tab keeps no outline from a late response");
-  }
-
-  {
-    // Replacing a cut hides and fences the old outline without unbinding its
-    // owner. A transient snapshot refresh failure must leave a second retry
-    // able to call the same refresher and rebuild the index.
-    const store = new TranscriptOutlineStore();
-    let snapshotId = "s1";
-    let refreshes = 0;
-    store.register("tab", async (_tabId, request) => page(request.snapshotId, [entry(1)], 1, true), async () => {
-      refreshes += 1;
-      if (refreshes === 1) throw new Error("network down");
-      snapshotId = "s2";
-      await store.load("tab", snapshotId);
-    });
-    await store.sync("tab", snapshotId);
-    store.invalidate("tab");
-    assert.equal(store.getView("tab").mode, "legacy", "the replaced cut is hidden during refresh");
-    await assert.rejects(store.refresh("tab"), /network down/);
-    await store.refresh("tab");
-    assert.equal(refreshes, 2, "the failed refresh did not discard the owner binding");
-    assert.equal(store.getView("tab").snapshotId, "s2");
-    assert.deepEqual(store.getView("tab").entries.map(item => item.id), ["m:1"]);
-  }
-
-  {
-    // A hostile or buggy host that never finishes must not drive an unbounded
-    // request-and-append loop. Each page advances the cursor by one and claims
-    // there is more, so only the page cap can stop it.
-    let requests = 0;
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async (_tabId, request) => {
-      requests += 1;
-      const offset = request.offset ?? 0;
-      return page("s1", [entry(offset)], offset + 1, false);
-    });
-    await store.sync("tab", "s1");
-    const view = store.getView("tab");
-    assert.ok(requests <= 64, `endless host issued ${requests} requests`);
-    assert.equal(view.truncated, true, "an endless host is cut off");
-    assert.equal(view.mode, "ready", "the turns that did arrive still navigate");
-  }
-
-  {
-    // Running out of budget keeps what was indexed and says it is partial: a
-    // huge conversation must still navigate instead of losing its rail.
-    const store = new TranscriptOutlineStore();
-    store.register("tab", async (_tabId, request) => {
-      const offset = request.offset ?? 0;
-      const entries = Array.from({ length: 1000 }, (_, index) => entry(offset + index));
-      return page("s1", entries, offset + entries.length, false);
-    });
-    await store.sync("tab", "s1");
-    const view = store.getView("tab");
-    assert.equal(view.mode, "ready", "an oversized outline still navigates");
-    assert.equal(view.truncated, true, "the view reports that it is partial");
-    assert.ok(view.entries.length > 0 && view.entries.length <= 20_000, `kept ${view.entries.length} entries`);
-  }
-
-  {
-    // An unregistered tab never claims the capability.
-    const store = new TranscriptOutlineStore();
-    await store.sync("unbound", "s1");
-    assert.equal(store.getView("unbound").mode, "legacy", "a tab this host never loaded stays legacy");
-  }
-
-  console.log("transcript outline store: paging, dedup, stale, stall, compatibility and release fencing passed");
-}
-
-await main();

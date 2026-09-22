@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { releaseReadSnapshot } from "./readSnapshot";
 import {
   createProjectTreeRequestLimiter,
   projectTreeRuntimeWindowLimits,
@@ -47,9 +48,11 @@ export function useProjectTreeListRuntime() {
     for (const records of [topicLoadPendingRef.current, topicRevisionRef.current, topicCompletePageRef.current]) {
       for (const key of Object.keys(records)) if (key.startsWith(prefix)) delete records[key];
     }
-    const next = Object.fromEntries(Object.entries(topicPageStateRef.current).map(([key, state]) => key.startsWith(prefix)
-      ? [key, { ...state, nextCursor: undefined, loading: false, initialized: false, error: undefined }]
-      : [key, state]));
+    const next = Object.fromEntries(Object.entries(topicPageStateRef.current).map(([key, state]) => {
+      if (!key.startsWith(prefix)) return [key, state];
+      releaseReadSnapshot(state.snapshotId);
+      return [key, { ...state, snapshotId: undefined, nextCursor: undefined, loading: false, initialized: false, error: undefined }];
+    }));
     topicPageStateRef.current = next;
     setTopicPageState(next);
   }, []);

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"reasonix/desktop/internal/workspacestate"
@@ -246,7 +245,7 @@ func TestIndependentSessionForkRespectsManualSidebarOrder(t *testing.T) {
 	}
 }
 
-func TestIndependentSessionOrderRejectsStaleCursor(t *testing.T) {
+func TestIndependentSessionOrderKeepsFrozenCursor(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()
 	app := NewApp()
@@ -287,11 +286,8 @@ func TestIndependentSessionOrderRejectsStaleCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 1, Cursor: first.NextCursor})
-	if err == nil {
-		t.Fatalf("stale cursor %q accepted: first=%#v second=%#v", first.NextCursor, first, second)
-	}
-	if !strings.Contains(err.Error(), "stale_cursor") {
-		t.Fatalf("stale cursor error = %v; want typed stale_cursor", err)
+	if err != nil || len(second.Items) != 1 || second.Items[0].Session.SessionID != "b" || second.SnapshotID != first.SnapshotID {
+		t.Fatalf("reorder disturbed frozen continuation: %+v %v", second, err)
 	}
 	refreshed, err := app.ListProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 10})
 	if err != nil {

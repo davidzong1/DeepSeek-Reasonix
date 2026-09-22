@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:4834c0e613010e6104b461f33ca8ddd31d407adbc5977b8e221269abfbbfb936";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:856aeb17926400a95c8eeebe0ded3e69e7ffa9e0184871c325ef615a8776e862";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -249,7 +249,9 @@ export const DESKTOP_COMMANDS = [
   "ImportHistoricalSession",
   "ImportThemePack",
   "InboxHasItems",
+  "InboxQueueForTarget",
   "InboxSnapshot",
+  "InspectTopicRemoval",
   "InspectWorktreeMerge",
   "InstallMCPServer",
   "InstallPlugin",
@@ -402,6 +404,7 @@ export const DESKTOP_COMMANDS = [
   "ReleaseAttachmentTarget",
   "ReleaseDraftImageForTab",
   "ReleaseDraftImageForTarget",
+  "ReleaseReadSnapshot",
   "ReloadCommands",
   "ReloadRuntime",
   "ReloadSettings",
@@ -418,6 +421,7 @@ export const DESKTOP_COMMANDS = [
   "RemoteServerLogs",
   "RemoteServerStatus",
   "RemoteSessionHistoryContentForTab",
+  "RemoteSessionHistoryOutlineForTab",
   "RemoteSessionHistoryPageForTab",
   "RemoteSessionHistoryWindowForTab",
   "RemoteSessionMessageFieldForTab",
@@ -442,6 +446,7 @@ export const DESKTOP_COMMANDS = [
   "RemoveRemoteHost",
   "RemoveRemoteProject",
   "RemoveSkillPath",
+  "RemoveTopic",
   "RemoveWorkspace",
   "RenameCanonicalSession",
   "RenameProject",
@@ -572,6 +577,7 @@ export const DESKTOP_COMMANDS = [
   "SearchSessionHistoryForTarget",
   "SessionHistoryContentForTab",
   "SessionHistoryContentForTarget",
+  "SessionHistoryOutlineForTab",
   "SessionHistoryPageForTab",
   "SessionHistoryPageForTarget",
   "SessionHistoryWindowForTab",
@@ -1100,6 +1106,26 @@ export interface CancelReceipt {
   recoveryRequired: boolean;
 }
 
+export interface InboxQueueEdit {
+  id: string;
+  text: string;
+  contentVersion: string;
+  references: string[];
+}
+
+export interface InboxQueueRequest {
+  kind: string;
+  itemId?: string;
+  text?: string;
+  contentVersion?: string;
+  beforeItemId?: string | null;
+  queueRevision: number;
+  paused?: boolean;
+  turnId?: string;
+  display?: string;
+  idempotencyKey?: string;
+}
+
 export interface control_InvocationRequest {
   name: string;
   kind: string;
@@ -1360,6 +1386,8 @@ export interface CacheDiagnostics {
   prefixHash: string;
   prefixChanged: boolean;
   prefixChangeReasons?: string[];
+  stablePrefixHash?: string;
+  stablePrefixChanged?: boolean;
   systemHash: string;
   toolsHash: string;
   logRewriteVersion: number;
@@ -2567,6 +2595,7 @@ export interface HistorySearchContextLine {
 }
 
 export interface HistorySearchContextRequest {
+  contentDigest?: string;
   sessionPath: string;
   messageIndex: number;
   before: number;
@@ -2574,6 +2603,8 @@ export interface HistorySearchContextRequest {
 }
 
 export interface HistorySearchHit {
+  partIndex?: number;
+  contentDigest?: string;
   sessionPath: string;
   sessionId: string;
   source: string;
@@ -2593,6 +2624,9 @@ export interface HistorySearchHit {
 }
 
 export interface HistorySearchPage {
+  snapshotId?: string;
+  snapshotExpiresAt?: number;
+  readError?: ReadError | null;
   items: HistorySearchHit[];
   nextCursor: string;
   revision: number;
@@ -2614,6 +2648,9 @@ export interface HistorySearchRequest {
 }
 
 export interface HistorySessionPage {
+  snapshotId?: string;
+  snapshotExpiresAt?: number;
+  readError?: ReadError | null;
   items: SessionMeta[];
   nextCursor: string;
   revision: number;
@@ -2708,6 +2745,14 @@ export interface InboxItemView {
   position: number;
 }
 
+export interface InboxQueueResultView {
+  outcome: string;
+  reason?: string;
+  snapshot: InboxSnapshotView;
+  edit?: InboxQueueEdit | null;
+  receipt?: InboxReceipt | null;
+}
+
 export interface InboxReceiptView {
   itemId: string;
   disposition: string;
@@ -2718,6 +2763,8 @@ export interface InboxReceiptView {
 }
 
 export interface InboxSnapshotView {
+  readonly?: boolean;
+  mutationsSupported: boolean;
   revision: number;
   paused: boolean;
   recovered: boolean;
@@ -3296,6 +3343,8 @@ export interface ProjectTopicKey {
 }
 
 export interface ProjectTopicPage {
+  snapshotId?: string;
+  snapshotExpiresAt?: number;
   items: ProjectNode[];
   nextCursor?: string;
   revision: number;
@@ -3485,6 +3534,20 @@ export interface QQBotView {
 export interface QuestionAnswer {
   questionId: string;
   selected: string[];
+}
+
+export interface ReadError {
+  code: string;
+  reason: string;
+  message: string;
+}
+
+export interface ReadSnapshotDiagnostics {
+  handles: number;
+  activeBuilders: number;
+  pendingBuilders: number;
+  residentBytes: number;
+  reservedDiskBytes: number;
 }
 
 export interface RecoveryCleanupItem {
@@ -3899,6 +3962,7 @@ export interface SessionActivityBaseline {
 }
 
 export interface SessionArchitectureDiagnostics {
+  readSnapshots?: ReadSnapshotDiagnostics | null;
   pending_operations: number;
   missing_members: number;
   identity_mismatches: number;
@@ -4686,6 +4750,34 @@ export interface TopicMeta {
   createdAt: number;
 }
 
+export interface TopicRemovalInspection {
+  target: TopicRemovalTarget;
+  disposition: string;
+  allowed: boolean;
+  reason?: string;
+  token: string;
+}
+
+export interface TopicRemovalRequest {
+  operationId: string;
+  target: TopicRemovalTarget;
+  expectedToken: string;
+}
+
+export interface TopicRemovalResult {
+  committed: boolean;
+  disposition: string;
+  recoveryEntryId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  retryable: boolean;
+}
+
+export interface TopicRemovalTarget {
+  workspaceId: string;
+  topicId: string;
+}
+
 export interface TrashEntry {
   id: string;
   ref?: SessionRef | null;
@@ -4733,6 +4825,7 @@ export interface TurnStartView {
   status: string;
   disposition: string;
   operationId?: string;
+  managementErrorCode?: string;
   runtimeEpoch?: string;
   submissionId?: string;
 }
@@ -5085,6 +5178,32 @@ export interface ExportSnapshot {
   title: string;
 }
 
+export interface HistoryOutlineEntry {
+  messageId: string;
+  turn: number;
+  position: number;
+  prompt: string;
+  answer?: string;
+}
+
+export interface HistoryOutlinePage {
+  status: string;
+  generation: string;
+  snapshotSequence: number;
+  coverageSequence: number;
+  totalTurns: number;
+  entries: HistoryOutlineEntry[];
+  nextTurn: number;
+  done: boolean;
+}
+
+export interface HistoryOutlineRequest {
+  generation?: string;
+  snapshotSequence?: number | null;
+  startTurn?: number;
+  limit?: number;
+}
+
 export interface HistoryWindowPage {
   messages: PersistentMessage[];
   status: string;
@@ -5224,6 +5343,23 @@ export interface Ref {
   name?: string;
   indexDigest?: string;
   integrityBlockBytes?: number;
+}
+
+export interface Capacity {
+  items: number;
+  maxItems: number;
+  bytes: number;
+  maxBytes: number;
+  maxItemBytes: number;
+}
+
+export interface InboxReceipt {
+  itemId: string;
+  disposition: string;
+  position: number;
+  paused: boolean;
+  capacity: Capacity;
+  idempotent?: boolean;
 }
 
 export interface Diagnostics {
@@ -5900,7 +6036,9 @@ export interface GeneratedDesktopCommands {
   ImportHistoricalSession(arg0: string): Promise<SessionRestoreResult>;
   ImportThemePack(arg0: string, arg1: boolean): Promise<ThemeImportResult>;
   InboxHasItems(arg0: string): Promise<boolean>;
+  InboxQueueForTarget(arg0: InboxTargetView, arg1: InboxQueueRequest): Promise<InboxQueueResultView>;
   InboxSnapshot(arg0: string): Promise<InboxSnapshotView>;
+  InspectTopicRemoval(arg0: TopicRemovalTarget): Promise<TopicRemovalInspection>;
   InspectWorktreeMerge(arg0: string): Promise<MergeInspection>;
   InstallMCPServer(arg0: MCPServerInput): Promise<MCPInstallResult>;
   InstallPlugin(arg0: string, arg1: PluginInstallOptions): Promise<string>;
@@ -6053,6 +6191,7 @@ export interface GeneratedDesktopCommands {
   ReleaseAttachmentTarget(arg0: string): Promise<void>;
   ReleaseDraftImageForTab(arg0: string, arg1: string): Promise<void>;
   ReleaseDraftImageForTarget(arg0: string, arg1: string): Promise<void>;
+  ReleaseReadSnapshot(arg0: string): Promise<void>;
   ReloadCommands(): Promise<void>;
   ReloadRuntime(arg0: string): Promise<void>;
   ReloadSettings(): Promise<void>;
@@ -6069,6 +6208,7 @@ export interface GeneratedDesktopCommands {
   RemoteServerLogs(arg0: string, arg1: string, arg2: number): Promise<string>;
   RemoteServerStatus(arg0: string, arg1: string): Promise<RemoteServerView>;
   RemoteSessionHistoryContentForTab(arg0: string, arg1: Ref, arg2: number): Promise<SessionHistoryContentChunk>;
+  RemoteSessionHistoryOutlineForTab(arg0: string, arg1: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
   RemoteSessionHistoryPageForTab(arg0: string, arg1: string, arg2: number): Promise<MessageHistoryPage>;
   RemoteSessionHistoryWindowForTab(arg0: string, arg1: HistoryWindowRequest): Promise<HistoryWindowPage>;
   RemoteSessionMessageFieldForTab(arg0: string, arg1: string, arg2: number, arg3: string, arg4: number, arg5: number): Promise<MessageFieldPage>;
@@ -6093,6 +6233,7 @@ export interface GeneratedDesktopCommands {
   RemoveRemoteHost(arg0: string): Promise<void>;
   RemoveRemoteProject(arg0: string, arg1: string): Promise<void>;
   RemoveSkillPath(arg0: string): Promise<void>;
+  RemoveTopic(arg0: TopicRemovalRequest): Promise<TopicRemovalResult>;
   RemoveWorkspace(arg0: string): Promise<void>;
   RenameCanonicalSession(arg0: SessionRef, arg1: string): Promise<void>;
   RenameProject(arg0: string, arg1: string): Promise<void>;
@@ -6223,6 +6364,7 @@ export interface GeneratedDesktopCommands {
   SearchSessionHistoryForTarget(arg0: SessionSelector, arg1: string, arg2: string, arg3: number): Promise<SearchHistoryPage>;
   SessionHistoryContentForTab(arg0: string, arg1: Ref, arg2: number): Promise<SessionHistoryContentChunk>;
   SessionHistoryContentForTarget(arg0: SessionSelector, arg1: Ref, arg2: number): Promise<SessionHistoryContentChunk>;
+  SessionHistoryOutlineForTab(arg0: string, arg1: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
   SessionHistoryPageForTab(arg0: string, arg1: string, arg2: number): Promise<MessageHistoryPage>;
   SessionHistoryPageForTarget(arg0: SessionSelector, arg1: string, arg2: number): Promise<MessageHistoryPage>;
   SessionHistoryWindowForTab(arg0: string, arg1: HistoryWindowRequest): Promise<HistoryWindowPage>;

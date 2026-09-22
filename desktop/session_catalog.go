@@ -93,6 +93,10 @@ type ProjectTopicPageRequest struct {
 	groupSelected    *desktopGroup
 	groupAll         []desktopGroup
 	pinnedOnly       bool
+	readContext      context.Context
+	metadataSnapshot *[]ProjectNode
+	readAllSources   bool
+	readAvailability *catalogWorkspaceAvailability
 }
 
 type ProjectTopicKey struct {
@@ -108,6 +112,8 @@ type ProjectTopicKey struct {
 }
 
 type ProjectTopicPage struct {
+	SnapshotID         string        `json:"snapshotId,omitempty"`
+	SnapshotExpiresAt  int64         `json:"snapshotExpiresAt,omitempty"`
 	Items              []ProjectNode `json:"items"`
 	NextCursor         string        `json:"nextCursor,omitempty"`
 	Revision           uint64        `json:"revision"`

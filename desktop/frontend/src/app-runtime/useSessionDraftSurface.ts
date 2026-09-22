@@ -75,6 +75,7 @@ export type SessionDraftSurface = {
   editVersion: number;
   pendingTasks: number;
   preparingSubmission: boolean;
+  discarding?: boolean;
   saveState: DraftSaveState;
   error?: string;
   taskError?: string;
@@ -153,6 +154,7 @@ function projectEntry(entry: DraftEntry): SessionDraftSurface {
     editVersion: entry.editVersion,
     pendingTasks: entry.pendingTasks.size,
     preparingSubmission: entry.preparingSubmission || Boolean(entry.discarding),
+    discarding: Boolean(entry.discarding),
     saveState: saveState(entry),
     error: entry.error,
     taskError: entry.taskError,
@@ -944,6 +946,7 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     const intent = expectedIntent ?? entry.visibleIntent;
     if (entry.generation !== generation || (expectedVersion != null && entry.editVersion !== expectedVersion)
       || (expectedRevision != null && (entry.conflict?.revision ?? entry.draft.revision) !== expectedRevision)) throw new Error("The draft changed. Confirm discarding its current contents again.");
+    if (entry.discarding) return;
     if (entry.preparingSubmission || draftSubmissionLocksEditing(entry.operation)) throw new Error("Cancel the submission before discarding this draft.");
     entry.discarding = true;
     publish(id);
@@ -965,7 +968,6 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
     await refreshSummaries();
     onChanged();
   }, [intentCurrent, onChanged, publish, refreshSummaries, updateContentFor]);
-
   const confirmDiscard = useCallback(async (labels: { title: string; message: string; detail: string; confirmLabel: string; cancelLabel: string }) => {
     const id = visibleDraftIdRef.current;
     const entry = id ? entriesRef.current.get(id) : undefined;

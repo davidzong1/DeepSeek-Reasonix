@@ -45,7 +45,7 @@ workspace registry 的 `Organization` 是组织顺序的权威，保存 revision
 
 - 目录与 runtime 使用同一稳定身份，runtime 只覆盖运行字段。空 runtime 不删除持久化行；置顶区和不完整页也按来源别名去重。
 - 归档成功 receipt 安装应用级生命周期屏障，包含已验证别名；目录、runtime、resident cache 共用。归档失败不安装成功屏障；刷新开始与组件重挂载都不清除屏障。只有更高生命周期的活动目录行能证明显式恢复，runtime revision 不能释放屏障。当前采取保守保留策略，直到恢复或应用退出；未实现基于两类 owner 同时确认缺席的自动回收。
-- 列表先身份归一化/去重，再筛选、排序和分页。游标绑定工作区、筛选、排序、物化元数据及 registry/organization/catalog 版本。运行中的标题和结果变化不一定增加 registry generation，因此列表生成前后两次核对 canonical 元数据。核对使用 metadata Stat，不同步重放冷历史。排序比较器不读配置文件。`stale_cursor` 清空对应分页并从第一页重读。
+- 列表先归一化/去重、筛选和排序，再冻结读取结果。成员、生命周期、展示和分组来自同一份 registry 投影；canonical 元数据只观察一次。续页绑定冻结结果、查询和序号，标题/结果/分组写入不会使其失效。相关生命周期或源变化、过期和回收返回 `stale_cursor`；前端最多整窗重建一次，失败保留旧显示，后台事件合并而不反复取消正在读取的请求。旧历史搜索、资源预算与验收要求见[读取快照实施说明](READ_SNAPSHOT_PAGINATION.zh-CN.md)。
 - 未读 v3 用一个 localStorage 对象原子保存指标、基线、记录版本及核验/修复证据。正常读取只增加同指标基线；只有导入且尚未核验的 result 记录，才能凭完整、正值的 owner 观察降低一次。捕获版本与实际读取下限拒绝迟到修复。来源时间戳不转换为结果序号；跨窗口合并保留较新的实际读取。核验去重且最多并发两项；冷元数据未完成时延后修复。
 
 ## 七项缺陷验收对应
@@ -56,7 +56,7 @@ workspace registry 的 `Organization` 是组织顺序的权威，保存 revision
 | 归档后迟到 runtime 复活 B | 应用级身份/生命周期屏障。`session-lifecycle-fences.test.ts`、`project-tree-archive-race.test.ts`、`independent-session-boundaries.test.ts` | 浏览器旧目录/runtime + 重挂载；原生归档重启、恢复再重启 |
 | 旧分支共用选中/未读 | 来源身份和不同计量类型的未读记录。`independent-session-boundaries.test.ts`、`session-read-activity.test.ts` | 浏览器 B10→20 独立未读，读 A 不清 B、读 B 清除；原生 A/B/A。具体旧来源覆盖属于机制测试 |
 | 接管回退分组/重复行 | journal 原子替换别名/分组/顺序；首屏及不完整页按别名合并。`TestOrganizationSourceJournalCommitPreservesUngroupedPlacement`、`TestIndependentLegacyHeadsAdoptOneWithoutHidingSibling`、`independent-session-boundaries.test.ts` | 浏览器 B 移出后重挂载仍未分组；实际多 head 接管由 Go 夹具验证 |
-| 排序后旧游标仍有效 | 统一版本分页、元数据复核及 stale 重置。`project_tree_organization_test.go`、`project_topic_group_filter_test.go`、`TestWorkspaceMetadataSnapshotRejectsChangeDuringMaterialization` | 浏览器发出 old:5 后收到 stale_cursor，下一次从空游标开始，重排后七行无遗漏和重复 |
+| 写入或过期打断分页 | 绑定快照的统一分页及 stale 重置，另验证持续写入时列表可读。`project_tree_organization_test.go`、`project_topic_group_filter_test.go`、`session_topic_snapshot_test.go` | 浏览器发出 old:5 后收到 stale_cursor，下一次从空游标开始，重排后七行无遗漏和重复 |
 | 未读修复降低合法基线 | owner 核验、一次性导入修复、记录 CAS/read floor、跨窗口合并。`session-read-activity.test.ts`、`session_activity_baseline_test.go` | 浏览器 baseline20 在 ready10/20 + 重挂载后仍为20；机制测试另覆盖污染100/10和修复期间读取 |
 | 分叉未排在父后 | registry 权威顺序及可恢复发布。`TestOrganizationForkAttachmentInheritsGroupAndFollowsParent`、`TestOrganizationForkPreservesActivitySortWithoutEnablingManualOrder`、`TestIndependentForkResumesPublicationWithSameOperationWithoutResettingChoices` | 原生真实分叉并继续独立对话；中断/重启/顺序由确定性 Go 测试验证 |
 

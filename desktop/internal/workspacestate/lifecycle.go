@@ -268,6 +268,9 @@ func (s *Store) CommitOperation(ctx context.Context, id string) error {
 		if op, ok := state.PendingOperations[id]; ok && op.Kind == "archive-import" {
 			return ErrMutationConflict
 		}
+		if err := validateTopicRemovalArchive(*state, state.PendingOperations[id]); err != nil {
+			return err
+		}
 		return commitOperation(state, id, map[string]bool{})
 	})
 }

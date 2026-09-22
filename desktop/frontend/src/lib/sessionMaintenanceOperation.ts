@@ -1,7 +1,19 @@
 import type { HistoryMessage, WireSessionOperation } from "./types";
 import type { Item } from "./useController";
+import type { StructuredInvocationSubmit } from "./invocationDisplay";
 
 export type CompactionItem = Extract<Item, { kind: "compaction" }>;
+
+/** Match the controller's management route without treating other slash inputs as commands. */
+export function isCompactCommand(input: string): boolean {
+  const trimmed = input.trim();
+  return trimmed === "/compact" || trimmed.startsWith("/compact ");
+}
+
+/** Structured invocations and initial goals retain their own admission contracts. */
+export function isCompactSubmission(input: string, structured?: StructuredInvocationSubmit, initialGoal?: object): boolean {
+  return !structured && !initialGoal && isCompactCommand(input);
+}
 
 const terminalStatuses = new Set([
   "completed",

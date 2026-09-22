@@ -184,7 +184,7 @@ func TestEnsureBlankTabStoresCreatedAt(t *testing.T) {
 		t.Fatalf("createdAt = %d, want between %d and %d", createdAt, before, after)
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want Global with one topic", nodes)
 	}

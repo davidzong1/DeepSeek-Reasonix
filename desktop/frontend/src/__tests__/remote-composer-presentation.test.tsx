@@ -52,8 +52,12 @@ try {
   const button = document.querySelector<HTMLButtonElement>(".composer__btn--send")!;
   assert.equal(button.disabled, false);
   await act(async () => button.click());
-  assert.deepEqual(calls, ["steer:remote-A:remote guidance"], "running remote input uses the remote steer port, never conversational submit");
+  assert.deepEqual(calls, [], "an unsupported remote queue never falls through to conversational submit or steer");
+  assert.equal(document.querySelector<HTMLTextAreaElement>("#composer-input")!.value, "remote guidance", "unsupported queue keeps the draft");
+  const guideCurrent = document.querySelector<HTMLButtonElement>(".composer__queue-steer")!;
+  await act(async () => guideCurrent.click());
+  assert.deepEqual(calls, ["steer:remote-A:remote guidance"], "Guide current turn uses the remote steer port, never conversational submit");
   assert.equal(localWrites, 0);
   assert.equal(document.querySelector<HTMLTextAreaElement>("#composer-input")!.value, "");
-  console.log("remote Composer: real file control, native drop boundary and running guidance preserve source routing");
+  console.log("remote Composer: real file control, native drop boundary, unsupported queue and explicit current-turn guidance preserve source routing");
 } finally { await act(async () => root.unmount()); dom.window.close(); }

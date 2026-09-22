@@ -117,7 +117,7 @@ func TestCompatibilityProjectTreeDoesNotMigrateLegacySession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = NewApp().ListProjectTree()
+	_ = mustListProjectTree(t, NewApp())
 	if _, err := os.Stat(legacyPath + ".meta"); !os.IsNotExist(err) {
 		t.Fatalf("ListProjectTree migrated legacy session: %v", err)
 	}

@@ -1,4 +1,5 @@
 import { reduceCompactionEvent, reduceMaintenanceRuntimeSnapshot, reconcileMaintenanceState } from "./sessionMaintenanceReducer";
+import { isCompactSubmission } from "./sessionMaintenanceOperation";
 import { isShellToolName } from "./shellToolIdentity";
 // useController is the frontend's state machine over the agent event stream. It keeps
 // per-tab output, tool state, and approvals while the user switches tabs; components
@@ -85,6 +86,7 @@ import { activeTabHydrationPlan, canAdoptUnboundLiveSurface, hasCachedLiveTurn, 
 import { useSessionCatalogActions } from "./useSessionCatalogActions";
 import { hydrateIdentityCurrent, sessionIdentityFields, sessionIdentityStableKey, type SessionHydrationOptions } from "./sessionIdentity";
 import { loadHistoryWindow } from "./historyWindowController";
+import { useHistoryTurnNavigation } from "./useHistoryTurnNavigation";
 import { reduceHistoryWindowState } from "./historyWindowState";
 import { withRemoteProviderUnreachable, withRemoteTurnInterrupted } from "./remoteTurnState";
 import type { NavigationResult, SurfaceDataCommit, SurfaceDataOutcome } from "./navigationSurfaceTransition";
@@ -828,7 +830,8 @@ export type Action =
   | { type: "user"; text: string; submitText?: string; seq: number; submissionId: string; deliveryRecovery?: boolean }
   | { type: "unsend" }
   | { type: "send_confirmed"; submissionId: string }
-  | { type: "management_confirmed"; submissionId: string }
+  | { type: "management_confirmed"; submissionId: string; receipt?: import("./turnSubmit").ManagementReceipt }
+  | { type: "management_requested" }
   | { type: "turn_admitted"; turnId: string; submissionId: string }
   | { type: "turn_submit_rejected"; submissionId: string; error: string }
   | { type: "turn_submit_unknown"; submissionId: string; error: string }
@@ -1974,7 +1977,8 @@ function reduceState(s: State, a: Action): State {
       });
     }
     case "send_confirmed": return confirmPendingUser(s, a.submissionId);
-    case "management_confirmed": return reduceManagementConfirmation(s, a.submissionId, promptEventClock());
+    case "management_requested": return { ...s, seq: s.seq + 1 };
+    case "management_confirmed": return reduceManagementConfirmation(s, a.submissionId, promptEventClock(), a.receipt);
     case "turn_admitted":
       return s.localSubmissions[a.submissionId] && a.turnId
         ? updateLocalSubmission(s.pendingSubmissionId === a.submissionId ? { ...s, activeTurnId: a.turnId } : s, a.submissionId,
@@ -2945,10 +2949,7 @@ export function useController() {
     }
   }, [bumpSessionLoadSeq, dispatchTo, ensureTranscriptSubscription, sessionLoadCurrent]);
 
-  // On-demand full content for a ref-replaced history field (entries carrying
-  // refs[] ship a ≤4KiB preview inline). Resolves through the transcript
-  // store, which patches the projected items by stable id on completion. The
-  // rendering layer calls this when a truncated entry scrolls into view.
+  // Resolve a visible truncated field through the store's stable message id.
   const requestHistoryFullContent = useCallback(async (entryId: string, field: string): Promise<string | undefined> => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return undefined;
@@ -2956,6 +2957,7 @@ export function useController() {
     return getTranscriptStore().requestFullContent(tabId, entryId, field);
   }, [ensureTranscriptSubscription]);
 
+  const navigateToTurn = useHistoryTurnNavigation(statesRef, historyWindowSeq, dispatchTo);
   const loadOlderHistory = useCallback(async (tabId?: string, targetTurn?: number, trigger: HistoryLoadType = "retry"): Promise<HistoryLoadOutcome> => {
     const targetTabId = tabId || activeTabIdRef.current;
     if (!targetTabId) return "empty";
@@ -2975,7 +2977,7 @@ export function useController() {
     });
   }, [dispatchTo, ensureTranscriptSubscription, startTranscriptFollow]);
 
-  const loadNewerHistory = useCallback(async (tabId?: string, latest = false): Promise<HistoryLoadOutcome> => {
+  const loadNewerHistory = useCallback(async (tabId?: string, latest = false, readerCurrent?: () => boolean): Promise<HistoryLoadOutcome> => {
     const targetTabId = tabId || activeTabIdRef.current;
     if (!targetTabId) return "empty";
     const state = statesRef.current.get(targetTabId);
@@ -2985,7 +2987,7 @@ export function useController() {
     ensureTranscriptSubscription(targetTabId);
     return loadHistoryWindow({
       tabId: targetTabId, direction: latest ? "latest" : "newer", trigger: latest ? "return-latest" : "viewport-user",
-      state, requestSeq,
+      state, requestSeq, readerCurrent,
       isCurrent: (seq) => historyWindowSeq.current.get(targetTabId) === seq,
       currentState: () => statesRef.current.get(targetTabId),
       dispatch: (action) => dispatchTo(targetTabId, action),
@@ -3616,7 +3618,13 @@ export function useController() {
     const original = originalText?.trim() ?? "";
     bumpCancelHydrateSeq(tabId);
     if (currentState.hydrateReason === "rewind") dispatchTo(tabId, { type: "hydrate_done" });
-    dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq, submissionId });
+    // A compact request never starts a conversational turn. Runtime snapshots
+    // own its busy/Stop state; a late receipt must not mutate chat lifecycle.
+    if (isCompactSubmission(submit, structured, initialGoal)) {
+      dispatchTo(tabId, { type: "management_requested" });
+    } else {
+      dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq, submissionId });
+    }
     invalidateCache();
     try {
       const [outcome, detail] = await import("./turnSubmit").then(module => module.submitTurn(app, tabId, submissionId, display, submit, original, structured, initialGoal));
@@ -3628,7 +3636,7 @@ export function useController() {
         return;
       }
       if (outcome === 2) {
-        dispatchTo(tabId, { type: "management_confirmed", submissionId });
+        dispatchTo(tabId, { type: "management_confirmed", submissionId, receipt: detail });
         return;
       }
       if (outcome === 3) dispatchTo(tabId, { type: "turn_admitted", turnId: detail as string, submissionId });
@@ -4872,7 +4880,7 @@ export function useController() {
     dismissExtensionForm, drainExtensionNotifications,
     setCollaborationMode, setCollaborationModeForTab, setToolApprovalMode, setToolApprovalModeForTab, setQualityFloor, setComposerProfileForTab, setGoal, setGoalForTab, editGoalForTab, clearGoal, clearGoalForTab, resumeGoal, resumeGoalForTab, pauseGoal, pauseGoalForTab,
     newSession, clearSession, listSessions, listTrashedSessions, retrySessionHistory, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
-    loadOlderHistory, loadNewerHistory,
+    loadOlderHistory, loadNewerHistory, navigateToTurn,
     requestHistoryFullContent,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, rewindForTab, rewindForTabDetailed, undoRewindForTab, forkTurnForTab, setModel, setModelForTab, setEffort, setEffortForTab, cancelJob,
     fetchMemory, remember, forget, saveDoc,

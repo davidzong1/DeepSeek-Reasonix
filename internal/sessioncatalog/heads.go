@@ -100,7 +100,7 @@ func (c *Catalog) ListHeads(ctx context.Context, path string) ([]HeadRecord, err
 	if c == nil || path == "" {
 		return out, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT head_id,parent_head_id,kind,name,leaf_message_id,writer_id,last_activity_at,
+	rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT head_id,parent_head_id,kind,name,leaf_message_id,writer_id,last_activity_at,
 		turns,preview,retired,selected FROM catalog_heads WHERE path_key=? ORDER BY rowid`, c.pathKey(path))
 	if err != nil {
 		return out, fmt.Errorf("list session heads: %w", err)

@@ -61,7 +61,7 @@ func TestCreateTopicPreservesManualDefaultTitle(t *testing.T) {
 	if got := loadTopicTitleSource("", manual.ID); got != topicTitleSourceManual {
 		t.Fatalf("manual title source = %q, want %q", got, topicTitleSourceManual)
 	}
-	tree := app.ListProjectTree()
+	tree := mustListProjectTree(t, app)
 	if len(tree) == 0 || len(tree[0].Children) == 0 || tree[0].Children[0].Label != defaultTopicTitleEn {
 		t.Fatalf("manual project-tree title was localized: %+v", tree)
 	}
@@ -79,7 +79,7 @@ func TestCreateTopicPreservesManualDefaultTitle(t *testing.T) {
 	if got := loadTopicTitleSource("", automatic.ID); got != topicTitleSourceManual {
 		t.Fatalf("renamed title source = %q, want %q", got, topicTitleSourceManual)
 	}
-	tree = app.ListProjectTree()
+	tree = mustListProjectTree(t, app)
 	if len(tree) == 0 || len(tree[0].Children) == 0 || tree[0].Children[0].Label != defaultTopicTitleEn {
 		t.Fatalf("renamed project-tree title was localized: %+v", tree)
 	}

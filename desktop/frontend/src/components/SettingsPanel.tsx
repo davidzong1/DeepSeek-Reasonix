@@ -5177,7 +5177,7 @@ export function AddProviderPanel({
         id: `official:${choice.kind}`,
         catalog: { brandId: "deepseek", brandLabel: "DeepSeek", region: "global", product: "api", format: "anthropic", baseUrl: "https://api.deepseek.com/anthropic" },
         keyEnv: provider?.apiKeyEnv || choice.keyEnv, keySet: Boolean(provider?.keySet),
-        models: provider?.models ?? ["deepseek-v4-flash", "deepseek-v4-pro"],
+        models: providerPresets.find(p => p.id === "deepseek-chat")?.models ?? ["deepseek-flash", "deepseek-v4-pro"],
         canAdd: true, status: "available",
         statusLabel: "",
         actionLabel: t("settings.addProvider.confirm"),

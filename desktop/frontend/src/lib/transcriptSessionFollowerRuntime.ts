@@ -9,6 +9,7 @@ import type { TranscriptSnapshot } from "./transcriptProtocol";
 import type { Message, TranscriptFollowResponse } from "../generated/desktopContract.generated";
 import { canonicalUserConfirmations } from "./localSubmissionState";
 import { snapshotRecords } from "./transcriptSnapshotState";
+import { signalOutline } from "./transcriptOutlineSignals";
 
 export class TranscriptSessionFollowerRuntime {
   private readonly client: TranscriptFollowClient;
@@ -51,6 +52,7 @@ export class TranscriptSessionFollowerRuntime {
     await this.client.start({
       install: response => this.install(response),
       changes: changes => {
+        if (changes.some(change => change.records?.some(record => record.role === "user" || record.role === "assistant") || change.durableSeq > this.coverage)) signalOutline(this.tabId);
         this.observeSubmissions();
         for (const change of changes) {
           if (change.records?.length) {
@@ -206,6 +208,7 @@ export class TranscriptSessionFollowerRuntime {
     };
     this.dispatch({ type: "transcript_v2_snapshot", snapshot: combined, projection: prepared.projection, remote: this.remote });
     prepared.commit();
+    signalOutline(this.tabId);
     this.dispatch({ type: "transcript_runtime", runtime: snapshot.runtime });
     this.coverage = snapshot.coveredThroughSeq;
     noteSessionObservation(this.path, { action: "snapshot_installed", tabId: this.tabId, generation: this.generation, sequence: this.coverage, status: snapshot.runtime.status });

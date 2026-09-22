@@ -8,6 +8,15 @@ branch.
 
 ### Added
 
+- **Editable message queue (Desktop):** full-text editing in the original queue row,
+  pointer and keyboard reordering, move-to-top/bottom actions, and a pause
+  control. Saves preserve message identity, order and attachments; conflicting
+  or unconfirmed saves retain the user's draft. Remote editing requires the
+  additive `inbox-mutations-v1` capability. Editing temporarily hides the main
+  composer; saving or cancelling restores its draft, attachments and focus.
+  Switching sessions protects newer edits from delayed replies; loading the
+  latest version can recover after the active session selection changes.
+
 - **Live file observations:** structured file tools now protect mutations with
   a host-owned current-version observation. Any successful text window is
   sufficient, successful writes refresh the version, and external changes
@@ -27,6 +36,10 @@ branch.
   capabilities never cross-read.
 
 ### Changed
+
+- Sending while a task is running now queues a follow-up by default. Use
+  **Guide current turn** for explicit mid-turn guidance. Stopping the current
+  task retains pending messages; the queue has separate pause/delete controls.
 
 - **Persistent bash PTY:** ordinary foreground `bash` calls in a session now
   share one PTY, so `cd`, exported variables, and shell functions survive

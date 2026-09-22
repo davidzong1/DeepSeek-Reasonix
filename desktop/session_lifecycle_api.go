@@ -205,6 +205,7 @@ func (a *App) ListTrashEntries(query, cursor string, limit int) (TrashEntryPage,
 		}
 	}
 	rows = append(rows, legacyCleanupTopicTrashEntries(cleanupState, state, query)...)
+	rows = append(rows, topicRemovalTrashEntries(state, query)...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].ArchivedAt != rows[j].ArchivedAt {
 			return rows[i].ArchivedAt > rows[j].ArchivedAt
@@ -244,7 +245,7 @@ func validateLifecycleRequest(req SessionLifecycleRequest) error {
 			if err := validateLocalSessionRef(*target.Ref); err != nil {
 				return err
 			}
-		} else if req.Action != "restore" && !(req.Action == "purge" && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:")) {
+		} else if req.Action != "restore" && !(req.Action == "purge" && (strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:") || strings.HasPrefix(target.RecoveryEntryID, "topic-removal:"))) {
 			return errors.New("historical recovery entries can only be restored")
 		}
 		body, _ := json.Marshal(target)
@@ -314,6 +315,10 @@ func (a *App) applyLifecycleTarget(req SessionLifecycleRequest, key string, inde
 	case "archive":
 		opErr = archiveErr
 	case "purge":
+		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "topic-removal:") {
+			opErr = a.purgeRemovedTopic(strings.TrimPrefix(target.RecoveryEntryID, "topic-removal:"), target.WorkspaceID)
+			break
+		}
 		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:") {
 			opErr = a.purgeLegacyCleanupTopic(strings.TrimPrefix(target.RecoveryEntryID, "legacy-cleanup:"), target.WorkspaceID)
 		} else {
@@ -322,6 +327,11 @@ func (a *App) applyLifecycleTarget(req SessionLifecycleRequest, key string, inde
 			release()
 		}
 	case "restore":
+		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "topic-removal:") {
+			opErr = a.restoreRemovedTopic(strings.TrimPrefix(target.RecoveryEntryID, "topic-removal:"), target.WorkspaceID)
+			item.WorkspaceID = target.WorkspaceID
+			break
+		}
 		if target.Ref == nil && strings.HasPrefix(target.RecoveryEntryID, "legacy-cleanup:") {
 			opErr = a.restoreLegacyCleanupTopic(strings.TrimPrefix(target.RecoveryEntryID, "legacy-cleanup:"), target.WorkspaceID)
 			item.WorkspaceID = target.WorkspaceID

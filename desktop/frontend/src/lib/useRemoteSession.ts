@@ -14,6 +14,7 @@ import { createTurnSubmissionId, initialState, reducer, type ControllerLiveStore
 import { isUnknownSubmissionError } from "./localSubmissionState";
 import { TranscriptSessionFollower } from "./transcriptSessionFollower";
 import { getTranscriptStore } from "./transcriptStore";
+import type { NavigateToTurn } from "./historyTurnNavigation";
 import { historyReplaceAction } from "./sessionTranscriptMode";
 import { isAuthoritativeRemoteStatus, remoteCheckpoints, remoteComposerState, remoteGoalRuntime, remoteGoalView } from "./remoteStatus";
 import type { CollaborationMode, CommandInfo, EffortInfo, GoalLifecycleView, GoalRuntime, GoalStatus, QualityFloor, RemoteTabStateValue, TabMeta, ToolApprovalMode, WireEvent } from "./types";
@@ -36,7 +37,8 @@ export interface RemoteSessionApi {
   hydrated: boolean;
   syncMode?: "v2";
   loadOlderHistory?: (targetTurn?: number, trigger?: HistoryLoadTrigger) => Promise<HistoryLoadOutcome>;
-  loadNewerHistory?: (latest?: boolean) => Promise<HistoryLoadOutcome>;
+  loadNewerHistory?: (latest?: boolean, current?: () => boolean) => Promise<HistoryLoadOutcome>;
+  navigateToTurn?: NavigateToTurn;
   running: boolean;
   /** The serve's label for the active model, for the composer capsule. */
   modelLabel: string;
@@ -138,7 +140,8 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   const [promptError, setPromptError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const olderRef = useRef<((trigger?: HistoryLoadTrigger) => Promise<HistoryLoadOutcome>) | undefined>(undefined);
-  const newerRef = useRef<(() => Promise<HistoryLoadOutcome>) | undefined>(undefined);
+  const navigateRef = useRef<NavigateToTurn | undefined>(undefined);
+  const newerRef = useRef<((latest?: boolean, current?: () => boolean) => Promise<HistoryLoadOutcome>) | undefined>(undefined);
   const transcriptRef = useRef(transcript);
   const submitBindingRef = useRef<object>({});
   const setTranscript = useCallback((update: State | ((state: State) => State)) => {
@@ -357,6 +360,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const offContent = getTranscriptStore().subscribe(tabId, change => change.projection
       ? dispatch({ type: "transcript_records", projection: change.projection, confirmedUsers: [] })
       : dispatch({ type: "history_items_patch", patches: change.patches, expected: change.expected }));
+    navigateRef.current = async (target, current) => (await import("./historyTurnNavigation")).navigateHistoryTurn(tabId, transcriptRef.current, () => cancelled ? undefined : transcriptRef.current, dispatch, target, () => !cancelled && current());
     olderRef.current = async () => {
       if (transcriptRef.current.historyOlderLoading) return "empty";
       dispatch({ type: "history_older_start" });
@@ -375,10 +379,16 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       }
     };
     hydrateRef.current = { tabId, run: hydrate };
-    newerRef.current = async () => {
+    newerRef.current = async (latest = false, current = () => true) => {
       if (transcriptRef.current.historyNewerLoading) return "empty";
       dispatch({ type: "history_newer_start" });
       try {
+        if (latest) {
+          const projection = await getTranscriptStore().loadLatest(tabId, sessionPath ?? "", { current: () => !cancelled && current() });
+          if (!projection || cancelled) { dispatch({ type: "history_newer_error", error: "" }); return "empty"; }
+          dispatch({ type: "transcript_records", projection: { ...projection, removeIds: [] }, confirmedUsers: [] });
+          return "loaded";
+        }
         const page = await getTranscriptStore().loadNewer(tabId, sessionPath ?? "");
         if (!page || cancelled) { dispatch({ type: "history_newer_error", error: "" }); return "empty"; }
         if (page.kind === "stale") { await hydrate(); return "loaded"; }
@@ -435,6 +445,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
       offMeta();
       offEvent();
       olderRef.current = undefined;
+      navigateRef.current = undefined;
       newerRef.current = undefined;
       hydrateRef.current = null;
       refreshStatusRef.current = null;
@@ -658,7 +669,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
   }, []);
 
   return {
-    state, error, transcript, liveStore, hydrated, syncMode: "v2", loadOlderHistory: (_targetTurn?: number, trigger?: HistoryLoadTrigger) => olderRef.current?.(trigger) ?? Promise.resolve("empty"), loadNewerHistory: () => newerRef.current?.() ?? Promise.resolve("empty"), running: transcript.running, modelLabel, commands,
+    state, error, transcript, liveStore, hydrated, syncMode: "v2", navigateToTurn: (target, current) => navigateRef.current?.(target, current) ?? Promise.resolve("cancelled"), loadOlderHistory: (_targetTurn?: number, trigger?: HistoryLoadTrigger) => olderRef.current?.(trigger) ?? Promise.resolve("empty"), loadNewerHistory: (latest = false, current) => newerRef.current?.(latest, current) ?? Promise.resolve("empty"), running: transcript.running, modelLabel, commands,
     composerProfile, goalRuntime, goalView, effort, surfaceGeneration, promptError, submit, runManagementCommand, compact, cancelTurn,
     approve, resolvePlanDecision, answer, clearExtensionForm, rewind, forkTurn, acknowledgeFork, setModel, setEffort, setQualityFloor, pauseGoal, resumeGoal, editGoal, steer, cancelJob,
     drainApprovals, retryHydration,

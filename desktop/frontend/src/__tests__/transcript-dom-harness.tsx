@@ -284,12 +284,13 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
     }
   };
 
-  // Each attempt costs one 30ms flush, so the default is a three-second budget,
-  // not eight tries. It returns the moment the condition holds, so a generous
-  // cap is free on the happy path and only makes a genuine failure slower —
-  // which beats failing a correct test on a loaded runner.
+  // Treat attempts as the same 30 ms wall-clock budget used by the real-clock
+  // harness. A deterministic flush only yields through setImmediate, so a
+  // fixed iteration count can expire in a few milliseconds while a lazy Vite
+  // import is still doing filesystem I/O on a loaded CI runner.
   const waitFor = async (condition: () => boolean, description: string, attempts = 100) => {
-    for (let i = 0; i < attempts; i += 1) {
+    const deadline = performance.now() + attempts * 30;
+    while (performance.now() < deadline) {
       if (condition()) return;
       await flush();
     }

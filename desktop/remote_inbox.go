@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/servecontract"
 	"reasonix/internal/sessioninbox"
 )
 
@@ -44,7 +45,9 @@ func (a *App) remoteInboxSnapshot(tabID string) (InboxSnapshotView, error) {
 	if current != tab || current.gen != gen || current.selectionRevision != selection || current.client != client || current.base != base || current.state != "ready" || current.routing.currentPath != path || current.routing.rehydratingPath != "" {
 		return InboxSnapshotView{}, fmt.Errorf("remote inbox route changed during read")
 	}
-	return inboxSnapshotView(snap), nil
+	view := inboxSnapshotView(snap)
+	view.MutationsSupported = current.capabilities[servecontract.InboxMutationsV1]
+	return view, nil
 }
 
 // enqueueRemoteFollowup preserves the route, rich input and caller's stable

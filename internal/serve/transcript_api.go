@@ -32,6 +32,7 @@ func (s *Server) registerTranscriptRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /session-history/locate", s.sessionHistoryLocate)
 	mux.HandleFunc("GET /session-history/content", s.sessionHistoryContent)
 	mux.HandleFunc("GET /session-history/window", s.sessionHistoryWindow)
+	mux.HandleFunc("GET /session-history/outline", s.sessionHistoryOutline)
 	mux.HandleFunc("GET /session-message-field", s.sessionMessageField)
 }
 
@@ -45,6 +46,15 @@ func (s *Server) sessionHistoryWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := session.HistoryWindowRequest{Anchor: r.URL.Query().Get("anchor"), MessageID: r.URL.Query().Get("messageId"), Cursor: r.URL.Query().Get("cursor"), Direction: r.URL.Query().Get("direction")}
+	req.Generation = r.URL.Query().Get("generation")
+	if raw := r.URL.Query().Get("snapshotSequence"); raw != "" {
+		var cut uint64
+		if _, err := fmt.Sscan(raw, &cut); err != nil {
+			http.Error(w, "invalid snapshot sequence", http.StatusBadRequest)
+			return
+		}
+		req.SnapshotSequence = &cut
+	}
 	if raw := r.URL.Query().Get("turn"); raw != "" {
 		if _, err := fmt.Sscan(raw, &req.Turn); err != nil {
 			http.Error(w, "invalid history window turn", http.StatusBadRequest)

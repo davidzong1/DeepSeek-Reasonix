@@ -231,7 +231,7 @@ func TestSetTopicPinnedOrdersProjectTopics(t *testing.T) {
 		t.Fatalf("set topic b title: %v", err)
 	}
 	app := NewApp()
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if got := []string{nodes[0].Children[0].TopicID, nodes[0].Children[1].TopicID}; got[0] != "topic_a" || got[1] != "topic_b" {
 		t.Fatalf("initial topic order = %v, want [topic_a topic_b]", got)
 	}
@@ -239,7 +239,7 @@ func TestSetTopicPinnedOrdersProjectTopics(t *testing.T) {
 	if err := app.SetTopicPinned("topic_b", true); err != nil {
 		t.Fatalf("pin topic: %v", err)
 	}
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if got := []string{nodes[0].Children[0].TopicID, nodes[0].Children[1].TopicID}; got[0] != "topic_b" || got[1] != "topic_a" {
 		t.Fatalf("pinned topic order = %v, want [topic_b topic_a]", got)
 	}
@@ -250,7 +250,7 @@ func TestSetTopicPinnedOrdersProjectTopics(t *testing.T) {
 	if err := app.SetTopicPinned("topic_b", false); err != nil {
 		t.Fatalf("unpin topic: %v", err)
 	}
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if nodes[0].Children[0].Pinned || nodes[0].Children[1].Pinned {
 		t.Fatalf("unpin should clear pinned flags: %#v", nodes[0].Children)
 	}
@@ -279,7 +279,7 @@ func TestSetProjectPinnedOrdersProjectFolders(t *testing.T) {
 	if err := app.SetProjectPinned(second, true); err != nil {
 		t.Fatalf("pin project: %v", err)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if got := []string{nodes[0].Root, nodes[1].Root, nodes[2].Root}; got[0] != second || got[1] != third || got[2] != first {
 		t.Fatalf("pinned project order = %v, want %v", got, []string{second, third, first})
 	}
@@ -290,7 +290,7 @@ func TestSetProjectPinnedOrdersProjectFolders(t *testing.T) {
 	if err := app.SetProjectPinned(second, false); err != nil {
 		t.Fatalf("unpin project: %v", err)
 	}
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if got := []string{nodes[0].Root, nodes[1].Root, nodes[2].Root}; got[0] != third || got[1] != first || got[2] != second {
 		t.Fatalf("unpinned project order = %v, want %v", got, []string{third, first, second})
 	}
@@ -611,7 +611,7 @@ func TestRenameProjectUpdatesSidebarTitle(t *testing.T) {
 		t.Fatalf("rename project: %v", err)
 	}
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 {
 		t.Fatalf("project tree len = %d, want 1", len(nodes))
 	}
@@ -622,7 +622,7 @@ func TestRenameProjectUpdatesSidebarTitle(t *testing.T) {
 	if err := NewApp().RenameProject(projectRoot, ""); err != nil {
 		t.Fatalf("clear project title: %v", err)
 	}
-	nodes = NewApp().ListProjectTree()
+	nodes = mustListProjectTree(t, NewApp())
 	if got, want := nodes[0].Label, filepath.Base(projectRoot); got != want {
 		t.Fatalf("cleared project label = %q, want %q", got, want)
 	}
@@ -700,7 +700,7 @@ func TestLegacySessionsMigrateIntoGlobalTopics(t *testing.T) {
 		t.Fatalf("migrated meta = %+v", meta)
 	}
 
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if got := len(nodes[0].Children); got != 2 {
 		t.Fatalf("migration should be idempotent, global topics = %d", got)
 	}
@@ -996,7 +996,7 @@ func TestProjectTreeRepairsIndexedGlobalTopicsAfterMigrationMarker(t *testing.T)
 		t.Fatalf("repaired topics = %#v, want %q", repaired, topicID)
 	}
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	var global *ProjectNode
 	for i := range nodes {
 		if nodes[i].Kind == "global_folder" {
@@ -1211,7 +1211,7 @@ func TestTombstonedTitleOnlyTopicStaysHiddenInProjectTree(t *testing.T) {
 		t.Fatalf("seed tombstone: %v", err)
 	}
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	var global *ProjectNode
 	for i := range nodes {
 		if nodes[i].Kind == "global_folder" {
@@ -1305,7 +1305,7 @@ func TestTopicMigrationDefersEmptyLegacySession(t *testing.T) {
 		t.Fatalf("write empty session: %v", err)
 	}
 
-	NewApp().ListProjectTree()
+	mustListProjectTree(t, NewApp())
 	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); err == nil {
 		t.Fatal("an empty legacy session must defer marking, but the dir was marked done")
 	}
@@ -1336,7 +1336,7 @@ func TestV05LegacyEventSessionsImportIntoGlobalTopic(t *testing.T) {
 		t.Fatalf("migrated topics = %#v, want imported v0.5 topic %q", migratedTopics, wantTopicID)
 	}
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" {
 		t.Fatalf("project tree = %#v, want global folder", nodes)
 	}
@@ -1744,7 +1744,7 @@ func TestReorderProjectsPersistsSidebarAndWorkspaceOrder(t *testing.T) {
 		t.Fatalf("ReorderProjects: %v", err)
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 3 {
 		t.Fatalf("project tree len = %d, want 3: %+v", len(nodes), nodes)
 	}
@@ -1780,7 +1780,7 @@ func TestReorderProjectsPersistsGlobalSidebarOrder(t *testing.T) {
 		t.Fatalf("ReorderProjects with global: %v", err)
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 3 {
 		t.Fatalf("project tree len = %d, want 3: %+v", len(nodes), nodes)
 	}
@@ -1821,7 +1821,7 @@ func TestReorderProjectsRejectsInvalidOrder(t *testing.T) {
 		})
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if got := []string{nodes[0].Root, nodes[1].Root}; got[0] != first || got[1] != second {
 		t.Fatalf("project tree order changed after invalid reorder: %v", got)
 	}
@@ -1846,7 +1846,7 @@ func TestRemoveWorkspaceUsesSharedProjectRegistryForCurrentProject(t *testing.T)
 	if got := app.ListWorkspaces(); len(got) != 0 {
 		t.Fatalf("workspaces after remove = %+v, want empty", got)
 	}
-	if got := app.ListProjectTree(); len(got) != 1 || got[0].Kind != "global_folder" {
+	if got := mustListProjectTree(t, app); len(got) != 1 || got[0].Kind != "global_folder" {
 		t.Fatalf("project tree after remove = %+v, want only Global folder", got)
 	}
 }
@@ -1876,7 +1876,7 @@ func TestRestoredProjectTabUsesStoredTopicTitle(t *testing.T) {
 	if got := tabs[0].TopicTitle; got != "你是谁" {
 		t.Fatalf("tab title = %q, want 你是谁", got)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one project with one topic", nodes)
 	}
@@ -1910,7 +1910,7 @@ func TestUntitledProjectTopicUsesSameFallbackEverywhere(t *testing.T) {
 	if got := tabs[0].TopicTitle; got != defaultTopicTitle {
 		t.Fatalf("tab title = %q, want %q", got, defaultTopicTitle)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one project with one topic", nodes)
 	}
@@ -1941,7 +1941,7 @@ func TestCreateTopicDefaultsToAutoNewSessionTitle(t *testing.T) {
 	if got := loadTopicCreatedAt(projectRoot, topic.ID); got < before || got > after {
 		t.Fatalf("createdAt = %d, want between %d and %d", got, before, after)
 	}
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one project with one topic", nodes)
 	}
@@ -1961,7 +1961,7 @@ func TestListProjectTreeFallsBackToTopicIDCreatedAt(t *testing.T) {
 		t.Fatalf("prepend topic: %v", err)
 	}
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want Global with one topic", nodes)
 	}
@@ -1985,7 +1985,7 @@ func TestCreateTopicAppearsFirstInProjectTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second topic: %v", err)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
 		t.Fatalf("project tree = %#v, want one project with two topics", nodes)
 	}
@@ -2010,7 +2010,7 @@ func TestCreateGlobalTopicAppearsFirstInProjectTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second global topic: %v", err)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 2 {
 		t.Fatalf("project tree = %#v, want Global with two topics", nodes)
 	}
@@ -2025,7 +2025,7 @@ func TestCreateGlobalTopicAppearsFirstInProjectTree(t *testing.T) {
 func TestListProjectTreeShowsEmptyGlobalWhenNoProjects(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 {
 		t.Fatalf("project tree = %#v, want one Global folder", nodes)
 	}
@@ -2045,7 +2045,7 @@ func TestSwitchWorkspaceRegistersDefaultTopicInProjectTree(t *testing.T) {
 		t.Fatalf("SwitchWorkspace root = %q, want %q", got, projectRoot)
 	}
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 {
 		t.Fatalf("project tree len = %d, want 1: %+v", len(nodes), nodes)
 	}
@@ -2155,7 +2155,7 @@ func TestRenameCanonicalTopicSurvivesDeletedLegacyTitleIndex(t *testing.T) {
 	if !found {
 		t.Fatal("canonical topic title was not durably restored")
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topic.ID {
 		t.Fatalf("project tree should still contain topic, got %#v", nodes)
 	}
@@ -2193,7 +2193,7 @@ func TestRenameTopicRecreatesDeletedProjectTitleIndexFromSessionMeta(t *testing.
 	if got := loadTopicTitle(projectRoot, topicID); got != "恢复标题" {
 		t.Fatalf("restored topic title = %q, want 恢复标题", got)
 	}
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topicID {
 		t.Fatalf("project tree should contain restored topic, got %#v", nodes)
 	}
@@ -2614,7 +2614,7 @@ func TestRestoreSessionWithoutTopicMetadataFallsBackToGlobal(t *testing.T) {
 	if err := app.RestoreSession(trashPath); err != nil {
 		t.Fatalf("restore orphan session: %v", err)
 	}
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topicID {
 		t.Fatalf("restored orphan session should fall back to Global, got %#v", nodes)
 	}
@@ -3325,7 +3325,7 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 		t.Fatal("request initial project session catalog reconcile")
 	}
 	<-reconcileDone
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != firstTopicID {
 		t.Fatalf("first project CLI session should appear in project tree, got %#v; want topic %q", nodes, firstTopicID)
 	}
@@ -3339,7 +3339,7 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 		t.Fatal("request updated project session catalog reconcile")
 	}
 	<-reconcileDone
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 2 {
 		t.Fatalf("second project CLI session should trigger re-scan, got %#v", nodes)
 	}
@@ -3570,7 +3570,7 @@ func TestEnsureTopicIndexedConcurrentRunsHaveNoLostProjectUpdates(t *testing.T) 
 	close(start)
 	wg.Wait()
 
-	nodes := NewApp().ListProjectTree()
+	nodes := mustListProjectTree(t, NewApp())
 	if len(nodes) != 1 {
 		t.Fatalf("project tree len = %d, want 1: %#v", len(nodes), nodes)
 	}

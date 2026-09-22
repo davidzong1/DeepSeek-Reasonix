@@ -50,7 +50,7 @@ func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 	}
 	// "provider/model"
 	if prov, model, ok := strings.Cut(ref, "/"); ok {
-		if e, found := c.Provider(prov); found && e.HasModel(model) {
+		if e, found := c.Provider(prov); found && acceptsDeepSeekModelReference(e, model) {
 			cp := *e
 			cp.Model = model
 			cp.applyModelPrice()
@@ -68,7 +68,7 @@ func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 	}
 	// a bare model name → the provider that lists it
 	for i := range c.Providers {
-		if c.Providers[i].HasModel(ref) {
+		if acceptsDeepSeekModelReference(&c.Providers[i], ref) {
 			cp := c.Providers[i]
 			cp.Model = ref
 			cp.applyModelPrice()

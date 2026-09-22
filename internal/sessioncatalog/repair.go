@@ -141,7 +141,7 @@ func (c *Catalog) nextRepairDelay(ctx context.Context) time.Duration {
 		return time.Hour
 	}
 	var next sql.NullInt64
-	err := c.db.QueryRowContext(ctx, `SELECT MIN(repair_retry_at) FROM catalog_sessions
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT MIN(repair_retry_at) FROM catalog_sessions
 		WHERE turns_state='unknown' AND repair_state IN ('pending','deferred','active')`).Scan(&next)
 	if err != nil || !next.Valid {
 		return time.Hour
@@ -551,7 +551,7 @@ func (c *Catalog) preserveKnownSourceStates(ctx context.Context, directory strin
 	if !needsKnownState {
 		return records, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT path,preview,turns,turns_state,health,content_fingerprint
+	rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT path,preview,turns,turns_state,health,content_fingerprint
 		FROM catalog_sessions WHERE directory_key=? AND missing_since=0 AND turns_state<>'unknown'`, c.pathKey(directory))
 	if err != nil {
 		return nil, err

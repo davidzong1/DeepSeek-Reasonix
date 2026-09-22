@@ -4,6 +4,7 @@ import { useFileNavigationRuntime } from "../app-runtime/useFileNavigationRuntim
 import { useActiveRemoteRef } from "../app-runtime/useActiveRemoteRef";
 import { fileNavigationKey } from "../lib/fileNavigationOwner";
 import { useActivityBarStore } from "../store/activityBar";
+import { useToast } from "../lib/toast";
 import { ShellExpandProvider } from "../lib/shellExpand";
 import { RemoteNavigationContext } from "../lib/remoteNavigationCommands";
 import { UpdaterProvider } from "../lib/useUpdater";
@@ -97,6 +98,7 @@ export type AppRuntimeViewProps = {
  * beyond value memoization live here; ownership stays in the compositions.
  */
 export function AppRuntimeView(props: AppRuntimeViewProps) {
+  const { showToast } = useToast();
   const [dockNavigation] = useState(() => new DockNavigation());
   const fileNavigation = useFileNavigationRuntime();
   useLayoutEffect(() => dockNavigation.attach(), [dockNavigation]);
@@ -296,7 +298,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
                 detail: t("draft.discardDetail"),
                 confirmLabel: t("draft.discardConfirm"),
                 cancelLabel: t("common.cancel"),
-              })}
+              }).catch(error => showToast(error instanceof Error ? error.message : String(error), "error"))}
             /> : <TopicbarActionsStack
               t={t}
               activeTab={activeTab}
@@ -402,6 +404,7 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               onOpenTurnChanges: session.turnVerificationCommands.openTurnChanges,
               onLoadOlderHistory: session.transcript.handleLoadOlderHistory,
               onLoadNewerHistory: session.transcript.handleLoadNewerHistory,
+              onNavigateToTurn: session.transcript.handleNavigateToTurn,
               onSurfacePaintReady: session.transcript.handleSurfacePaintReady,
             }}
           />

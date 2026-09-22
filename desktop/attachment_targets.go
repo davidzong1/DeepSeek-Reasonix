@@ -385,5 +385,5 @@ func (a *App) EnqueueForAttachmentTarget(token, submissionID, input, display str
 		return InboxReceiptView{}, err
 	}
 	a.emitInboxChanged(target.tabID)
-	return InboxReceiptView{ItemID: receipt.ItemID, Paused: receipt.Paused}, nil
+	return InboxReceiptView{ItemID: receipt.ItemID, Disposition: string(receipt.Disposition), Paused: receipt.Paused}, nil
 }

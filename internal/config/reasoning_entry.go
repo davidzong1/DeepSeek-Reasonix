@@ -93,7 +93,7 @@ func builtinReasoningDefaults(e *ProviderEntry) (ProviderModelOverride, bool) {
 	}
 	for _, preset := range curatedProviderPresets {
 		for _, template := range preset.Entries {
-			if template.Kind != e.Kind || !template.HasModel(e.Model) {
+			if template.Kind != e.Kind || !acceptsDeepSeekModelReference(&template, e.Model) {
 				continue
 			}
 			candidate, valid := normalizedExactProviderRequestURL(ProviderEffectiveRequestURL(&template))

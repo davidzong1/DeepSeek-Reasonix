@@ -1,5 +1,6 @@
 import { recoveryStatusText, type RecoveryRetry } from "../lib/recoveryStatus";
 import { useRuntimeSession } from "../lib/useRuntimeState";
+import { isCompactCommand } from "../lib/sessionMaintenanceOperation";
 import { pendingFollowups, confirmFollowup, followupNotSubmitted, followupSessionKey, type PendingFollowup } from "../lib/pendingFollowup";
 import { useAppNavigationStore } from "../store/appNavigation";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -119,6 +120,7 @@ const COMPOSER_AUTO_RESERVED_HEIGHT = 58;
 const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
 const ComposerGuidanceShelf = lazy(() => import("./ComposerGuidanceShelf").then((module) => ({ default: module.ComposerGuidanceShelf })));
+const ComposerInboxQueue = lazy(() => import("./ComposerInboxQueue").then(module => ({ default: module.ComposerInboxQueue })));
 const loadAttachmentSubmit = () => import("../lib/attachmentSubmit");
 // Resolve functional updates synchronously, outside React's deferred updater.
 // The store receives only the field changed by the event, never an old snapshot.
@@ -749,14 +751,14 @@ export function Composer({
   const runtimeState = useRuntimeSession(tabId, inboxSessionPath);
   const finishing = runtimeState.finishing;
   const maintenanceActive = Boolean(runtimeState.state?.maintenance);
-  const queueOnly = finishing || maintenanceActive;
+  const [queueEditingScope, setQueueEditingScope] = useState<string | null>(null);
   if (runtimeState.known) running = runtimeState.running ?? running;
   if (runtimeState.unknown) disabled = true;
   const pendingKey = followupSessionKey(inboxSessionPath, inboxHostId, inboxWorkspace);
   const pendingKeyRef = useRef(pendingKey);
   pendingKeyRef.current = pendingKey;
   const pendingFollowup = useSyncExternalStore(pendingFollowups.subscribe, () => pendingFollowups.get(pendingKey));
-  const inboxSessionKey = inboxScopeKey(inboxSessionPath, workspaceScopeKey);
+  const inboxSessionKey = [pendingKey, inboxScopeKey(inboxSessionPath, workspaceScopeKey)].filter(Boolean).join("\u0000");
   const now = useTick(running);
   const persistentOwner = useRef(persistentDraft);
   persistentOwner.current = persistentDraft;
@@ -1306,7 +1308,10 @@ export function Composer({
   const applyInboxQueue = useCallback((items: PendingGuidance[]) => updatePendingGuidanceForDraft(draftKey, () => items), [draftKey]);
   const collapseInboxQueue = useCallback(() => setGuidanceExpanded(false), []);
   const refreshInboxQueue = useCallback(() => setGuidanceRetryNonce((value) => value + 1), []);
-  useComposerInboxRefresh(tabId, draftKey, guidanceDraftKey, inboxSessionKey, guidanceQueuePreviewKey, guidanceRetryNonce, running, applyInboxQueue, collapseInboxQueue, refreshInboxQueue, runtimeState.state?.revision);
+  const { snapshot: inboxSnapshot, acceptSnapshot: acceptInboxSnapshot } = useComposerInboxRefresh(tabId, draftKey, guidanceDraftKey, inboxSessionKey, guidanceQueuePreviewKey, guidanceRetryNonce, running, applyInboxQueue, collapseInboxQueue, refreshInboxQueue, runtimeState.state?.revision);
+  const queueScope = JSON.stringify([draftKey, pendingKey]);
+  const queueEditing = queueEditingScope === queueScope;
+  const onQueueEditingChange = useCallback((active: boolean) => setQueueEditingScope(active ? queueScope : null), [queueScope]);
 
   useEffect(() => {
     return () => {
@@ -2099,7 +2104,9 @@ export function Composer({
       draft.sessionRefs, draft.selectedTextRefs, draft.pastedBlocks]);
   };
 
-  const submit = async () => {
+  const submit = async (guideCurrent = false) => {
+    if (queueEditing) return;
+    const queueOnly = running && (!guideCurrent || finishing || maintenanceActive);
     const submitDraftKey = activeDraftKeyRef.current;
     const submitPendingKey = pendingKey;
     const submitTabId = tabId;
@@ -2169,7 +2176,7 @@ export function Composer({
       if (onCaptureSubmit && !submissionCapture) return;
       await onPrepareSubmit?.(submissionCapture);
       if (queueOnly && !submitPendingKey) throw new Error("reasonix_error:inbox_not_submitted");
-      const target = queueOnly && app.CaptureInboxTarget
+      const target = running && app.CaptureInboxTarget
         ? await app.CaptureInboxTarget(submitTabId || "", inboxSessionPath || "") : undefined;
       const orderedAttachments = sortComposerAttachments(currentAttachments);
       const refs = [
@@ -2206,7 +2213,9 @@ export function Composer({
 				attachmentSubmissionId = prepared.submissionId;
 				structured = prepared.structured;
 			}
-      if (running) {
+      // Repeated compaction asks the owner for its current operation receipt;
+      // queueing it would unexpectedly start another compaction after this one.
+      if (running && !(maintenanceActive && !structured && isCompactCommand(submitText))) {
         // An entity-only submit has an empty displayText (entities live
         // outside the text model); fall back to the serialized slash form so
         // the queue shows the invocation instead of silently dropping it
@@ -2228,22 +2237,18 @@ export function Composer({
           receiptTracker?.start(submitDraftKey);
           let unresolvedRequest: PendingFollowup | undefined;
           try {
-            const { enqueueInboxGuidance, enqueueInboxGuidanceForActiveTurn } = await import("../lib/inboxGuidanceSubmit");
-            const request: PendingFollowup = { key: `followup-${crypto.randomUUID()}`, target,
+            const { enqueueComposerGuidance } = await import("../lib/inboxGuidanceSubmit");
+            const request: PendingFollowup = { key: structured?.attachmentSubmissionId || `followup-${crypto.randomUUID()}`, target,
               tabId: submitTabId || "", display: guidanceText, submit: guidanceSubmitText, structured, draft: submittedDraft };
-            if (queueOnly) {
+            if (queueOnly || target) {
               unresolvedRequest = request;
               pendingFollowups.set(submitPendingKey, request);
             }
-            const receipt = queueOnly
-              ? target && app.EnqueueInboxFollowupForTarget
-                ? await app.EnqueueInboxFollowupForTarget(target, guidanceText, guidanceSubmitText, structured?.invocations ?? [], request.key)
-                : await enqueueInboxGuidance(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, { idempotency: request.key })
-              : await enqueueInboxGuidanceForActiveTurn(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, turnId);
+            const receipt = await enqueueComposerGuidance(app, request, queueOnly, turnId);
             if (receipt?.error) throw new Error(receipt.error);
             if (!receipt?.itemId) throw new Error("Follow-up receipt unconfirmed");
             const consumedBeforeReceipt = receiptTracker?.takeConsumed(submitDraftKey, receipt.itemId) ?? false;
-            if (!consumedBeforeReceipt && !queueOnly) {
+            if (!consumedBeforeReceipt && !queueOnly && (receipt.disposition === "steer_accepted" || receipt.disposition === "queued_followup")) {
               updatePendingGuidanceForDraft(submitDraftKey, (items) => {
                 const next = items.map((item) => receipt.paused ? { ...item, paused: true } : item);
                 if (next.some((item) => item.id === receipt.itemId)) return next;
@@ -2251,8 +2256,8 @@ export function Composer({
                   id: receipt.itemId,
                   text: guidanceText.slice(0, 120),
                   submitText: "",
-                  intent: "followup",
-                  state: "queued",
+                  intent: receipt.disposition === "steer_accepted" ? "steer" : "followup",
+                  state: receipt.disposition === "steer_accepted" ? "steer_accepted" : "queued",
                   source: "desktop",
                   paused: Boolean(receipt.paused),
                   structured,
@@ -2260,11 +2265,11 @@ export function Composer({
               });
             }
             if (ownsDraft() && (!queueOnly || pendingFollowups.get(submitPendingKey) === request) && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
-            if (queueOnly) {
+            if (queueOnly || target) {
               pendingFollowups.clear(submitPendingKey, request);
               setGuidanceRetryNonce(value => value + 1);
             }
-            if (queueOnly) showToast(t("runtime.queued"), "info");
+            if (queueOnly || receipt.disposition === "queued_followup") showToast(t("runtime.queued"), "info");
           } catch (error) {
             if (unresolvedRequest && followupNotSubmitted(error)) pendingFollowups.clear(submitPendingKey, unresolvedRequest);
             showToast(formatInboxError(error, locale), "warn");
@@ -3005,7 +3010,9 @@ export function Composer({
     if (cancelSettlingDraftsRef.current.has(targetDraftKey)) return;
     cancelSettlingDraftsRef.current.add(targetDraftKey);
     setCancelSettlingRevision((value) => value + 1);
-    const ownedGuidance = pendingGuidanceRef.current.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
+    // The durable queue has its own pause/delete controls. Stopping the current
+    // task must not discard pending messages or restore truncated previews.
+    const ownedGuidance = typeof app.InboxQueueForTarget === "function" ? [] : pendingGuidanceRef.current.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
     const durableItemIDs = maintenanceActive ? [] : ownedGuidance
       .map((item) => item.id)
       .filter((id) => !id.startsWith("local-"));
@@ -4039,7 +4046,7 @@ export function Composer({
   const runStrip = runMetrics?.stripParts.length ? runMetrics : null;
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0 &&
     !invocations.some((invocation) => invocation.command.kind === "skill");
-  const submitBlocked = submitting || (!pendingFollowup && (pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly));
+  const submitBlocked = queueEditing || submitting || (!pendingFollowup && (pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly));
   const submitUnavailableHint = !running && submitDisabled ? submitDisabledReason : undefined;
   const submitTooltip = pendingFollowup ? t("runtime.checkReceipt") : running
     ? t("composer.queueGuidance", { combo: sendComboLabel })
@@ -4127,6 +4134,7 @@ export function Composer({
   return (
     <div
       ref={composerWrapRef}
+      data-queue-editing={queueEditing ? "true" : undefined}
       className={[
         "composer-wrap",
         decisionPending ? "composer-wrap--decision-pending" : "",
@@ -4412,7 +4420,15 @@ export function Composer({
           />
         ) : null
       )}
-      {pendingGuidance.length > 0 && (
+      {typeof app.InboxQueueForTarget === "function" ? <Suspense fallback={null}>
+        <ComposerInboxQueue key={queueScope} scope={queueScope} tabId={tabId || ""} sessionPath={inboxSessionPath || ""}
+          items={pendingGuidance} snapshot={inboxSnapshot} disabled={Boolean(disabled || readOnly)} running={running}
+          onSnapshot={acceptInboxSnapshot} onRefresh={refreshInboxQueue}
+          onEditingChange={onQueueEditingChange} turnId={turnId}
+          onRestoreDraft={value => setTextCaretEnd([textRef.current, value].filter(Boolean).join("\n\n"))}
+          onStop={!finishing && !runtimeState.unknown ? () => void handleCancel() : undefined}
+          stopDisabled={runtimeState.cancellable === false || cancelSettlingDraftsRef.current.has(draftKey)} />
+      </Suspense> : pendingGuidance.length > 0 && (
         <Suspense fallback={null}>
           <ComposerGuidanceShelf
             recovery={pendingGuidance[0]?.paused && !pendingGuidance.some((item) => guidanceIsInFlight(item.state)) ? {
@@ -4841,13 +4857,14 @@ export function Composer({
               <Tooltip label={submitUnavailableHint || submitTooltip}>
                 <button
                   className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
-                  onClick={submit}
+                  onClick={() => void submit()}
                   disabled={submitBlocked}
                   aria-label={submitTooltip}
                 >
                   {pendingFollowup ? <Search size={16} /> : running ? <CornerDownRight size={16} /> : <ArrowUp size={16} />}
                 </button>
               </Tooltip>
+              {running && !finishing && !maintenanceActive && <button type="button" className="btn btn--small composer__queue-steer" disabled={submitBlocked || Boolean(pendingFollowup)} onClick={() => void submit(true)}>{locale.startsWith("zh") ? "引导当前轮" : "Guide current turn"}</button>}
               {submitUnavailableHint && <span className="composer-toolbar-send__hint">{submitUnavailableHint}</span>}
               {authentication && authentication.status !== "ready" && <Suspense fallback={null}>
                 <AuthenticationRecoveryActions

@@ -43,6 +43,9 @@ export interface ProjectTopicPageRequest {
 }
 
 export interface ProjectTopicPage {
+  snapshotId?: string;
+  snapshotExpiresAt?: number;
+  replacedSnapshot?: boolean;
   items: ProjectNode[];
   nextCursor?: string;
   revision: number;
@@ -92,6 +95,7 @@ export interface ProjectGroupsSnapshot {
 }
 
 export interface SessionCatalogBindings {
+  ReleaseReadSnapshot?(snapshotId: string): Promise<void>;
   GetRuntimeStateSnapshot?(): Promise<import("./runtimeStateStore").RuntimeProjection>;
   SyncRuntimeState?(): Promise<import("./runtimeStateStore").RuntimeProjection>;
   GetProjectTreeSnapshot(): Promise<ProjectTreeSnapshot>;

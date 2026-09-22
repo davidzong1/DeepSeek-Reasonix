@@ -113,6 +113,19 @@ try {
   assert.deepEqual(mcpSelections, [false], "the compact control preserves per-draft MCP selection");
   assert.equal(discarded, 1, "the compact control preserves draft discard");
 
+  for (const phase of ["submitting", "discarding"]) {
+    await act(async () => root.render(<LocaleProvider><DraftTopicbarActions
+      t={((key: string) => key) as Translator}
+      draft={{ ...surface, preparingSubmission: true, discarding: phase === "discarding" }}
+      onSetMCPEnabled={() => {}} onDiscard={() => { discarded++; }}
+    /></LocaleProvider>));
+    const button = document.querySelector<HTMLButtonElement>(".draft-topicbar-actions button")!;
+    assert.equal(button.disabled, true);
+    assert.equal(button.getAttribute("aria-label"), phase === "discarding" ? "draft.discarding" : "draft.discardBlocked");
+    await act(async () => button.click());
+    assert.equal(discarded, 1, "locked button cannot dispatch another discard");
+  }
+
   await act(async () => root.unmount());
   console.log("PASS session draft presentation: clean landing and exceptional recovery controls");
 } finally {

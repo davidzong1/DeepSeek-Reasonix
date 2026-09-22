@@ -25,7 +25,7 @@ func (c *Catalog) ListRecoveryGroups(ctx context.Context, directory string) ([]R
 		return out, nil
 	}
 	directory = cleanCatalogAccessPath(directory)
-	rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
+	rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
 		WHERE directory_key=? AND recovered=1 AND recovery_group_id<>'' AND missing_since=0
 		ORDER BY recovery_group_id,path`, c.pathKey(directory))
 	if err != nil {

@@ -2249,8 +2249,8 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:            "deepseek",
 			Kind:            "openai",
 			BaseURL:         "https://api.deepseek.com",
-			Models:          []string{"deepseek-v4-flash", "deepseek-v4-pro"},
-			Default:         "deepseek-v4-flash",
+			Models:          []string{"deepseek-flash", "deepseek-v4-pro"},
+			Default:         "deepseek-flash",
 			APIKeyEnv:       "DEEPSEEK_API_KEY",
 			BalanceURL:      "https://api.deepseek.com/user/balance",
 			Thinking:        "enabled",
@@ -2260,8 +2260,8 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			BillingMode:     "payg",
 			Prices:          config.DeepSeekV4PricesForCurrency("USD"),
 			ModelOverrides: map[string]config.ProviderModelOverride{
-				"deepseek-v4-flash": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
-				"deepseek-v4-pro":   {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
+				"deepseek-flash":  {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
+				"deepseek-v4-pro": {SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high"},
 			},
 		}}, "DEEPSEEK_API_KEY", nil
 	default:

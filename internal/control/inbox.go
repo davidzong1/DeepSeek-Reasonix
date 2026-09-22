@@ -351,40 +351,18 @@ func (c *Controller) UpdateInboxItem(id, display, raw, submit string) (sessionin
 	submit = strings.TrimSpace(firstNonEmptyStr(submit, raw, display))
 	display = firstNonEmptyStr(display, submit)
 	raw = firstNonEmptyStr(raw, submit)
-	_, previous, err := st.ReadItem(id)
+	meta, previous, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	env := sessioninbox.PromptEnvelope{
-		DisplayText:          display,
-		RawText:              raw,
-		SubmitText:           submit,
-		Format:               previous.Format,
-		ImageInputs:          previous.ImageInputs,
-		ImageSourceRefs:      maps.Clone(previous.ImageSourceRefs),
-		AttachmentIdentities: previous.AttachmentIdentities,
-		Source:               previous.Source,
-		ExplicitRefs:         append([]string(nil), previous.ExplicitRefs...),
-		Invocation:           previous.Invocation,
-		Invocations:          append([]sessioninbox.StructuredInvocation(nil), previous.Invocations...),
-		Attachments:          append([]string(nil), previous.Attachments...),
-		Extra:                maps.Clone(previous.Extra),
-	}
+	env := previous
+	env.DisplayText, env.RawText, env.SubmitText = display, raw, submit
 	if err := c.freezeInboxEnvelopeReferences(context.Background(), &env, submit, env.ExplicitRefs); err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	updated, err := st.UpdateItem(id, env)
+	updated, err := st.UpdateItemIfVersion(id, env, sessioninbox.ContentVersion(meta))
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
-	}
-	if len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
-			return sessioninbox.InboxItemMeta{}, err
-		}
-		_ = st.SetPaused(true)
-		updated.State = sessioninbox.StateBlocked
-		updated.BlockReason = reason
 	}
 	return updated, nil
 }
@@ -396,7 +374,7 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	_, previous, err := st.ReadItem(id)
+	meta, previous, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
@@ -427,20 +405,7 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 		Source:      previous.Source,
 		Extra:       maps.Clone(extra),
 	}
-	updated, err := st.UpdateItemWithIdempotency(id, env, idempotency, aliasEnv)
-	if err != nil {
-		return sessioninbox.InboxItemMeta{}, err
-	}
-	if len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
-			return sessioninbox.InboxItemMeta{}, err
-		}
-		_ = st.SetPaused(true)
-		updated.State = sessioninbox.StateBlocked
-		updated.BlockReason = reason
-	}
-	return updated, nil
+	return st.UpdateItemWithIdempotencyIfVersion(id, env, idempotency, aliasEnv, sessioninbox.ContentVersion(meta))
 }
 
 func (c *Controller) DeleteInboxItem(id string) error {
@@ -553,15 +518,16 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 		return sessioninbox.InboxReceipt{}, materializeErr
 	}
 	if block != "" {
-		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateBlocked, block, true); err != nil {
+			return sessioninbox.InboxReceipt{}, err
+		}
 		return sessioninbox.InboxReceipt{}, fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
 	// Persist the in-flight state before admission. Active tracking is installed
 	// only after Controller admission is reserved and before the turn can finish.
 	c.inbox.trackAdmission(id)
 	defer c.inbox.untrackAdmission(id)
-	if err := st.ClaimItem(id); err != nil {
+	if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateRunning, "", true); err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
 	c.inbox.mu.Lock()

@@ -72,6 +72,7 @@ export type ChatPaneRegionProps = {
     onOpenTurnChanges?: TranscriptProps["onOpenTurnChanges"];
     onLoadOlderHistory: TranscriptProps["onLoadOlderHistory"];
     onLoadNewerHistory: TranscriptProps["onLoadNewerHistory"];
+    onNavigateToTurn?: TranscriptProps["onNavigateToTurn"];
     onSurfacePaintReady: TranscriptProps["onSurfacePaintReady"];
   };
 };
@@ -191,6 +192,7 @@ export function ChatPaneRegion(props: ChatPaneRegionProps) {
                 newerHistoryError={state.historyNewerError}
                 onLoadOlderHistory={commands.onLoadOlderHistory}
                 onLoadNewerHistory={commands.onLoadNewerHistory}
+                onNavigateToTurn={commands.onNavigateToTurn}
                 invocationMetadata={transcript.invocationMetadata}
                 surfaceCommitToken={transcript.surfaceCommitToken}
                 onSurfacePaintReady={commands.onSurfacePaintReady}

@@ -3,7 +3,7 @@
 export const transientUserTags = [
   "response-language", "reasoning-language", "memory-update", "background-jobs",
   "active-goal", "autoresearch-runtime", "hook-context", "capability-route",
-  "interrupted-turn-recovery", "execution-policy",
+  "interrupted-turn-recovery", "execution-policy", "turn-protocol",
 ] as const;
 const leadingBlock = new RegExp(`^\\s*<(${transientUserTags.join("|")})(?:\\s+[^>]*)?>[\\s\\S]*?</\\1>\\s*`);
 const steerPrefix = "[Mid-turn steer queued by the user. Do not treat this as a new task; use it only as additional guidance for the current task after completing the current step.]";

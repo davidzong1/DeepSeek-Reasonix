@@ -61,7 +61,7 @@ model = "text"
 			if _, err := decodeTOMLFile(path, &cfg); err != nil {
 				t.Fatalf("migrated config no longer parses: %v\n%q", err, text)
 			}
-			if cfg.ConfigVersion != openCodeGoUpgradeVersion || len(cfg.Providers) != fixture.providers {
+			if cfg.ConfigVersion != Default().ConfigVersion || len(cfg.Providers) != fixture.providers {
 				t.Fatalf("version=%d providers=%d\n%q", cfg.ConfigVersion, len(cfg.Providers), text)
 			}
 			if strings.Count(text, "config_version") != 1 {

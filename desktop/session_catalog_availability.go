@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"sort"
 
@@ -24,13 +25,16 @@ func (availability catalogWorkspaceAvailability) decorate(page ProjectTopicPage,
 	return page
 }
 
-func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scope, workspaceRoot string) catalogWorkspaceAvailability {
+func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scope, workspaceRoot string, views ...context.Context) catalogWorkspaceAvailability {
 	availability := catalogWorkspaceAvailability{}
 	if a == nil || catalog == nil {
 		return availability
 	}
 	ctx, cancel := a.catalogReadContext()
 	defer cancel()
+	if len(views) > 0 && views[0] != nil {
+		ctx = views[0]
+	}
 	scope, workspaceRoot = normalizeDesktopTopicScope(scope, workspaceRoot)
 	for _, target := range a.sessionCatalogTargets() {
 		if target.Scope != scope || scope == "project" && !sameProjectRoot(target.WorkspaceRoot, workspaceRoot) {
@@ -63,6 +67,9 @@ func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopic
 		return page, err
 	}
 	manualOrder := manualTopicOrderFor(req.Scope, req.WorkspaceRoot)
+	if req.readAllSources {
+		manualOrder = false
+	}
 	seen := make(map[string]struct{}, len(page.Items)+len(metadata.Items))
 	for _, item := range page.Items {
 		seen[item.TopicID] = struct{}{}

@@ -28,7 +28,7 @@ func (c *Catalog) PreferredOrdinarySessionPaths(ctx context.Context, scope, work
 		return out, nil
 	}
 	scope, workspaceRoot = normalizeScope(scope, workspaceRoot)
-	rows, err := c.db.QueryContext(ctx, `
+	rows, err := c.readDB(ctx).QueryContext(ctx, `
 		SELECT path, recovered, parent_id, recovery_copy, recovery_group_id,
 		       recovery_role, recovery_canonical, turns, last_activity_at
 		FROM catalog_sessions

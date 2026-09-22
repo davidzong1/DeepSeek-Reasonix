@@ -823,8 +823,8 @@ func TestNormalizeOfficialDeepSeekModelsRepairsCanonicalProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if !p.HasModel("deepseek-v4-flash") || !p.HasModel("deepseek-v4-pro") || !p.HasModel("glm-5") {
-		t.Fatalf("deepseek models = %+v, want official models plus existing model", p.ModelList())
+	if !p.HasModel("deepseek-flash") || !p.HasModel("deepseek-v4-pro") || !p.HasModel("glm-5") {
+		t.Fatalf("deepseek models = %+v, want current official models plus existing model", p.ModelList())
 	}
 	if c.DefaultModel != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("default_model = %q, want retargeted official ref", c.DefaultModel)

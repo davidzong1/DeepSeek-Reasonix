@@ -1489,7 +1489,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 		if !p.BuiltIn {
 			t.Fatalf("deepseek provider should be marked built-in for official endpoint: %+v", p)
 		}
-		if !p.Added || !p.KeySet || len(p.Models) != 3 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Models[2] != "deepseek-v4-flash-vision-exp" || !slices.Equal(p.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) || p.Default != "deepseek-v4-flash" {
+		if !p.Added || !p.KeySet || !slices.Equal(p.Models, []string{"deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"}) || len(p.VisionModels) != 0 || p.Default != "deepseek-v4-flash" {
 			t.Fatalf("deepseek provider = %+v, want added repaired official model list", p)
 		}
 		if got.DefaultModel != "deepseek/deepseek-v4-flash" {
@@ -1680,14 +1680,17 @@ api_key_env = "DEEPSEEK_API_KEY"
 	if !ok {
 		t.Fatal("deepseek provider not saved")
 	}
-	if len(p.Models) != 3 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Models[2] != "deepseek-v4-flash-vision-exp" || !slices.Equal(p.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) || p.Default != "deepseek-v4-flash" {
+	if !slices.Equal(p.Models, []string{"deepseek-flash", "deepseek-v4-pro"}) || len(p.VisionModels) != 0 || p.Default != "deepseek-flash" {
 		t.Fatalf("deepseek provider after add = %+v, want official model list", p)
 	}
 	if !providerAccessSet(cfg.Desktop.ProviderAccess)["deepseek"] {
 		t.Fatalf("provider_access missing deepseek: %+v", cfg.Desktop.ProviderAccess)
 	}
 	if cfg.DefaultModel != "deepseek/deepseek-v4-flash" {
-		t.Fatalf("default_model = %q, want deepseek/deepseek-v4-flash", cfg.DefaultModel)
+		t.Fatalf("default_model = %q, want preserved legacy Flash choice", cfg.DefaultModel)
+	}
+	if resolved, ok := cfg.ResolveModel(cfg.DefaultModel); !ok || resolved.Model != "deepseek-v4-flash" {
+		t.Fatalf("legacy default model no longer resolves: entry=%+v, ok=%t", resolved, ok)
 	}
 }
 
@@ -3045,8 +3048,8 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 			t.Fatalf("Models() refs = %+v, should not include hidden provider %s", models, hidden)
 		}
 	}
-	if len(models) != 5 {
-		t.Fatalf("Models() len = %d, want 5: %+v", len(models), models)
+	if len(models) != 4 {
+		t.Fatalf("Models() len = %d, want only explicitly selected provider models: %+v", len(models), models)
 	}
 }
 
@@ -3231,7 +3234,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 	models := app.ModelsForTab(tab.ID)
 	refs := modelRefsFromView(models)
 	for _, want := range []string{
-		"deepseek/deepseek-v4-flash",
+		"deepseek/deepseek-flash",
 		"mimo-pro/mimo-v2.5-pro",
 	} {
 		if !refs[want] {

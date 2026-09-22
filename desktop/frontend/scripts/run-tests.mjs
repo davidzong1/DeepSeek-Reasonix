@@ -7,13 +7,8 @@
 // coverage. Fail-fast by default; --keep-going runs everything and summarizes.
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-
-// Resolve the local tsx entry directly so the runner works both under pnpm
-// scripts and when invoked as plain `node scripts/run-tests.mjs`.
-const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 
 const TESTS_DIR = "src/__tests__";
 const SCRIPTS_DIR = "scripts";
@@ -88,7 +83,9 @@ for (const name of suites) {
   // Node's built-in navigator.language follows the machine's ICU locale, and
   // suites assert English UI strings.
   const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
-  const result = spawnSync(process.execPath, [tsxCli, ...assetArgs, path], { stdio: "inherit", env });
+  // Register asset hooks before tsx and the suite. Passing --import after the
+  // tsx CLI can leave lazy CSS imports unhandled in Node tests.
+  const result = spawnSync(process.execPath, [...assetArgs, "--import", "tsx", path], { stdio: "inherit", env });
   if (result.error) console.error(`run-tests: spawn failed for ${path}: ${result.error.message}`);
   if (result.status !== 0) {
     if (!keepGoing) {

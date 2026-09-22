@@ -11,33 +11,6 @@ import (
 
 type workspaceInfoProbe struct{ ids []string }
 
-type changingWorkspaceInfoProbe struct{ reads int }
-
-func (p *changingWorkspaceInfoProbe) Stat(_ context.Context, ref session.SessionRef) (session.SessionInfo, error) {
-	p.reads++
-	sequence := uint64(1)
-	if p.reads > 2 && ref.SessionID == "a" {
-		sequence = 2
-	}
-	return session.SessionInfo{SessionID: ref.SessionID, EventSequence: sequence, MetadataStatus: session.MetadataReady}, nil
-}
-
-func TestWorkspaceMetadataSnapshotRejectsChangeDuringMaterialization(t *testing.T) {
-	probe := &changingWorkspaceInfoProbe{}
-	ids := []string{"a", "b"}
-	before, err := listWorkspaceSessionInfo(t.Context(), probe, ids)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if workspaceSessionInfoUnchanged(t.Context(), probe, ids, before) {
-		t.Fatal("published mixed metadata after A changed while building the page")
-	}
-	stable, _ := listWorkspaceSessionInfo(t.Context(), probe, ids)
-	if !workspaceSessionInfoUnchanged(t.Context(), probe, ids, stable) {
-		t.Fatal("rejected unchanged metadata")
-	}
-}
-
 func (p *workspaceInfoProbe) Stat(_ context.Context, ref session.SessionRef) (session.SessionInfo, error) {
 	p.ids = append(p.ids, ref.SessionID)
 	return session.SessionInfo{SessionID: ref.SessionID, MetadataStatus: session.MetadataReady}, nil

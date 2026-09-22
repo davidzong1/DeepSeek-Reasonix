@@ -149,6 +149,7 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
         olderHistoryError={session.transcript.historyOlderError}
         onLoadOlderHistory={session.loadOlderHistory}
         onLoadNewerHistory={session.loadNewerHistory}
+        onNavigateToTurn={session.navigateToTurn}
         onPrompt={(display, submit = display) => runAction(() => session.submit(submit, display))}
         forkTargets={session.transcript.forkTargets}
         // The tab's advertised capability, not the target list, decides whether

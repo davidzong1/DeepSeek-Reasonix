@@ -82,9 +82,9 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 
 [[providers]]
 name        = "deepseek-flash"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-model       = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+model       = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 # also preset: deepseek-pro
@@ -322,14 +322,16 @@ Custom provider** for proxies, aggregators, or self-hosted services that speak
 the OpenAI-compatible chat API or Anthropic-compatible Messages API.
 
 For common providers, choose **Add model service -> Recommended preset** instead.
-New official DeepSeek entries use the Anthropic-compatible Messages endpoint by
-default and enable provider-side `web_search`; the same `DEEPSEEK_API_KEY` works
-for both protocols. On startup, Reasonix upgrades unmodified legacy
+New official DeepSeek entries use Chat Completions by default and enable
+independent `web_search`; the same `DEEPSEEK_API_KEY` works across supported
+protocols. On startup, Reasonix upgrades unmodified legacy
 `deepseek-flash` / `deepseek-pro` entries that still use the official endpoint
 and standard key/model settings. Customized official Chat Completions entries
-stay unchanged and show an **Upgrade protocol** action in Settings. Proxy
-endpoints, custom headers, model lists, and capability overrides are never
-migrated automatically. Existing
+keep their protocol choice and show an **Upgrade protocol** action in Settings.
+Proxy endpoints, custom headers, and capability overrides do not trigger a
+protocol migration. Separately, the version 11 catalog upgrade appends
+`deepseek-flash` once to existing official model lists, including customized
+lists. It preserves the selected/default model and later user deletion. Existing
 separately named `deepseek-anthropic` entries remain compatible, but that
 redundant preset is no longer offered for new access. Reasonix can prefill editable custom-provider entries for Kimi CN,
 Kimi Global,
@@ -350,8 +352,9 @@ usually needs only the provider API key: the key value is stored in Reasonix hom
 environment-variable name, context window, model capability metadata, proxy bypass
 for China-only endpoints, MiniMax `reasoning_split`, GLM/MiniMax thinking
 heuristics, Anthropic-compatible Bearer auth where needed, Ollama Cloud
-max-effort support, and OpenCode Go per-model reasoning overrides. Official DeepSeek Anthropic, Responses, and Chat Completions catalogs also
-include the multimodal SKUs `deepseek-flash` and `deepseek-v4-flash-vision-exp`. Settings derives image support from
+max-effort support, and OpenCode Go per-model reasoning overrides. New official DeepSeek Anthropic, Responses, and Chat Completions catalogs offer
+`deepseek-flash` and `deepseek-v4-pro`. The retired `deepseek-v4-flash` and
+`deepseek-v4-flash-vision-exp` IDs remain valid for saved references. Settings derives image support from
 model capability metadata. Each model also has an Image input Auto / On / Off
 selector. For an ID-only relay list, unknown means unrecognized, not confirmed
 text-only: select On after confirming support with the relay, then save. See the
@@ -362,8 +365,7 @@ shapes: inline base64 `data:` URLs for local files, `http(s)` image URLs as-is,
 and Files API `file-api-` ids (local images over 32 MiB on official DeepSeek are
 uploaded automatically). Chat Completions uses `image_url` or `file`, Anthropic
 uses `image`+`source.base64|url|file`, and Responses uses `input_image`.
-Flash and Pro stay text-only on the wire even when legacy configuration lists them, and tool screenshots
-are not forwarded as image parts. The vision SKU uses the Flash rate card. The dedicated
+Flash and its retired aliases accept images; V4 Pro remains text-only. The dedicated
 OpenCode Go DeepSeek Anthropic and DeepSeek Responses presets expose the verified
 Flash routes and enable provider-side `web_search` by default; the Responses
 variant uses stateless context replay. The existing mixed OpenCode Go Anthropic

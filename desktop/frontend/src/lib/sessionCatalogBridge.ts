@@ -1,6 +1,7 @@
 import { asArray } from "./array";
 import { desktopHost } from "./desktopHost";
 import { mockProjectGroups } from "./mockProjectTreeOrganization";
+import { mockReadSnapshotPage, releaseMockReadSnapshot } from "./mockReadSnapshot";
 import type {
   ProjectNode,
   ProjectTopicKey,
@@ -45,12 +46,8 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
         || (created ? right.createdAt || right.lastActivityAt || 0 : right.lastActivityAt || right.createdAt || 0)
           - (created ? left.createdAt || left.lastActivityAt || 0 : left.lastActivityAt || left.createdAt || 0)
         || (left.topicId ?? "").localeCompare(right.topicId ?? ""));
-    const start = Math.max(0, Number.parseInt(req.cursor ?? "0", 10) || 0);
-    const limit = Math.min(200, Math.max(1, req.limit ?? 50));
-    const items = all.slice(start, start + limit);
     return {
-      items,
-      nextCursor: start + items.length < all.length ? String(start + items.length) : undefined,
+      ...mockReadSnapshotPage("project-topics", [req.scope, req.workspaceRoot, query, req.sortMode, req.groupFilter, req.groupId, req.excludePinned], req.cursor, req.limit, all),
       revision: 1,
       complete: true,
       readyDirectories: 1,
@@ -59,6 +56,7 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
     };
   };
   return {
+    async ReleaseReadSnapshot(id: string) { releaseMockReadSnapshot(id); },
     async GetProjectTreeSnapshot() {
       return {
         revision: 1,

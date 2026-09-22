@@ -221,6 +221,8 @@ func (a *App) remoteSessionHistoryRead(tabID, route string, query url.Values, de
 		requiredCapability = serveCapabilitySessionReadV2
 	case "/session-history/window", "/session-message-field":
 		requiredCapability = serveCapabilityHistoryWindowV1
+	case "/session-history/outline":
+		requiredCapability = servecontract.HistoryOutlineV1
 	}
 	if !tab.capabilities[requiredCapability] {
 		a.remoteTabMu.Unlock()
@@ -347,6 +349,10 @@ func (a *App) RemoteSessionHistoryWindowForTab(tabID string, req session.History
 	}
 	query := make(url.Values)
 	query.Set("anchor", req.Anchor)
+	query.Set("generation", req.Generation)
+	if req.SnapshotSequence != nil {
+		query.Set("snapshotSequence", fmt.Sprint(*req.SnapshotSequence))
+	}
 	if req.MessageID != "" {
 		query.Set("messageId", req.MessageID)
 	}

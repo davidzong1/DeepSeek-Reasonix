@@ -77,9 +77,9 @@ reasoning_language = "auto"      # 可见思考过程语言：auto|zh|en
 
 [[providers]]
 name        = "deepseek-flash"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-model       = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+model       = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 # 还有预设：deepseek-pro
@@ -283,11 +283,13 @@ Remote-SSH 式的体验。它在远端主机上引导一个常驻的 headless `r
 聚合平台或自建 OpenAI-compatible chat API / Anthropic-compatible Messages API 服务。
 
 常用服务优先使用 **添加模型服务 -> 推荐预设**。新建的官方 DeepSeek provider 默认使用
-Anthropic-compatible Messages 端点，并开启 provider 侧 `web_search`；两种协议都复用同一个
+Chat Completions，并开启独立 `web_search`；各协议复用同一个
 `DEEPSEEK_API_KEY`。启动时，Reasonix 会自动升级仍使用官方端点、标准密钥和标准模型设置且
-未修改过的旧 `deepseek-flash` / `deepseek-pro` 条目。修改过的官方 Chat Completions 配置保持
-原样，设置页会提供 **升级到推荐协议** 操作。代理地址、自定义 Headers、模型列表和能力覆盖
-都不会自动迁移。已有单独命名的 `deepseek-anthropic` 条目继续兼容，但新增
+未修改过的旧 `deepseek-flash` / `deepseek-pro` 条目。修改过的官方 Chat Completions 配置保留
+协议选择，设置页会提供 **升级到推荐协议** 操作。代理地址、自定义 Headers 和能力覆盖
+不会触发协议迁移。另有配置版本 11 的模型目录迁移：已有官方模型列表会一次性追加
+`deepseek-flash`，保留当前与默认模型；用户之后删除该选项也不会再次补回。已有单独命名的
+`deepseek-anthropic` 条目继续兼容，但新增
 接入不再展示这个重复预设。Reasonix 还可以预填以下可编辑的自定义 provider：
 Kimi CN、Kimi Global、Kimi Coding Plan、MiMo API、MiMo Anthropic、MiMo Token Plan
 CN/SGP/AMS 及其 Anthropic-compatible 变体、MiniMax CN/Global API、MiniMax
@@ -305,17 +307,17 @@ Gateway、HuggingFace Router、ModelScope、NVIDIA NIM、KiloCode 和 Ollama Clo
 `config.toml` 只保存端点、模型列表、key 环境变量名、上下文窗口、模型能力元数据、
 中国区端点直连、MiniMax `reasoning_split`、GLM/MiniMax thinking heuristic、
 Anthropic-compatible 网关需要的 Bearer 认证、Ollama Cloud max-effort 支持，
-以及 OpenCode Go 的每模型 reasoning 覆盖。官方 DeepSeek 的 Anthropic、Responses 与
-Chat Completions 目录还会带上多模态 SKU `deepseek-flash` 与 `deepseek-v4-flash-vision-exp`。设置页会按模型能力元数据
+以及 OpenCode Go 的每模型 reasoning 覆盖。新建官方 DeepSeek 的 Anthropic、Responses 与
+Chat Completions 目录提供 `deepseek-flash`、`deepseek-v4-pro`。已退役的
+`deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 仍兼容历史引用。设置页会按模型能力元数据
 展示支持图片的模型，也提供逐模型“图片输入：自动 / 开启 / 关闭”。中转站只返回
 模型 ID 时会显示“图片能力未识别”；向服务商确认支持后，选择开启并保存即可。
 详见[图片输入指南](MODEL_CAPABILITIES.zh-CN.md#中转站模型使用指南)。
 composer/`@` 用户图片会按官方文档的三种方式发出：本地小图走内联 base64 `data:` URL；
 `http(s)` 图片链接原样作为 URL 传入；`file-api-` 引用走 Files API（官方 DeepSeek 上
 超过 32 MiB 的本地图会自动上传）。Chat Completions 用 `image_url` 或 `file`，Anthropic
-用 `image`+`source.base64|url|file`，Responses 用 `input_image`。Flash/Pro 即使旧配置列出
-为视觉模型，线上仍是纯文本，工具截图也不会作为图片块转发。
-视觉 SKU 使用 Flash 价卡。专用的 OpenCode Go DeepSeek Anthropic 与
+用 `image`+`source.base64|url|file`，Responses 用 `input_image`。Flash 及其旧别名支持图片，
+V4 Pro 仍是纯文本模型。专用的 OpenCode Go DeepSeek Anthropic 与
 DeepSeek Responses 预设接入已验证的 Flash 线路，并默认启用 provider 侧 `web_search`；
 Responses 变体使用无状态上下文回放。原有混合 OpenCode Go Anthropic 预设仍只包含 Qwen
 与 MiniMax，避免把服务端搜索工具发送给未验证模型。DeepSeek Pro 暂时仍只放在 Chat

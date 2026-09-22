@@ -1,13 +1,13 @@
 import { useManagementT } from "../lib/managementLocale";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Archive, GitBranch, Pencil, Search, Trash2, RotateCcw } from "lucide-react";
 import { app } from "../lib/bridge";
-import { t, useT } from "../lib/i18n";
-import { historySearchHitDisplayTitle, historySessionDisplayTitle, sessionActivityTime } from "../lib/session";
+import { useT } from "../lib/i18n";
+import { historySearchHitDisplayTitle, historySessionDisplayTitle } from "../lib/session";
 import type { HistoryMessage, HistorySearchContextLine, HistorySearchHit, RecoveryLineageView, SessionMeta } from "../lib/types";
-import { historyMessagesToItems, type Item } from "../lib/useController";
 import { useHistoryCatalog } from "../lib/useHistoryCatalog";
+import { historyDateBucket as dateBucket, historyDayLabel as dayLabel, historyPreviewItems as previewMessagesToItems, historySessionLocation as sessionLocation, historySessionMetaLine as sessionMetaLine, historySessionScope as sessionScope, historySessionTime as sessionTimeForGrouping, historyTimeLabel as timeLabel, isChannelHistorySession as isChannelSession } from "../lib/historyPanelPresentation";
 import { Transcript } from "./Transcript";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 import { useDeferredClose } from "../lib/useMountTransition";
@@ -67,7 +67,7 @@ export function HistoryPanel({
   const [showSystemRecoveryData, setShowSystemRecoveryData] = useState(false);
   const [selectedVersions, setSelectedVersions] = useState<RecoveryLineageView | null>(null);
   const [searchContext, setSearchContext] = useState<{ hit: HistorySearchHit; lines: HistorySearchContextLine[]; loading: boolean } | null>(null);
-  const { sessions, nextCursor, partial: catalogPartial, progress: catalogProgress, searchHits, loadMore } = useHistoryCatalog({
+  const { readIdentity, sessions, nextCursor, partial: catalogPartial, progress: catalogProgress, searchHits, loadMore, error: catalogError, retry: retryCatalog } = useHistoryCatalog({
     isTrash, suppliedSessions, scope: scopeFilter, status: statusFilter, timeFilter: dateFilter, query,
   });
   const [menuSession, setMenuSession] = useState<SessionMeta | null>(null);
@@ -87,11 +87,23 @@ export function HistoryPanel({
   const previewSeq = useRef(0);
   const lineageSeq = useRef(0);
 
+  useLayoutEffect(() => {
+    ++previewSeq.current;
+    ++lineageSeq.current;
+    setPreview(null);
+    setSearchContext(null);
+    setSelectedVersions(null);
+    setMenuSession(null);
+    setMenuConfirmTarget(null);
+    setEditing(null);
+    return () => { ++previewSeq.current; ++lineageSeq.current; };
+  }, [readIdentity]);
+
   const loadSearchContext = useCallback(async (hit: HistorySearchHit) => {
     const seq = ++previewSeq.current;
     setPreview(null);
     setSearchContext({ hit, lines: [], loading: true });
-    const lines = await app.GetHistorySearchContext({ sessionPath: hit.sessionPath, messageIndex: hit.messageIndex, before: 2, after: 2 }).catch(() => []);
+    const lines = await app.GetHistorySearchContext({ sessionPath: hit.sessionPath, messageIndex: hit.messageIndex, contentDigest: hit.contentDigest, before: 2, after: 2 }).catch(() => []);
     if (seq === previewSeq.current) setSearchContext({ hit, lines, loading: false });
   }, []);
 
@@ -464,7 +476,7 @@ export function HistoryPanel({
                   : tr(session.turns === 1 ? "history.turnOne" : "history.turnOther", { n: session.turns })}
               </span>
               <span className="hist-item__dot">·</span>
-              <span className="hist-item__stat">{timeLabel(isTrash ? session.deletedAt || sessionActivityTime(session) : sessionActivityTime(session))}</span>
+              <span className="hist-item__stat">{timeLabel(sessionTimeForGrouping(session, isTrash))}</span>
               {!isTrash && running && (
                 <>
                   <span className="hist-item__dot">·</span>
@@ -550,6 +562,11 @@ export function HistoryPanel({
             onChange={(next) => setDateFilter(next as HistoryDateFilter)}
           />
         </div>
+        {!isTrash && catalogError && (
+          <div className="management-modal__summary history-modal__summary" role="alert">
+            {catalogError} <button type="button" onClick={retryCatalog}>Retry</button>
+          </div>
+        )}
         {!isTrash && catalogPartial && (
           <div className="management-modal__summary history-modal__summary" role="status">
             History index is still building ({catalogProgress.indexed}/{catalogProgress.total}); results may be incomplete.
@@ -580,7 +597,7 @@ export function HistoryPanel({
                     <span className="hist-group__count">{searchHits.length}</span>
                   </div>
                   {searchHits.map((hit) => (
-                    <div className="hist-item" key={`${hit.sessionPath}:${hit.messageIndex}:${hit.kind}:${hit.toolName ?? ""}`}>
+                    <div className="hist-item" key={`${hit.sessionPath}:${hit.messageIndex}:${hit.partIndex ?? 0}:${hit.kind}:${hit.toolName ?? ""}`}>
                       <button className="hist-item__main" type="button" onClick={() => void loadSearchContext(hit)}>
                         <div className="hist-item__preview">{historySearchHitDisplayTitle(hit)}</div>
                         <div className="hist-item__meta">
@@ -744,64 +761,4 @@ export function HistoryPanel({
   return <div className="management-modal-backdrop history-modal-backdrop" data-app-overlay="" data-state={status} onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
     <section className="management-modal history-modal" data-state={status} aria-label={tr(isTrash ? "history.trashTitle" : "history.title")} onClick={(e) => e.stopPropagation()}>{content}</section>
   </div>;
-}
-
-// dayLabel buckets a timestamp into "Today", "Yesterday", or a locale date. It's
-// module-level (not a component), so it uses the non-reactive translator; the
-// panel re-renders on a locale switch via its parent, picking up the new strings.
-function dayLabel(ms: number): string {
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(ms))) / 86_400_000);
-  if (days <= 0) return t("history.today");
-  if (days === 1) return t("history.yesterday");
-  return new Date(ms).toLocaleDateString();
-}
-
-function timeLabel(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function dateBucket(ms: number): Exclude<HistoryDateFilter, "all"> {
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(ms))) / 86_400_000);
-  if (days <= 0) return "today";
-  if (days === 1) return "yesterday";
-  return "older";
-}
-
-function sessionTimeForGrouping(s: SessionMeta, isTrash: boolean): number {
-  return isTrash ? s.deletedAt || sessionActivityTime(s) : sessionActivityTime(s);
-}
-
-function sessionScope(s: SessionMeta): "project" | "global" {
-  return s.scope === "project" ? "project" : "global";
-}
-
-function isChannelSession(s: SessionMeta): boolean {
-  return s.kind === "channel" || s.sessionSource === "auto";
-}
-
-function sessionLocation(s: SessionMeta, tr: ReturnType<typeof useT>): string {
-  if (isChannelSession(s)) {
-    return [s.channelLabel || s.channel || tr("history.channel"), s.remoteId].filter(Boolean).join(" · ");
-  }
-  if (s.workspaceRoot) {
-    const parts = s.workspaceRoot.split(/[\\/]/).filter(Boolean);
-    return parts[parts.length - 1] || s.workspaceRoot;
-  }
-  return sessionScope(s) === "project" ? tr("history.filterProject") : tr("history.filterGlobal");
-}
-
-function sessionMetaLine(s: SessionMeta, tr: ReturnType<typeof useT>, isTrash = false): string {
-  const time = timeLabel(isTrash ? s.deletedAt || sessionActivityTime(s) : sessionActivityTime(s));
-  const suffix = isTrash && s.deletedAt ? ` · ${tr("history.deleted")}` : "";
-  const prefix = isChannelSession(s) ? `${tr("history.channelReadOnly")} · ` : "";
-  const turns = s.turnsState === "unknown"
-    ? tr("history.indexing")
-    : tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns });
-  return `${prefix}${turns} · ${time}${suffix}`;
-}
-
-function previewMessagesToItems(messages: HistoryMessage[]): Item[] {
-  return historyMessagesToItems(messages, "hp").items;
 }

@@ -3480,6 +3480,21 @@
       ]
     }
   },
+  "InboxQueueForTarget": {
+    "domain": "desktop/inbox_queue.go",
+    "owner": "App.InboxQueueForTarget",
+    "sources": [
+      "desktop/inbox_queue.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.InboxQueueForTarget",
+      "inputs": [
+        "target",
+        "request"
+      ]
+    }
+  },
   "InboxSnapshot": {
     "domain": "desktop/inbox_app.go",
     "owner": "App.InboxSnapshot",
@@ -3491,6 +3506,20 @@
       "resolver": "App.InboxSnapshot",
       "inputs": [
         "tabID"
+      ]
+    }
+  },
+  "InspectTopicRemoval": {
+    "domain": "desktop/topic_removal.go",
+    "owner": "App.InspectTopicRemoval",
+    "sources": [
+      "desktop/topic_removal.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.InspectTopicRemoval",
+      "inputs": [
+        "target"
       ]
     }
   },
@@ -3707,10 +3736,10 @@
     }
   },
   "ListHistorySessions": {
-    "domain": "desktop/history_catalog.go",
+    "domain": "desktop/history_read_snapshots.go",
     "owner": "App.ListHistorySessions",
     "sources": [
-      "desktop/history_catalog.go"
+      "desktop/history_read_snapshots.go"
     ],
     "scope": {
       "kind": "owner-inputs",
@@ -5649,6 +5678,20 @@
       ]
     }
   },
+  "ReleaseReadSnapshot": {
+    "domain": "desktop/read_snapshot_store.go",
+    "owner": "App.ReleaseReadSnapshot",
+    "sources": [
+      "desktop/read_snapshot_store.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ReleaseReadSnapshot",
+      "inputs": [
+        "id"
+      ]
+    }
+  },
   "ReloadCommands": {
     "domain": "desktop/app.go",
     "owner": "App.ReloadCommands",
@@ -5874,6 +5917,21 @@
         "tabID",
         "ref",
         "offset"
+      ]
+    }
+  },
+  "RemoteSessionHistoryOutlineForTab": {
+    "domain": "desktop/remote_history_outline.go",
+    "owner": "App.RemoteSessionHistoryOutlineForTab",
+    "sources": [
+      "desktop/remote_history_outline.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoteSessionHistoryOutlineForTab",
+      "inputs": [
+        "tabID",
+        "req"
       ]
     }
   },
@@ -6227,6 +6285,20 @@
       "resolver": "App.RemoveSkillPath",
       "inputs": [
         "path"
+      ]
+    }
+  },
+  "RemoveTopic": {
+    "domain": "desktop/topic_removal.go",
+    "owner": "App.RemoveTopic",
+    "sources": [
+      "desktop/topic_removal.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.RemoveTopic",
+      "inputs": [
+        "req"
       ]
     }
   },
@@ -8075,10 +8147,10 @@
     }
   },
   "SearchHistoryContent": {
-    "domain": "desktop/history_catalog.go",
+    "domain": "desktop/history_read_snapshots.go",
     "owner": "App.SearchHistoryContent",
     "sources": [
-      "desktop/history_catalog.go"
+      "desktop/history_read_snapshots.go"
     ],
     "scope": {
       "kind": "owner-inputs",
@@ -8168,6 +8240,21 @@
         "selector",
         "ref",
         "offset"
+      ]
+    }
+  },
+  "SessionHistoryOutlineForTab": {
+    "domain": "desktop/session_history_service.go",
+    "owner": "App.SessionHistoryOutlineForTab",
+    "sources": [
+      "desktop/session_history_service.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SessionHistoryOutlineForTab",
+      "inputs": [
+        "tabID",
+        "req"
       ]
     }
   },

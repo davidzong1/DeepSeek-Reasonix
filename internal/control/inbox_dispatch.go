@@ -127,6 +127,14 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 	}
 	receipt, err := c.TrySubmitInboxItem(meta.ID)
 	if err != nil {
+		if errors.Is(err, sessioninbox.ErrContentChanged) || errors.Is(err, sessioninbox.ErrOrderChanged) || errors.Is(err, sessioninbox.ErrNotFound) {
+			// A prepared candidate was invalidated. Reselect from the authoritative
+			// queue through the existing level-triggered loop, without a timer.
+			c.inbox.mu.Lock()
+			c.inbox.dispatchPending = true
+			c.inbox.mu.Unlock()
+			return inboxDispatchIdle
+		}
 		if errors.Is(err, ErrInboxRuntimeUnpublished) || errors.Is(err, ErrTurnRunning) {
 			return inboxDispatchIdle
 		}

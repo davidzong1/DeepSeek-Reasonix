@@ -23,7 +23,7 @@ export interface AttachmentBindings {
   RebindDraftImageForTarget?(token: string, draftID: string): Promise<{ draftId: string; displayName: string; mime: string; width: number; height: number; bytes: number }>;
   ReleaseDraftImageForTarget?(token: string, draftID: string): Promise<void>;
   StartTurnForAttachmentTarget?(token: string, submissionID: string, request: { input: string; display: string; original?: string; goal?: string; toolApprovalMode?: string; invocations?: import("./invocationDisplay").InvocationRequest[]; attachments: import("./invocationDisplay").SubmissionAttachment[] }): Promise<{ turnId: string; status: string; submissionId: string }>;
-  EnqueueForAttachmentTarget?(token: string, submissionID: string, input: string, display: string, invocations: import("./invocationDisplay").InvocationRequest[], attachments: import("./invocationDisplay").SubmissionAttachment[]): Promise<{ itemId: string; paused?: boolean; error?: string }>;
+  EnqueueForAttachmentTarget?(token: string, submissionID: string, input: string, display: string, invocations: import("./invocationDisplay").InvocationRequest[], attachments: import("./invocationDisplay").SubmissionAttachment[]): Promise<{ itemId: string; disposition?: string; paused?: boolean; error?: string }>;
 }
 
 const mockImages = new Map<string, string>();

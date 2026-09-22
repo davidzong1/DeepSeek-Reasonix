@@ -99,7 +99,7 @@ func TestOpenCodeGoV10MigrationPreservesAccountsHistorySearchAndRawFields(t *tes
 	for i := range cfg.Providers {
 		cfg.Providers[i].resolvedAPIKey = "test-resolved-key"
 	}
-	if cfg.ConfigVersion != 10 || len(cfg.Providers) != 5 {
+	if cfg.ConfigVersion != Default().ConfigVersion || len(cfg.Providers) != 5 {
 		t.Fatalf("version/providers=%d/%d", cfg.ConfigVersion, len(cfg.Providers))
 	}
 	if cfg.DefaultModel != "go-chat-2/deepseek-v4-pro" {
@@ -189,7 +189,7 @@ func TestOpenCodeGoV10MigrationVersionsAndInline(t *testing.T) {
 				if _, err := decodeTOMLFile(path, &c); err != nil {
 					t.Fatal(err)
 				}
-				if c.ConfigVersion != 10 || c.Providers[0].Kind != "openai" || c.Providers[0].Effort != "max" {
+				if c.ConfigVersion != Default().ConfigVersion || c.Providers[0].Kind != "openai" || c.Providers[0].Effort != "max" {
 					t.Fatalf("%+v", c.Providers)
 				}
 				if inline {
@@ -440,7 +440,7 @@ func TestOpenCodeGoV10CustomSettingsAndManualAlternates(t *testing.T) {
 		}
 	}
 	path := filepath.Join(t.TempDir(), "config.toml")
-	body := "config_version=10\n[[providers]]\nname='manual'\nkind='anthropic'\nbase_url='https://opencode.ai/zen/go'\nmodel='deepseek-v4-pro'\nthinking='enabled'\neffort='max'\n"
+	body := fmt.Sprintf("config_version=%d\n[[providers]]\nname='manual'\nkind='anthropic'\nbase_url='https://opencode.ai/zen/go'\nmodel='deepseek-v4-pro'\nthinking='enabled'\neffort='max'\n", Default().ConfigVersion)
 	_ = os.WriteFile(path, []byte(body), 0600)
 	if changed, err := ApplyUserConfigUpgradesOnStartup(path); changed || err != nil {
 		t.Fatalf("manual alternate: %v %v", changed, err)

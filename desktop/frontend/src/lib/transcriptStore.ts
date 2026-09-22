@@ -1,8 +1,9 @@
 import type { HistoryPreparationWait } from "./historyPreparation";
 // Bounded transcript records with stable ids, lazy content, generation-aware paging, and weighted LRU eviction.
 import { asArray } from "./array";
-import { canonicalHistoryContent, canonicalHistorySlice } from "./canonicalTranscriptBackend";
+import { canonicalHistoryContent, canonicalHistorySlice, canonicalHistoryWindow } from "./canonicalTranscriptBackend";
 import { fetchPreparedHistorySlice } from "./transcriptHistoryFetch";
+import { loadPreparedHistory, HistoryPreparingError } from "./historyPreparation";
 import { prepareTranscriptInstall } from "./transcriptStoreInstall";
 import { registerTranscriptCacheDiagnostics } from "./sessionDiagnostics";
 import { TranscriptMarkdownCache, type ParsedMarkdownValue } from "./transcriptMarkdownCache";
@@ -65,6 +66,34 @@ export class TranscriptStore {
     const prepared = this.prepareInstallSlice(tabId, sessionPath, slice);
     prepared.commit();
     return prepared.projection;
+  }
+
+  /** A target replaces the reading window only after its caller validates intent. */
+  async prepareTargetWindow(tabId: string, path: string, request: import("./types").HistoryWindowRequestView, current: () => boolean): Promise<
+    { status: "loaded"; prepared: PreparedTranscriptInstall; current: () => boolean } | { status: "cancelled" | "stale" | "unavailable" }> {
+    const key = this.sessionKeyFor(tabId, path);
+    const owner = this.sessions.get(key);
+    if (!owner || !current()) return { status: "cancelled" };
+    const generation = owner.generation;
+    const ownsRequest = this.beginWindowRequest(owner);
+    const valid = () => current() && ownsRequest() && this.sessions.get(key) === owner && owner.generation === generation;
+    const page = await loadPreparedHistory(async () => {
+      const page = await canonicalHistoryWindow(tabId, request);
+      if (page.status === "preparing") throw new HistoryPreparingError();
+      return page;
+    }, valid, this.preparationWait);
+    if (!page || !valid()) return { status: "cancelled" };
+    if (page.status === "stale_cursor") return { status: "stale" };
+    if (page.status !== "ready" || !page.entries.some(entry => entry.message.messageId === request.messageId)) return { status: "unavailable" };
+    const prepared = this.prepareInstallSlice(tabId, path, { ...page, nextCursor: page.olderCursor, stale: false });
+    return { status: "loaded", prepared, current: valid };
+  }
+
+  private windowRequests = new WeakMap<SessionTranscript, object>();
+  private beginWindowRequest(session: SessionTranscript): () => boolean {
+    const request = {};
+    this.windowRequests.set(session, request);
+    return () => this.windowRequests.get(session) === request;
   }
 
   /** Build a complete replacement without exposing it to readers. The caller
@@ -598,6 +627,7 @@ export class TranscriptStore {
     // A fresh load supersedes every in-flight request of the previous load.
     session.generation += 1;
     const generation = session.generation;
+    const ownsRequest = this.beginWindowRequest(session);
     let settleGeneration!: () => void;
     const generationSettled = new Promise<void>((resolve) => { settleGeneration = resolve; });
     session.generationSettlement = { generation, promise: generationSettled };
@@ -606,7 +636,7 @@ export class TranscriptStore {
 
     try {
       const { turns, entries, bytes } = options;
-      const current = () => this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true);
+      const current = () => ownsRequest() && this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true);
       let slice = await this.fetchSlice(tabId, { cursor: "", turns, entries, bytes }, current);
       if (!slice || !current()) return undefined;
       if (slice.stale) {
@@ -661,10 +691,11 @@ export class TranscriptStore {
     if (!session.hasOlder || !session.nextCursor || session.olderInFlight) return undefined;
     session.olderInFlight = true;
     const generation = session.generation;
+    const ownsRequest = this.beginWindowRequest(session);
     const { current: _current, ...budget } = options;
     try {
-      const slice = await this.fetchSlice(tabId, { cursor: session.nextCursor, ...budget }, () => this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true));
-      if (!slice || this.sessions.get(key) !== session || session.generation !== generation) return undefined;
+      const slice = await this.fetchSlice(tabId, { cursor: session.nextCursor, ...budget }, () => ownsRequest() && this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true));
+      if (!slice || !ownsRequest() || this.sessions.get(key) !== session || session.generation !== generation || options.current?.() === false) return undefined;
       if (slice.stale) {
         if (session.canonicalV2) throw new Error("history snapshot expired");
         const projection = await this.loadLatest(tabId, sessionPath, options);
@@ -729,10 +760,11 @@ export class TranscriptStore {
     if (!session.hasNewer || !session.newerCursor || session.newerInFlight) return undefined;
     session.newerInFlight = true;
     const generation = session.generation;
+    const ownsRequest = this.beginWindowRequest(session);
     const { current: _current, ...budget } = options;
     try {
-      const slice = await this.fetchSlice(tabId, { cursor: session.newerCursor, newer: true, ...budget }, () => this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true));
-      if (!slice || this.sessions.get(key) !== session || session.generation !== generation) return undefined;
+      const slice = await this.fetchSlice(tabId, { cursor: session.newerCursor, newer: true, ...budget }, () => ownsRequest() && this.sessions.get(key) === session && session.generation === generation && (options.current?.() ?? true));
+      if (!slice || !ownsRequest() || this.sessions.get(key) !== session || session.generation !== generation || options.current?.() === false) return undefined;
       if (slice.stale || !this.sameFingerprint(session, slice)) {
         // A newer page from a rebuilt projection cannot be appended to the
         // window the reader is holding; the window keeps its position and the

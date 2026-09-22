@@ -102,8 +102,8 @@ the original access error together with the repair outcome.
 Example:
 
 ```toml
-config_version = 1
-default_model = "deepseek/deepseek-v4-flash"
+config_version = 11
+default_model = "deepseek/deepseek-flash"
 language = "zh"
 credentials_store = "auto"   # legacy compatibility; provider keys are in .env
 
@@ -117,10 +117,10 @@ provider_access = ["deepseek"]
 
 [[providers]]
 name        = "deepseek"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-models      = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
-default     = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+models      = ["deepseek-flash", "deepseek-v4-pro"]
+default     = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 

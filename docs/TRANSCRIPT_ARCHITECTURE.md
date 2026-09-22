@@ -1,6 +1,6 @@
 # Natural-flow chat transcript
 
-This is the sole production chat renderer, replacing TranscriptKernel, the window adapter and the measurement ledger. Rendering reference: local DeepSeek Harness `c291e7961a`. Reasonix keeps its controller, storage, composer, approvals and workbench; current synchronization and history behavior follow [Transcript v2](TRANSCRIPT_V2.md) and the [scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md). Referencing Harness does not imply adopting its complete turn-outline navigation.
+This is the sole production chat renderer, replacing TranscriptKernel, the window adapter and the measurement ledger. Rendering reference: local DeepSeek Harness `c291e7961a`. Reasonix keeps its controller, storage, composer, approvals and workbench; current synchronization and history behavior follow [Transcript v2](TRANSCRIPT_V2.md) and the [scroll and history contract](TRANSCRIPT_SCROLL_CONTRACT.md). The complete turn rail uses durable indexed summaries and direct history-window positioning.
 
 ## Ownership
 
@@ -27,34 +27,17 @@ Markdown source → shared worker → stable prefix blocks + mutable streaming t
 
 ## Product behavior
 
-The column is at most 800 px wide, with 24 px horizontal padding (16 px in narrow chat containers). Existing typography/themes apply. Native selection and scrollbars are used. History uses a bidirectional bounded window, retaining three adjacent pages of 32 messages by default. Paging beyond the budget reclaims the opposite end. Navigation lists loaded turns only; complete persisted history remains searchable and reachable through canonical search/locate.
+The column is at most 800 px wide, with 24 px horizontal padding (16 px in narrow chat containers). Existing typography/themes apply. Native selection and scrollbars are used. History uses a bidirectional bounded window, retaining three adjacent pages of 32 messages by default. Paging beyond the budget reclaims the opposite end. Navigation describes all visible durable turns using paged summaries; body residency remains bounded.
 
-## Loaded-turn navigation and history access
+## Complete-turn navigation and history access
 
-Follow v2 intentionally derives the rail from loaded turns. Its marks reflect the resident window, not a complete conversation index. Reading older pages isolates live output; paging forward or locating a message makes reclaimed history reachable again. Reclaiming a page releases resident content without deleting persisted messages.
+The rail reads `history-outline-v1` summaries from the canonical history index, not the bounded Follow projection. Each page pins storage generation and snapshot sequence. A directory keeps at most six pages of 128 entries under a shared 8 MiB renderer budget; the rail renders only visible marks plus four marks at each end. Eviction preserves the total turn count and re-fetches previews on demand.
 
-The rail navigates within loaded turns. To reach unloaded history, canonical search/locate resolves the target through the history index and requests its surrounding page; it does not sequentially load every intervening page from the newest position. Navigation obeys the scroll contract's generation and interaction fences: reader takeover cancels pending navigation, and stale callbacks cannot regain viewport ownership.
+Unloaded turns resolve to stable message IDs and request one newer-direction, 32-message window beginning at that message. The common history store owns replacement, paging and request fencing. No intervening pages are loaded. Navigation waits for mounted content and routes all viewport writes through ChatScrollController. New selections, reader input and session replacement cancel obsolete commits and positioning. Stale cuts re-anchor once by message identity, never by an ordinal that may now describe another message.
 
-PR #10385 supersedes the complete-outline and cumulative-history behavior previously documented here. The [#10276 outline acceptance record](TRANSCRIPT_OUTLINE_NAVIGATION.md) preserves that earlier implementation and its validation; it does not define current production behavior. Desktop and Serve require `transcript-v2`, with an upgrade error for unsupported peers and no legacy chat fallback.
+Follow invalidates directory summaries on committed message changes and durable coverage changes, not token deltas. Directory refresh does not restart Follow or replace the body. Peers without the optional directory capability retain loaded-turn navigation with an upgrade hint; the mandatory transcript-v2 requirement remains unchanged.
 
-| Capability | Result |
-| --- | --- |
-| User content, attachments, images, copy | Kept; chat edit-and-resend removed |
-| Assistant Markdown, code, tables, math, images, safe links and citations | Kept; answer source is not truncated |
-| Reasoning | Latest nonempty line while streaming; first line and existing duration after completion; lazy disclosure |
-| Tool/subagent progress | Compact name, subject and status; independent details drawer |
-| Turn process | Collapsed only with a final answer, complete user boundary and successful completion |
-| Partial, failed, interrupted, tool-only or incomplete-page turns | Output and faults remain visible |
-| Turn actions | Copy complete answer; ordinary conversation fork using an eligible checkpoint |
-| Rewinds, worktree forks, summary/delivery/acceptance/verification workflows | Removed from chat; backend/other consumers retained |
-| Context recovery, history errors and interactive extensions | Kept through existing command/interaction hosts |
-| Selection popup and permanent transcript diagnostics | Removed; native copy and development diagnostics retained |
-
-Manual process disclosure survives session navigation in a bounded in-memory map; streaming does not override it. Fork is disabled during running, hydration, pending actions, read-only state or missing `canConversation` checkpoint capability. It calls the existing ordinary `fork` command.
-
-The drawer overlays the column: `min(560px, 60%)`, full width below a 900 px chat width. It has independent scrolling, an inert background, focus trapping, Escape dismissal, child/parent call navigation and post-commit trigger-focus restoration. Session changes unmount it; target changes reset its request epoch.
-
-Tool and thought previews use 8,000 characters. Full loading/copying exposes pending/error/retry state; copying awaits clipboard completion. Code initially shows 200 lines and copies its entire source even when collapsed. Browser find covers mounted content only.
+This restores complete navigation after #10385's loaded-only product choice while retaining its bounded body window. The earlier #10276 acceptance record is historical; its accumulated-history jump implementation is not restored.
 
 ## Full content and asynchronous ownership
 

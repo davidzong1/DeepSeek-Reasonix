@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/fileutil"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 )
@@ -272,6 +273,15 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	}
 	defer unlock()
 
+	changed, err := applyUserConfigUpgradesThroughV10Locked(path)
+	if err != nil {
+		return changed, err
+	}
+	upgraded, err := upgradeDeepSeekCatalogFileLocked(path, fileutil.AtomicWriteFile)
+	return changed || upgraded, err
+}
+
+func applyUserConfigUpgradesThroughV10Locked(path string) (bool, error) {
 	_, exists, err := statConfigPath(path)
 	if err != nil {
 		return false, err
@@ -350,7 +360,7 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	if !changed {
 		return repairProviderEndpointContractsOnStartup(path, false)
 	}
-	if header.ConfigVersion < defaultVersion {
+	if header.ConfigVersion < openCodeGoUpgradeVersion {
 		cfg.ConfigVersion = deepSeekOfficialChatUpgradeConfigVersion
 	}
 	if err := cfg.SaveTo(path); err != nil {

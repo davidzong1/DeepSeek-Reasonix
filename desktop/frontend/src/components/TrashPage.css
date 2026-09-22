@@ -27,8 +27,4 @@
 .trash-page__sections { display: flex; flex: 0 0 auto; gap: 8px; padding: 8px 0 12px; }
 .trash-page__sections button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--sidebar-active); }
 .trash-page__archived { display: flex; flex: 1; min-height: 0; width: 100%; max-width: 840px; }
-.trash-center__heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 24px; }
-.trash-center__eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-faint); font-size: 12px; }
-.trash-center__heading h2 { font-size: 20px; font-weight: 600; margin: 8px 0; }
-.trash-center__heading p { color: var(--fg-faint); margin: 0; }
-.trash-center__body { min-height: 0; }
+.trash-center .management-screen__content { min-height: 0; }

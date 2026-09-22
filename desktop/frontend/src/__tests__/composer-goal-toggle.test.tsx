@@ -1083,27 +1083,29 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
-  let nextInboxID = 0;
-  const steerItemIDs: string[] = [];
-  const deletedItemIDs: string[] = [];
+  let nextInboxID = 0, revision = 0;
+  let queued: { id: string; preview: string; state: string; intent: string; byteSize: number; position: number }[] = [];
+  const steerItemIDs: string[] = [], deletedItemIDs: string[] = [];
   mockApp({
-    InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
-      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
-    }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: `durable-${++nextInboxID}`, disposition: "queued_followup", position: nextInboxID, paused: false,
-    }),
+    InboxSnapshot: async () => ({ revision, paused: false, recovered: false, items: queued,
+      itemsCount: queued.length, bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024 }),
+    EnqueueInboxFollowup: async (_tabID, display) => {
+      const id = `durable-${++nextInboxID}`;
+      queued.push({ id, preview: display, state: "queued", intent: "followup", byteSize: display.length, position: queued.length + 1 }); revision++;
+      return { itemId: id, disposition: "queued_followup", position: queued.length, paused: false };
+    },
     SteerInboxItem: async (_tabID, itemID) => {
       steerItemIDs.push(itemID);
+      queued = queued.filter(item => item.id !== itemID); revision++;
       return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
     },
     DeleteInboxItem: async (_tabID, itemID) => {
       deletedItemIDs.push(itemID);
+      queued = queued.filter(item => item.id !== itemID); revision++;
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/session.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1167,6 +1169,7 @@ console.log("\ncomposer goal toggle");
   });
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders again after another queued item");
 
+  queued = []; revision++; // The controller consumed and acknowledged the item.
   await rerender({ guidanceConsumedKey: "s1", guidanceConsumedText: "prefer the smaller diff" });
   ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when steer is consumed");
 
@@ -1178,7 +1181,7 @@ console.log("\ncomposer goal toggle");
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders before turn stop");
 
   await rerender({ running: false });
-  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when the turn stops");
+  ok(document.querySelector(".composer-guidance-item") !== null, "pending guidance remains after the current turn stops");
 
   await act(async () => {
     root.unmount();
@@ -1189,21 +1192,21 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   const steerItemIDs: string[] = [];
+  let queued = false, revision = 0;
   mockApp({
-    InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+    InboxSnapshot: async () => ({ revision, paused: false, recovered: false,
+      items: queued ? [{ id: "durable-activating", preview: "steer while activating", state: "queued", intent: "followup", byteSize: 22, position: 1 }] : [], itemsCount: queued ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: "durable-activating", disposition: "queued_followup", position: 1, paused: false,
-    }),
+    EnqueueInboxFollowup: async () => { queued = true; revision++; return { itemId: "durable-activating", disposition: "queued_followup", position: 1, paused: false }; },
     SteerInboxItem: async (_tabID, itemID) => {
       steerItemIDs.push(itemID);
+      queued = false; revision++;
       return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/activating.jsonl",
     submitDisabled: true,
     onSend: (displayText) => {
       calls.send.push(displayText);
@@ -1244,10 +1247,10 @@ console.log("\ncomposer goal toggle");
   // the browser, owns its later FIFO dispatch and ack.
   const dom = installDom();
   let steerAttempts = 0;
-  let backendQueued = false;
+  let backendQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendQueued ? 1 : 2,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendQueued ? [{
@@ -1258,17 +1261,15 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendQueued = true;
-      return { itemId: "durable-late", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendQueued = true; backendRevision++;
+      return { itemId: "durable-late", disposition: "queued_followup", position: 1, paused: false }; },
     SteerInboxItem: async (_tabID, itemID) => {
       steerAttempts += 1;
       return { itemId: itemID, disposition: "queued_followup", position: 1, paused: false };
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/late.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1295,7 +1296,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "rejected steer does not open a provider turn");
   ok(document.querySelector(".composer-guidance-item") !== null, "rejected steer remains queued");
 
-  backendQueued = false; // Controller dispatched and durably acked after TurnDone.
+  backendQueued = false; backendRevision++; // Controller dispatched and durably acked after TurnDone.
   await rerender({ running: false });
   await waitFor("acked durable follow-up removed from shelf", () => document.querySelector(".composer-guidance-item") === null);
   eq(calls.send.length, 0, "late durable follow-up is never resubmitted by the frontend");
@@ -1311,10 +1312,10 @@ console.log("\ncomposer goal toggle");
   // completion is dispatched by the Controller, so the frontend must only
   // reconcile the eventual durable ack and never call onSend itself.
   const dom = installDom();
-  let backendQueued = false;
+  let backendQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendQueued ? 1 : 2,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendQueued ? [{
@@ -1325,13 +1326,11 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendQueued = true;
-      return { itemId: "durable-natural", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendQueued = true; backendRevision++;
+      return { itemId: "durable-natural", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/natural.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1351,7 +1350,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "queuing while running does not send immediately");
   ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
 
-  backendQueued = false; // Controller completed and acked the next FIFO turn.
+  backendQueued = false; backendRevision++; // Controller completed and acked the next FIFO turn.
   await rerender({ running: false });
   await waitFor("durable guidance ack reconciled", () => document.querySelector(".composer-guidance-item") === null);
 
@@ -1370,17 +1369,17 @@ console.log("\ncomposer goal toggle");
   // that could run after cancellation.
   const dom = installDom();
   let cancelledItemIDs: string[] = [];
+  let queued = false;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      revision: queued ? 1 : 0, paused: false, recovered: false,
+      items: queued ? [{ id: "durable-cancel", preview: "keep cancelled follow-up", state: "queued", intent: "followup", source: "desktop", byteSize: 24, position: 1 }] : [], itemsCount: queued ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: "durable-cancel", disposition: "queued_followup", position: 1, paused: false,
-    }),
+    EnqueueInboxFollowup: async () => { queued = true; return { itemId: "durable-cancel", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/cancel.jsonl",
     onCancel: async (itemIDs = []) => {
       cancelledItemIDs = itemIDs;
       return { discardedItemIds: [...itemIDs] };
@@ -1416,10 +1415,10 @@ console.log("\ncomposer goal toggle");
   // Controller activation state is irrelevant to browser-side dispatch now:
   // the durable item remains visible until an authoritative consume/ack event.
   const dom = installDom();
-  let backendReadyQueued = false;
+  let backendReadyQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendReadyQueued ? 1 : 0,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendReadyQueued ? [{
@@ -1430,13 +1429,11 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendReadyQueued = true;
-      return { itemId: "durable-ready", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendReadyQueued = true; backendRevision++;
+      return { itemId: "durable-ready", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/ready.jsonl",
     submitDisabled: false,
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
@@ -1471,6 +1468,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "controller readiness never triggers frontend auto-submit");
   ok(document.querySelector(".composer-guidance-item") !== null, "durable item remains until backend consume/ack");
 
+  backendReadyQueued = false; backendRevision++;
   await rerender({ guidanceConsumedKey: "durable-ready-acked", guidanceConsumedText: "keep going once ready" });
   ok(document.querySelector(".composer-guidance-item") === null, "backend consume event clears the acknowledged item");
 
@@ -2265,6 +2263,7 @@ console.log("\ncomposer goal toggle");
   // Entity-only input must remain structured while queued during a run.
   const dom = installDom();
   let queued: { submit?: string; invocations?: StructuredInvocationSubmit["invocations"] } = {};
+  let queuedDisplay = "";
   mockApp({
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
@@ -2272,15 +2271,17 @@ console.log("\ncomposer goal toggle");
     ListDirForTarget: async () => [],
     SearchFileRefsForTarget: async () => [],
     InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      revision: queuedDisplay ? 1 : 0, paused: false, recovered: false,
+      items: queuedDisplay ? [{ id: "durable-entity", preview: queuedDisplay, state: "queued", intent: "followup", source: "desktop", byteSize: queuedDisplay.length, position: 1 }] : [], itemsCount: queuedDisplay ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowupWithInvocations: async (_tabId, _display, input, invocations) => {
+    EnqueueInboxFollowupWithInvocations: async (_tabId, display, input, invocations) => {
       queued = { submit: input, invocations };
+      queuedDisplay = display;
       return { itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false };
     },
   });
-  const { root, calls, rerender } = await renderComposer();
+  const { root, calls, rerender } = await renderComposer({ inboxSessionPath: "/repo/entity.jsonl" });
   await replaceComposerDraft(rerender, 4000, "/writing-plans");
   await waitFor("skill menu for the running-queue entity", () => Boolean(document.querySelector(".slashmenu")));
   const queueTextarea = document.querySelector("textarea") as HTMLTextAreaElement | null;

@@ -483,7 +483,7 @@ func (a *App) recoverDesktopOperations(ctx context.Context, includeHistorical bo
 		defer release()
 		return a.replayDesktopSessionOperation(ctx, state, op)
 	}
-	var joined error
+	joined := a.reconcileTopicRemovals(state)
 	for _, op := range state.PendingOperations {
 		if op.Kind != "purge" || op.Phase == "committed" {
 			continue

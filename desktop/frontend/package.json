@@ -35,6 +35,9 @@
     "test:transcript": "tsx src/__tests__/canonical-user-display.test.ts && tsx src/__tests__/chat-tool-presentation.test.ts && tsx src/__tests__/chat-view-source.test.ts && tsx src/__tests__/maintenance-lifecycle.test.ts && node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/maintenance-card.test.tsx && tsx src/__tests__/presented-files.test.ts && node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/presented-files-ui.test.tsx && tsx src/__tests__/chat-content-loader.test.ts && tsx src/__tests__/chat-details-race.test.tsx && tsx src/__tests__/tool-payload-preview.test.ts && tsx src/__tests__/markdown-natural-flow.test.tsx && tsx src/__tests__/chat-natural-flow.test.tsx && tsx src/__tests__/chat-scroll-controller.test.ts && tsx src/__tests__/markdown-pipeline.test.tsx && tsx src/__tests__/markdown-worker-client.test.ts && tsx src/__tests__/transcript-store.test.ts && tsx src/__tests__/transcript-memory-pressure.test.ts && tsx src/__tests__/transcript-tool-association.test.ts && tsx src/__tests__/transcript-follow-client.test.ts && tsx src/__tests__/transcript-session-follower.test.ts && tsx src/__tests__/transcript-scroll-diagnostics.test.ts && tsx src/__tests__/session-export-routing.test.tsx && tsx src/__tests__/session-export-operation.test.ts && tsx src/__tests__/typography-overflow-contract.test.ts && tsx src/__tests__/nested-scroll-handoff.test.ts && tsx src/__tests__/transcript-outline-store.test.ts && tsx src/__tests__/chat-turn-jump.test.ts && node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/chat-turn-outline-jump.test.tsx",
     "test:session-export-browser": "node bench/session-export.mjs",
     "test:session-loading-browser": "node bench/session-loading.mjs",
+    "test:maintenance-browser": "node bench/maintenance-submit.mjs",
+    "test:turn-outline-browser": "node bench/turn-outline.mjs",
+    "test:turn-outline-electron": "node bench/turn-outline.mjs --electron",
     "test:transcript-browser": "PLAYWRIGHT_BROWSERS_PATH=.pw-browsers CHAT_BROWSER=chromium node bench/chat-transcript.mjs",
     "test:transcript-reader-browser": "PLAYWRIGHT_BROWSERS_PATH=.pw-browsers CHAT_BROWSER=chromium node bench/chat-transcript.mjs",
     "test:transcript-electron": "node bench/transcript-layout.mjs --electron",
@@ -43,7 +46,7 @@
     "test:dock-electron": "node bench/dock-file-navigation.mjs --electron",
     "pretest": "pnpm test:terminal && pnpm test:task-monitor && pnpm test:composer && tsx src/__tests__/context-center-contract.test.ts && tsx src/__tests__/provider-model-cache.test.ts && tsx src/__tests__/format-tokens.test.ts && pnpm test:usage-stats && pnpm test:settings-responsive && pnpm test:composer-menu-viewport && pnpm test:diagnostics && pnpm test:transcript",
     "test:composer-menu-viewport": "tsx src/__tests__/composer-menu-viewport.test.ts && tsx src/__tests__/anchored-popover-scroll.test.tsx && tsx src/__tests__/anchored-overlay-lifecycle.test.tsx && tsx src/__tests__/virtual-menu-identity.test.tsx",
-    "test:composer": "tsx src/__tests__/rich-composer-selection.test.tsx && tsx src/__tests__/composer-resized-input-css.test.ts && tsx src/__tests__/composer-workspace-frame-css.test.ts && tsx src/__tests__/composer-ime.test.tsx && tsx src/__tests__/composer-autosize-scrollbar-css.test.ts",
+    "test:composer": "tsx src/__tests__/rich-composer-selection.test.tsx && tsx src/__tests__/composer-resized-input-css.test.ts && tsx src/__tests__/composer-workspace-frame-css.test.ts && node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/composer-ime.test.tsx && tsx src/__tests__/composer-autosize-scrollbar-css.test.ts",
     "test:composer-browser": "node bench/composer-transcript-stability.mjs",
     "test:popover-browser": "node bench/anchored-popover-lifecycle.mjs",
     "test:popover-electron": "node bench/anchored-popover-lifecycle.mjs --electron",
@@ -64,6 +67,9 @@
     "test:chat-file-browser": "PLAYWRIGHT_BROWSERS_PATH=.pw-browsers node bench/chat-file-reference.mjs"
   },
   "dependencies": {
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@tanstack/react-virtual": "^3.14.10",
     "@xterm/addon-fit": "0.11.0",

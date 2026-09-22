@@ -1,8 +1,9 @@
 import { createRoot } from "react-dom/client";
-import { ArchivedSessionsList } from "../components/ArchivedSessionsList";
+import { TrashPage } from "../components/TrashPage";
 import { LocaleProvider } from "../lib/i18n";
 import type { SessionLifecycleRequest } from "../generated/desktopContract.generated";
 import { installDesktopHostStub } from "../__tests__/desktopHostStub";
+import "../styles.css";
 
 let generation = 7, targetGeneration = 7;
 let unknown = false, preview = true;
@@ -27,4 +28,5 @@ Object.assign(window, { trashFixture: {
   invalidatePreview() { preview = false; host.emit("project-tree:changed"); },
   finishPreview() { finishPreview?.(); },
 } });
-createRoot(document.getElementById("root")!).render(<LocaleProvider><ArchivedSessionsList active onOpenSession={async () => {}} /></LocaleProvider>);
+createRoot(document.getElementById("root")!).render(<LocaleProvider><TrashPage active onBack={() => {}}
+  onOpenSession={async () => {}} list={async () => []} restore={async () => {}} purge={async () => {}} /></LocaleProvider>);

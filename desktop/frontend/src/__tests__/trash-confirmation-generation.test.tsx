@@ -17,9 +17,12 @@ let rows = [row("victim")];
 const requests: SessionLifecycleRequest[] = [];
 let networkFailure = false;
 let latePreview: (() => void) | undefined;
+let holdPreview = false;
 const host = installDesktopHostStub({
  ListTrashEntries: async () => ({items: rows, generation}),
- ReadSessionHistory: async () => new Promise(resolve => { latePreview = () => resolve({messages:[{role:"user", content:"late private preview"}]}); }),
+ ReadSessionHistory: async () => holdPreview
+  ? new Promise(resolve => { latePreview = () => resolve({messages:[{role:"user", content:"late private preview"}]}); })
+  : { messages: [{role:"user", content:"preview"}] },
  ApplySessionLifecycle: async (request: SessionLifecycleRequest) => {
   requests.push(structuredClone(request));
   if (networkFailure) throw new Error("network outcome unknown");
@@ -28,8 +31,13 @@ const host = installDesktopHostStub({
 });
 const root = createRoot(document.getElementById("root")!);
 const button = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(node => node.textContent?.trim() === text)!;
+const startDelete = async () => {
+ await act(async () => (document.querySelector('.archived-sessions__open') as HTMLButtonElement).click());
+ await act(async () => (document.querySelector('.archived-sessions__session-menu') as HTMLButtonElement).click());
+ await act(async () => (document.querySelector('[role="menuitem"]') as HTMLButtonElement).click());
+};
 await act(async () => root.render(<LocaleProvider><ArchivedSessionsList active={true} onOpenSession={async()=>{}} /></LocaleProvider>));
-await act(async () => (document.querySelector('.archived-sessions__delete') as HTMLButtonElement).click());
+await startDelete();
 assert.ok(document.querySelector('[role="dialog"]'));
 // Another client restores and rearchives this same session while confirmation is open.
 generation = 9;
@@ -39,7 +47,7 @@ assert.equal(requests[0].expectedGeneration, 7, "confirmation retains original g
 
 // A background refresh must not remove an unknown-result request or its retry.
 networkFailure = true;
-await act(async () => (document.querySelector('.archived-sessions__delete') as HTMLButtonElement).click());
+await startDelete();
 await act(async () => button("Permanently delete").click());
 const unknown = structuredClone(requests.at(-1));
 generation = 12;
@@ -49,11 +57,13 @@ await act(async () => button("Retry failed items").click());
 assert.deepEqual(requests.at(-1), unknown, "retry preserves the complete original request");
 
 // Invalidate an outstanding preview when its row becomes unavailable.
-await act(async () => (document.querySelector('.archived-sessions__open') as HTMLButtonElement).click());
+holdPreview = true;
+act(() => (document.querySelector('.archived-sessions__open') as HTMLButtonElement).click());
 rows = [{...row("victim"), canPreview:false, canRestore:false}];
 await act(async () => host.emit("project-tree:changed"));
-assert.equal(document.querySelector('.archived-sessions__preview'), null);
-await act(async () => latePreview?.());
+assert.equal(document.querySelector('.archived-sessions__preview-heading'), null, "unavailable preview content is cleared");
+latePreview?.();
+await Promise.resolve();
 assert.ok(!document.body.textContent?.includes("late private preview"));
 
 // Cancelling and leaving the page never submits the captured request.

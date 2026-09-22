@@ -671,6 +671,9 @@ jobs:
               pnpm --dir frontend test:motion-browser
               ;;
             transcript)
+              # The fixture resolves .pw-browsers from frontend, not this shell's desktop cwd.
+              REASONIX_MAINTENANCE_EVIDENCE="$evidence/maintenance" \
+                pnpm --dir frontend test:maintenance-browser
               xvfb-run -a env PLAYWRIGHT_BROWSERS_PATH=.pw-browsers REASONIX_TRANSCRIPT_NATIVE_THUMB=1 \
                 REASONIX_TRANSCRIPT_MODE=native-scrollbar REASONIX_LAYOUT_ARTIFACTS="$evidence/native-scrollbar" \
                 pnpm --dir frontend test:transcript-browser
