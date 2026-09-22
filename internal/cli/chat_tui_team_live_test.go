@@ -27,8 +27,8 @@ func TestMemberInFlightTurnVisibleAfterSwitch(t *testing.T) {
 	if joined := strings.Join(m.transcript, "\n"); strings.Contains(joined, "ALICE-IN-FLIGHT") {
 		t.Fatalf("an unbound member must not write the bound member's transcript:\n%s", joined)
 	}
-	if got := len(m.teamPick.session.live["alice"]); got != 2 {
-		t.Fatalf("live buffer = %d events, want the in-flight turn kept for the switch", got)
+	if got := len(m.memberEvents.heldTurn("alice")); got != 2 {
+		t.Fatalf("retained turn = %d events, want the in-flight turn kept for the switch", got)
 	}
 
 	if cmd := m.switchTeamMember("alice"); cmd == nil {
@@ -45,12 +45,12 @@ func TestMemberInFlightTurnVisibleAfterSwitch(t *testing.T) {
 func TestMemberLiveBufferClearsOnTurnDone(t *testing.T) {
 	m := promptTestTUI(t, nil)
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{Kind: event.Message, Text: "done work"}})
-	if len(m.teamPick.session.live["alice"]) == 0 {
-		t.Fatal("the in-flight event must buffer")
+	if len(m.memberEvents.heldTurn("alice")) == 0 {
+		t.Fatal("the in-flight event must be retained")
 	}
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{Kind: event.TurnDone}})
-	if _, ok := m.teamPick.session.live["alice"]; ok {
-		t.Fatal("a finished turn must clear the buffer; its content is in History() now")
+	if got := len(m.memberEvents.heldTurn("alice")); got != 0 {
+		t.Fatalf("a finished turn must clear the hold; its content is in History() now (%d left)", got)
 	}
 }
 
@@ -66,9 +66,9 @@ func TestMemberLiveBufferIsBounded(t *testing.T) {
 		}
 		m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{Kind: event.Text, Text: text}})
 	}
-	buffered := m.teamPick.session.live["alice"]
+	buffered := m.memberEvents.heldTurn("alice")
 	if len(buffered) != memberLiveEventCap {
-		t.Fatalf("buffer = %d events, want the cap %d", len(buffered), memberLiveEventCap)
+		t.Fatalf("retained turn = %d events, want the cap %d", len(buffered), memberLiveEventCap)
 	}
 	for _, ev := range buffered {
 		if ev.Text == "OLDEST" {
@@ -92,8 +92,8 @@ func TestMemberPromptEventsStayOutOfLiveBuffer(t *testing.T) {
 		Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1"}}})
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: event.Event{
 		Kind: event.AskRequest, Ask: event.Ask{ID: "q1"}}})
-	if got := len(m.teamPick.session.live["alice"]); got != 0 {
-		t.Fatalf("live buffer = %d events, want prompts left to ReplayPendingPrompts", got)
+	if got := len(m.memberEvents.heldTurn("alice")); got != 0 {
+		t.Fatalf("retained turn = %d events, want prompts left to ReplayPendingPrompts", got)
 	}
 }
 

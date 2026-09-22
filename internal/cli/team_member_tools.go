@@ -85,6 +85,26 @@ func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []t
 		base("leader_authz_log", "Read this team's recorded authorization decisions (auto grants and leader allow/deny), newest first. Read-only.", `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":64}},"additionalProperties":false}`),
 		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
 		base("team_knowledge_expire", "Retire this team's knowledge created before an RFC 3339 cutoff. Leader-only write.", `{"type":"object","properties":{"before":{"type":"string"},"reason":{"type":"string"}},"required":["before"]}`),
+		// The one tool that is not a task-service pass-through: waiting blocks
+		// inside the call instead of returning a status the model must re-ask for.
+		newLeaderWaitTool(service, teamName),
+	}
+}
+
+// newLeaderWaitTool registers the leader's waiting primitive. Its dependency is
+// the wait bus, resolved late-bound through the service because the registry
+// that owns the bus is built after the service these tools are assembled from.
+//
+// A host that wired no bus still gets a bounded wait rather than a stuck one:
+// the timeout is the wait's own, not a configuration.
+func newLeaderWaitTool(service *teamTaskService, teamName string) tool.Tool {
+	const desc = "Block until the team reports something worth acting on (a member result, a cancellation, a refused dispatch, a queued escalation, or new user input), then return the reasons. " +
+		"Use this instead of sleeping in bash or re-reading leader_check_member_status: the reason arrives in this result, so waking costs no extra request. " +
+		"Returns timeout when nothing arrived before timeout_seconds."
+	const schema = `{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":1,"maximum":600,"description":"Seconds to wait before returning timeout. Defaults to 120."}},"additionalProperties":false}`
+	return &leaderWaitTool{
+		teamTaskTool: &teamTaskTool{name: "leader_wait", desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, leader: true},
+		signal:       leaderWaitSignalSource(service),
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"reasonix/internal/control"
@@ -40,6 +41,9 @@ type writeAccessEscalations struct {
 	hub     *teamHub
 	pending map[string]pendingEscalation
 	waking  map[string]bool
+	// signals is the registry's wait bus, late-bound like the hub: the service is
+	// built with the overlay, the bus with the registry behind it.
+	signals atomic.Pointer[waitBus]
 }
 
 func newWriteAccessEscalations(store *team.TeamStore) *writeAccessEscalations {
@@ -58,6 +62,23 @@ func (s *writeAccessEscalations) setHub(h *teamHub) {
 	s.mu.Lock()
 	s.hub = h
 	s.mu.Unlock()
+}
+
+// setSignals late-binds the registry's wait bus, so a request that needs the
+// leader's decision also wakes a leader blocked in an interruptible wait. The
+// wake below still delivers the queue; the signal is what makes it immediate.
+func (s *writeAccessEscalations) setSignals(bus *waitBus) {
+	if s == nil {
+		return
+	}
+	s.signals.Store(bus)
+}
+
+// escalateReason is the request's line in a waiting leader's result. It names
+// the member, the tool and the request id, because that tuple is what the
+// leader needs to answer with leader_resolve_member_approval.
+func escalateReason(entry pendingEscalation) string {
+	return fmt.Sprintf("member %q requests write access (%s) — request %s", entry.Member, entry.Tool, entry.RequestID)
 }
 
 // requestID keys one member's prompt. Approval ids are per-controller counters,
@@ -116,6 +137,12 @@ func (s *writeAccessEscalations) begin(teamName, memberID string, esc control.Wr
 	s.mu.Lock()
 	s.pending[entry.RequestID] = entry
 	s.mu.Unlock()
+	// The leader is told about the request before the wake tries to submit a turn:
+	// a leader already blocked in its wait has no turn to submit into, and this is
+	// what releases it with the request in its result.
+	if bus := s.signals.Load(); bus != nil {
+		bus.Signal(WaitEvent{Kind: waitKindEscalation, Team: teamName, ID: entry.RequestID, Summary: escalateReason(entry)})
+	}
 
 	go s.wake(teamName, leader)
 	go s.expire(entry.RequestID)

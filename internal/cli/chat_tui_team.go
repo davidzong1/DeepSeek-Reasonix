@@ -193,12 +193,17 @@ func (m *chatTUI) onTeamButtonClick() tea.Cmd {
 			}
 			p.hub = newTeamHub(roots.store, m.teamBackends, p.model.Name())
 			// Late-bound for the same reason tasks are: the escalations service is
-			// built with the registry, and the hub is built with the overlay.
+			// built with the registry, and the hub is built with the overlay. The
+			// bus lets a request release a leader already blocked in its wait.
 			m.teamEscalations.setHub(p.hub)
-			// Leader wakeups land as notices; a leader without a cursor yet is
-			// quiet — history before the first open does not replay (§5.1).
-			for _, reason := range p.board.consumeWakeups(p.firstLeader()) {
-				m.notice("wakeup: " + reason)
+			m.teamEscalations.setSignals(m.teamBackends.signals())
+			// Leader wakeups land as notices, read through the board's dispatcher
+			// rather than the cursor directly: the same cursor serves a waiting
+			// leader, and one cursor has one owner.
+			if d := p.board.wakeDispatcher(); d != nil {
+				for _, ev := range d.drain(p.sessionTeamName(), p.firstLeader()) {
+					m.notice("wakeup: " + ev.Summary)
+				}
 			}
 			member, suspended := p.restoreSession()
 			if member != "" {
@@ -249,6 +254,48 @@ func (p *teamPicker) firstLeader() string {
 		}
 	}
 	return ""
+}
+
+// signalTeamInput reports input the composer could not deliver: the bound
+// member's turn is busy, so the text was queued durably and will run when that
+// turn ends. Only the leader's own window matters — the leader is the member
+// that waits on the team's behalf — and telling its wait is what turns "queued
+// until the turn happens to end" into "the turn ends now".
+func (m *chatTUI) signalTeamInput(text string) {
+	if m == nil || m.teamPick == nil || !m.teamPick.session.active {
+		return
+	}
+	p := m.teamPick
+	if p.session.current == "" || p.session.current != p.firstLeader() {
+		return
+	}
+	bus := m.teamBackends.signals()
+	if bus == nil {
+		return
+	}
+	bus.Signal(WaitEvent{
+		Kind: waitKindInput, Team: p.sessionTeamName(), ID: p.session.current,
+		Summary: "input waiting for the leader: " + inputSummary(text),
+	})
+}
+
+// inputSummary renders one composer line for a wait event, bounded because the
+// summary is what a waiting leader reads in its tool result and what the bus
+// keys its duplicate suppression by: an unbounded paste would make one event
+// both unreadable and unique.
+func inputSummary(text string) string {
+	line := strings.TrimSpace(text)
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = strings.TrimSpace(line[:i])
+	}
+	const max = 120
+	if len(line) > max {
+		line = strings.TrimSpace(line[:max]) + "…"
+	}
+	if line == "" {
+		line = "(empty line)"
+	}
+	return line
 }
 
 // pickerErrMsg maps a load or mutation error onto the overlay message, keeping

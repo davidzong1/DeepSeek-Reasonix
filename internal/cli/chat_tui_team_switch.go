@@ -15,20 +15,34 @@ import (
 	"reasonix/internal/team"
 )
 
-// waitForMemberEvent turns one blocking read on the shared pump into a tea.Msg.
+// waitForMemberEvent turns a blocking read on the shared pump into a tea.Msg.
 // One goroutine serves every member backend, so member switching never re-arms a
-// second event pump (§11.5 replacement: no second event bus). A nil cmd for a
-// missing or closed pump stops the pump instead of dispatching a phantom event.
-func waitForMemberEvent(pump *memberEventPump) tea.Cmd {
+// second event pump (§11.5 replacement: no second event bus).
+//
+// bound is the member whose transcript is on screen. A background member's
+// streamed delta changes nothing the window paints, so it is parked in the
+// pump's retain area instead of becoming a message — bubbletea renders a full
+// View() per message, and paying that for an invisible token was most of what
+// made a team of thinking members feel slow. Everything else is delivered: the
+// window derives unread badges, prompt cards and transcript commits from it.
+//
+// The loop takes the head and re-parks it until something visible comes up, so
+// the retained turn keeps its arrival order and no member can be starved.
+func waitForMemberEvent(pump *memberEventPump, bound string) tea.Cmd {
 	if pump == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		ev, ok := pump.next()
-		if !ok {
-			return nil
+		for {
+			ev, ok := pump.next()
+			if !ok {
+				return nil
+			}
+			if ev.member == bound || !memberEventDelta(ev.ev.Kind) {
+				return memberEventMsg(ev)
+			}
+			pump.hold(ev)
 		}
-		return memberEventMsg(ev)
 	}
 }
 
@@ -39,14 +53,40 @@ type memberEventMsg memberEvent
 // events render into the transcript exactly as the ambient session's do, while
 // another member's are buffered so switching to it shows the turn it is running
 // right now — History() only carries committed messages, so without the buffer
-// an in-flight turn looked like an idle member. The pump re-arms either way.
+// an in-flight turn looked like an idle member.
+//
+// It also carries the whole backlog, so a burst costs one frame instead of one
+// per event: the pump already holds everything that arrived, and the wait is
+// re-armed once for all of it. The event this call was handed is in that
+// backlog in production — the command took it off the same queue — so the
+// drain skips its stamp rather than routing it twice.
 func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
+	first := memberEvent(msg)
+	m.routeMemberEvent(first)
+	if m.memberEvents == nil {
+		return nil // a pump-less model (bare harness, non-interactive host)
+	}
+	for _, queued := range m.memberEvents.drainReady(memberEventBatchLimit) {
+		// A stamp of 0 is a hand-built event that never went through the queue,
+		// so it cannot collide with anything the pump assigned.
+		if first.seq != 0 && queued.member == first.member && queued.seq == first.seq {
+			continue
+		}
+		m.routeMemberEvent(queued)
+	}
+	return waitForMemberEvent(m.memberEvents, m.boundMember())
+}
+
+// routeMemberEvent applies one member event to the window. Every event of a
+// batch goes through here, so the per-event semantics are identical whether it
+// arrived alone or behind fifty others.
+func (m *chatTUI) routeMemberEvent(msg memberEvent) {
 	// A background auto-mode member's ordinary approval never surfaces: the mode
 	// answers it immediately (audited). The bound member's own approvals stay on
 	// the modal — the window's operator decides those, whatever the mode.
 	if msg.member != m.boundMember() && msg.ev.Kind == event.ApprovalRequest &&
 		m.teamPick != nil && m.teamPick.autoGrantMemberApproval(msg.member, msg.ev) {
-		return waitForMemberEvent(m.memberEvents)
+		return
 	}
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
@@ -74,7 +114,6 @@ func (m *chatTUI) handleMemberEvent(msg memberEventMsg) tea.Cmd {
 	if msg.ev.Kind == event.TurnDone && msg.ev.Err == nil {
 		m.publishTurnOwnerHistory(msg.member)
 	}
-	return waitForMemberEvent(m.memberEvents)
 }
 
 // noteOrphanedMemberPrompt surfaces a member that blocked on a decision after the
@@ -90,49 +129,42 @@ func (m *chatTUI) noteOrphanedMemberPrompt(member string, ev event.Event) {
 	}
 }
 
-// memberLiveEventCap bounds one unbound member's buffered turn. Streaming deltas
-// dominate the count, so the cap is what keeps a long background turn from
-// growing without limit; the oldest events are dropped first, which degrades to
+// memberLiveEventCap bounds one background member's retained turn. Streaming
+// deltas dominate the count, so the cap is what keeps a long background turn
+// from growing without limit; the oldest are dropped first, which degrades to
 // "you see the tail of what it is doing" rather than to nothing.
 const memberLiveEventCap = 512
 
-// bufferMemberEvent keeps one unbound member's in-flight turn so a switch can
-// replay it. A finished turn clears the buffer: its content is in the member's
-// own History() from then on, and replaying both would double it. Prompt events
-// are excluded because ReplayPendingPrompts owns re-emitting those on bind —
-// buffering them too would raise the same card twice.
+// bufferMemberEvent keeps one background member's in-flight turn so a switch can
+// replay it, in the pump's retain area rather than a session map: the events
+// belong to the member backends that produced them, so they end with the pump
+// those backends write into instead of outliving it on the session. The policy
+// (bound, drop-oldest, prompt exclusion, TurnDone clearing) lives in hold.
 func (m *chatTUI) bufferMemberEvent(member string, ev event.Event) {
-	if m.teamPick == nil || m.teamPick.session.live == nil {
+	if m.memberEvents == nil {
 		return
 	}
-	switch ev.Kind {
-	case event.TurnDone:
-		delete(m.teamPick.session.live, member)
-		return
-	case event.ApprovalRequest, event.AskRequest:
-		return
-	}
-	buffered := append(m.teamPick.session.live[member], ev)
-	if over := len(buffered) - memberLiveEventCap; over > 0 {
-		buffered = buffered[over:]
-	}
-	m.teamPick.session.live[member] = buffered
+	m.memberEvents.hold(memberEvent{member: member, ev: ev})
 }
 
 // replayMemberLiveEvents renders the turn a member started while the window was
-// elsewhere. It runs after the history replay committed, so the buffered events
+// elsewhere. It runs after the history replay committed, so the retained events
 // land on top of the member's committed transcript in the order they arrived —
 // the same order the bound path ingested them in. Each event is filed under the
-// member that produced it, so a buffered todo_write mounts on that member's
+// member that produced it, so a retained todo_write mounts on that member's
 // panel even if the window has moved on again by the time it replays.
+//
+// The hold is cleared once replayed: its content is in this member's transcript
+// now, and a later switch must not show the same turn twice.
 func (m *chatTUI) replayMemberLiveEvents(member string) {
-	if m.teamPick == nil || m.teamPick.session.live == nil {
+	if m.memberEvents == nil || m.teamPick == nil {
 		return
 	}
 	owner := memberOwner(m.teamPick.sessionTeamName(), member)
-	for _, ev := range m.teamPick.session.live[member] {
+	for _, ev := range m.memberEvents.heldTurn(member) {
 		m.ingestEventOwned(ev, owner)
 	}
+	m.memberEvents.dropHeld(member)
 }
 
 // recordMemberPrompt keeps one non-current member's pending approval/ask on the
@@ -265,8 +297,9 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	// onto the shared pump, ingested once the member is bound. No prompt, none.
 	backend.ReplayPendingPrompts()
 	// A member bind is also where the cockpit's reports start being collected:
-	// the tick that would carry them only exists while the overlay is open.
-	return batchCmds(replayCmd, m.collectCockpitResults(), waitForMemberEvent(m.memberEvents))
+	// the tick that would carry them only exists while the overlay is open. The
+	// wait is armed for the member just bound, so its own stream stays visible.
+	return batchCmds(replayCmd, m.collectCockpitResults(), waitForMemberEvent(m.memberEvents, memberID))
 }
 
 // sessionTeamName is the team a member switch resolves against: the bound

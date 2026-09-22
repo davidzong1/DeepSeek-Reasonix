@@ -72,9 +72,10 @@ func (m *chatTUI) setTranscriptBlock(index int, rendered string, source transcri
 	m.ensureTranscriptSources()
 	m.transcript[index] = rendered
 	m.transcriptSources[index] = source
-	// In-place rewrite: drop wrap from this block onward so the next sync
-	// re-wraps the mutated block and everything after it.
-	m.invalidateWrapFrom(index)
+	// In-place rewrite: only this block's content changed, so only this block's
+	// wrap is stale. Recording the span (rather than dropping the cache from here
+	// on) is what keeps an early rewrite from re-wrapping the whole tail.
+	m.markWrapDirty(index)
 }
 
 func (m *chatTUI) removeTranscriptBlock(index int) {
@@ -444,6 +445,12 @@ var (
 // last column and the active selection reverse-highlighted. The content lines
 // (m.wrappedLines) are already padded to cw by wrapTranscript, so this stays
 // cheap per frame — important because a drag re-renders on every mouse move.
+//
+// The scrollbar cell is appended to each row rather than joined horizontally
+// (JoinHorizontal cost ~166 µs/frame, 99% of renderTranscript): both sides are
+// exactly one terminal row tall, so the only thing the join added was an
+// ANSI-aware width pad for the bar's 1 cell. renderTranscriptRow is the row
+// that keeps that equivalence.
 func (m chatTUI) renderTranscript() string {
 	h := m.viewport.Height()
 	if h <= 0 {
@@ -458,7 +465,6 @@ func (m chatTUI) renderTranscript() string {
 	blank := strings.Repeat(" ", cw)
 
 	rows := make([]string, h)
-	bar := make([]string, h)
 	for r := range h {
 		idx := yoff + r
 		line := blank // off-content rows fill to width
@@ -470,10 +476,18 @@ func (m chatTUI) renderTranscript() string {
 				line = lipgloss.StyleRanges(line, lipgloss.NewRange(lo, hi, selStyle))
 			}
 		}
-		rows[r] = line
-		bar[r] = scrollbarCell(r, total, h, thumbStart, thumbSize)
+		rows[r] = line + scrollbarCell(r, total, h, thumbStart, thumbSize)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(rows, "\n"), strings.Join(bar, "\n"))
+	return strings.Join(rows, "\n")
+}
+
+// renderTranscriptRow is the byte-equivalence reference for the append above: the
+// horizontal join the frame used to pay for, kept so a test can prove the cheap
+// path renders the identical frame. Both sides are one row tall, which is why
+// the join reduces to a pad — this function is what makes that claim checkable
+// rather than asserted.
+func renderTranscriptRow(line string, bar string) string {
+	return lipgloss.JoinHorizontal(lipgloss.Top, line, bar)
 }
 
 // selSpan returns the [lo, hi) visual-column span of the selection on content

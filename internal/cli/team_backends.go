@@ -79,6 +79,10 @@ type teamBackends struct {
 	// on (team_member_cockpit.go). Its lifetime is the registry's, like the
 	// board's, because the members it writes for are these backends.
 	workers *memberCockpit
+	// bus is the in-process wait bus a leader's interruptible wait subscribes to
+	// (team_wake_signal.go), created with the registry and closed by closeAll so
+	// a teardown releases every waiter instead of stranding it.
+	bus *waitBus
 }
 
 // cockpit returns the registry's per-member workers. Nil receiver included: a
@@ -88,6 +92,16 @@ func (r *teamBackends) cockpit() *memberCockpit {
 		return nil
 	}
 	return r.workers
+}
+
+// signals returns the registry's wait bus, or nil without a registry. Every
+// producer signals through it, and a nil bus makes the signal a no-op rather
+// than a panic.
+func (r *teamBackends) signals() *waitBus {
+	if r == nil {
+		return nil
+	}
+	return r.bus
 }
 
 // inbox returns the shared board wire, or nil when none was installed. Nil
@@ -109,26 +123,34 @@ func (r *teamBackends) setInbox(w *teamInboxWire) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.inboxWire == nil {
 		r.inboxWire = w
 	}
+	bus := r.bus
+	r.mu.Unlock()
+	// The board's wake dispatcher publishes into this registry's bus, so every
+	// consumer of a wakeup — the window's notices and a leader's wait — is served
+	// from the one cursor owner.
+	w.attachSignals(bus)
 }
 
 // setTasks installs the shared task service once. It is set alongside the board
 // on the first overlay open, so a reopen keeps the durable service (and its
 // wakeup wiring) behind every member backend's tools. The service also answers
-// the roster size the retention cap is fitted to.
+// the roster size the retention cap is fitted to, and receives this registry's
+// wait bus so a member's completion reaches a waiting leader without a poll.
 func (r *teamBackends) setTasks(s *teamTaskService) {
 	if r == nil || s == nil {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.tasks == nil {
 		r.tasks = s
 		r.rosterSize = s.rosterSize
 	}
+	bus := r.bus
+	r.mu.Unlock()
+	s.setSignals(bus)
 }
 
 // fitToTeam raises the retention cap to hold the team's whole roster. The cap
@@ -180,6 +202,7 @@ func newTeamBackends(build func(team.MemberBinding) (control.SessionAPI, error),
 		fps:      map[string]string{},
 		building: map[string]*buildCall{},
 		workers:  newMemberCockpit(),
+		bus:      newWaitBus(),
 	}
 }
 
@@ -434,11 +457,13 @@ func (r *teamBackends) liveTeamCount(teamName string) int {
 // closeAll retires every backend and abandons every in-flight assembly; the
 // registry is reusable afterwards. The member cockpit stops here too: a write in
 // flight finishes, a queued one does not start, and the registry this worker set
-// belongs to is gone.
+// belongs to is gone. The wait bus closes with them, releasing any leader still
+// blocked in an interruptible wait instead of stranding its goroutine.
 func (r *teamBackends) closeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.workers.close()
+	r.bus.close()
 	for _, key := range slices.Clone(r.order) {
 		r.retire(key)
 	}

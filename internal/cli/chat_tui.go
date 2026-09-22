@@ -269,15 +269,15 @@ type chatTUI struct {
 	// transcriptSources runs parallel to transcript and retains raw, semantic
 	// content for blocks whose layout depends on terminal width. Fixed blocks
 	// keep their already-rendered text; markdown, user bubbles, reasoning, tool
-	// cards, and replay bundles are regenerated after a resize.
+	// cards, and replay bundles are regenerated after a resize. The wrap cache
+	// fields beside it keep wrappedLines incremental (wrap_cache.go).
 	transcriptSources []transcriptSource
-	// wrappedLines is the viewport line cache; wrapBlockLines / wrapWidth /
-	// wrapBlockCount support append-only updates without re-wrapping the full
-	// history on every streaming commit (#6978).
-	wrappedLines   []string
-	wrapBlockLines [][]string
-	wrapWidth      int
-	wrapBlockCount int
+	wrappedLines      []string
+	wrapBlockLines    [][]string
+	wrapBlockOffsets  []int
+	wrapWidth         int
+	wrapBlockCount    int
+	wrapDirty         wrapSpan
 	// lastMouseReenable rate-limits ConPTY mouse re-enable sequences (#7583).
 	// mouseReenablePending + timer cover trailing-edge fires after a resize storm.
 	lastMouseReenable       time.Time
@@ -1262,6 +1262,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				default:
 					m.notice(fmt.Sprintf("queued #%s", shortID(rec.ItemID)))
 				}
+				m.signalTeamInput(body)
 				m.resetComposerInput()
 				m.pastedBlocks = nil
 				m.resetQueueNavigation()
@@ -1300,6 +1301,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, finalize(m, cmds)
 					}
 					m.notice(fmt.Sprintf("durable follow-up queued #%s — will run when idle", shortID(rec.ItemID)))
+					m.signalTeamInput(body)
 					m.resetQueueNavigation()
 				}
 				m.resetComposerInput()

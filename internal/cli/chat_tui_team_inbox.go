@@ -33,6 +33,10 @@ type teamInboxWire struct {
 	// under an older count describes commands already delivered, so it is dropped
 	// rather than injected twice.
 	acks map[string]int64
+	// wakes owns the leader's board wakeup cursor. It is per board, like the
+	// store, so a reopened overlay and the registry share one cursor owner
+	// instead of advancing it twice (team_wake_dispatcher.go).
+	wakes *teamWakeDispatcher
 }
 
 // teamInboxBatch is one member's read-ahead command batch: the items to fold
@@ -77,7 +81,30 @@ func openTeamInbox(dir string) *teamInboxWire {
 	if err != nil {
 		return nil
 	}
-	return &teamInboxWire{board: board, inboxes: map[string]*agentruntime.BoardInbox{}, prefetched: map[string]teamInboxBatch{}}
+	w := &teamInboxWire{board: board, inboxes: map[string]*agentruntime.BoardInbox{}, prefetched: map[string]teamInboxBatch{}}
+	w.wakes = &teamWakeDispatcher{wire: w}
+	return w
+}
+
+// wakeDispatcher returns this board's wake dispatcher, or nil when there is no
+// board at all — a wire the host could not open. Nil receiver included: the
+// caller's board may itself be nil, and a field selection on it would panic
+// where a method call on the nil wire does not.
+func (w *teamInboxWire) wakeDispatcher() *teamWakeDispatcher {
+	if w == nil {
+		return nil
+	}
+	return w.wakes
+}
+
+// attachSignals hands the registry's wait bus to this board's wake dispatcher.
+// A wire with no registry — a host or test that opened its own — keeps draining
+// for the window's notices, with nothing to publish to.
+func (w *teamInboxWire) attachSignals(sig *waitBus) {
+	if w == nil || w.wakes == nil {
+		return
+	}
+	w.wakes.setSignals(sig)
 }
 
 // close releases the board store. Only the process-level teardown may call it:
@@ -298,6 +325,10 @@ func (w *teamInboxWire) inboxFor(member string) *agentruntime.BoardInbox {
 // read — a wakeup surfaces once. A leader with no cursor yet establishes
 // one without replaying history, so the first open after a leader change is
 // quiet.
+//
+// It is the wake dispatcher's read primitive, never a consumer's: two readers
+// of one cursor are one reader too many, and the second would find the page the
+// first advanced past. Consumers call teamWakeDispatcher.drain.
 func (w *teamInboxWire) consumeWakeups(leader string) []string {
 	if w == nil || w.board == nil || leader == "" {
 		return nil

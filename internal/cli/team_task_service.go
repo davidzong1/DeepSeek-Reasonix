@@ -57,6 +57,10 @@ type teamTaskService struct {
 	// now is the clock for the poll interval. Nil uses time.Now; tests replace
 	// it so no test sleeps for the real interval.
 	now func() time.Time
+	// signals is the registry's wait bus, late-bound (the service is built before
+	// the registry that owns it). It is atomic because a member's completion
+	// goroutine reads it while the overlay wires it.
+	signals atomic.Pointer[waitBus]
 }
 
 // wakeLeader delivers one leader wakeup into the durable board wake stream.
@@ -135,6 +139,10 @@ func newTeamTaskService(store *team.TeamStore, board *team.SQLiteStore, teamName
 			agentruntime.NewBoardWakeStamped(board, team.BoardShared),
 		}
 		s.runtime.AddWakeup(s.wakeLeader)
+		// The in-process report rides the state move itself, before the board
+		// write above it: a leader waiting on this member is released at the
+		// moment the move is durable, never after the board has been written.
+		s.runtime.AddAttention(s.attention)
 		s.scheduler = teamscheduler.NewRuntimeScheduler(s.runtime)
 		s.scheduler.SetTaskStore(board)
 		s.teams[s.teamName] = s
@@ -158,6 +166,7 @@ func (s *teamTaskService) forTeam(teamName string) *teamTaskService {
 	child := newTeamTaskService(s.teamStore, s.board, teamName, s.bind)
 	child.kbDataRoot = s.kbDataRoot
 	child.discussionDataDir = s.discussionDataDir
+	child.signals.Store(s.signals.Load())
 	// The clock is inherited so a test that pins time for one team sees the same
 	// pinned time through every per-team child the overlay opens.
 	child.now = s.now
