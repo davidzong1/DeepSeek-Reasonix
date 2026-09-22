@@ -219,6 +219,27 @@ func memberSystemPromptIdentity(b team.MemberBinding) string {
 	return identity + "\n" + team.CollaborationDiscipline(b.Leader)
 }
 
+// memberWriteLabel names one member in workspace-lease holder records: a
+// teammate queued behind it should read a person, not a pid. Diagnostic only —
+// no lease decision reads it.
+func memberWriteLabel(memberID, teamName string) string {
+	member := strings.TrimSpace(memberID)
+	if member == "" {
+		return ""
+	}
+	if team := strings.TrimSpace(teamName); team != "" {
+		return "member " + member + " of team " + team
+	}
+	return "member " + member
+}
+
+// memberWorkspaceLeaseLabel labels this member's workspace-lease holder records,
+// so a teammate queued behind it reads a person rather than a pid. An unbound
+// member publishes nothing.
+func memberWorkspaceLeaseLabel(b team.MemberBinding) string {
+	return memberWriteLabel(b.MemberID, b.Team)
+}
+
 // memberProxySpec maps one member's resolved team proxy onto a transport spec.
 // The team form is address-only (IP:port, no auth), so a disabled proxy is an
 // explicit off rather than a fall-through to the ambient environment: a member
@@ -435,6 +456,7 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// a team's recorded workspace cannot steer it.
 		opts.TeamSkillsRoot = teamSkillsBase()
 		opts.TeamRole = string(roleForLeader(b.Leader))
+		opts.WorkspaceLeaseLabel = memberWorkspaceLeaseLabel(b)
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
 		opts.Sink = deps.events.sink(b.MemberID)

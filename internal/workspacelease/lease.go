@@ -34,10 +34,14 @@ type ownerActivity struct {
 }
 
 type systemHold struct {
-	refs    int
-	scope   string
-	keys    []string
-	slots   []string
+	refs  int
+	scope string
+	keys  []string
+	slots []string
+	// paths are the lock files this hold took, recorded during its acquisition.
+	// A retained hold publishes them so a blocked peer can find it and ask for
+	// the domain back (see yield.go); no lease decision reads them.
+	paths   []string
 	release func()
 }
 
@@ -60,6 +64,13 @@ type ownerLease struct {
 	legacy      []func()
 	epoch       uint64
 	graceTimer  *time.Timer
+	// adoptedPaths collects the lock files one in-flight acquisition takes, so
+	// the hold it becomes can name the domains it owns without every acquisition
+	// helper having to return them. Reset when an acquisition begins.
+	adoptedPaths []string
+	// blockedBy is the holder observed when this Owner last queued. It is read
+	// beside the lock file while queued and never drives a lease decision.
+	blockedBy *HolderInfo
 }
 
 // Owner is one Delivery session's re-entrant workspace lease. One Owner may be
@@ -73,6 +84,12 @@ type Owner struct {
 	rootPath      string
 	onWait        WaitNotice
 	graceAfter    time.Duration
+	// identity labels this Owner in the holder records it publishes. Empty
+	// publishes nothing, so only sessions that set it pay for the records.
+	identity string
+	// holderRootPath is the workspace root's own lock file. It is the one shared
+	// domain whose record a queued writer reads, and it is fixed for this root.
+	holderRootPath string
 
 	mu       sync.Mutex
 	activity ownerActivity
@@ -156,7 +173,7 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 		return nil, fmt.Errorf("create workspace lease directory: %w", err)
 	}
 	lockPath := workspaceLockPath(lockDir, compatibility)
-	return &Owner{
+	o := &Owner{
 		lockPath: lockPath, canonical: canonical, compatibility: compatibility,
 		rootPath: workspaceRoot,
 		lockDir:  lockDir,
@@ -165,7 +182,9 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 			changed: make(chan struct{}), holds: map[uint64]*systemHold{},
 			shared: map[string]*sharedSystemHold{},
 		},
-	}, nil
+	}
+	o.holderRootPath = o.canonicalRootLockPath()
+	return o, nil
 }
 
 // HeldKeys returns the actual lock-domain identities currently held. An
@@ -408,6 +427,7 @@ func (o *Owner) hasPathHoldsLocked() bool {
 }
 
 func (o *Owner) addHoldLocked(hold *systemHold) uint64 {
+	hold.paths = append([]string(nil), o.lease.adoptedPaths...)
 	o.lease.nextID++
 	o.lease.holds[o.lease.nextID] = hold
 	o.lease.epoch++
@@ -518,6 +538,7 @@ func (o *Owner) cancelGraceLocked() {
 
 func (o *Owner) beginAcquisitionLocked(scope, label string, keys []string) {
 	o.lease.acquiring = true
+	o.lease.adoptedPaths = nil
 	o.lease.acquireDone = make(chan struct{})
 	o.lease.targetScope = scope
 	o.lease.targetLabel = label
@@ -738,13 +759,18 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace lock identity: %w", err)
 	}
+	o.adoptLockPath(path)
 	release, err := filelock.TryAcquireModeWithKey(path, localKey, mode)
 	if err == nil {
-		return release, nil
+		o.clearBlockedHolder()
+		return o.observeHolder(path, mode, release), nil
 	}
 	if !errors.Is(err, filelock.ErrHeld) {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
+	// Read the holder record while queued: the wait notice is emitted from
+	// onWait, below, and names whoever published it.
+	o.noteBlockedHolder(path)
 	if o.markWaiting() && !*notified {
 		*notified = true
 		if o.onWait != nil {
@@ -755,7 +781,22 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 	if err != nil {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
-	return release, nil
+	o.clearBlockedHolder()
+	return o.observeHolder(path, mode, release), nil
+}
+
+// adoptLockPath records one lock file a hold in flight takes. Transient queue
+// locks are skipped: they are released inside the acquisition, so a peer queued
+// on one is mid-acquisition rather than waiting behind a retained hold.
+func (o *Owner) adoptLockPath(path string) {
+	if strings.HasSuffix(path, queueLockSuffix) {
+		return
+	}
+	o.mu.Lock()
+	if o.lease.acquiring {
+		o.lease.adoptedPaths = append(o.lease.adoptedPaths, path)
+	}
+	o.mu.Unlock()
 }
 
 func waitForSignal(ctx context.Context, signal <-chan struct{}) error {
