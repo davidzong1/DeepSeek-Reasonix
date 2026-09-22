@@ -25,7 +25,7 @@ func overlayBusy(t *testing.T, status map[string]control.RuntimeStatus) (chatTUI
 	t.Helper()
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	replays := map[string]*int{}
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		n := 0
@@ -128,7 +128,7 @@ func TestRunningMemberBackgroundEventsBadgeUnread(t *testing.T) {
 func TestSwitchBackWhileRunningRebuildsTranscript(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		st := control.RuntimeStatus{}
 		if b.MemberID == "lead" {
@@ -392,7 +392,7 @@ func TestRebindMemberAgentUserFailedBuildKeepsServing(t *testing.T) {
 	}
 	closed := 0
 	fail := false
-	m.memberEvents = make(chan memberEvent, 4)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		if fail {
 			return nil, errors.New("no credential")

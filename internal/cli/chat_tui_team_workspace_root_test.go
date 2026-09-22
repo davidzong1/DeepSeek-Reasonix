@@ -66,7 +66,7 @@ func memberBuildDeps(t *testing.T, workspace string) memberBackendDeps {
 			"leader-user": {UserID: "leader-user", Provider: "openai", Model: "gpt-5.6", BaseURL: "https://example.invalid/v1", APIKey: "test-key"},
 			"member-user": {UserID: "member-user", Provider: "openai", Model: "gpt-5.6", BaseURL: "https://example.invalid/v1", APIKey: "test-key"},
 		}},
-		events:        make(chan memberEvent, memberEventBuffer),
+		events:        newMemberEventPump(),
 		workspaceRoot: workspace,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}

@@ -15,11 +15,21 @@ import (
 	"reasonix/internal/team"
 )
 
-// waitForMemberEvent turns one blocking read on the shared tagged channel into
-// a tea.Msg. One goroutine serves every member backend, so member switching
-// never re-arms a second event pump (§11.5 replacement: no second event bus).
-func waitForMemberEvent(ch chan memberEvent) tea.Cmd {
-	return func() tea.Msg { return memberEventMsg(<-ch) }
+// waitForMemberEvent turns one blocking read on the shared pump into a tea.Msg.
+// One goroutine serves every member backend, so member switching never re-arms a
+// second event pump (§11.5 replacement: no second event bus). A nil cmd for a
+// missing or closed pump stops the pump instead of dispatching a phantom event.
+func waitForMemberEvent(pump *memberEventPump) tea.Cmd {
+	if pump == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := pump.next()
+		if !ok {
+			return nil
+		}
+		return memberEventMsg(ev)
+	}
 }
 
 // memberEventMsg is one member backend's event inside the update loop.
@@ -242,7 +252,10 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	if m.ambient == nil {
 		m.ambient = m.ctrl // first member bind: remember the chat's own backend
 	}
-	m.bindBackend(backend, memberOwner(p.sessionTeamName(), memberID))
+	// A switch paints the tail of the member's history immediately and renders
+	// the rest off the Update goroutine, so a heavy member cannot freeze the
+	// frame that is switching to it.
+	replayCmd := m.bindBackend(backend, memberOwner(p.sessionTeamName(), memberID), replayBounded)
 	// The turn this member started while the window was elsewhere: bindBackend
 	// replayed its committed history, and these are the events that turn has
 	// produced since, which no History() snapshot can carry yet.
@@ -251,7 +264,9 @@ func (m *chatTUI) switchTeamMember(memberID string) tea.Cmd {
 	// when the prompt registered. The event flows through the member's own sink
 	// onto the shared pump, ingested once the member is bound. No prompt, none.
 	backend.ReplayPendingPrompts()
-	return waitForMemberEvent(m.memberEvents)
+	// A member bind is also where the cockpit's reports start being collected:
+	// the tick that would carry them only exists while the overlay is open.
+	return batchCmds(replayCmd, m.collectCockpitResults(), waitForMemberEvent(m.memberEvents))
 }
 
 // sessionTeamName is the team a member switch resolves against: the bound
@@ -292,7 +307,9 @@ func (m *chatTUI) unbindTeamMember() {
 	m.stopAmbientOwnerUsage()
 	ambient := m.ambient
 	m.ambient = nil
-	m.bindBackend(ambient, ownerKey{})
+	// The ambient restore is not a member switch and its caller (closeSession)
+	// has no command to hand back, so it keeps the inline render.
+	m.bindBackend(ambient, ownerKey{}, replayInline)
 }
 
 // bindBackend swaps the window's backend and rebuilds everything derived from
@@ -304,7 +321,7 @@ func (m *chatTUI) unbindTeamMember() {
 // than derived from m.ctrl: the caller is the one that knows whether it is
 // binding a member or restoring the ambient session, and the derived owner
 // reads the session state, which a rebind deliberately leaves untouched.
-func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey) {
+func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey, mode replayMode) tea.Cmd {
 	m.ctrl = backend
 	m.label = backend.Label()
 	m.modelRef = backend.ModelRef()
@@ -355,10 +372,22 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey) {
 	m.clearTranscriptDisplay()
 	m.transcriptDirty = true
 	m.forceGotoBottom = true
-	m.commitTranscriptSource(transcriptSource{
-		kind:    transcriptSourceReplayBundle,
-		history: append([]provider.Message(nil), backend.History()...),
-	})
+	// A member bind arms its inbox read-ahead here, at the one place every
+	// member bind passes through, so the first submit after a switch usually
+	// finds its command batch ready and does no board read on the keystroke path.
+	if owner.Member != "" {
+		m.prefetchMemberInbox(owner.Member)
+	}
+	return m.commitBackendReplay(backend, mode)
+}
+
+// prefetchMemberInbox starts the bound member's read-ahead command batch. It is
+// a no-op without a board (tests, non-interactive hosts).
+func (m *chatTUI) prefetchMemberInbox(member string) {
+	if m.teamPick == nil || member == "" {
+		return
+	}
+	m.teamPick.board.prefetch(member)
 }
 
 // bindTeamBackendSeam installs the team seam onto the TUI: the one tagged event
@@ -375,15 +404,17 @@ func (m *chatTUI) bindTeamBackendSeam(maxSteps int, overrides cliBuildOverrides)
 		m.teamBackends.closeAll()
 		m.teamBackends = nil
 	}
-	m.memberEvents = make(chan memberEvent, memberEventBuffer)
+	// A reinstalled seam closes the previous pump: its queues belong to member
+	// backends this call is about to retire, and a stale pump would keep a
+	// blocked next alive behind a window that moved on.
+	if m.memberEvents != nil {
+		m.memberEvents.close()
+	}
+	m.memberEvents = newMemberEventPump()
 	m.memberBackendBase = func() boot.Options {
 		return cliProfileBuildOptions("", maxSteps, false, event.Discard, overrides)
 	}
 }
-
-// memberEventBuffer matches the ambient session's event channel: buffered
-// generously so a streaming burst never backpressures a member's agent loop.
-const memberEventBuffer = 1024
 
 // bindTeamBackends creates the member-backend registry for an opened overlay.
 // The pool lookup is the overlay's own store, so a member resolves its agent
@@ -680,7 +711,9 @@ func (m *chatTUI) rebindTeamBackend(p *teamPicker, member string) error {
 		// bind keeps the previous backend assembled and serving on failure.
 		return err
 	}
-	m.bindBackend(backend, memberOwner(p.model.Name(), member))
+	// A rebuild is not a switch between members and its caller (/model) has no
+	// command to hand back, so it keeps the inline render.
+	m.bindBackend(backend, memberOwner(p.model.Name(), member), replayInline)
 	backend.ReplayPendingPrompts()
 	return nil
 }

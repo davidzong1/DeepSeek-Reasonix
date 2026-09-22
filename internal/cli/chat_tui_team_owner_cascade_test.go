@@ -229,7 +229,7 @@ func TestMemberBackendAdoptsLegacyHistoryIntoOwnerStore(t *testing.T) {
 			"u": {UserID: "u", Provider: "openai", Model: "gpt-5.6",
 				BaseURL: "https://example.invalid/v1", APIKey: "k"},
 		}},
-		events:        make(chan memberEvent, memberEventBuffer),
+		events:        newMemberEventPump(),
 		workspaceRoot: workspace,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}

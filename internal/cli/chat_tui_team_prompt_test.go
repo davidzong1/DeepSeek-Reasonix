@@ -75,7 +75,7 @@ func promptTestTUI(t *testing.T, approves *int) chatTUI {
 	t.Helper()
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return promptProbeBackend{stubBackend: stubBackend{label: b.MemberID}, approves: approves}, nil
 	}, 4)

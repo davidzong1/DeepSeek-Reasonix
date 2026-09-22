@@ -33,7 +33,7 @@ func armFailoverOverlay(t *testing.T, pool []string) (chatTUI, *int, *int) {
 	writeTeamPoolFixture(t, []team.Team{fixture}, failoverUsers(pool...))
 	m := openTeamOverlay(t)
 	builds, closed := 0, 0
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		builds++
 		return stubBackend{label: b.AgentUserRef, closed: &closed}, nil
@@ -200,7 +200,7 @@ func TestFailoverIgnoresOutOfPoolPin(t *testing.T) {
 	writeTeamPoolFixture(t, []team.Team{fixture}, users)
 	m := openTeamOverlay(t)
 	builds := 0
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		builds++
 		return stubBackend{label: b.AgentUserRef}, nil
@@ -304,7 +304,7 @@ func armCustomFailoverOverlay(t *testing.T) (chatTUI, *int, *int) {
 	writeTeamPoolFixture(t, []team.Team{fixture}, failoverUsers("au-1", "au-2", "au-3"))
 	m := openTeamOverlay(t)
 	builds, closed := 0, 0
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		builds++
 		return stubBackend{label: b.AgentUserRef, closed: &closed}, nil

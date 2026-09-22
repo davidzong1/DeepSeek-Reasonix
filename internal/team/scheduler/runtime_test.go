@@ -41,7 +41,7 @@ func (s *stubExecutor) Resume(_ context.Context, task team.Task, _ team.Member) 
 func TestRuntimeSchedulerAssignStarts(t *testing.T) {
 	exec := &stubExecutor{}
 	s := NewRuntimeScheduler(exec)
-	a, err := s.Assign(team.Task{ID: "t1", RequireRole: team.RoleCoder}, []team.Member{idleMember("m1", team.RoleCoder)})
+	a, err := s.Assign(context.Background(), team.Task{ID: "t1", RequireRole: team.RoleCoder}, []team.Member{idleMember("m1", team.RoleCoder)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRuntimeSchedulerAssignStarts(t *testing.T) {
 
 func TestRuntimeSchedulerAssignNoExecutor(t *testing.T) {
 	s := NewRuntimeScheduler(nil)
-	_, err := s.Assign(team.Task{ID: "t1"}, []team.Member{idleMember("m1", team.RoleCoder)})
+	_, err := s.Assign(context.Background(), team.Task{ID: "t1"}, []team.Member{idleMember("m1", team.RoleCoder)})
 	if !errors.Is(err, ErrNoExecutor) {
 		t.Fatalf("err = %v, want ErrNoExecutor", err)
 	}
@@ -63,7 +63,7 @@ func TestRuntimeSchedulerAssignNoExecutor(t *testing.T) {
 
 func TestRuntimeSchedulerAssignNoMember(t *testing.T) {
 	s := NewRuntimeScheduler(&stubExecutor{})
-	_, err := s.Assign(team.Task{ID: "t1", RequireRole: team.RoleTester}, []team.Member{idleMember("m1", team.RoleCoder)})
+	_, err := s.Assign(context.Background(), team.Task{ID: "t1", RequireRole: team.RoleTester}, []team.Member{idleMember("m1", team.RoleCoder)})
 	if !errors.Is(err, ErrNoSuitableMember) {
 		t.Fatalf("err = %v, want ErrNoSuitableMember", err)
 	}
@@ -73,7 +73,7 @@ func TestRuntimeSchedulerAssignNoMember(t *testing.T) {
 // a ledger entry that pretends execution.
 func TestRuntimeSchedulerStartFailure(t *testing.T) {
 	s := NewRuntimeScheduler(&stubExecutor{startErr: errors.New("agent down")})
-	_, err := s.Assign(team.Task{ID: "t1"}, []team.Member{idleMember("m1", team.RoleCoder)})
+	_, err := s.Assign(context.Background(), team.Task{ID: "t1"}, []team.Member{idleMember("m1", team.RoleCoder)})
 	if !errors.Is(err, ErrStartFailed) {
 		t.Fatalf("err = %v, want ErrStartFailed", err)
 	}
@@ -97,7 +97,7 @@ func TestRuntimeSchedulerRestoreResumes(t *testing.T) {
 	exec := &stubExecutor{}
 	s := NewRuntimeScheduler(exec)
 	tasks := []team.Task{{ID: "t1", Status: team.TaskStatusRunning, AssignedMember: "m1"}}
-	restored, err := s.Restore(tasks, []team.Member{idleMember("m1", team.RoleCoder)})
+	restored, err := s.Restore(context.Background(), tasks, []team.Member{idleMember("m1", team.RoleCoder)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRuntimeSchedulerRestoreMemberGone(t *testing.T) {
 	exec := &stubExecutor{}
 	s := NewRuntimeScheduler(exec)
 	tasks := []team.Task{{ID: "t1", Status: team.TaskStatusRunning, AssignedMember: "gone"}}
-	restored, err := s.Restore(tasks, []team.Member{idleMember("m1", team.RoleCoder)})
+	restored, err := s.Restore(context.Background(), tasks, []team.Member{idleMember("m1", team.RoleCoder)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestRuntimeSchedulerRestoreMemberGonePersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(tasks, []team.Member{idleMember("m1", team.RoleCoder)}); err != nil {
+	if _, err := s.Restore(context.Background(), tasks, []team.Member{idleMember("m1", team.RoleCoder)}); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := store.LoadTask(context.Background(), "t1")
@@ -176,7 +176,7 @@ func TestRuntimeSchedulerRestoreAssignedMemberGoneCancels(t *testing.T) {
 	}
 	s.SetTaskStore(store)
 	tasks := []team.Task{{ID: "t1", Status: team.TaskStatusAssigned, AssignedMember: "gone"}}
-	restored, err := s.Restore(tasks, []team.Member{idleMember("m1", team.RoleCoder)})
+	restored, err := s.Restore(context.Background(), tasks, []team.Member{idleMember("m1", team.RoleCoder)})
 	if err != nil {
 		t.Fatal(err)
 	}

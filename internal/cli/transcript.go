@@ -43,6 +43,10 @@ type transcriptSource struct {
 	planMode     bool
 	maxLines     int
 	history      []provider.Message
+	// windowed marks a replay bundle whose block paints only the newest window of
+	// history, the rest arriving off the Update goroutine (team_replay.go). Every
+	// other replay renders its whole history in place.
+	windowed bool
 }
 
 func (m *chatTUI) ensureTranscriptSources() {
@@ -105,7 +109,10 @@ func (m *chatTUI) renderTranscriptSource(source transcriptSource, terminalWidth 
 	case transcriptSourceBanner:
 		return strings.TrimRight(renderTUIBanner(m.label, source.raw, contentWidth), "\n")
 	case transcriptSourceReplayBundle:
-		return m.renderReplayBundle(source, contentWidth, renderAssistantMarkdown)
+		if !source.windowed {
+			return m.renderReplayBundleWithRenderers(source, contentWidth, renderAssistantMarkdown, reasoningBlock)
+		}
+		return m.renderReplayBundleWindow(source, contentWidth)
 	case transcriptSourceTurnReceipt:
 		return renderTurnReceiptBand(source.raw, contentWidth)
 	case transcriptSourceSubagentProgress:
@@ -118,24 +125,31 @@ func (m *chatTUI) renderTranscriptSource(source transcriptSource, terminalWidth 
 	}
 }
 
-func (m chatTUI) renderReplayBundle(
-	source transcriptSource,
-	contentWidth int,
-	renderAssistant func(string, int) string,
-) string {
-	return m.renderReplayBundleWithRenderers(source, contentWidth, renderAssistant, reasoningBlock)
-}
-
 func (m chatTUI) renderReplayBundleWithRenderers(
 	source transcriptSource,
 	contentWidth int,
 	renderAssistant func(string, int) string,
 	renderReasoning func(string, int, int) string,
 ) string {
+	return renderReplayBundleBlock(m.label, source.raw, source.history, contentWidth, renderAssistant, renderReasoning)
+}
+
+// renderReplayBundleBlock renders one replay bundle: the banner plus every
+// section of history, joined the way the transcript commits them. It is a free
+// function of its arguments — no model state — because a member's bind renders
+// it off the Update goroutine (team_replay.go). Every display path funnels
+// through it, so a background paint and an inline one cannot drift.
+func renderReplayBundleBlock(
+	label, raw string,
+	history []provider.Message,
+	contentWidth int,
+	renderAssistant func(string, int) string,
+	renderReasoning func(string, int, int) string,
+) string {
 	var b strings.Builder
-	b.WriteString(renderTUIBanner(m.label, source.raw, contentWidth))
+	b.WriteString(renderTUIBanner(label, raw, contentWidth))
 	for _, section := range replaySectionsForWithRenderers(
-		source.history,
+		history,
 		contentWidth,
 		renderAssistant,
 		renderReasoning,

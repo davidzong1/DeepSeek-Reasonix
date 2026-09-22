@@ -115,7 +115,7 @@ func followerBindAttempt(t *testing.T, owners *team.OwnerStore, storeRoot, teamN
 		SessionService: store, ExclusiveSession: exclusive,
 	})
 	roots := []string{ownerDir, dir}
-	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, memberEventBuffer)}
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: newMemberEventPump()}
 	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
 
 	path, _, bindErr := bindMemberSession(ctrl, sessionFile, roots, ownerDir)
@@ -347,7 +347,7 @@ func memberBindAttempt(t *testing.T, owners *team.OwnerStore, storeRoot, teamNam
 		SystemPrompt: "member-sys", DisableColdResumePrune: true, Sink: event.Discard,
 		SessionService: store, ExclusiveSession: true,
 	})
-	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, memberEventBuffer)}
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: newMemberEventPump()}
 	binding := team.MemberBinding{Team: teamName, MemberID: memberID, SessionFile: sessionFile}
 
 	path, _, bindErr := bindMemberSession(ctrl, sessionFile, []string{ownerDir, dir}, ownerDir)
@@ -570,7 +570,7 @@ func TestFollowerBindsIntoWindowAndRefusesSubmit(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
-	m.bindBackend(backend, ownerKey{})
+	m.bindBackend(backend, ownerKey{}, replayInline)
 
 	if got := m.ctrl.History(); len(got) == 0 {
 		t.Fatal("binding the follower must render the member's transcript, not an empty window")

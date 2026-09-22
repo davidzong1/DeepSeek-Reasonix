@@ -177,7 +177,9 @@ func (m *chatTUI) rebindMemberToRef(teamName, member, ref string) (control.Sessi
 			return nil, fmt.Errorf("member %s is busy; the pool switch to %s applies when idle", member, ref)
 		}
 	}
-	m.bindBackend(backend, memberOwner(teamName, member))
+	// A quota failover rebuild is not a switch between members and its caller
+	// has no command to hand back, so it keeps the inline render.
+	m.bindBackend(backend, memberOwner(teamName, member), replayInline)
 	backend.ReplayPendingPrompts()
 	return backend, nil
 }

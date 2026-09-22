@@ -43,7 +43,7 @@ func TestMemberBackendPublishesOwnerHistoryIdentity(t *testing.T) {
 			"u": {UserID: "u", Provider: "openai", Model: "gpt-5.6",
 				BaseURL: "https://example.invalid/v1", APIKey: "k"},
 		}},
-		events:        make(chan memberEvent, memberEventBuffer),
+		events:        newMemberEventPump(),
 		workspaceRoot: workspace,
 		base: func() boot.Options {
 			return boot.Options{SessionDir: t.TempDir(), Stderr: io.Discard}
@@ -257,7 +257,7 @@ func TestMemberBindTakesOverThePublishedOwnerSession(t *testing.T) {
 	}
 
 	next := newCtrl()
-	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: make(chan memberEvent, 4)}
+	deps := memberBackendDeps{ctx: context.Background(), owners: owners, events: newMemberEventPump()}
 	_, fresh, follower, err := bindMemberOwnerSession(deps, next, binding)
 	if err != nil || follower != nil {
 		t.Fatalf("bind returned a read-only follower (err=%v), want the member bound writable", err)

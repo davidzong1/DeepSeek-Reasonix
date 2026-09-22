@@ -185,6 +185,10 @@ func TestBoundMemberTurnPhaseChangesUpdateFooter(t *testing.T) {
 	if m.turnPhase != "" {
 		t.Errorf("TurnDone must clear turnPhase, got %q", m.turnPhase)
 	}
+	// The settled turn also publishes the member's history identity, off the
+	// Update goroutine: settle it before the test's temporary team data root is
+	// removed under the write.
+	waitForCockpit(t, m)
 }
 
 // TestTurnPhaseClearedWhenOverlayOpens: verifying the turnPhase is empty when

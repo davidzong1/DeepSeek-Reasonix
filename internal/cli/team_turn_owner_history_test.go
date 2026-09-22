@@ -28,7 +28,7 @@ func TestTurnDonePublishesUnboundMemberOwnerHistory(t *testing.T) {
 	m := openTeamOverlay(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, stamp: b.MemberID + "-stem"}, nil
 	}, 4)
@@ -42,6 +42,7 @@ func TestTurnDonePublishesUnboundMemberOwnerHistory(t *testing.T) {
 	}
 
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: memberTurnDone()})
+	m = waitForCockpit(t, m)
 
 	got := ownerHistoryOf(t, m, "alpha", "alice")
 	want := team.OwnerFingerprint{Present: true, Stem: "alice-stem", Generation: 1}
@@ -65,7 +66,7 @@ func TestTurnDoneSkipsMemberWithoutHistoryIdentity(t *testing.T) {
 	m := openTeamOverlay(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID}, nil // no stamp: no readable identity yet
 	}, 4)
@@ -75,6 +76,7 @@ func TestTurnDoneSkipsMemberWithoutHistoryIdentity(t *testing.T) {
 	m.switchTeamMember("lead")
 
 	m.handleMemberEvent(memberEventMsg{member: "alice", ev: memberTurnDone()})
+	m = waitForCockpit(t, m)
 
 	if got := ownerHistoryOf(t, m, "alpha", "alice"); got.Present {
 		t.Fatalf("a member with no history identity must not be published: %+v", got)
@@ -99,6 +101,7 @@ func TestTurnDonePublishesBoundMemberExactlyOnce(t *testing.T) {
 	}
 
 	m.handleMemberEvent(memberEventMsg{member: "lead", ev: memberTurnDone()})
+	m = waitForCockpit(t, m)
 
 	got := ownerHistoryOf(t, m, "alpha", "lead")
 	if got.Generation != before.Generation+1 {

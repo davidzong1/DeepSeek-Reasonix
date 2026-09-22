@@ -17,7 +17,7 @@ import (
 // reflect every terminal event of every background member exactly once.
 func TestP2MemberEventPumpPreservesPerSenderOrder(t *testing.T) {
 	m := chatTUI{}
-	m.memberEvents = make(chan memberEvent, 64)
+	m.memberEvents = newMemberEventPump()
 	m.teamPick = &teamPicker{session: sessionState{
 		active: true, teamName: "alpha", current: "lead", unread: map[string]int{},
 	}}
@@ -29,10 +29,7 @@ func TestP2MemberEventPumpPreservesPerSenderOrder(t *testing.T) {
 		go func(member string) {
 			defer wg.Done()
 			for i := range n {
-				m.memberEvents <- memberEvent{
-					member: member,
-					ev:     event.Event{Kind: event.Message, Text: member + "#" + byteFrame(i)},
-				}
+				m.memberEvents.push(member, event.Event{Kind: event.Message, Text: member + "#" + byteFrame(i)})
 			}
 		}(member)
 	}
@@ -40,7 +37,10 @@ func TestP2MemberEventPumpPreservesPerSenderOrder(t *testing.T) {
 	seen := map[string][]string{}
 	got := 0
 	for got < 2*n {
-		msg := <-m.memberEvents
+		msg, ok := m.memberEvents.next()
+		if !ok {
+			t.Fatal("the pump closed before every event was drained")
+		}
 		if cmd := m.handleMemberEvent(memberEventMsg(msg)); cmd == nil {
 			t.Fatal("the pump must re-arm after every event")
 		}

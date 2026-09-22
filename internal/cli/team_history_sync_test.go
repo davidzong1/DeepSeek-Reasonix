@@ -21,7 +21,7 @@ func syncFixture(t *testing.T, backend stubBackend) chatTUI {
 	m := openTeamOverlay(t)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return backend, nil
 	}, 4)
@@ -58,7 +58,7 @@ func publishOwnerHistory(t *testing.T, m chatTUI, member string) {
 // refused one, schedules nothing.
 func pollHistorySync(t *testing.T, m chatTUI) (chatTUI, bool) {
 	t.Helper()
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		return m, false
 	}
@@ -105,7 +105,7 @@ func TestHistorySyncReadRunsOffTheUpdateGoroutine(t *testing.T) {
 	pollHistorySync(t, m)
 	publishOwnerHistory(t, m, "lead")
 
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		t.Fatal("a changed owner identity must schedule a durable read")
 	}
@@ -173,7 +173,7 @@ func TestHistorySyncStaleResultIsDropped(t *testing.T) {
 	pollHistorySync(t, m)
 	publishOwnerHistory(t, m, "lead")
 
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		t.Fatal("precondition: a read must be scheduled")
 	}
@@ -335,7 +335,7 @@ func TestHistorySyncReplaySuppressesLegacyClearScreen(t *testing.T) {
 	m := syncFixture(t, stubBackend{label: "lead", stamp: "s1"})
 	m.legacyScrollClear = true
 
-	m.replayBoundHistory()
+	_ = m.replayBoundHistory()
 	if !m.sessionSwitch {
 		t.Fatal("a cross-window replay must arm sessionSwitch like every other rebuild")
 	}

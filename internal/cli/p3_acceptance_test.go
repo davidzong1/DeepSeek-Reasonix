@@ -69,7 +69,7 @@ func TestP3SwitchPreservesMemberContext(t *testing.T) {
 func TestP3IndependentMemberCursors(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, status: control.RuntimeStatus{}, history: map[string][]provider.Message{
 			"lead":  {userMessage("LEAD-HISTORY")},
@@ -129,7 +129,7 @@ func TestP3BackgroundEventBadgesExactlyOnce(t *testing.T) {
 func TestP3BoundMemberEventsRenderToOwnWindow(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, status: control.RuntimeStatus{}, history: map[string][]provider.Message{
 			"alice": {userMessage("ALICE-HISTORY")},

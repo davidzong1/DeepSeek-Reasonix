@@ -521,7 +521,7 @@ func TestMemberBindDisarmsTheWatchdogForTheTurnItLeaves(t *testing.T) {
 		t.Fatal("a started turn must arm the watchdog")
 	}
 	// The member switch: another backend becomes the window's own.
-	m.bindBackend(newOwnedTestController(t, control.Options{}), ownerKey{})
+	m.bindBackend(newOwnedTestController(t, control.Options{}), ownerKey{}, replayInline)
 	if d.Running() {
 		t.Fatal("switching members must disarm the generation of the turn this window no longer services")
 	}

@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/sessioninbox"
 	"reasonix/internal/skill"
 	"reasonix/internal/team"
 )
@@ -109,13 +110,25 @@ func (s stubBackend) Close() {
 // the switch gate's per-condition behavior.
 func (s stubBackend) RuntimeStatus() control.RuntimeStatus { return s.status }
 
+// AutoApproveTools is otherwise promoted from the embedded interface, which a
+// stub leaves nil: the status footer reads it, so a stub bound as the window's
+// backend has to answer it for a frame to render. The zero value is what a
+// fixture backend grants — nothing is auto-approved.
+func (s stubBackend) AutoApproveTools() bool { return false }
+
+// InboxSnapshot is promoted from the embedded interface too, and the queue
+// indicator reads it on every frame. A stub queues nothing.
+func (s stubBackend) InboxSnapshot() sessioninbox.InboxSnapshot {
+	return sessioninbox.InboxSnapshot{}
+}
+
 // overlayWithBackends opens the team overlay and wires a backend registry whose
 // builder hands out a backend carrying that member's own history.
 func overlayWithBackends(t *testing.T, history map[string][]provider.Message) chatTUI {
 	t.Helper()
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, history: history[b.MemberID]}, nil
 	}, 4)
@@ -199,7 +212,7 @@ func TestSwitchTeamMemberRefusesUnknownMember(t *testing.T) {
 func TestSwitchTeamMemberRefreshesSkillSnapshot(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	skills := map[string][]skill.Skill{
 		"lead":  {{Name: "locked-leader", Description: "leader-scoped"}},
 		"alice": {{Name: "special-member", Description: "member-scoped"}},
@@ -284,8 +297,14 @@ func TestTeamBackendSeamInstallsChannelAndOptions(t *testing.T) {
 	}
 
 	m.bindTeamBackendSeam(20, cliBuildOverrides{})
-	if m.memberEvents == nil || cap(m.memberEvents) != memberEventBuffer {
-		t.Fatalf("seam must install a buffered channel, cap = %d", cap(m.memberEvents))
+	if m.memberEvents == nil {
+		t.Fatal("seam must install the member event pump")
+	}
+	// The pump must be live, not just non-nil: an emitter's sink reaches exactly
+	// one consumer read, and the seam's own channel is what carries it.
+	m.memberEvents.sink("lead").Emit(event.Event{Kind: event.Notice, Text: "seam"})
+	if ev, ok := m.memberEvents.next(); !ok || ev.member != "lead" || ev.ev.Text != "seam" {
+		t.Fatalf("seam pump did not carry the first event: %+v ok=%v", ev, ok)
 	}
 	if m.memberBackendBase == nil {
 		t.Fatal("seam must install the options template")
@@ -372,7 +391,7 @@ func TestDestructiveOpsRetireMemberBackends(t *testing.T) {
 	closed := 0
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, closed: &closed}, nil
 	}, 8)

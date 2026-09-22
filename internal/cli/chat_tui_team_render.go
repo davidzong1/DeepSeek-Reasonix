@@ -421,14 +421,41 @@ func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 		b.WriteString(dim("a add member · Esc back"))
 		return
 	}
+	// One index for the whole roster: slotOf scans every team and slot, and the
+	// overlay renders the roster several times per frame (bottomRows), so a
+	// lookup per row per render made the frame O(members²). The map is local, so
+	// it can never serve a slot from a document the picker has reloaded past.
+	slots := p.memberSlotMap()
 	for i, member := range members {
-		label := member.ID + " " + dim("("+compactMemberSummary(member, p.statusOf(member.ID))+")")
-		if slot, ok := p.slotOf(member.ID); ok && slot.IsCustomPool() {
+		status := string(team.MemberStatusActive)
+		if slot, ok := slots[member.ID]; ok {
+			status = string(slot.Status)
+		}
+		label := member.ID + " " + dim("("+compactMemberSummary(member, status)+")")
+		if slot, ok := slots[member.ID]; ok && slot.IsCustomPool() {
 			label += dim(" · custom pool")
 		}
 		b.WriteString(rowLine(i == view.FocusIndex(), i+1, "", label, member.State == team.MemberStateWorking) + "\n")
 	}
 	b.WriteString(dim(ansi.Wrap(rosterHelp, w-1, "")))
+}
+
+// memberSlotMap indexes the focused team's template slots by member id, so a
+// caller rendering every member resolves each one from one scan instead of one
+// scan per row.
+func (p *teamPicker) memberSlotMap() map[string]team.MemberSlot {
+	name := p.model.Name()
+	for _, t := range p.doc.Teams {
+		if t.Name != name {
+			continue
+		}
+		slots := make(map[string]team.MemberSlot, len(t.Template))
+		for _, slot := range t.Template {
+			slots[slot.MemberID] = slot
+		}
+		return slots
+	}
+	return nil
 }
 
 // compactMemberSummary joins a member's role, leader marker, and status for
@@ -598,7 +625,7 @@ func (p *teamPicker) renderLeaderReset(w int) string {
 		b.WriteString("  " + r.buf + "▏" + "\n")
 	case leaderResetList:
 		b.WriteString(dim("  Clearing ") + accent(teamName) + dim(" member contexts:") + "\n")
-		b.WriteString("  " + dim(strconv.Itoa(p.resetDirCount(teamName))+" directories under .reasonix/team/context/") + "\n")
+		b.WriteString("  " + dim(strconv.Itoa(r.dirCount)+" directories under .reasonix/team/context/") + "\n")
 	case leaderResetDone:
 		b.WriteString(dim("  Leader stepped down; team contexts cleared.") + "\n")
 	}
@@ -614,15 +641,6 @@ func (p *teamPicker) renderLeaderReset(w int) string {
 		b.WriteString(dim("Enter/Esc close"))
 	}
 	return choicePanelStyle.Width(w).Render(b.String())
-}
-
-// statusOf is the member's persisted lifecycle status, defaulting to active for
-// a slot the registry no longer carries.
-func (p *teamPicker) statusOf(id string) string {
-	if slot, ok := p.slotOf(id); ok {
-		return string(slot.Status)
-	}
-	return string(team.MemberStatusActive)
 }
 
 // rosterSize labels a team row's member count.

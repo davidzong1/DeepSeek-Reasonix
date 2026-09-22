@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"time"
@@ -18,14 +19,44 @@ import (
 // sync carries the result of the tick's off-goroutine durable-history read back
 // through the same message: the read is scheduled by the tick, so its result
 // rides the tick instead of needing a second update branch (see syncBoundHistory).
+// replay does the same for a member's off-goroutine transcript render
+// (team_replay.go), super for the members' cockpit reports
+// (team_member_cockpit.go), and read for the transcript's own off-goroutine
+// history read (commitBackendReplay) — neither is a tick of its own.
+//
+// tick marks a genuine timer tick, and gen names the chain it belongs to. Only
+// a tick re-arms the next one: a delivered result used to reach the end of
+// refreshTeamRoster and arm a chain of its own, so every replay bundle and
+// history sync the team produced left one more poll loop running, each paying
+// the tick's registry read (see rosterTick).
 type teamRosterRefreshMsg struct {
-	sync *historySyncDone
+	sync   *historySyncDone
+	replay *teamReplayReadyMsg
+	super  []cockpitResult
+	read   *replayReadReady
+	tick   bool
+	gen    uint64
 }
 
 const teamRosterRefreshInterval = time.Second
 
-func teamRosterRefresh() tea.Cmd {
-	return tea.Tick(teamRosterRefreshInterval, func(time.Time) tea.Msg { return teamRosterRefreshMsg{} })
+// rosterTick arms the next roster tick, carrying the generation that was current
+// when it was armed. A message from a superseded chain is dropped rather than
+// re-armed, and only a genuine tick re-arms: together those two halves keep the
+// overlay at one poll loop per session instead of one per delivered result.
+func (m *chatTUI) rosterTick() tea.Cmd {
+	gen := m.rosterTickGen
+	return tea.Tick(teamRosterRefreshInterval, func(time.Time) tea.Msg {
+		return teamRosterRefreshMsg{tick: true, gen: gen}
+	})
+}
+
+// startRosterTick opens a fresh poll chain and retires every chain armed before
+// it. Session entry is the only caller: a reopen must not leave the previous
+// chain's generation ticking.
+func (m *chatTUI) startRosterTick() tea.Cmd {
+	m.rosterTickGen++
+	return m.rosterTick()
 }
 
 // refreshTeamRoster re-reads the registry and keeps the active session's
@@ -34,20 +65,82 @@ func teamRosterRefresh() tea.Cmd {
 //
 // The same 1s tick also polls the bound member's history identity, so a second
 // window that appended, cleared or branched the same canonical owner is noticed
-// without a re-enter or a rebind (see syncBoundHistory). The poll runs after the
-// roster has settled: a member removed remotely must be rebound before its
-// owner is read, or the window reads the fingerprint of a member it is about to
-// leave and reports its own rebind as a remote clear.
+// without a re-enter or a rebind (see syncBoundHistory). The roster settles first
+// and its owner is then read ONCE for both consumers: a member removed remotely
+// must be rebound before its owner is read (or the window reads the fingerprint of
+// a member it is about to leave and reports its own rebind as a remote clear), and
+// a read inside each consumer would let the rebind land between them.
 func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
-	if m == nil || m.teamPick == nil || m.teamPick.store == nil {
+	if m == nil {
 		return nil
 	}
-	if msg.sync != nil {
-		m.handleHistorySyncDone(*msg.sync)
+	if len(msg.super) > 0 {
+		// A member's cockpit report: the tick that armed this collection is still
+		// pending, so this path applies the report and arms no second tick.
+		m.applyCockpitResults(msg.super)
+		return nil
 	}
-	m.syncAmbientOwnerUsage()
-	next := m.refreshTeamRosterView()
-	return batchCmds(m.syncBoundHistory(), next)
+	// A superseded chain's tick dies here instead of re-arming: session entry is
+	// the one place a chain is opened (startRosterTick).
+	if msg.tick && msg.gen != m.rosterTickGen {
+		return nil
+	}
+	var work tea.Cmd
+	if msg.read != nil {
+		work = batchCmds(work, m.handleReplayReadReady(*msg.read))
+	}
+	if msg.replay != nil {
+		work = batchCmds(work, m.handleTeamReplayReady(*msg.replay))
+	}
+	if msg.sync != nil {
+		work = batchCmds(work, m.handleHistorySyncDone(*msg.sync))
+	}
+	if m.teamPick == nil || m.teamPick.store == nil {
+		return work
+	}
+	// The roster settles before anything reads an owner: a member removed remotely
+	// must be rebound before its owner is read, or the window reads the fingerprint
+	// of a member it is about to leave and reports its own rebind as a remote clear.
+	work = batchCmds(work, m.refreshTeamRosterView())
+	// Both owner consumers are then served from ONE read. They need the same
+	// fingerprint on the same tick — the ambient usage channel and the cross-window
+	// history poll — and it is a disk read, so resolving it here (after the roster
+	// settled, so it names the member now bound) is what makes sharing it safe:
+	// reading it inside each consumer let the roster rebind between them, and the
+	// second consumer would then have compared the incoming member's stamp against
+	// the outgoing member's fingerprint and read that difference as a history change.
+	fingerprint, fingerprintOK := m.boundOwnerFingerprint()
+	m.syncAmbientOwnerUsage(fingerprint, fingerprintOK)
+	work = batchCmds(work, m.syncBoundHistory(fingerprint, fingerprintOK))
+	work = batchCmds(work, m.refreshBoundMemberUsage(), m.collectCockpitResults())
+	// Only a genuine tick continues the chain. A result that rode this message
+	// (a replay bundle, a history sync, a transcript read) must not: arming here
+	// as well left one extra poll loop per delivered result, so the overlay's
+	// tick rate grew with every history change the team produced.
+	if msg.tick {
+		work = batchCmds(work, m.rosterTick())
+	}
+	return work
+}
+
+// refreshBoundMemberUsage hands the bound member's published usage to the tick's
+// off-goroutine read, so the status band stops reading that document on the frame
+// path (see refreshUsage). A follower is the only backend whose usage lives on
+// disk: when the window owns the writer's own controller, its numbers are already
+// in memory and there is nothing to refresh.
+//
+// The read answers no message. The tick that armed it is already in flight, and a
+// second result would arm a second tick — the same reason the tick carries the
+// results that do need delivering (see refreshTeamRoster).
+func (m *chatTUI) refreshBoundMemberUsage() tea.Cmd {
+	follower, ok := m.ctrl.(*memberFollowerBackend)
+	if !ok || follower == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		follower.refreshUsage(context.Background())
+		return nil
+	}
 }
 
 // syncAmbientOwnerUsage keeps the usage channel of the member this window's own
@@ -61,7 +154,7 @@ func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 // publisher owns its own cadence, so it survives the team overlay being left
 // (the member backends do too); the condition is re-evaluated every tick and
 // the publisher is stopped the moment it stops holding.
-func (m *chatTUI) syncAmbientOwnerUsage() {
+func (m *chatTUI) syncAmbientOwnerUsage(fingerprint team.OwnerFingerprint, ok bool) {
 	if m == nil {
 		return
 	}
@@ -69,7 +162,6 @@ func (m *chatTUI) syncAmbientOwnerUsage() {
 	if p == nil || p.owners == nil {
 		return
 	}
-	fingerprint, ok := m.boundOwnerFingerprint()
 	if m.ambient == nil || !ok || !fingerprint.Present || fingerprint.Corrupt ||
 		!sameOwnerIdentity(fingerprint.Stem, m.ambient.HistoryStamp()) {
 		m.stopAmbientOwnerUsage()
@@ -107,16 +199,17 @@ func (m *chatTUI) stopAmbientOwnerUsage() {
 }
 
 // refreshTeamRosterView is the roster half of the tick: reload the registry and
-// align the session's member list with it.
+// align the session's member list with it. It arms no tick of its own — the
+// caller that received the tick owns the chain (refreshTeamRoster).
 func (m *chatTUI) refreshTeamRosterView() tea.Cmd {
 	p := m.teamPick
 	teamName := p.model.Name()
 	if err := p.reload(teamName); err != nil {
 		p.errMsg = pickerErrMsg(err)
-		return teamRosterRefresh()
+		return nil
 	}
 	if !p.session.active {
-		return teamRosterRefresh()
+		return nil
 	}
 	ids := make([]string, 0, len(p.model.Members()))
 	for _, member := range p.model.Members() {
@@ -126,21 +219,18 @@ func (m *chatTUI) refreshTeamRosterView() tea.Cmd {
 	p.session.members = ids
 	if i := slices.Index(ids, oldCurrent); i >= 0 {
 		p.session.focus = i
-		return teamRosterRefresh()
+		return nil
 	}
 	// The bound member was removed remotely. Rebind to the current leader when
 	// possible, preserving the team session instead of forcing a reopen.
 	leader := p.firstLeader()
 	if leader == "" {
 		m.closeSession()
-		return teamRosterRefresh()
+		return nil
 	}
 	p.session.current = leader
 	p.session.focus = slices.Index(ids, leader)
-	if cmd := m.switchTeamMember(leader); cmd != nil {
-		return tea.Batch(cmd, teamRosterRefresh())
-	}
-	return teamRosterRefresh()
+	return m.switchTeamMember(leader)
 }
 
 // sessionState is the team session window (§5/§11.4): which member's Agent the
@@ -299,7 +389,7 @@ func (m *chatTUI) enterTeamSession() tea.Cmd {
 		// failed to land, and the refusal banner is where the page says so.
 		p.refusal = "Selection not saved: " + pickerErrMsg(err)
 	}
-	return tea.Batch(m.switchTeamMember(member.ID), teamRosterRefresh())
+	return tea.Batch(m.switchTeamMember(member.ID), m.startRosterTick())
 }
 
 // restoreSession resumes the persisted member window when its member is still

@@ -60,8 +60,13 @@ func (s *RuntimeScheduler) SetTaskStore(store team.TaskStore) {
 }
 
 // Assign picks a member by the §3.5 strategy order and starts the task for
-// real. Status is running, never a fake pending: the executor ran.
-func (s *RuntimeScheduler) Assign(task team.Task, fleet []team.Member) (Assignment, error) {
+// real. Status is running, never a fake pending: the executor ran. The caller's
+// context reaches the executor, because the writes it gates — the durable
+// "running" row and the member's turn submission — belong to the caller that
+// asked for the assignment, not to the scheduler: passing context.Background()
+// here made a contended board write impossible to abandon for its whole
+// busy_timeout window. A nil context is treated as uncancellable.
+func (s *RuntimeScheduler) Assign(ctx context.Context, task team.Task, fleet []team.Member) (Assignment, error) {
 	if s.exec == nil {
 		return Assignment{}, ErrNoExecutor
 	}
@@ -69,7 +74,7 @@ func (s *RuntimeScheduler) Assign(task team.Task, fleet []team.Member) (Assignme
 	if !ok {
 		return Assignment{}, fmt.Errorf("%w: task %s requires role %q", ErrNoSuitableMember, task.ID, task.RequireRole)
 	}
-	if err := s.exec.Start(context.Background(), task, m); err != nil {
+	if err := s.exec.Start(orBackground(ctx), task, m); err != nil {
 		return Assignment{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	return Assignment{
@@ -78,6 +83,16 @@ func (s *RuntimeScheduler) Assign(task team.Task, fleet []team.Member) (Assignme
 		Status:   StatusRunning,
 		Note:     fmt.Sprintf("%s started on %s (role %s, state %s)", task.ID, m.ID, m.Role, m.State),
 	}, nil
+}
+
+// orBackground keeps a nil caller context from reaching the executor's durable
+// writes, where it would panic instead of reporting that nothing was
+// cancellable to begin with.
+func orBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // Cancel stops one running task through the executor and records the ledger
@@ -95,11 +110,13 @@ func (s *RuntimeScheduler) Cancel(taskID team.TaskID) (Assignment, error) {
 // Restore re-drives interrupted executions after a restart (§4 recovery): a
 // task persisted in a live state is resumed on its member when the member is
 // still in the fleet, else marked failed. No fake pending — every restored
-// task ends running or failed.
-func (s *RuntimeScheduler) Restore(tasks []team.Task, fleet []team.Member) ([]Assignment, error) {
+// task ends running or failed. The caller's context reaches the executor and
+// the failed-restore write for the same reason Assign's does.
+func (s *RuntimeScheduler) Restore(ctx context.Context, tasks []team.Task, fleet []team.Member) ([]Assignment, error) {
 	if s.exec == nil {
 		return nil, ErrNoExecutor
 	}
+	ctx = orBackground(ctx)
 	byID := make(map[string]team.Member, len(fleet))
 	for _, m := range fleet {
 		byID[m.ID] = m
@@ -110,13 +127,13 @@ func (s *RuntimeScheduler) Restore(tasks []team.Task, fleet []team.Member) ([]As
 		case team.TaskStatusAssigned, team.TaskStatusRunning:
 			m, ok := byID[t.AssignedMember]
 			if !ok {
-				s.persistRestoreFailure(t, "member "+t.AssignedMember+" no longer in fleet")
+				s.persistRestoreFailure(ctx, t, "member "+t.AssignedMember+" no longer in fleet")
 				restored = append(restored, Assignment{TaskID: t.ID, Status: StatusFailed,
 					Note: string(t.ID) + " failed: member " + t.AssignedMember + " no longer in fleet"})
 				continue
 			}
-			if err := s.exec.Resume(context.Background(), t, m); err != nil {
-				s.persistRestoreFailure(t, err.Error())
+			if err := s.exec.Resume(ctx, t, m); err != nil {
+				s.persistRestoreFailure(ctx, t, err.Error())
 				restored = append(restored, Assignment{TaskID: t.ID, Status: StatusFailed,
 					Note: string(t.ID) + " failed to resume: " + err.Error()})
 				continue
@@ -132,7 +149,7 @@ func (s *RuntimeScheduler) Restore(tasks []team.Task, fleet []team.Member) ([]As
 // the migration map: a running task fails, an assigned task cancels — the
 // map has no assigned -> failed edge. Best-effort: the ledger Assignment
 // already records the failure, and the store stays live for a later attempt.
-func (s *RuntimeScheduler) persistRestoreFailure(t team.Task, reason string) {
+func (s *RuntimeScheduler) persistRestoreFailure(ctx context.Context, t team.Task, reason string) {
 	if s.store == nil {
 		return
 	}
@@ -144,5 +161,5 @@ func (s *RuntimeScheduler) persistRestoreFailure(t team.Task, reason string) {
 		return
 	}
 	t.Status = to
-	_ = s.store.SaveTask(context.Background(), t)
+	_ = s.store.SaveTask(ctx, t)
 }

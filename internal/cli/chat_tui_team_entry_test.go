@@ -49,7 +49,7 @@ func TestTeamButtonEntryBindsLeaderBackend(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(chatTUI)
 
-	m.memberEvents = make(chan memberEvent, 4)
+	m.memberEvents = newMemberEventPump()
 	installed := newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		return stubBackend{label: b.MemberID, history: []provider.Message{
 			{Role: provider.RoleUser, Content: "LEADER-OWN-HISTORY"},

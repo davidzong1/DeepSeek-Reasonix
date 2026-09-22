@@ -160,7 +160,7 @@ func TestTeamTurnInjectsInboxAtSubmit(t *testing.T) {
 	writeTeamFixture(t, twoMemberTeam())
 	m := openTeamOverlay(t)
 	closeBoardOn(t, m)
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	var cb *captureBackend
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		cb = &captureBackend{stubBackend: stubBackend{

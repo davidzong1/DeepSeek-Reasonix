@@ -165,8 +165,18 @@ func recordMemberOwnerHistory(ctx context.Context, owners *team.OwnerStore, b te
 	if owners == nil || ctrl == nil {
 		return nil
 	}
+	return recordMemberOwnerHistoryWith(ctx, owners, b, ctrl.HistoryStamp(), bump)
+}
+
+// recordMemberOwnerHistoryWith records an identity the caller read itself. The
+// off-loop publisher (team_member_cockpit.go) reads the identity and writes it
+// in one place, so what it publishes is exactly the identity it probed.
+func recordMemberOwnerHistoryWith(ctx context.Context, owners *team.OwnerStore, b team.MemberBinding, stamp string, bump bool) error {
+	if owners == nil {
+		return nil
+	}
 	key := team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}
-	if err := owners.BumpHistory(ctx, key, ctrl.HistoryStamp(), bump); err != nil {
+	if err := owners.BumpHistory(ctx, key, stamp, bump); err != nil {
 		return fmt.Errorf("member %q: record owner history: %w", b.MemberID, err)
 	}
 	return nil

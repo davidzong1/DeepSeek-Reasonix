@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -113,6 +114,45 @@ var (
 	terminalProbe         = queryTerminalBackground
 )
 
+// themeMaterializeMu serializes palette materialization against background
+// transcript rendering (team_replay.go). A member's replay bundle is rendered
+// and wrapped off the Update goroutine, and that render reads activeCLITheme and
+// the styles refreshCLIStyles derives from it for its whole duration; a palette
+// change would otherwise rewrite both underneath it. Writers take the write
+// side, the background render takes the read side, and the Update goroutine's
+// own readers need no lock: they are the writers' goroutine.
+var themeMaterializeMu sync.RWMutex
+
+// withThemeMaterialized runs fn while the active palette and its derived styles
+// are guaranteed not to change under it.
+func withThemeMaterialized(fn func()) {
+	themeMaterializeMu.RLock()
+	defer themeMaterializeMu.RUnlock()
+	fn()
+}
+
+// materializeTheme installs a palette and the styles derived from it under the
+// write side. A palette change waits for a background render in flight rather
+// than rewriting the globals under it.
+func materializeTheme(fn func()) {
+	themeMaterializeMu.Lock()
+	defer themeMaterializeMu.Unlock()
+	fn()
+}
+
+// tryMaterializeTheme is materializeTheme for a frame that may simply be
+// skipped: the theme sweep swaps the palette per tick, so a tick that loses the
+// race to a background render is dropped instead of stalling the animation.
+// Reports whether fn ran.
+func tryMaterializeTheme(fn func()) bool {
+	if !themeMaterializeMu.TryLock() {
+		return false
+	}
+	defer themeMaterializeMu.Unlock()
+	fn()
+	return true
+}
+
 func noTerminalBackground() (terminalRGB, bool) { return terminalRGB{}, false }
 
 // cliCursorShape is the active cursor shape for the textarea input, configured
@@ -135,8 +175,10 @@ func configureCLIThemeWithStyle(mode, style string) {
 	if env := strings.TrimSpace(os.Getenv("REASONIX_THEME_STYLE")); env != "" {
 		style = env
 	}
-	activeCLITheme = resolveCLIThemeWithStyle(mode, style)
-	refreshCLIStyles()
+	materializeTheme(func() {
+		activeCLITheme = resolveCLIThemeWithStyle(mode, style)
+		refreshCLIStyles()
+	})
 }
 
 func resolveCLITheme(mode string) cliPalette {
@@ -229,9 +271,13 @@ func withTerminalProbe(fn func()) {
 }
 
 func setCLIThemeMode(mode string) cliPalette {
-	activeCLITheme = resolveCLIThemeWithStyle(mode, activeCLITheme.style)
-	refreshCLIStyles()
-	return activeCLITheme
+	var applied cliPalette
+	materializeTheme(func() {
+		activeCLITheme = resolveCLIThemeWithStyle(mode, activeCLITheme.style)
+		refreshCLIStyles()
+		applied = activeCLITheme
+	})
+	return applied
 }
 
 func setCLIThemeStyle(name string) (cliPalette, bool) {
@@ -239,9 +285,13 @@ func setCLIThemeStyle(name string) (cliPalette, bool) {
 	if !ok {
 		return cliPalette{}, false
 	}
-	activeCLITheme = resolveCLIThemeWithStyle(st.mode, st.name)
-	refreshCLIStyles()
-	return activeCLITheme, true
+	var applied cliPalette
+	materializeTheme(func() {
+		activeCLITheme = resolveCLIThemeWithStyle(st.mode, st.name)
+		refreshCLIStyles()
+		applied = activeCLITheme
+	})
+	return applied, true
 }
 
 type terminalRGB struct {

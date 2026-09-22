@@ -349,7 +349,7 @@ func TestRebindMemberAgentUserUpdatesModelRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := m.teamPick.store
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	builds := 0
 	replays := 0
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {

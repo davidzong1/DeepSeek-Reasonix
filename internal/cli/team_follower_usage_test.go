@@ -98,7 +98,7 @@ func TestFollowerRendersWriterUsageInStatusBand(t *testing.T) {
 	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 140)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
 	m = next.(chatTUI)
-	m.bindBackend(backend, ownerKey{})
+	m.bindBackend(backend, ownerKey{}, replayInline)
 
 	// The context group renders the used tokens and the compaction headroom the
 	// writer's CompactRatio implies (80% threshold, 9% used), so asserting the
@@ -226,6 +226,81 @@ func TestFollowerUsageReadIsThrottled(t *testing.T) {
 	}
 }
 
+// TestFollowerUsageReadsLeaveTheFramePath covers the tick's half of the throttle:
+// once a host has refreshed the snapshot off the Update goroutine, the band serves
+// what that read installed, so drawing a frame costs no stat and no parse. What
+// the band renders is still the writer's observation, freshness and TTL included.
+func TestFollowerUsageReadsLeaveTheFramePath(t *testing.T) {
+	reader := &countingUsageReader{doc: sampleWriterUsage(time.Now())}
+	backend, err := newMemberFollowerBackend(
+		followerLegacySource{path: "unused.json", stamp: "stem:1"}, event.Discard,
+		"lead", "", "", "", "", "", reader,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), 140)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	m = next.(chatTUI)
+	m.bindBackend(backend, ownerKey{}, replayInline)
+
+	// A frame before any refresh still reads: the fallback is what a host with no
+	// tick gets.
+	flush := func() {
+		m.ctrl.ContextSnapshot()
+		m.ctrl.LastUsage()
+		m.ctrl.SessionCache()
+		m.ctrl.Jobs()
+		m.ctrl.CompactRatio()
+	}
+	flush()
+	if got := reader.count(); got != 1 {
+		t.Fatalf("a frame before the tick read the document %d times, want 1", got)
+	}
+
+	cmd := m.refreshBoundMemberUsage()
+	if cmd == nil {
+		t.Fatal("a bound follower's usage must be refreshed by the tick")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("the refresh must answer no message — the tick that armed it is in flight, got %T", msg)
+	}
+	if got := reader.count(); got != 2 {
+		t.Fatalf("the refresh read the document %d times, want 2 in total", got)
+	}
+
+	for range 50 {
+		flush()
+	}
+	if got := reader.count(); got != 2 {
+		t.Fatalf("frames read the document %d more times after the refresh, want none", got-2)
+	}
+	if used, window := m.ctrl.ContextSnapshot(); used != 12000 || window != 128000 {
+		t.Fatalf("the band must still render the writer's numbers, got (%d,%d)", used, window)
+	}
+}
+
+// TestFollowerUsageRefreshHidesAStoppedWriter pins the freshness rule at the new
+// boundary too: refreshing installs whatever the document says, and the document's
+// own stamp — not who read it — decides whether the band shows it.
+func TestFollowerUsageRefreshHidesAStoppedWriter(t *testing.T) {
+	reader := &countingUsageReader{doc: sampleWriterUsage(time.Now().Add(-2 * followerUsageTTL))}
+	backend, err := newMemberFollowerBackend(
+		followerLegacySource{path: "unused.json", stamp: "stem:1"}, event.Discard,
+		"lead", "", "", "", "", "", reader,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.refreshUsage(context.Background())
+	if used, window := backend.ContextSnapshot(); used != 0 || window != 0 {
+		t.Fatalf("a stale document must still be hidden, got (%d,%d)", used, window)
+	}
+	if u := backend.LastUsage(); u != nil {
+		t.Fatalf("LastUsage = %+v, want nil for a stopped writer", u)
+	}
+}
+
 // sampleUsageBackend answers the five published surfaces with fixed values, so
 // the publisher's mapping is asserted without a provider or a real turn.
 type sampleUsageBackend struct {
@@ -318,7 +393,7 @@ func TestAmbientWriterPublishesForItsOwnMember(t *testing.T) {
 	m.teamPick.session = sessionState{active: true, teamName: "alpha", current: "lead"}
 	publishFollowerIdentity(t, owners, "alpha", "lead", identity+":97")
 
-	m.syncAmbientOwnerUsage()
+	m.syncAmbientOwnerUsage(m.boundOwnerFingerprint())
 	if m.teamPick.ambientUsage == nil {
 		t.Fatal("the window's own chat writes this member; its usage channel must be published")
 	}
@@ -347,7 +422,7 @@ func TestAmbientWriterStaysQuietForAMemberItDoesNotWrite(t *testing.T) {
 	m.teamPick.session = sessionState{active: true, teamName: "alpha", current: "lead"}
 	publishFollowerIdentity(t, owners, "alpha", "lead", "9e0c63269f7ffcaa57b1603811ecddc4:2")
 
-	m.syncAmbientOwnerUsage()
+	m.syncAmbientOwnerUsage(m.boundOwnerFingerprint())
 	if m.teamPick.ambientUsage != nil {
 		t.Fatal("this window does not write that member; nothing may be published under its name")
 	}

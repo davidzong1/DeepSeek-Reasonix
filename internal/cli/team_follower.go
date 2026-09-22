@@ -147,6 +147,10 @@ type memberFollowerBackend struct {
 	usageMu     sync.Mutex
 	usageDoc    *team.OwnerUsage
 	usageReadAt time.Time
+	// usageTicked records that a host refreshed the snapshot off the frame path
+	// (refreshUsage). The band then serves what that read installed instead of
+	// stat-ing and parsing the document itself.
+	usageTicked bool
 }
 
 // Compile-time proof the follower is bindable as a member backend.
@@ -774,7 +778,7 @@ func newMemberFollower(deps memberBackendDeps, ctrl *control.Controller, b team.
 	}
 	path := filepath.Join(ownerDir, b.SessionFile)
 	follower, err := newMemberFollowerBackend(
-		source, memberSink(b.MemberID, deps.events),
+		source, deps.events.sink(b.MemberID),
 		b.MemberID, ctrl.ModelRef(), ctrl.SessionDir(), path, ctrl.WorkspaceRoot(), ctrl.SystemPrompt(),
 		newFollowerUsageReader(deps.owners, key),
 	)

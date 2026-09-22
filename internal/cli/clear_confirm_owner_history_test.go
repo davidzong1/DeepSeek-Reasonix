@@ -41,6 +41,27 @@ func ownerHistoryOf(t *testing.T, m chatTUI, teamName, memberID string) team.Own
 	return got
 }
 
+// waitForCockpit settles every queued member publication and applies its reports,
+// the way the next roster tick would. Publishing one member's history identity is
+// durable bookkeeping that runs off the Update goroutine by design
+// (team_member_cockpit.go), so a test asserting on the store right after the
+// trigger waits for it here instead of racing it.
+func waitForCockpit(t *testing.T, m chatTUI) chatTUI {
+	t.Helper()
+	if m.teamBackends == nil {
+		return m
+	}
+	cockpit := m.teamBackends.cockpit()
+	if cockpit == nil {
+		return m
+	}
+	if !cockpit.awaitIdle(5 * time.Second) {
+		t.Fatal("a member's cockpit publication never settled")
+	}
+	m.applyCockpitResults(cockpit.drain())
+	return m
+}
+
 // ownerHistoryBoundTUI binds the leader of a two-member team to a real
 // controller, so a bound /clear rotates a real session and the publication has
 // an identity to advance. It returns the TUI, the member's controller, and the
@@ -65,7 +86,7 @@ func ownerHistoryBoundTUI(t *testing.T, exclusive bool) (chatTUI, *control.Contr
 
 	runner := &blockingTurnRunner{started: make(chan struct{})}
 	var member *control.Controller
-	m.memberEvents = make(chan memberEvent, 8)
+	m.memberEvents = newMemberEventPump()
 	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
 		dir := t.TempDir()
 		exec := agent.New(nil, nil, agent.NewSession("member-sys"), agent.Options{}, event.Discard)
@@ -133,7 +154,7 @@ func TestBoundClearPublishesOwnerHistoryIdentity(t *testing.T) {
 			before := ownerHistoryOf(t, m, "alpha", "lead")
 			m.runSlashCommand("/clear")
 			next, _ := m.handleClearConfirmKey(tea.KeyPressMsg{Code: 'y'})
-			m = next.(chatTUI)
+			m = waitForCockpit(t, next.(chatTUI))
 
 			got := ownerHistoryOf(t, m, "alpha", "lead")
 			if got.Generation != before.Generation+1 {
