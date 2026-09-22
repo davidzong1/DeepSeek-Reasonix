@@ -67,6 +67,10 @@ type ownerLease struct {
 	legacy      []func()
 	epoch       uint64
 	graceTimer  *time.Timer
+	// retained records exactly the lock files this Owner published to the
+	// process registry, so a retract is exact and costs nothing for the sessions
+	// that never publish (which is every session without a background job).
+	retained []string
 	// adoptedPaths collects the lock files one in-flight acquisition takes, so
 	// the hold it becomes can name the domains it owns without every acquisition
 	// helper having to return them. Reset when an acquisition begins.
@@ -74,6 +78,9 @@ type ownerLease struct {
 	// blockedBy is the holder observed when this Owner last queued. It is read
 	// beside the lock file while queued and never drives a lease decision.
 	blockedBy *HolderInfo
+	// metrics is what waiting cost this Owner. Only blocked acquisitions and
+	// loans a peer took back touch it, so an uncontended write pays nothing.
+	metrics leaseMetrics
 }
 
 // Owner is one Delivery session's re-entrant workspace lease. One Owner may be
@@ -333,14 +340,19 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 		}
 		o.beginAcquisitionLocked("workspace", "", []string{o.canonical})
 		for o.hasPathHoldsLocked() {
-			if o.activity.background > 0 {
-				o.armGraceLocked()
+			// This Owner is the one waiting on its own completed hold: a loan kept
+			// for churn prevention is worth less than the wait it causes.
+			if releases := o.repayRetainedLocked(); len(releases) > 0 {
+				o.mu.Unlock()
+				runReleases(releases)
+				o.mu.Lock()
+				continue
 			}
 			changed := o.lease.changed
 			o.mu.Unlock()
 			if err := waitForSignal(ctx, changed); err != nil {
 				o.mu.Lock()
-				o.finishAcquisitionLocked()
+				o.finishAcquisitionLocked(err)
 				o.mu.Unlock()
 				return func() {}, err
 			}
@@ -367,7 +379,7 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 				refs: 1, scope: "workspace", keys: []string{o.canonical}, release: release,
 			})
 		}
-		o.finishAcquisitionLocked()
+		o.finishAcquisitionLocked(err)
 		releases := o.collectInactiveLocked()
 		o.mu.Unlock()
 		runReleases(releases)
@@ -479,69 +491,10 @@ func (o *Owner) RetainUntil(done <-chan struct{}) {
 	}()
 }
 
-func (o *Owner) collectInactiveLocked() []func() {
-	var inactive bool
-	for _, hold := range o.lease.holds {
-		if hold.refs == 0 {
-			inactive = true
-			break
-		}
-	}
-	if !inactive {
-		return nil
-	}
-	if o.activity.background > 0 {
-		o.armGraceLocked()
-		return nil
-	}
-	return o.takeInactiveLocked()
-}
-
-func (o *Owner) takeInactiveLocked() []func() {
-	o.cancelGraceLocked()
-	var releases []func()
-	for id, hold := range o.lease.holds {
-		if hold.refs != 0 {
-			continue
-		}
-		delete(o.lease.holds, id)
-		if hold.release != nil {
-			releases = append(releases, hold.release)
-		}
-	}
-	if len(releases) > 0 {
-		o.signalChangedLocked()
-	}
-	return releases
-}
-
-func (o *Owner) armGraceLocked() {
-	if o.graceAfter <= 0 || o.lease.graceTimer != nil {
-		return
-	}
-	epoch := o.lease.epoch
-	o.lease.graceTimer = time.AfterFunc(o.graceAfter, func() {
-		o.mu.Lock()
-		if o.lease.graceTimer == nil || o.lease.epoch != epoch {
-			o.mu.Unlock()
-			return
-		}
-		releases := o.takeInactiveLocked()
-		o.mu.Unlock()
-		runReleases(releases)
-	})
-}
-
-func (o *Owner) cancelGraceLocked() {
-	if o.lease.graceTimer != nil {
-		o.lease.graceTimer.Stop()
-		o.lease.graceTimer = nil
-	}
-}
-
 func (o *Owner) beginAcquisitionLocked(scope, label string, keys []string) {
 	o.lease.acquiring = true
 	o.lease.adoptedPaths = nil
+	o.lease.metrics.beginAcquisitionLocked(label)
 	o.lease.acquireDone = make(chan struct{})
 	o.lease.targetScope = scope
 	o.lease.targetLabel = label
@@ -549,7 +502,8 @@ func (o *Owner) beginAcquisitionLocked(scope, label string, keys []string) {
 	o.signalChangedLocked()
 }
 
-func (o *Owner) finishAcquisitionLocked() {
+func (o *Owner) finishAcquisitionLocked(err error) {
+	o.lease.metrics.finishAcquisitionLocked(err, time.Now())
 	o.lease.acquiring = false
 	o.lease.waiting = false
 	o.lease.targetScope = ""
@@ -771,9 +725,20 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 	if !errors.Is(err, filelock.ErrHeld) {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
+	// A completed tool call may still hold this domain for a running background
+	// job. That hold is a loan, and the caller is now blocked on it: repay it and
+	// retry before queueing at all, so nobody waits out a ~0.5ms saving.
+	if yieldRetainedOn(path) {
+		if release, retryErr := filelock.TryAcquireModeWithKey(path, localKey, mode); retryErr == nil {
+			o.clearBlockedHolder()
+			return o.observeHolder(path, mode, release), nil
+		}
+	}
 	// Read the holder record while queued: the wait notice is emitted from
-	// onWait, below, and names whoever published it.
+	// onWait, below, and names whoever published it. The same moment is where
+	// the wait is counted, which is the only place that sees every queue.
 	o.noteBlockedHolder(path)
+	o.noteBlockedLock(path)
 	if o.markWaiting() && !*notified {
 		*notified = true
 		if o.onWait != nil {
@@ -782,6 +747,7 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 	}
 	release, err = filelock.AcquireModeWithKey(ctx, path, localKey, mode)
 	if err != nil {
+		o.noteLockTimeout(path, err)
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}
 	o.clearBlockedHolder()

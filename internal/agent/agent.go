@@ -898,6 +898,10 @@ type Options struct {
 	// write, so that lease stays as narrow as those hooks actually are. nil keeps
 	// the conservative whole-workspace coverage.
 	HookWriteSurface ToolHookWriteSurfaceFunc
+	// WriteIntentGate queues a tool's write intent against in-process peers
+	// before the cross-process lease is attempted; boot supplies the team token.
+	// Concurrency only, never authority: nil or an error changes nothing.
+	WriteIntentGate WriteIntentGateFunc
 
 	// ProjectChecks is a retired compatibility option. Project instructions
 	// remain in normal model context and are not compiled into host obligations.

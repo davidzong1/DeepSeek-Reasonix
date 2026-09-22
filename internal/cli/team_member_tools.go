@@ -232,7 +232,12 @@ func (t *teamTaskTool) assignToRelevant(ctx context.Context, selected, roles []s
 	if assignErr != nil {
 		return "", assignErr
 	}
-	return fmt.Sprintf("task assigned to %s (roles=%s)", strings.Join(assigned, ", "), strings.Join(roles, ", ")), nil
+	// The fan-out hands every member the same subtask, so its write areas are
+	// shared by construction: naming them lets the leader dispatch members on
+	// distinct files instead of serializing them on the team write token.
+	return fmt.Sprintf("task assigned to %s (roles=%s)%s",
+		strings.Join(assigned, ", "), strings.Join(roles, ", "),
+		fanoutWriteAreas(payload, len(assigned))), nil
 }
 
 // execRedrive routes the leader's three recovery tools onto their service

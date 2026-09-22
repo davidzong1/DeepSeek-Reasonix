@@ -574,7 +574,7 @@ internal/boot/boot.go
 | A6 | **§3.1.2 的合并陷阱**（实施中发现，见 §3.1.2 陷阱框） | Part A | 已完成 | 读移到 roster 之后并只读一次；`team_owner_poll_test.go` 的 `TestRosterTickReadsTheOwnerFingerprintOnce`（放回各消费者即红，已验） |
 | B1 | `wakeMu` 不跨 `teamStore.Load()` | Part B | 已完成 | `agentruntime.NewBoardWakeStamped`（取代 `NewBoardWakeFor`：stamp 由调用方在进锁前解析，per-wake 重定向语义不变）；`teamTaskService.leaderStamp` 为解析缝，`wakeLeader` 先解析后进 `wakeMu`，锁只覆盖 board append。新增 `team_wake_leader_lock_test.go`：探针证明两次解析同时在途（锁内解析不可能到 2），且两条 wake 仍以 leader id 落地。红→绿已验（把解析移回锁内即 5s 超时守卫失败）。 |
 | B2 | board 写传 deadline ctx | Part B | 已完成 | `scheduler.RuntimeScheduler.Assign/Restore(ctx, …)`（含 `orBackground` 与 `persistRestoreFailure`）把调用方 ctx 传到 `exec.Start/Resume`；`agentruntime.Runtime.writeContext` 让 `record` 的 board append 借用调用方 ctx 并以 `boardWriteTimeout`(4s) 为界，`Cancel`/`Complete` 仍是有意不可取消的语义、只丢掉无界等待。新增 `scheduler/ctx_dispatch_test.go`（Assign/Restore 把调用方 ctx 交给 executor、传 nil 不 panic）与 `agentruntime/ctx_board_write_test.go`（取消即返回；无调用方 ctx 时带界）。红→绿已验（`Assign` 传 `Background()` 即两处断言失败）。失败语义未改：dispatch 依旧走 `failDispatch` + 唤醒 leader，只是更早可达。**残留**：`Complete`/`Cancel` 的 `SaveTask` 仍是 `context.Background()`（报告必须在其 turn 结束后仍落盘），且 `internal/team/blackboard_sqlite.go` 本轮冻结，driver 阻塞中的 `busy_timeout` 是否响应 ctx 未验。 |
-| B3 | 等锁可取消/可区分 | Part B | 进行中 | **第 1 项已落地**：新增 `internal/boot/workspace_lease_notice.go` 的 `workspaceLeaseWaitEvent`，从 `workspacelease.Owner.State()`（`Waiting`/`Scope`/`Label`）把等待分类成「整工作区」或「某文件」，沿用 `event.NoticeCodeWorkspaceLease`（`boot.go` 的 `onWait` 改为发这个事件）。新增 `boot/workspace_lease_wait_notice_test.go`：真实双 Owner 争用下，整工作区等待的 detail 含 “whole workspace”、文件等待含文件名，互不混淆。**第 2 项未做（残留）**：给成员写工具路径的租约等待加有界 deadline 需要改 `internal/agent/tool_write_coordination.go` / `execute_one.go` 的 ctx，而 `internal/agent/**` 本轮冻结（§4.1 第三张清单、§6.1 第 3 条：需改冻结文件先回报）；唯一不越界的替代（在 `workspacelease.Owner` 上给所有等待加全局上限）会把主窗口「等一等就成功」的写变成失败，属产品权衡，不在本轮单方面决定。**第 3 项按文档明确不做**（安全设计，无等价安全论证）。**另注**：把该成员渲染成「等待工作区」需要 `chat_tui_team_render.go` / `chat_tui_team.go`（Part A 独占文件），Part B 只提供可区分的事件载荷。 |
+| B3 | 等锁可取消/可区分 | Part B | 进行中 | **第 1 项已落地**：新增 `internal/boot/workspace_lease_notice.go` 的 `workspaceLeaseWaitEvent`，从 `workspacelease.Owner.State()`（`Waiting`/`Scope`/`Label`）把等待分类成「整工作区」或「某文件」，沿用 `event.NoticeCodeWorkspaceLease`（`boot.go` 的 `onWait` 改为发这个事件）。新增 `boot/workspace_lease_wait_notice_test.go`：真实双 Owner 争用下，整工作区等待的 detail 含 “whole workspace”、文件等待含文件名，互不混淆。**第 2 项未做（残留）**：给成员写工具路径的租约等待加有界 deadline 需要改 `internal/agent/tool_write_coordination.go` / `execute_one.go` 的 ctx，而 `internal/agent/**` 本轮冻结（§4.1 第三张清单、§6.1 第 3 条：需改冻结文件先回报）；唯一不越界的替代（在 `workspacelease.Owner` 上给所有等待加全局上限）会把主窗口「等一等就成功」的写变成失败，属产品权衡，不在本轮单方面决定。**第 3 项按文档明确不做**（安全设计，无等价安全论证）。**另注**：把该成员渲染成「等待工作区」需要 `chat_tui_team_render.go` / `chat_tui_team.go`（Part A 独占文件），Part B 只提供可区分的事件载荷。**后续优化路线（指名、有界、调度、产物通道）见 `TEAM_WRITE_LEASE_OPTIMIZATION_ROUTE.md`。** |
 | B4 | 后端上限与 LRU 抖动 | Part B | 已完成 | `teamBackends.fitToTeam`（在 `bind` 里、注册表锁外先读名单）把 `max` 抬到 `max(配置上限, len(team.Template))`，由 `setTasks` 安装的 `teamTaskService.rosterSize` 提供名单；`evictOverCap` 的「运行中/挂起提示的后端永不退休」约束一字未动。新增 `team_backends_cap_test.go`：6 人名单 + 上限 4 依次绑定 0 次退休/0 次重建；跨团队超出拟合上限时仍退休空闲成员且不碰运行中的成员；无名单时上限不变。红→绿已验（去掉 `fitToTeam` 即报 “member lead was retired”）。取舍：名单越大常驻后端越多（各带 plugin/MCP 子进程与会话租约）。 |
 | B5 | fan-out 并行装配 | Part B | 已完成 | 新增 `teamTaskService.assignSubtasks`（`team_task_fanout.go`，`wg.Go` 按成员并行，结果保持调用方顺序），`leader_assign_task_to_relevant` 改为一次调用走 fan-out；每个成员仍是自己的 durable 行、自己的 dispatch、自己的失败。新增 `team_fanout_assembly_test.go`：探针统计装配并发峰值（3 个未装配成员同时卡在装配中，无 sleep 计时），且某成员装配失败不回滚兄弟（其行仍是 assigned、未 driven，供 leader retry）。红→绿已验（改成串行即 “only 1 member assemblies started together”）。 |
 
@@ -740,3 +740,84 @@ internal/team/scheduler/scheduler_concurrent_test.go
 | pump 不阻塞、buffer 有界 | `internal/cli/team_event_pump.go`、`internal/cli/chat_tui_team_switch.go:97` |
 | 历史根因（共享阻塞通道）已修 | `TEAM_TUI_AGENT_DECOUPLING_PLAN.md` v0.10 |
 | `checkStatus` 不在帧线程 | `internal/cli/team_status_poll.go` |
+
+---
+
+## 7. 双 Agent 并行修复方案评审与优化结论（2026-09-22）
+
+### 7.1 总体判断
+
+本路线适合采用“双 Agent 并行施工”，但“互不干扰”必须限定为**编辑边界基本不冲突**，不能解释成编译、语义和运行时资源完全独立。综合判断为：
+
+- **拆分方向合理**：Part A 处理帧线程，Part B 处理执行层和共享资源，责任边界清晰。
+- **文件级隔离基本成立**：独占文件清单没有明显直接重叠，适合从同一基线并行开发。
+- **包级和运行时仍有耦合**：两段都涉及 `internal/cli`，并共享事件、任务、backend、board 和 workspace 资源。
+- **合并后必须做跨段验收**：不能以两边各自定向测试通过，替代合并后的集成验证。
+
+因此，本方案可以执行，但准确表述应为：**双 Agent 并行降低施工冲突，最终正确性由合并后的契约测试和并发门禁保证。**
+
+### 7.2 各节点合理性复核
+
+| 节点 | 评审结论 | 需要保留的约束或补充 |
+| --- | --- | --- |
+| A0 | 高优先级且必要 | tick 结果重复续期是实际乘数效应，应先于一般读盘优化处理 |
+| A1 | 合理，收益明确 | 只异步化 tick 刷新路径；bind 路径继续保持同步 transcript 契约；必须保留 generation 丢弃 |
+| A2 | 暂缓合理，但证据范围有限 | 当前 70 µs 测量是合成、本地稳态数据；后续应以真实慢磁盘、远端 follower 和 p95/p99 profile 重新判断 |
+| A3 | 暂缓合理 | 不要用内存快照替代新鲜 binding 校验，否则可能为已删除成员重建 owner |
+| A4 | 低风险、应保留 | 目录统计应在确认界面 arm 时完成，渲染函数只消费缓存 |
+| A5 | 只消除 O(members²) 合理 | `bottomRows` 记忆化的收益不足以抵消失效条件复杂度，保留 profile 触发条件 |
+| B1 | 设计合理 | `teamStore.Load` 移出 `wakeMu` 后仍需保留 leader 变更时的重定向语义 |
+| B2 | 方向正确，风险中高 | 需要真实 SQLite/driver 取消验证；`Complete`/`Cancel` 的 `Background()` 残留必须在文档中持续标注 |
+| B3 | 尚未闭环 | 已完成的是等待状态可观测，不是等待可取消；成员写工具的 deadline 和 TUI 状态渲染仍是后续工作 |
+| B4 | 合理但有资源成本 | 按 roster 提高 backend 上限会增加 plugin/MCP 子进程和租约常驻量，应监控内存、进程数和启动时间 |
+| B5 | 收益明确，语义风险中等 | 必须验证 durable task 顺序、单成员失败隔离、wake 次数/顺序和 board 竞争，不能只测装配峰值 |
+
+### 7.3 “互不干扰”的四层边界
+
+两 Agent 并行时应分别检查以下四层，而不是只看 Git 是否产生冲突：
+
+1. **文本层**：是否编辑了对方的独占文件或冻结文件。
+2. **编译层**：是否改变了跨包 API、构造函数、消息类型或接口签名。B2 已证明，scheduler 签名变化会穿透到清单外调用点。
+3. **语义层**：是否改变了事件顺序、generation、失败回滚、leader wake 或 durable 状态的可观察行为。
+4. **运行时层**：是否共同访问 workspace lease、SQLite board、team.json、memory store 和全局锁。
+
+当前拆分主要解决了第一层，第二至第四层仍需合并后验证。尤其是 B5 的并行 fan-out 可能改变事件到达顺序，A1/A6 的 replay generation 和 TUI 消息回投必须作为跨段契约测试覆盖。
+
+### 7.4 并行施工门禁
+
+并行开始前：
+
+- 固定共同基线 commit，并记录两段各自允许修改、禁止修改和冻结文件。
+- API 签名、共享消息类型或跨段状态机需要变更时，先回报并由 leader 协调，不以“文件不重叠”为理由直接扩边界。
+- 禁止对整个目录执行自动格式化；只格式化本 Agent 负责的文件。
+
+各 Agent 独立完成：
+
+```text
+gofmt -l <changed files>
+go build ./...
+go vet <affected packages>
+go test <affected packages>
+go test -race <targeted concurrency tests>
+```
+
+合并后必须追加跨段验证：
+
+- fan-out 同时触发 replay/roster refresh 时，历史 generation、消息回投和 transcript 不错乱；
+- 两个成员同时完成时，wake leader 的重定向、board 写入和通知顺序正确；
+- board 真实锁竞争下，调用方取消能够按约定返回，而不是只在 mock board 上通过；
+- workspace lease 等待状态能够从后端事件传到 TUI，且文案不再把等待锁伪装成普通运行；
+- 任一成员装配失败不回滚兄弟任务，也不产生重复 durable 记录或重复 wake；
+- 全量 `go test`、`go vet`、定向 `-race` 及 lint 门禁通过，并将既有 flaky 与新增失败分开记录。
+
+### 7.5 后续优先级调整
+
+建议按以下顺序维护路线：
+
+1. 保持 A0、A1、A4、A6、B1、B2、B4、B5 的已完成状态和现有证据。
+2. 将 B3 明确保持为“进行中”，不要把“可观测”描述成“可取消”。
+3. 对 B2 补真实 SQLite 取消/超时测试，并明确 `Complete`/`Cancel` 的不可取消持久化语义。
+4. A2、A3、A5 继续采用 profile 驱动的延期策略，不因静态怀疑重新引入异步状态机。
+5. A/B 合并后新增一组跨段并发回归用例，再决定是否启动预热 backend 或其他不在本轮范围的优化。
+
+最终验收标准应从“两个 Agent 各自通过定向测试”提升为：**文件边界无越界、跨段 API 有记录、运行时并发契约可证明、合并后全量门禁通过。**

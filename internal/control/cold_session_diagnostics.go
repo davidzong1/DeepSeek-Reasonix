@@ -24,7 +24,7 @@ func WriteColdSessionDiagnostics(ctx context.Context, dst io.Writer, query *sess
 		metadata.Capabilities = []string{}
 	}
 	fillGoalDiagnosticBuildMetadata(&metadata)
-	unavailable := []string{"runtime, submissionDiagnostics, shellDiagnostics and process-local lifecycle history are unavailable for a cold session"}
+	unavailable := []string{"runtime, submissionDiagnostics, shellDiagnostics, workspaceLeaseDiagnostics and process-local lifecycle history are unavailable for a cold session"}
 	if snapshot.ReadIncomplete {
 		unavailable = append(unavailable, "snapshot capture encountered unreadable durable events; only the readable prefix is available")
 	}
@@ -42,6 +42,7 @@ func WriteColdSessionDiagnostics(ctx context.Context, dst io.Writer, query *sess
 		{"observation", nil},
 		{"submissionDiagnostics", nil},
 		{"shellDiagnostics", nil},
+		{"workspaceLeaseDiagnostics", nil},
 		{"lifecycleDiagnostics", nil},
 	}
 	for _, field := range fields {

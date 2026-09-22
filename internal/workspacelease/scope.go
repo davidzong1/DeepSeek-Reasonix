@@ -92,14 +92,19 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 		}
 		o.beginAcquisitionLocked(scope, label, keys)
 		for !o.pathOrderAllowedLocked(slots) {
-			if o.activity.background > 0 {
-				o.armGraceLocked()
+			// This Owner is the one waiting on its own completed hold: a loan kept
+			// for churn prevention is worth less than the wait it causes.
+			if releases := o.repayRetainedLocked(); len(releases) > 0 {
+				o.mu.Unlock()
+				runReleases(releases)
+				o.mu.Lock()
+				continue
 			}
 			changed := o.lease.changed
 			o.mu.Unlock()
 			if err := waitForSignal(ctx, changed); err != nil {
 				o.mu.Lock()
-				o.finishAcquisitionLocked()
+				o.finishAcquisitionLocked(err)
 				o.mu.Unlock()
 				return func() {}, err
 			}
@@ -122,7 +127,7 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 				refs: 1, scope: scope, keys: keys, slots: slots, release: release,
 			})
 		}
-		o.finishAcquisitionLocked()
+		o.finishAcquisitionLocked(err)
 		releases := o.collectInactiveLocked()
 		o.mu.Unlock()
 		runReleases(releases)

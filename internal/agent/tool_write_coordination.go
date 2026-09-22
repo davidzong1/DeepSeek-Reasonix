@@ -23,7 +23,7 @@ func (a *Agent) prepareWriteCoordination(ctx context.Context, plan *toolCallPlan
 		}
 	}
 	if (plan.effects.WorkspaceMutation || plan.hooksMayMutateWorkspace) && a.svc.workspaceLease != nil {
-		release, err := a.acquireWorkspaceLease(ctx, plan)
+		release, err := a.acquireCallWriteGuard(ctx, plan)
 		if err != nil {
 			return toolOutcome{
 				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
@@ -52,16 +52,34 @@ func (a *Agent) reserveCoordinatedParentWrite(plan *toolCallPlan) (func(), error
 	return a.reserveParentWrite(plan.runTool, plan.runArgs, !plan.effects.WorkspaceMutation)
 }
 
-// acquireWorkspaceLease sizes this call's write hold from the hooks' proven
-// write surface first, the tool's own path arguments second, and the whole
-// workspace only when neither can name what the call writes.
-func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (func(), error) {
+// acquireCallWriteGuard takes the in-process write token first, then the
+// workspace lease. Peers therefore queue among themselves before racing the
+// cross-process lock; the token never replaces that lease.
+func (a *Agent) acquireCallWriteGuard(ctx context.Context, plan *toolCallPlan) (func(), error) {
+	toolPaths, toolBounded := a.pathBoundWriteScope(plan)
+	scope, whole := writeLeaseScope(plan.hookSurface, plan.hookWritePaths, toolPaths, toolBounded)
+	intent := WriteIntent{
+		Paths: scope,
+		Whole: whole,
+		Label: writeIntentLabel(a.writeWorkspaceRoot, scope, whole),
+	}
+	token := a.acquireWriteIntent(ctx, intent)
+	release, err := a.acquireWorkspaceLease(ctx, plan, scope, whole)
+	if err != nil {
+		token()
+		return nil, err
+	}
+	return func() {
+		release()
+		token()
+	}, nil
+}
+
+func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan, scope []string, whole bool) (func(), error) {
 	noop := func() {}
 	if a == nil || a.svc.workspaceLease == nil || plan == nil || plan.runTool == nil {
 		return noop, nil
 	}
-	toolPaths, toolBounded := a.pathBoundWriteScope(plan)
-	scope, whole := writeLeaseScope(plan.hookSurface, plan.hookWritePaths, toolPaths, toolBounded)
 	if whole {
 		return a.svc.workspaceLease.HoldWrite(ctx)
 	}
