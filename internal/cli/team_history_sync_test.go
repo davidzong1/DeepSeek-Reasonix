@@ -58,7 +58,7 @@ func publishOwnerHistory(t *testing.T, m chatTUI, member string) {
 // refused one, schedules nothing.
 func pollHistorySync(t *testing.T, m chatTUI) (chatTUI, bool) {
 	t.Helper()
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		return m, false
 	}
@@ -105,7 +105,7 @@ func TestHistorySyncReadRunsOffTheUpdateGoroutine(t *testing.T) {
 	pollHistorySync(t, m)
 	publishOwnerHistory(t, m, "lead")
 
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		t.Fatal("a changed owner identity must schedule a durable read")
 	}
@@ -173,7 +173,7 @@ func TestHistorySyncStaleResultIsDropped(t *testing.T) {
 	pollHistorySync(t, m)
 	publishOwnerHistory(t, m, "lead")
 
-	cmd := m.syncBoundHistory()
+	cmd := m.syncBoundHistory(m.boundOwnerFingerprint())
 	if cmd == nil {
 		t.Fatal("precondition: a read must be scheduled")
 	}

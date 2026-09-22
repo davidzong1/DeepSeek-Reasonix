@@ -19,6 +19,16 @@ var (
 	ErrTaskUnknown = errors.New("agentruntime: unknown task")
 )
 
+// boardWriteTimeout bounds one best-effort board write made from the task path.
+// The board serializes writers behind SQLite's own 5s busy_timeout, and that
+// wait could not be abandoned through the value this used to pass —
+// context.Background() — so one member's write could hold a peer's completion
+// for the board's whole retry window with no way out. The bound sits inside
+// that window: the runtime's own ceiling, not the board's, is what ends a
+// contended write, while a caller that cancels its context abandons the wait
+// immediately.
+const boardWriteTimeout = 4 * time.Second
+
 // Runtime drives task execution on member agent backends: it assembles the
 // injected context, starts/cancels/resumes the member's agent, and records
 // every state move on the blackboard. It implements scheduler.Executor, so
@@ -35,6 +45,9 @@ type Runtime struct {
 	mu       sync.Mutex
 	live     map[team.TaskID]*runEntry
 	byMember map[string]team.TaskID
+	// writeTimeout bounds one board write that has no caller context. Zero takes
+	// boardWriteTimeout; tests lower it to observe the bound without waiting.
+	writeTimeout time.Duration
 }
 
 // runEntry is one executing task: the task (with its live status), the
@@ -135,7 +148,7 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 		rollback()
 		return err
 	}
-	r.record(task, "running", "")
+	r.record(ctx, task, "running", "")
 	r.mu.Lock()
 	r.live[task.ID] = &runEntry{task: task, member: member.ID, api: api}
 	r.mu.Unlock()
@@ -158,7 +171,7 @@ func (r *Runtime) Cancel(taskID team.TaskID) error {
 		}
 	}
 	entry.api.Cancel()
-	r.record(task, "canceled", "")
+	r.record(context.Background(), task, "canceled", "")
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " canceled")
 	return nil
@@ -205,7 +218,7 @@ func (r *Runtime) failDispatch(ctx context.Context, task team.Task, reason strin
 	if r.store != nil {
 		_ = r.store.SaveTask(ctx, task) // best-effort: the refusal itself is the returned error
 	}
-	r.record(task, "failed", reason)
+	r.record(ctx, task, "failed", reason)
 	if err := team.TransitionTask(task.Status, team.TaskStatusAssigned); err == nil {
 		task.Status = team.TaskStatusAssigned
 		if r.store != nil {
@@ -264,7 +277,7 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 		rollback()
 		return err
 	}
-	r.record(task, "running", "resumed")
+	r.record(ctx, task, "running", "resumed")
 	r.mu.Lock()
 	r.live[task.ID] = &runEntry{task: task, member: member.ID, api: api}
 	r.mu.Unlock()
@@ -287,7 +300,7 @@ func (r *Runtime) Complete(taskID team.TaskID, summary string) error {
 			return err
 		}
 	}
-	r.record(task, "reported", summary)
+	r.record(context.Background(), task, "reported", summary)
 	r.drop(taskID, entry.member)
 	r.wakeAll("task " + string(taskID) + " reported")
 	return nil
@@ -307,7 +320,7 @@ func (r *Runtime) CancelTask(ctx context.Context, task team.Task) error {
 			return err
 		}
 	}
-	r.record(task, "canceled", "leader cancel")
+	r.record(ctx, task, "canceled", "leader cancel")
 	r.wakeAll("task " + string(task.ID) + " canceled")
 	return nil
 }
@@ -335,9 +348,28 @@ func (r *Runtime) Drain(ctx context.Context, inbox *BoardInbox, limit int, fn fu
 	return len(items), nil
 }
 
+// writeContext returns the context one board write runs under. A caller
+// context is honoured as the parent, so cancelling it abandons the write
+// immediately; the bound is what keeps a write with no caller context — a
+// report settling after its turn already returned — from waiting on the
+// board's own clock. An uncancellable parent — the shape Cancel and Complete
+// have — keeps its durable semantics and only loses the unbounded wait.
+func (r *Runtime) writeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	timeout := r.writeTimeout
+	if timeout <= 0 {
+		timeout = boardWriteTimeout
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
 // record appends one task state event to the blackboard. Best-effort: the
-// blackboard is observability for the runtime, never its gate.
-func (r *Runtime) record(task team.Task, status, detail string) {
+// blackboard is observability for the runtime, never its gate. The caller's
+// context bounds the write (see writeContext); a refused or timed-out append
+// costs the event, never the task state move that already landed durably.
+func (r *Runtime) record(ctx context.Context, task team.Task, status, detail string) {
 	if r.board == nil {
 		return
 	}
@@ -350,7 +382,9 @@ func (r *Runtime) record(task team.Task, status, detail string) {
 		summary += ": " + detail
 	}
 	eventID := "task-" + string(task.ID) + "-" + status + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	_, _ = r.board.Append(context.Background(), team.AppendInput{
+	writeCtx, cancel := r.writeContext(ctx)
+	defer cancel()
+	_, _ = r.board.Append(writeCtx, team.AppendInput{
 		BoardID:     r.boardID,
 		EventID:     eventID,
 		ClientMsgID: eventID, // the event id doubles as the idempotency key

@@ -38,7 +38,7 @@ func RecoverTeamRuntime(ctx context.Context, store team.TaskStore, sched *schedu
 	if len(tasks) == 0 {
 		return nil, nil
 	}
-	return sched.Restore(tasks, fleet)
+	return sched.Restore(ctx, tasks, fleet)
 }
 
 // teamInjectTimeout bounds one turn's context assembly; a stalled board never

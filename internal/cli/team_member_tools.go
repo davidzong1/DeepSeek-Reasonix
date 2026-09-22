@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -182,14 +183,7 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		if payload == "" {
 			payload = p.Task
 		}
-		assigned := make([]string, 0, len(selected))
-		for _, member := range selected {
-			if _, err := t.service.assignSubtask(ctx, member, payload, "leader task: "+p.Task); err != nil {
-				return "", fmt.Errorf("assign %s: %w", member, err)
-			}
-			assigned = append(assigned, member)
-		}
-		return fmt.Sprintf("task assigned to %s (roles=%s)", strings.Join(assigned, ", "), strings.Join(roles, ", ")), nil
+		return t.assignToRelevant(ctx, selected, roles, payload, p.Task)
 	case "leader_check_member_status":
 		return t.service.checkStatus(strings.TrimSpace(p.MemberName))
 	case "leader_retry_task", "leader_cancel_task", "leader_reassign_task":
@@ -217,6 +211,28 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	default:
 		return "", fmt.Errorf("%s: unsupported operation", t.name)
 	}
+}
+
+// assignToRelevant starts one subtask on every selected member through the
+// service's parallel fan-out, so the whole dispatch costs one round of member
+// assemblies instead of one boot.Build per member in turn. A member that refuses
+// is named in the error; the members that did start keep their tasks — a refused
+// sibling is re-dispatchable, never a reason to abandon the ones that landed.
+func (t *teamTaskTool) assignToRelevant(ctx context.Context, selected, roles []string, payload, task string) (string, error) {
+	_, errs := t.service.assignSubtasks(ctx, selected, payload, "leader task: "+task)
+	assigned := make([]string, 0, len(selected))
+	var assignErr error
+	for i, member := range selected {
+		if errs[i] != nil {
+			assignErr = errors.Join(assignErr, fmt.Errorf("assign %s: %w", member, errs[i]))
+			continue
+		}
+		assigned = append(assigned, member)
+	}
+	if assignErr != nil {
+		return "", assignErr
+	}
+	return fmt.Sprintf("task assigned to %s (roles=%s)", strings.Join(assigned, ", "), strings.Join(roles, ", ")), nil
 }
 
 // execRedrive routes the leader's three recovery tools onto their service

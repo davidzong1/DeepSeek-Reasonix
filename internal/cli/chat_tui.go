@@ -116,6 +116,11 @@ type chatTUI struct {
 	runStart                    time.Time
 	elapsed                     int
 	elapsedTickGeneration       uint64
+	// rosterTickGen names the team overlay's poll chain. Opening a session bumps
+	// it, so a chain armed before that is dropped instead of re-arming: the tick
+	// message carries it, and only a tick whose generation is current continues
+	// the chain (see rosterTick).
+	rosterTickGen uint64
 	// Recovery state is cleared by progress or completion.
 	retryAttempt int
 	retryMax     int

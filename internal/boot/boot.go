@@ -550,14 +550,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds()) * time.Second),
 		jobs.WithSessionOwnershipProbe(agent.SessionLeaseHeldByCurrentRuntime),
 	}
+	// The wait notice is classified from the lease's own state, so a session
+	// queued for the whole workspace is distinguishable from one queued for a
+	// file — the signal a window needs to render a member as waiting.
 	workspaceLease, err = workspacelease.New(root, config.WorkspaceLeaseDir(), func() {
-		sink.Emit(event.Event{
-			Kind:   event.Notice,
-			Level:  event.LevelInfo,
-			Code:   event.NoticeCodeWorkspaceLease,
-			Text:   "Another session is writing to this workspace; this session will continue automatically when it is safe.",
-			Detail: "workspace write lease is busy; read-only work remains concurrent",
-		})
+		sink.Emit(workspaceLeaseWaitEvent(workspaceLease))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize workspace write lease: %w", err)

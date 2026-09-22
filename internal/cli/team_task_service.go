@@ -31,9 +31,16 @@ type teamTaskService struct {
 	cacheMu   sync.Mutex
 	teams     map[string]*teamTaskService
 	// wakeMu guards the late-binding deliverable upon which wakeup delivery
-	// may race (the report path is a member goroutine).
+	// may race (the report path is a member goroutine). It covers the delivery
+	// itself, never the leader-stamp read: see wakeLeader.
 	wakeMu sync.Mutex
-	onWake []agentruntime.WakeFunc
+	// onWake delivers the leader wakeup into the durable board wake stream. The
+	// stamp is supplied by wakeLeader, which resolves it before it takes wakeMu.
+	onWake []agentruntime.StampedWakeFunc
+	// leaderStamp resolves the identity a leader wakeup is stamped with. It is
+	// the production store-backed read (leaderIdentity) and the seam a test uses
+	// to observe where that read happens relative to wakeMu.
+	leaderStamp func() team.Identity
 	// kb is this service's opened team knowledge base (nil until first capture
 	// or recall). kbDataRoot "" keeps the KB off, the default for plain hosts
 	// and tests.
@@ -56,11 +63,22 @@ type teamTaskService struct {
 // The stamp is resolved per wake to the team's current leader member id (see
 // leaderIdentity) — the identity the TUI's consumeWakeups(leader) cursor
 // selects — never the team name, which a leader id need not equal.
+//
+// The resolution happens *before* wakeMu is taken. leaderIdentity re-reads the
+// durable team document (JSON read + parse), and several members finishing at
+// the same moment is the common case, so holding the delivery lock across that
+// read serialized exactly the burst the lock is meant to let through. The lock
+// still covers the delivery — the board append — which is what it is for.
 func (s *teamTaskService) wakeLeader(reason string) error {
+	resolve := s.leaderStamp
+	if resolve == nil {
+		resolve = s.leaderIdentity
+	}
+	stamp := resolve()
 	s.wakeMu.Lock()
 	defer s.wakeMu.Unlock()
 	for _, fn := range s.onWake {
-		_ = fn(reason)
+		_ = fn(reason, stamp)
 	}
 	return nil
 }
@@ -112,8 +130,9 @@ func newTeamTaskService(store *team.TeamStore, board *team.SQLiteStore, teamName
 			return team.Identity{MemberID: memberID, Role: string(binding.Role), Agent: binding.AgentType}
 		})
 		s.runtime.SetTaskStore(board)
-		s.onWake = []agentruntime.WakeFunc{
-			agentruntime.NewBoardWakeFor(board, team.BoardShared, s.leaderIdentity),
+		s.leaderStamp = s.leaderIdentity
+		s.onWake = []agentruntime.StampedWakeFunc{
+			agentruntime.NewBoardWakeStamped(board, team.BoardShared),
 		}
 		s.runtime.AddWakeup(s.wakeLeader)
 		s.scheduler = teamscheduler.NewRuntimeScheduler(s.runtime)
@@ -475,7 +494,7 @@ func (s *teamTaskService) assignSubtask(ctx context.Context, memberID, subtask, 
 	if err := s.board.SaveTask(ctx, task); err != nil {
 		return teamscheduler.Assignment{}, err
 	}
-	assignment, err := s.scheduler.Assign(task, fleet)
+	assignment, err := s.scheduler.Assign(ctx, task, fleet)
 	if err != nil {
 		// The row stays live on purpose: assigned is re-dispatchable. The defect was
 		// the reporting, not the state — memberTaskState renders a row nothing

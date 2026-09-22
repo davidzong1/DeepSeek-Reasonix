@@ -393,7 +393,7 @@ func TestAmbientWriterPublishesForItsOwnMember(t *testing.T) {
 	m.teamPick.session = sessionState{active: true, teamName: "alpha", current: "lead"}
 	publishFollowerIdentity(t, owners, "alpha", "lead", identity+":97")
 
-	m.syncAmbientOwnerUsage()
+	m.syncAmbientOwnerUsage(m.boundOwnerFingerprint())
 	if m.teamPick.ambientUsage == nil {
 		t.Fatal("the window's own chat writes this member; its usage channel must be published")
 	}
@@ -422,7 +422,7 @@ func TestAmbientWriterStaysQuietForAMemberItDoesNotWrite(t *testing.T) {
 	m.teamPick.session = sessionState{active: true, teamName: "alpha", current: "lead"}
 	publishFollowerIdentity(t, owners, "alpha", "lead", "9e0c63269f7ffcaa57b1603811ecddc4:2")
 
-	m.syncAmbientOwnerUsage()
+	m.syncAmbientOwnerUsage(m.boundOwnerFingerprint())
 	if m.teamPick.ambientUsage != nil {
 		t.Fatal("this window does not write that member; nothing may be published under its name")
 	}

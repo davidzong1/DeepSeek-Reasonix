@@ -60,6 +60,10 @@ type replayLoad struct {
 	// windowed says the block paints a window of history and re-arms a full render
 	// on a resize (replayLoad.history is then the whole history).
 	windowed bool
+	// reading marks a load whose history has not been read yet: the bind handed the
+	// read to a command, and nothing is painted until it lands (handleReplayReadReady).
+	// history is nil while it is set.
+	reading bool
 }
 
 // replayWindow is the window's member-replay state: where the bound backend's
@@ -96,8 +100,16 @@ const (
 	// what a path that cannot hand a command back to the Update loop must use.
 	replayInline replayMode = iota
 	// replayBounded paints the newest messages inline and renders the rest off
-	// the Update goroutine.
+	// the Update goroutine. The read stays inline: a bind must show the incoming
+	// member's transcript before it returns, so it cannot clear the window and
+	// wait for a read to fill it.
 	replayBounded
+	// replayDeferred reads the backend's history off the Update goroutine and
+	// paints only when it lands. This is the refresh path — the window already
+	// shows this member, so it repaints in place instead of blanking, and the
+	// read is what the frame must not pay: a follower re-reads its durable source
+	// on every call, and a peer's append reaches this path through the tick.
+	replayDeferred
 )
 
 // commitBackendReplay rebuilds the transcript for a backend the window is
@@ -113,9 +125,21 @@ const (
 // installWrappedBlock adopts that wrap, so neither the markdown pass nor the
 // wrap ever runs on the Update goroutine. The window is real history, not a
 // placeholder, so a paint whose bundle never arrives still shows a transcript.
+//
+// The read is the remaining half (replayDeferred): bounding the paint still left
+// backend.History() on this goroutine, and for a follower that read is O(history)
+// off disk, so the frame still stalled — on every refresh, not just a bind. The
+// refresh path therefore reads off the loop; a bind reads inline, because it
+// cannot show a stale transcript and must not blank the window to wait.
 func (m *chatTUI) commitBackendReplay(backend control.SessionAPI, mode replayMode) tea.Cmd {
-	history := backend.History()
 	label, raw := m.label, ""
+	if mode == replayDeferred {
+		m.replay.gen++
+		load := replayLoad{gen: m.replay.gen, raw: raw, pin: true, windowed: true, reading: true}
+		m.replay.load = &load
+		return m.readReplayCmd(backend, load.gen)
+	}
+	history := backend.History()
 	if mode == replayInline || len(history) <= replayInlineMessages {
 		m.replay.load = nil
 		m.installReplayPaint(replayPaintFor(label, raw, history, m.width, m.nativeScrollback))
@@ -132,6 +156,61 @@ func (m *chatTUI) commitBackendReplay(backend control.SessionAPI, mode replayMod
 	load := &replayLoad{gen: m.replay.gen, raw: raw, history: history, pin: true, windowed: true}
 	m.replay.load = load
 	return m.renderFullReplayCmd(*load)
+}
+
+// replayReadReady carries one off-goroutine transcript read back to the loop.
+// The history is width-independent, so no width rides along: the paint that
+// follows is rendered at whatever width the window has when it lands, which is
+// the width it will be shown at.
+type replayReadReady struct {
+	gen     uint64
+	history []provider.Message
+}
+
+// readReplayCmd reads the backend's history off the Update goroutine and hands it
+// back through the roster tick's own message, the way the full render does.
+func (m *chatTUI) readReplayCmd(backend control.SessionAPI, gen uint64) tea.Cmd {
+	return func() tea.Msg {
+		return teamRosterRefreshMsg{read: &replayReadReady{gen: gen, history: backend.History()}}
+	}
+}
+
+// handleReplayReadReady paints a transcript whose history the frame did not read.
+// The clear and the install happen together here, so a refreshed transcript never
+// shows an empty frame between them, and a read whose refresh the window has moved
+// past is dropped rather than painted over the bound member.
+func (m *chatTUI) handleReplayReadReady(msg replayReadReady) tea.Cmd {
+	load := m.replay.load
+	if load == nil || !load.reading || load.gen != msg.gen {
+		return nil // a later bind owns the transcript now
+	}
+	history := msg.history
+	label, raw := m.label, load.raw
+	// The stream state is reset with the install, not only when the read was
+	// armed: a delta that arrived while the read was in flight is superseded by
+	// the durable history this paints, and leaving it pending would render it on
+	// top of the replayed transcript as a duplicate.
+	m.pending.Reset()
+	m.reasoning.Reset()
+	m.clearTranscriptDisplay()
+	m.sessionSwitch = true
+	m.transcriptDirty = true
+	m.forceGotoBottom = true
+	if len(history) <= replayInlineMessages {
+		m.installReplayPaint(replayPaintFor(label, raw, history, m.width, m.nativeScrollback))
+		return nil
+	}
+	// History order is oldest first, so the window is what the member is doing
+	// now — the part the user reads while the rest renders above it.
+	tail := history[len(history)-replayInlineMessages:]
+	paint := replayPaintFor(label, raw, tail, m.width, m.nativeScrollback)
+	paint.sourceHistory = history
+	paint.windowed = true
+	m.installReplayPaint(paint)
+	m.replay.gen++
+	next := &replayLoad{gen: m.replay.gen, raw: raw, history: history, pin: true, windowed: true}
+	m.replay.load = next
+	return m.renderFullReplayCmd(*next)
 }
 
 // reflowReplayBundle re-arms the off-loop render after the terminal changed

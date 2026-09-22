@@ -38,6 +38,12 @@ func backendKey(teamName, memberID string) string { return teamName + "\x00" + m
 // once. Each one owns a controller with its own plugin/MCP subprocesses and a
 // session-file lease, so the set is capped and the least recently bound member
 // is retired; its history is on disk, so binding it again rebuilds it.
+//
+// The cap is a floor on retention, never a ceiling on the team: a roster larger
+// than the cap would otherwise retire an idle member on every bind and pay a
+// full boot.Build for it again on the next one, which reads as a member that is
+// forever starting. fitToTeam raises the effective cap to the team's own roster
+// size, so a team is never made to evict itself.
 const defaultMaxTeamBackends = 4
 
 // teamBackends holds one assembled Agent backend per member: the registry the
@@ -65,6 +71,10 @@ type teamBackends struct {
 	// the registry's lifetime, like the board: every assembled backend's tools
 	// hold it, so a reopen must keep, never rebuild, it.
 	tasks *teamTaskService
+	// rosterSize answers how many member slots a team declares, so fitToTeam can
+	// fit the cap to a whole roster. Nil without a task service, where the
+	// configured cap stands unchanged.
+	rosterSize func(teamName string) int
 	// workers is the per-member worker set every owner-history publication runs
 	// on (team_member_cockpit.go). Its lifetime is the registry's, like the
 	// board's, because the members it writes for are these backends.
@@ -107,7 +117,8 @@ func (r *teamBackends) setInbox(w *teamInboxWire) {
 
 // setTasks installs the shared task service once. It is set alongside the board
 // on the first overlay open, so a reopen keeps the durable service (and its
-// wakeup wiring) behind every member backend's tools.
+// wakeup wiring) behind every member backend's tools. The service also answers
+// the roster size the retention cap is fitted to.
 func (r *teamBackends) setTasks(s *teamTaskService) {
 	if r == nil || s == nil {
 		return
@@ -116,6 +127,34 @@ func (r *teamBackends) setTasks(s *teamTaskService) {
 	defer r.mu.Unlock()
 	if r.tasks == nil {
 		r.tasks = s
+		r.rosterSize = s.rosterSize
+	}
+}
+
+// fitToTeam raises the retention cap to hold the team's whole roster. The cap
+// bounds resident plugin/MCP subprocesses and session leases, so it stays a
+// floor on how much may remain assembled — never a reason to retire a member
+// the team is about to bind again. The roster read happens before the registry
+// lock, and the cap only ever grows: a later, larger team raises it, and nothing
+// lowers it back and starts evicting the roster that is already assembled.
+func (r *teamBackends) fitToTeam(teamName string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	roster := r.rosterSize
+	r.mu.Unlock()
+	if roster == nil {
+		return
+	}
+	size := roster(teamName)
+	if size <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if size > r.max {
+		r.max = size
 	}
 }
 
@@ -170,6 +209,10 @@ func (r *teamBackends) setFingerprint(f func(team.MemberBinding) (string, error)
 // are still guarded for concurrent bind/evict/release.
 func (r *teamBackends) bind(b team.MemberBinding) (control.SessionAPI, error) {
 	key := backendKey(b.Team, b.MemberID)
+	// Fit the cap before the live set is touched: a team bigger than the cap
+	// would otherwise retire one of its own idle members on every bind and pay a
+	// full boot.Build to have it back on the next one (§B4).
+	r.fitToTeam(b.Team)
 	r.mu.Lock()
 	fp, fpErr := r.currentFingerprint(b)
 	live, ok := r.live[key]

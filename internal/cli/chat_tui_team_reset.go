@@ -34,10 +34,16 @@ const leaderResetTimeout = 30 * time.Second
 // leaderResetState is the k step-down confirmation: the active stage, the
 // typed leader id buffer, and the refusal message.
 type leaderResetState struct {
-	kind    leaderResetKind
-	buf     string
-	errMsg  string
-	entered time.Time // stage entry; a stale stage cancels on the next key
+	kind   leaderResetKind
+	buf    string
+	errMsg string
+	// dirCount is the directory count the list stage shows, resolved once when
+	// that stage is armed. Counting it in the renderer made every frame list the
+	// member context directories; the overlay renders several times per frame
+	// (bottomRows), so the count is a property of the confirmation, not of the
+	// frame that happens to paint it.
+	dirCount int
+	entered  time.Time // stage entry; a stale stage cancels on the next key
 }
 
 // startLeaderConfirm arms the leader-gated destructive confirmation the roster
@@ -97,6 +103,7 @@ func handleLeaderResetKey(p *teamPicker, msg tea.KeyPressMsg) bool {
 		case "enter":
 			if strings.TrimSpace(r.buf) == p.resetTargetID() {
 				r.kind, r.buf, r.errMsg, r.entered = leaderResetList, "", "", time.Now()
+				r.dirCount = p.resetDirCount(p.model.Name())
 			} else {
 				r.errMsg = "Member id does not match the leader — Esc to cancel"
 				r.buf = ""
@@ -140,7 +147,10 @@ func (p *teamPicker) resetTargetID() string {
 }
 
 // resetDirCount is the number of member context directories the clear will
-// remove, from the session store when usable, else the roster size.
+// remove, from the session store when usable, else the roster size. It does a
+// directory listing, so the confirmation resolves it once when its list stage
+// is armed and renders the cached value (leaderResetState.dirCount) — a frame
+// must never pay for it.
 func (p *teamPicker) resetDirCount(teamName string) int {
 	if p.sessions != nil {
 		if dirs, err := p.sessions.MemberDirs(teamName); err == nil {

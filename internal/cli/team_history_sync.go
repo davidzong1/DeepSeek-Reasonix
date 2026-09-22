@@ -46,12 +46,11 @@ type historySyncDone struct {
 // exactly as they are — only the rendered transcript is rebuilt. A busy window
 // (a running turn, a pending prompt) records the change and retries on a later
 // tick, so local input and the in-flight turn are never dropped.
-func (m *chatTUI) syncBoundHistory() tea.Cmd {
+func (m *chatTUI) syncBoundHistory(fingerprint team.OwnerFingerprint, ok bool) tea.Cmd {
 	if m == nil || !m.teamSessionBound() || m.ctrl == nil {
 		return nil
 	}
 	session := &m.teamPick.session
-	fingerprint, ok := m.boundOwnerFingerprint()
 	if !ok {
 		return nil
 	}
@@ -164,6 +163,12 @@ func (m *chatTUI) reportHistorySyncFailure(key, msg string) {
 	m.notice(msg)
 }
 
+// ownerFingerprintReadHook observes one owner-fingerprint disk read. Nil in
+// production; a test installs it to pin how many reads a tick performs and which
+// member they name — the shared read above is only safe while there is exactly
+// one per tick, after the roster settled.
+var ownerFingerprintReadHook func()
+
 // boundOwnerFingerprint reads the bound member's canonical owner fingerprint.
 // ok is false when there is nothing to poll — no owner store, no bound member,
 // or a member id that cannot form an owner key. A read error is a failure to
@@ -173,6 +178,9 @@ func (m *chatTUI) boundOwnerFingerprint() (team.OwnerFingerprint, bool) {
 	p := m.teamPick
 	if p == nil || p.owners == nil || p.session.current == "" {
 		return team.OwnerFingerprint{}, false
+	}
+	if ownerFingerprintReadHook != nil {
+		ownerFingerprintReadHook()
 	}
 	key := team.OwnerKey{TeamID: p.sessionTeamName(), MemberID: p.session.current}
 	fingerprint, err := p.owners.Fingerprint(key)
@@ -323,13 +331,18 @@ func (m *chatTUI) publishTurnOwnerHistory(member string) {
 // nothing about the binding, the lease, the roster or the session selection is
 // touched, which is what distinguishes this from switchTeamMember.
 //
-// sessionSwitch is armed for the same reason every other transcript rebuild arms
-// it: the clear below is a whole-screen replacement, and the legacy scroll-clear
-// workaround (see chat_tui.go) would answer it with a second ClearScreen
-// mid-refresh.
+// It paints through the deferred path, so the frame does not read the history
+// either: this runs whenever a peer appended to the member this window shows,
+// and a follower's History() is a durable re-read, so a synchronous read here
+// stalled the frame on every append rather than once per switch. The clear, the
+// sessionSwitch arming and the install all happen together when the read lands
+// (handleReplayReadReady) — clearing now would blank the transcript for the
+// length of that read, which is the stall this path exists to avoid.
 //
-// It paints through the same bounded path a member switch uses, so a peer's
-// change to a heavy member's history cannot freeze the frame either.
+// sessionSwitch is armed with that install for the same reason every other
+// transcript rebuild arms it: the clear is a whole-screen replacement, and the
+// legacy scroll-clear workaround (see chat_tui.go) would answer it with a second
+// ClearScreen mid-refresh.
 func (m *chatTUI) replayBoundHistory() tea.Cmd {
 	if m == nil || m.ctrl == nil {
 		return nil
@@ -337,9 +350,7 @@ func (m *chatTUI) replayBoundHistory() tea.Cmd {
 	m.finalizeStreamed()
 	m.pending.Reset()
 	m.reasoning.Reset()
-	m.clearTranscriptDisplay()
-	m.sessionSwitch = true
 	m.transcriptDirty = true
 	m.forceGotoBottom = true
-	return m.commitBackendReplay(m.ctrl, replayBounded)
+	return m.commitBackendReplay(m.ctrl, replayDeferred)
 }

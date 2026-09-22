@@ -78,7 +78,7 @@ func (s *teamTaskService) reattachLive(ctx context.Context, claimed map[team.Tas
 	if err != nil {
 		return "", err
 	}
-	restored, err := s.scheduler.Restore(pending, fleet)
+	restored, err := s.scheduler.Restore(ctx, pending, fleet)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +178,7 @@ func (s *teamTaskService) retryTask(ctx context.Context, taskID string) (string,
 	if err != nil {
 		return "", err
 	}
-	assignment, err := s.scheduler.Assign(row, fleet)
+	assignment, err := s.scheduler.Assign(ctx, row, fleet)
 	if err != nil {
 		return "", s.leaderRedriveError("retry", row, err)
 	}
@@ -229,7 +229,7 @@ func (s *teamTaskService) reassignTask(ctx context.Context, taskID, memberID str
 	if err := s.board.SaveTask(ctx, row); err != nil {
 		return "", fmt.Errorf("reassign %s: %w", row.ID, err)
 	}
-	assignment, err := s.scheduler.Assign(row, []team.Member{{ID: target.ID, Role: target.Role}})
+	assignment, err := s.scheduler.Assign(ctx, row, []team.Member{{ID: target.ID, Role: target.Role}})
 	if err != nil {
 		return "", s.leaderRedriveError("reassign", row, err)
 	}

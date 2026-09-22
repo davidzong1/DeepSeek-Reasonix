@@ -55,8 +55,8 @@ func TestRuntimeSchedulerConcurrentAssignTwoMembers(t *testing.T) {
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); results[0], errs[0] = s.Assign(a, fleet) }()
-	go func() { defer wg.Done(); results[1], errs[1] = s.Assign(b, fleet) }()
+	go func() { defer wg.Done(); results[0], errs[0] = s.Assign(context.Background(), a, fleet) }()
+	go func() { defer wg.Done(); results[1], errs[1] = s.Assign(context.Background(), b, fleet) }()
 	started := time.Now()
 	wg.Wait()
 	elapsed := time.Since(started)
@@ -127,11 +127,11 @@ func TestRuntimeSchedulerConcurrentStartFailureIsIsolated(t *testing.T) {
 	done1 := make(chan struct{})
 	go func() {
 		defer close(done1)
-		_, err1 = s.Assign(team.Task{ID: "t1", RequireRole: team.RoleCoder}, fleet)
+		_, err1 = s.Assign(context.Background(), team.Task{ID: "t1", RequireRole: team.RoleCoder}, fleet)
 	}()
 
 	<-exec.blocked // t1's start is now blocked inside the executor
-	_, err2 := s.Assign(team.Task{ID: "t2", RequireRole: team.RoleTester}, fleet)
+	_, err2 := s.Assign(context.Background(), team.Task{ID: "t2", RequireRole: team.RoleTester}, fleet)
 	if err2 != nil {
 		t.Fatalf("t2's start must complete while t1 is blocked, got %v", err2)
 	}
