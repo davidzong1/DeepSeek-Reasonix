@@ -22,7 +22,10 @@ import (
 	"reasonix/internal/pathidentity"
 )
 
-const backgroundGrace = 30 * time.Second
+// backgroundGrace is how long a completed write hold survives a running
+// background job. Measured (L3): re-acquiring or reusing a hold costs ~0.5ms
+// either way, so the window is sized by what a teammate waits, not by churn.
+const backgroundGrace = 3 * time.Second
 
 // WaitNotice is called once when an acquisition cannot complete immediately.
 // It must return quickly and must not call back into Owner.
