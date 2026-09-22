@@ -894,6 +894,10 @@ type Options struct {
 	// the same workspace. nil preserves source compatibility for direct Agent
 	// construction; boot always supplies it for writer-capable sessions.
 	WorkspaceLease *workspacelease.Owner
+	// HookWriteSurface reports what the tool-call hooks firing for one tool can
+	// write, so that lease stays as narrow as those hooks actually are. nil keeps
+	// the conservative whole-workspace coverage.
+	HookWriteSurface ToolHookWriteSurfaceFunc
 
 	// ProjectChecks is a retired compatibility option. Project instructions
 	// remain in normal model context and are not compiled into host obligations.

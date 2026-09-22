@@ -42,10 +42,14 @@ type toolCallPlan struct {
 	releaseParentWrite, releaseMutationWrite, releaseLease func()
 	mutationPath                                           string
 	mutationObserved, mutationAfterDone, executed          bool
-	hooksMayMutateWorkspace                                bool
-	perCallWriteRoots                                      []string
-	skipOrdinaryGate                                       bool
-	permissionPreset                                       string
+	hooksMayMutateWorkspace                                bool // hookSurface is what the tool-call hooks firing for this call can write,
+	// resolved before any lease is taken. hookWritePaths are its proven targets
+	// that fall inside the workspace.
+	hookSurface       ToolHookWriteSurface
+	hookWritePaths    []string
+	perCallWriteRoots []string
+	skipOrdinaryGate  bool
+	permissionPreset  string
 }
 
 func cloneEvidenceTarget(target tool.EvidenceTargetInfo) tool.EvidenceTargetInfo {

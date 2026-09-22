@@ -1711,7 +1711,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ModelRef:     modelRef,
 		Gate:         headlessGate,
 		Hooks:        hookRunner,
-		Jobs:         jm,
+		// The lease is sized from the hooks' own write surface, so a proven
+		// reader no longer forces a whole-workspace hold.
+		HookWriteSurface: hookLeaseSurface(hookRunner),
+		Jobs:             jm,
 		// Parent write reservation at the executor entry covers all writers
 		// (including late Economy/MCP adds) without wrapping tool schemas.
 		WriteScheduler:               subagentScheduler,

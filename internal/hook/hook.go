@@ -142,6 +142,10 @@ type HookConfig struct {
 	ContextFile string `json:"contextFile,omitempty"`
 	// Description is an optional human label surfaced in `/hooks`.
 	Description string `json:"description,omitempty"`
+	// WriteScope declares what this hook writes so the workspace write lease stays
+	// as narrow as the hook is. Empty proves nothing: "none" means it writes
+	// nothing, "tool" that it only rewrites the files the tool call names.
+	WriteScope string `json:"writeScope,omitempty"`
 	// Timeout overrides the per-event default, in milliseconds.
 	Timeout int `json:"timeout,omitempty"`
 	// Cwd overrides the working directory (defaults to the payload's cwd).
