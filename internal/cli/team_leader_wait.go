@@ -16,8 +16,8 @@ import (
 // turn indefinitely; the ceiling keeps the retired tmux flow's contract
 // (leader_sleep(max_seconds=600)) reachable when a caller asks for it.
 const (
-	leaderWaitDefaultTimeout = 120 * time.Second
-	leaderWaitMaxTimeout     = 600 * time.Second
+	leaderWaitDefaultTimeout = 600 * time.Second
+	leaderWaitMaxTimeout     = 3600 * time.Second
 )
 
 // waitKindTimeout labels the one event the wait itself produces: nothing the

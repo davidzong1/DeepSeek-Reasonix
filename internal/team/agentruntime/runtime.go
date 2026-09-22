@@ -29,6 +29,27 @@ var (
 // immediately.
 const boardWriteTimeout = 4 * time.Second
 
+// framedSubmitter is the optional half of AgentAPI that a task dispatch wants:
+// a submit that marks the turn as host-dispatched work, so the order's wording
+// (and the peer-written board view riding with it) never becomes the member's
+// policy. Optional because the port's other implementations refuse every
+// submit anyway, and a test double should not have to grow a method to drive a
+// task.
+type framedSubmitter interface {
+	SubmitUserTurnFramedOrError(input, display string) error
+}
+
+// submitDispatchedTask submits one host-dispatched task turn, framing it when
+// the backend can. A backend without the framed submit still gets the turn —
+// dropping it would strand the task — and pays only the historical behaviour:
+// its text is read as instruction text.
+func submitDispatchedTask(api AgentAPI, input, display string) error {
+	if framed, ok := api.(framedSubmitter); ok {
+		return framed.SubmitUserTurnFramedOrError(input, display)
+	}
+	return api.SubmitUserTurnOrError(input, display)
+}
+
 // Runtime drives task execution on member agent backends: it assembles the
 // injected context, starts/cancels/resumes the member's agent, and records
 // every state move on the blackboard. It implements scheduler.Executor, so
@@ -147,7 +168,7 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 			return err
 		}
 	}
-	if err := api.SubmitUserTurnOrError(injected.Text, task.Desc); err != nil {
+	if err := submitDispatchedTask(api, injected.Text, task.Desc); err != nil {
 		r.failDispatch(ctx, task, err.Error())
 		rollback()
 		return err
@@ -279,7 +300,7 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 	// Same execution gate as Start: a refused resume must never persist a running
 	// task that never ran, so it settles back to assigned and wakes the leader
 	// instead of leaving a ghost a third restart re-resumes.
-	if err := api.SubmitUserTurnOrError("[resumed]\n"+injected.Text, "[resumed] "+task.Desc); err != nil {
+	if err := submitDispatchedTask(api, "[resumed]\n"+injected.Text, "[resumed] "+task.Desc); err != nil {
 		r.failDispatch(ctx, task, err.Error())
 		rollback()
 		return err

@@ -52,9 +52,29 @@ func (h *teamHub) team() string {
 func newTeamHub(store *team.TeamStore, backends *teamBackends, teamName string) *teamHub {
 	h := &teamHub{store: store, backends: backends, teamName: strings.TrimSpace(teamName)}
 	h.submit = func(b control.SessionAPI, text string) error {
-		return b.SubmitUserTurnOrError(text, text)
+		return submitHostNotice(b, text)
 	}
 	return h
+}
+
+// framedNoticeSubmitter is the optional framed submit on a session: the hub's
+// texts are host-assembled notices, not user instructions, so they must not
+// become the receiving turn's policy — see runtimepolicy.DispatchFramed. The
+// authorization wake is why this is not cosmetic: it quotes the requesting
+// member's own justification, so without framing a teammate's sentence
+// ("只读审计……") would decide whether the leader may write.
+type framedNoticeSubmitter interface {
+	SubmitUserTurnFramedOrError(input, display string) error
+}
+
+// submitHostNotice drives one host-assembled notice on a backend, framing it
+// when the backend can. A backend without the framed submit still receives the
+// notice — the leader must hear an authorization request either way.
+func submitHostNotice(b control.SessionAPI, text string) error {
+	if framed, ok := b.(framedNoticeSubmitter); ok {
+		return framed.SubmitUserTurnFramedOrError(text, text)
+	}
+	return b.SubmitUserTurnOrError(text, text)
 }
 
 // Submit drives text on member's backend, assembling it on first use through

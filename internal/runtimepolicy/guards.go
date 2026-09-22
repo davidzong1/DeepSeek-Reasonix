@@ -39,7 +39,7 @@ func (g ConstraintGuard) BeforeTool(ctx CallContext) GuardDecision {
 		return GuardDecision{
 			Action:  GuardDeny,
 			Reasons: []string{"user_constraint"},
-			Message: "blocked: the current constraints forbid state mutation",
+			Message: mutationBanMessage(ctx.Profile),
 		}
 	}
 	if (ctx.Profile.ExternalState || looksExternalCommand(ctx)) && !c.AllowsExternal() {
@@ -66,6 +66,26 @@ func (g ConstraintGuard) BeforeTool(ctx CallContext) GuardDecision {
 	return GuardDecision{Action: GuardAbstain}
 }
 func (ConstraintGuard) AfterTool(ResultContext) []evidence.Receipt { return nil }
+
+// mutationBanMessage names what the ban caught. A proven write and a call the
+// classifier could not prove read-only are both refused, but only the second is
+// a guess about effects, and the model is the one that can replace the shape:
+// telling it which half it hit is what stops the same unprovable command from
+// coming back with cosmetic edits, which is how a single refusal used to turn
+// into a page of them. The proven-write wording stays byte-stable — hosts and
+// tests key on it.
+func mutationBanMessage(profile evidence.EffectProfile) string {
+	const proven = "blocked: the current constraints forbid state mutation"
+	if profile.Known {
+		return proven
+	}
+	reason := strings.TrimSpace(string(profile.Reason))
+	if reason == "" {
+		reason = "its effects are not statically known"
+	}
+	return proven + "; this call's effects are not proven (" + reason + "), so the ban treats it as a write. " +
+		"A command whose effects are statically known to be read-only passes; otherwise run it in a turn that allows mutation."
+}
 
 func bashCommand(ctx CallContext) string {
 	name := strings.ToLower(strings.TrimSpace(ctx.ToolName))

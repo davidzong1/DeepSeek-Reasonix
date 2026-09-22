@@ -112,6 +112,11 @@ not chat text and not the deprecated discussion tools.
 - If a command batch is blocked by a dependency or permission decision, split
   the batch and retry only the necessary command. Do not blindly repeat the
   whole batch.
+- While waiting for external events (such as member reports, window dialogues, etc.), 
+  use `leader_sleep` to enter sleep mode. The initial call sets the minimum sleep 
+  duration to 600 seconds. If there is no trigger during the entire sleep process, 
+  increase the sleep duration by 300 seconds; otherwise, reset it to 600 seconds. 
+  The maximum sleep duration should not exceed 3600 seconds
 
 ## Completion Gate
 

@@ -100,7 +100,11 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string, pinned pinnedRev
 	if constraints, ok := runtimepolicy.FromContext(ctx); ok {
 		a.turn.constraints = constraints
 	} else {
-		a.turn.constraints = runtimepolicy.ParseConstraints(runtimepolicy.StripQuotedConstraints(a.turn.turnInput))
+		// Host-dispatched work orders derive no constraints from their own
+		// text: see runtimepolicy.DispatchFramed.
+		if !runtimepolicy.DispatchFramed(ctx) {
+			a.turn.constraints = runtimepolicy.ParseConstraints(runtimepolicy.StripQuotedConstraints(a.turn.turnInput))
+		}
 		if a.planMode.Load() {
 			a.turn.constraints.PlanModeReadOnly = true
 			a.turn.constraints.ForbidMutation = true
