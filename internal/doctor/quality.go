@@ -201,7 +201,7 @@ func summarizeQualityTranscript(messages []provider.Message) QualityTranscript {
 
 func qualityWriterTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "edit_file", "multi_edit", "write_file", "move_file", "delete_range", "delete_symbol", "notebook_edit":
+	case "edit_file", "multi_edit", "write_file", "atomic_write", "move_file", "delete_range", "delete_symbol", "notebook_edit":
 		return true
 	default:
 		return false

@@ -716,12 +716,32 @@ func TestHTTPTransportRPCError(t *testing.T) {
 	}
 }
 
-// TestSSETransportUnsupported documents that the legacy sse transport is
-// recognised but deferred with a clear, actionable error.
-func TestSSETransportUnsupported(t *testing.T) {
-	_, _, err := StartAll(context.Background(), []Spec{{Name: "legacy", Type: "sse", URL: "http://x"}})
-	if err == nil || !strings.Contains(err.Error(), "http") {
-		t.Fatalf("sse should error pointing to http, got %v", err)
+// TestSSETransportIsSupportedNotDeferred pins the actual contract for the
+// legacy HTTP+SSE transport: it is wired to the SDK's SSEClientTransport, so a
+// server that is not an MCP endpoint fails the HANDSHAKE — never a
+// transport-type rejection. The previous form of this test asserted only that
+// the error mentioned "http", which was vacuously true because the request URL
+// itself contains "http"; it passed or failed with the ambient proxy rather
+// than with the code. This version uses a loopback server (no DNS, no proxy)
+// and distinguishes a handshake failure from an unknown-transport rejection.
+func TestSSETransportIsSupportedNotDeferred(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	_, _, err := StartAll(context.Background(), []Spec{{Name: "legacy", Type: "sse", URL: srv.URL}})
+	if err == nil {
+		t.Fatal("a non-MCP server must fail the sse handshake")
+	}
+	if strings.Contains(err.Error(), "unknown transport") {
+		t.Fatalf("sse is a supported transport and must not be rejected as unknown: %v", err)
+	}
+
+	// The contrast case: an actually unknown type IS rejected before any dial.
+	_, _, err = StartAll(context.Background(), []Spec{{Name: "bogus", Type: "not-a-transport", URL: srv.URL}})
+	if err == nil || !strings.Contains(err.Error(), "unknown transport") {
+		t.Fatalf("an unknown transport must be rejected by type, got %v", err)
 	}
 }
 

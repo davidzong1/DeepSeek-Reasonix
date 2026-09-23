@@ -41,6 +41,7 @@ func waitForCatalog(t *testing.T, what string, cond func() bool) {
 // and a discovery-relevant change must invalidate both catalogs through the
 // single coalesced notification.
 func TestHostWatchServiceSharedAcrossStores(t *testing.T) {
+	requireWatchBackend(t)
 	root := t.TempDir()
 	skillsDir := filepath.Join(root, ".reasonix", "skills")
 	if err := os.MkdirAll(filepath.Join(skillsDir, "alpha"), 0o755); err != nil {

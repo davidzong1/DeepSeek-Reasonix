@@ -24,7 +24,7 @@ untracked local subagent call.
    access, not size: reading files and checking status to plan or accept work
    is yours; writing files, changing code, and running implementation commands
    belong to a member. A request too small to split is still one subtask for
-   one member.
+   one member. Files: `atomic_read`/`atomic_write`, not `cat`/`sed`/`>>`.
 4. With no member able to take a subtask, add one with `leader_add_member`. A
    thin roster is never a reason to do the work yourself.
 

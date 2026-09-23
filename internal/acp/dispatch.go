@@ -632,11 +632,11 @@ func clip(text string) string {
 // else (plugins, the task tool) falls back to a name heuristic, then "other".
 func toolKindFor(name string) string {
 	switch name {
-	case "read_file", "ls", "glob":
+	case "read_file", "atomic_read", "ls", "glob":
 		return "read"
 	case "grep":
 		return "search"
-	case "edit_file", "move_file", "multiedit", "write_file":
+	case "edit_file", "atomic_write", "move_file", "multiedit", "write_file":
 		return "edit"
 	case "bash", "pwsh", "powershell", "shell":
 		return "execute"
@@ -663,7 +663,9 @@ func toolKindFor(name string) string {
 // path is a directory scope, not a file the user would want opened.
 var locationTools = map[string]bool{
 	"read_file":     true,
+	"atomic_read":   true,
 	"write_file":    true,
+	"atomic_write":  true,
 	"edit_file":     true,
 	"multi_edit":    true,
 	"notebook_edit": true,
@@ -689,7 +691,7 @@ func (s *updateSink) toolLocations(name, rawArgs string) []ToolCallLocation {
 	loc := ToolCallLocation{Path: s.absPath(p.Path)}
 	// read_file's offset is a 0-based start line; surface it so the editor can
 	// jump to the region being read.
-	if name == "read_file" && p.Offset > 0 {
+	if (name == "read_file" || name == "atomic_read") && p.Offset > 0 {
 		line := p.Offset + 1
 		loc.Line = &line
 	}

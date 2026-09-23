@@ -101,6 +101,7 @@ func TestWatchDirectoryScanHonorsCancellationBeforeFilesystemWork(t *testing.T) 
 }
 
 func TestCatalogWatcherInvalidatesCreateRenameAndDelete(t *testing.T) {
+	requireWatchBackend(t)
 	root := t.TempDir()
 	store := New(Options{HomeDir: t.TempDir(), CustomPaths: []string{root}, DisableBuiltins: true, Watch: true})
 	t.Cleanup(func() { _ = store.Close() })

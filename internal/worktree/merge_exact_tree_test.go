@@ -10,6 +10,7 @@ import (
 )
 
 func TestMergeBackUsesExactPreparedTreeWithoutHooks(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("executable Git hook permissions are not portable to Windows")
@@ -52,6 +53,7 @@ func TestMergeBackUsesExactPreparedTreeWithoutHooks(t *testing.T) {
 }
 
 func TestMergeBackDoesNotRequireUserGitIdentity(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -72,6 +74,7 @@ func TestMergeBackDoesNotRequireUserGitIdentity(t *testing.T) {
 }
 
 func TestMergeBackFailsClosedWhenSourceMutationFenceIsBusy(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -108,6 +111,7 @@ func TestMergeBackFailsClosedWhenSourceMutationFenceIsBusy(t *testing.T) {
 }
 
 func TestMergeBackRejectsSameHeadSourceBranchSwitchBeforeCAS(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -138,6 +142,7 @@ func TestMergeBackRejectsSameHeadSourceBranchSwitchBeforeCAS(t *testing.T) {
 }
 
 func TestMergeBackFencesSourceHeadDuringRefTransaction(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -173,6 +178,7 @@ func TestMergeBackFencesSourceHeadDuringRefTransaction(t *testing.T) {
 }
 
 func TestMergeBackRejectsIndexMutationBeforeRefUpdate(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -207,6 +213,7 @@ func TestMergeBackRejectsIndexMutationBeforeRefUpdate(t *testing.T) {
 }
 
 func TestMergeBackRefCompareAndSwapPreservesExternalAdvance(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -237,6 +244,7 @@ func TestMergeBackRefCompareAndSwapPreservesExternalAdvance(t *testing.T) {
 }
 
 func TestMergeBackPreservesChangedMergeHeadAfterRefUpdate(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -273,6 +281,7 @@ func TestMergeBackPreservesChangedMergeHeadAfterRefUpdate(t *testing.T) {
 }
 
 func TestMergeBackRejectsWorktreeAdvanceBeforePrepare(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -304,6 +313,7 @@ func TestMergeBackRejectsWorktreeAdvanceBeforePrepare(t *testing.T) {
 }
 
 func TestMergeBackRejectsWorktreeContentDriftBeforePrepare(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -336,6 +346,7 @@ func TestMergeBackRejectsWorktreeContentDriftBeforePrepare(t *testing.T) {
 }
 
 func TestMergeBackRejectsWorktreeBranchSwitchBeforePrepare(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -365,6 +376,7 @@ func TestMergeBackRejectsWorktreeBranchSwitchBeforePrepare(t *testing.T) {
 }
 
 func TestMergeBackRefTransactionRejectsWorktreeAdvanceAtomically(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -399,6 +411,7 @@ func TestMergeBackRefTransactionRejectsWorktreeAdvanceAtomically(t *testing.T) {
 }
 
 func TestMergeBackReportsRecoveryWhenWorktreeAdvancesAfterRefTransaction(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()

@@ -55,6 +55,12 @@ func TestUnobservedOverwriteRejectedButCreationAllowed(t *testing.T) {
 	}
 }
 
+// An external rewrite that leaves the file's size and mtime alone changes nothing
+// the metadata-only version can see, so the stale observation is written into the
+// store explicitly rather than provoked by a race — otherwise the case would pass
+// or fail by ctime granularity rather than by behaviour. What it pins is the rule:
+// an observation that no longer matches the current version is refused, and a
+// re-read is the way back.
 func TestExternalChangeMakesObservationStale(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file")
@@ -66,18 +72,29 @@ func TestExternalChangeMakesObservationStale(t *testing.T) {
 	if _, _, err := r.ExecuteRead(ctx, json.RawMessage(`{"path":"file","limit":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	stat, _ := os.Stat(path)
+	// The external writer's change, then the observation it invalidated. The
+	// stale version must belong to this file's identity, not a stale one.
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := fileops.DiskTarget(path, stat)
 	if err := os.WriteFile(path, []byte("two\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(path, stat.ModTime(), stat.ModTime()); err != nil {
-		t.Fatal(err)
+	fileops.FromContext(ctx).ObservePresent(identity, fileops.Version("disk-v1:before-the-external-write"))
+	if observed := fileops.FromContext(ctx).Get(identity); observed.Version != "disk-v1:before-the-external-write" {
+		t.Fatalf("stale observation was not recorded: %+v", observed)
 	}
+
 	e := editFile{workDir: dir}
-	_, err := e.Execute(ctx, json.RawMessage(`{"path":"file","old_string":"two","new_string":"THREE"}`))
+	_, err = e.Execute(ctx, json.RawMessage(`{"path":"file","old_string":"two","new_string":"THREE"}`))
 	var opErr *tool.OperationError
 	if !errors.As(err, &opErr) || opErr.Diagnostic.Code != tool.FSStaleVersion {
 		t.Fatalf("stale edit error = %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "two\n" {
+		t.Fatalf("a refused edit changed the file: %q", got)
 	}
 	if _, _, err := r.ExecuteRead(ctx, json.RawMessage(`{"path":"file","limit":1}`)); err != nil {
 		t.Fatal(err)

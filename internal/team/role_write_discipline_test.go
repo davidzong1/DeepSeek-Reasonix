@@ -23,6 +23,12 @@ func TestCollaborationDisciplineBatchesWritesToOneFile(t *testing.T) {
 			if !strings.Contains(tc.discipline, "multi_edit") {
 				t.Fatalf("discipline must name the batching tool:\n%s", tc.discipline)
 			}
+			if !strings.Contains(tc.discipline, "atomic_write") {
+				t.Fatalf("discipline must point at the atomic write tool:\n%s", tc.discipline)
+			}
+			if !strings.Contains(tc.discipline, "atomic_read") {
+				t.Fatalf("discipline must point at the atomic read tool:\n%s", tc.discipline)
+			}
 			if !strings.Contains(tc.discipline, "write lease") {
 				t.Fatalf("discipline must give the lease as the reason:\n%s", tc.discipline)
 			}
@@ -30,6 +36,18 @@ func TestCollaborationDisciplineBatchesWritesToOneFile(t *testing.T) {
 				t.Fatalf("discipline must not forbid the batching it asks for:\n%s", tc.discipline)
 			}
 		})
+	}
+}
+
+// TestCollaborationDisciplineBoundsTheAtomicHint pins the other half of §8.1's
+// byte budget: the atomic pair is named, but the shell tools it replaces are
+// still mentioned by name so a member keeps the "never cat/sed" instruction
+// short and concrete rather than a paragraph about file I/O.
+func TestCollaborationDisciplineBoundsTheAtomicHint(t *testing.T) {
+	for _, discipline := range []string{CollaborationDiscipline(false), CollaborationDiscipline(true)} {
+		if n := len(discipline); n > 2400 {
+			t.Fatalf("discipline grew past the shared-prefix budget (%d bytes):\n%s", n, discipline)
+		}
 	}
 }
 

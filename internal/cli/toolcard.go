@@ -59,7 +59,9 @@ var toolVerb = map[string]string{
 	"job_kill":       "Kill",
 	"wait":           "Wait",
 	"read_file":      "Read",
+	"atomic_read":    "Read",
 	"write_file":     "Write",
+	"atomic_write":   "Update",
 	"edit_file":      "Update",
 	"multi_edit":     "Update",
 	"move_file":      "Move",
@@ -86,7 +88,9 @@ var toolArgKey = map[string]string{
 	"kill_shell":    "job_id",
 	"job_kill":      "job_id",
 	"read_file":     "path",
+	"atomic_read":   "path",
 	"write_file":    "path",
+	"atomic_write":  "path",
 	"edit_file":     "path",
 	"multi_edit":    "path",
 	"move_file":     "source_path",
@@ -123,9 +127,9 @@ func toolDot(name string) string {
 }
 
 var toolCategory = map[string]string{
-	"read_file": "read", "ls": "read", "glob": "read", "grep": "read",
+	"read_file": "read", "atomic_read": "read", "ls": "read", "glob": "read", "grep": "read",
 	"web_fetch": "read", "web_search": "read", "bash_output": "read", "job_output": "read",
-	"write_file": "write", "edit_file": "write", "multi_edit": "write",
+	"write_file": "write", "atomic_write": "write", "edit_file": "write", "multi_edit": "write",
 	"move_file": "write", "delete_range": "write", "delete_symbol": "write", "notebook_edit": "write",
 	"bash": "exec", "pwsh": "exec", "powershell": "exec",
 	"wait": "proc", "kill_shell": "proc", "job_kill": "proc",

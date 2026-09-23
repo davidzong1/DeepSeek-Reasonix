@@ -855,10 +855,10 @@ func isPackageManagerRun(base string) bool {
 	}
 }
 
-// IsFileMutationTool reports whether a built-in tool mutates workspace files.
+// IsFileMutationTool reports whether a built-in tool mutates workspace files; atomic_write counts even though its arguments name no single file, because the shared "Edit" grant is about what a call does, not how many paths it names.
 func IsFileMutationTool(toolName string) bool {
 	switch toolName {
-	case "write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol":
+	case "write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol", "atomic_write":
 		return true
 	default:
 		return false

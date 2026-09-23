@@ -99,6 +99,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func TestSharedSubscriptionsCoalesceEvents(t *testing.T) {
+	requireWatchBackend(t)
 	dir := t.TempDir()
 	svc := NewService(Options{Stderr: io.Discard})
 	defer svc.Close()
@@ -160,6 +161,7 @@ func TestSharedSubscriptionsCoalesceEvents(t *testing.T) {
 }
 
 func TestScopeSkippedBodyChangesDoNotNotify(t *testing.T) {
+	requireWatchBackend(t)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
 		t.Fatal(err)

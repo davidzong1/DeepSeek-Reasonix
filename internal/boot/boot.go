@@ -230,6 +230,10 @@ type Options struct {
 	// leader-only team member management tools). They are registered in this
 	// controller only and are provider-visible alongside the unified surface.
 	ExtraTools []tool.Tool
+	// ProviderVisibleTools, when non-nil, narrows the provider-visible surface to
+	// the unified surface plus registered built-ins (how a team build mounts the
+	// atomic pair); it can never reveal an MCP or plugin tool. Nil keeps today's.
+	ProviderVisibleTools []string
 	// BrowserExecutor attaches the host's browser; nil registers nothing. Its
 	// tools are registry-only: use_capability reaches them while the provider-
 	// visible surface never changes, so the cached prompt prefix stays identical.
@@ -2006,7 +2010,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 
 	// Provider-visible tool surface is identical for every role setting before
 	// the extension snapshot freezes registry schemas for cache diagnostics.
-	applyUnifiedProviderToolSurface(reg, opts.ExtraTools...)
+	applyUnifiedProviderToolSurface(reg, opts.ExtraTools, providerVisibleTools(opts, cfg))
 
 	// Freeze the extension kernel's snapshot of exactly what this build wired.
 	// The snapshot is assembled from the in-hand objects above — discovery
