@@ -7,8 +7,6 @@
 package session
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -142,6 +140,7 @@ type Snapshot struct {
 type timerHandle interface{ Stop() bool }
 
 type OpenOptions struct {
+	Context   context.Context
 	AfterFunc func(time.Duration, func()) timerHandle
 	Write     func(context.Context, io.Writer, []byte) error
 	Sync      func(*os.File) error
@@ -354,6 +353,10 @@ func createWithOptions(dir, sessionID string, opts OpenOptions, header *SessionH
 }
 
 func openExistingHandle(dir, sessionID string, opts OpenOptions) (*Store, error) {
+	ctx := opts.openContext()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir = filepath.Clean(strings.TrimSpace(dir))
 	sessionID = strings.TrimSpace(sessionID)
 	if dir == "." || sessionID == "" {
@@ -372,7 +375,6 @@ func openExistingHandle(dir, sessionID string, opts OpenOptions) (*Store, error)
 	if !info.IsDir() {
 		return nil, fmt.Errorf("session: session path is not a directory: %s", dir)
 	}
-	eventsPath := filepath.Join(dir, currentLogName)
 	releaseLease, err := acquireSessionWriter(dir)
 	if err != nil {
 		if errors.Is(err, filelock.ErrHeld) {
@@ -385,13 +387,17 @@ func openExistingHandle(dir, sessionID string, opts OpenOptions) (*Store, error)
 		return nil, err
 	}
 	manifestPath := filepath.Join(dir, "manifest.json")
-	manifest, err := readManifest(manifestPath)
+	manifest, err := readStoredManifest(manifestPath)
 	if err != nil {
 		return fail(err)
 	}
 	if manifest.SessionID != sessionID {
 		return fail(fmt.Errorf("session: manifest belongs to %q", manifest.SessionID))
 	}
+	if !supportedStoredManifest(manifest) {
+		return fail(fmt.Errorf("%w: manifest schema or codec", ErrUnsupportedVersion))
+	}
+	eventsPath := logPathForManifest(dir, manifest)
 	identity, err := ensureStorageIdentity(dir, manifest)
 	if err != nil {
 		return fail(err)
@@ -406,22 +412,17 @@ func openExistingHandle(dir, sessionID string, opts OpenOptions) (*Store, error)
 	}
 	// Build runtime state in one streaming validation pass. A newer required
 	// event or a damaged complete batch leaves the original tail untouched.
-	startup, durableEnd, torn, stats, usedCheckpoint, err := loadStartupSessionState(context.Background(), dir, eventsPath, opts.ExternalHistory, recovery, identity)
+	startup, durableEnd, torn, stats, usedCheckpoint, err := loadStartupSessionStateForManifest(ctx, dir, eventsPath, manifest, opts.ExternalHistory, recovery, identity)
 	if opts.ObserveRecovery != nil {
 		opts.ObserveRecovery(stats)
 	}
 	if err != nil {
 		return failRecovery(err)
 	}
-	if opts.ExternalHistory && startup.catalogPreview == "" {
-		revision, revisionErr := revisionOfLog(dir)
-		cacheDir := filepath.Join(filepath.Dir(dir), ".query-cache", filepath.Base(dir))
-		if revisionErr == nil {
-			if metadata, metadataErr := readCatalogMetadata(cacheDir, manifest, revision); metadataErr == nil {
-				startup.catalogPreview = metadata.Preview
-			}
-		}
+	if err := ctx.Err(); err != nil {
+		return failRecovery(err)
 	}
+	loadStartupCatalogPreview(dir, manifest, opts.ExternalHistory, startup)
 	if torn {
 		// Cold readers deliberately stop at the last complete record. A writer
 		// may repair that tail only after acquiring the exclusive lease above:
@@ -437,9 +438,11 @@ func openExistingHandle(dir, sessionID string, opts OpenOptions) (*Store, error)
 			startup.operations = map[string]operationRecord{}
 		}
 	}
-	// Upgrade only after the exclusive writer validated the complete log. Old
-	// readers reject a newer revision before using caches or accepting new writes.
-	manifest.StorageRevision = StorageRevision
+	// Keep the source codec stable. Legacy stored sessions are writable through
+	// their original line codec; explicit conversion is the only codec change.
+	if manifest.Codec == Codec && manifest.StorageRevision > 0 {
+		manifest.StorageRevision = StorageRevision
+	}
 	manifest.WriterGeneration++
 	if err := writeManifestFile(manifestPath, manifest); err != nil {
 		return failRecovery(err)
@@ -726,6 +729,9 @@ func supportedStoredManifest(manifest Manifest) bool {
 	if currentStoredManifest(manifest) {
 		return true
 	}
+	if manifest.SchemaVersion == SchemaVersion && manifest.Codec == Codec && manifest.StorageRevision == 0 {
+		return true
+	}
 	return manifest.SchemaVersion == 3 &&
 		(manifest.Codec == FinalV31Codec || manifest.Codec == LegacyLinearCodec || manifest.Codec == PrototypeCodec)
 }
@@ -771,8 +777,12 @@ func (s *Store) Append(ctx context.Context, commits []Commit) error {
 	s.indexMu.Lock()
 	next := s.index.LastSequence + 1
 	s.indexMu.Unlock()
+	wantSchema, wantCodec := SchemaVersion, Codec
+	if s.manifest.Codec != Codec {
+		wantSchema, wantCodec = 3, s.manifest.Codec
+	}
 	for i, commit := range commits {
-		if commit.SchemaVersion != SchemaVersion || commit.Codec != Codec || commit.RecordType != "commit" ||
+		if commit.SchemaVersion != wantSchema || commit.Codec != wantCodec || commit.RecordType != "commit" ||
 			commit.ID == "" || commit.OperationID == "" || commit.OperationHash == "" ||
 			commit.WriterGeneration != s.manifest.WriterGeneration || commit.FirstSequence != next ||
 			commit.EventCount == 0 || commit.EventCount != len(commit.Events) {
@@ -802,7 +812,12 @@ func (s *Store) persist(ctx context.Context, file *os.File, commits []Commit) er
 			_ = os.Remove(stagedPath)
 		}
 	}()
-	lengths, err := encodeV4Commits(ctx, staged, s.content, commits)
+	var lengths []int64
+	if s.manifest.Codec == Codec {
+		lengths, err = encodeV4Commits(ctx, staged, s.content, commits)
+	} else {
+		lengths, err = encodeLegacyCommits(ctx, staged, commits)
+	}
 	if err != nil {
 		return err
 	}
@@ -840,6 +855,33 @@ func (s *Store) persist(ctx context.Context, file *os.File, commits []Commit) er
 	}
 	s.recordPersistedIndex(file, start, commits, lengths)
 	return nil
+}
+
+func encodeLegacyCommits(ctx context.Context, dst io.Writer, commits []Commit) ([]int64, error) {
+	lengths := make([]int64, 0, len(commits))
+	for _, commit := range commits {
+		if commit.Codec == PrototypeCodec {
+			commit = cloneCommit(commit)
+			for i := range commit.Events {
+				if commit.Events[i].Kind == "history/replace" {
+					commit.Events[i].Kind = "context/replace"
+				}
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(commit)
+		if err != nil {
+			return nil, err
+		}
+		encoded = append(encoded, '\n')
+		if _, err := dst.Write(encoded); err != nil {
+			return nil, err
+		}
+		lengths = append(lengths, int64(len(encoded)))
+	}
+	return lengths, nil
 }
 
 func copyStagedAppend(ctx context.Context, source io.Reader, destination io.Writer, writeFn func(context.Context, io.Writer, []byte) error) error {
@@ -950,9 +992,6 @@ func Replay(dir string, knownKinds map[string]bool) ([]Commit, error) {
 // sequence cursor; a rebuildable offset index can optimize seeking without
 // changing this validation contract.
 func scanDurableCommits(dir string, knownKinds map[string]bool, visit func(Commit) bool) error {
-	if knownKinds == nil {
-		knownKinds = ProjectionKinds
-	}
 	manifest, err := readStoredManifest(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return err
@@ -975,61 +1014,6 @@ func scanDurableCommits(dir string, knownKinds map[string]bool, visit func(Commi
 		return scanV4CommitFile(context.Background(), file, 0, 1, contentStoreForSessionDir(dir), knownKinds, adapter)
 	}
 	return scanCommitFileCodec(file, 0, 1, manifest.Codec, knownKinds, adapter)
-}
-
-func scanCommitFileCodec(file *os.File, startOffset int64, nextSequence uint64, codec string, knownKinds map[string]bool, visit func(int64, Commit) bool) error {
-	if knownKinds == nil {
-		knownKinds = ProjectionKinds
-	}
-	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
-		return err
-	}
-	reader := bufio.NewReaderSize(file, 64<<10)
-	next := nextSequence
-	offset := startOffset
-	operations := map[string]string{}
-	for {
-		recordOffset := offset
-		line, readErr := reader.ReadBytes('\n')
-		if errors.Is(readErr, io.EOF) {
-			// Cold readers expose only the complete durable prefix. The exclusive
-			// writer path preserves and repairs this tail before accepting work.
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-		offset += int64(len(line))
-		var commit Commit
-		if err := json.Unmarshal(bytes.TrimSuffix(line, []byte{'\n'}), &commit); err != nil {
-			return fmt.Errorf("%w: decode complete commit: %w", ErrDamagedStore, err)
-		}
-		if commit.SchemaVersion != 3 || commit.Codec != codec {
-			return fmt.Errorf("%w: event codec", ErrUnsupportedVersion)
-		}
-		if commit.RecordType != "commit" || commit.ID == "" || commit.OperationID == "" ||
-			commit.OperationHash == "" || commit.WriterGeneration == 0 || commit.FirstSequence != next ||
-			commit.EventCount != len(commit.Events) || commit.EventCount == 0 {
-			return fmt.Errorf("%w: invalid commit boundary at sequence %d", ErrDamagedStore, next)
-		}
-		if prior, ok := operations[commit.OperationID]; ok && prior != commit.OperationHash {
-			return fmt.Errorf("%w: conflicting operation %q", ErrDamagedStore, commit.OperationID)
-		}
-		operations[commit.OperationID] = commit.OperationHash
-		for i, event := range commit.Events {
-			if event.Sequence != next+uint64(i) || event.ID == "" || strings.TrimSpace(event.Kind) == "" {
-				return fmt.Errorf("%w: invalid event at sequence %d", ErrDamagedStore, next+uint64(i))
-			}
-			if !event.Optional && !knownKinds[event.Kind] {
-				return fmt.Errorf("%w: unknown required event %q", ErrUnsupportedVersion, event.Kind)
-			}
-		}
-		next = commit.LastSequence() + 1
-		if visit != nil && !visit(recordOffset, commit) {
-			return nil
-		}
-	}
-	return nil
 }
 
 func preserveAndTruncateTail(path string, cut int64, label string) (string, error) {

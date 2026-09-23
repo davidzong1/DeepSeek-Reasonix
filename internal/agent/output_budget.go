@@ -107,6 +107,7 @@ func (o *outputBudgetState) reset() {
 	o.lastUsage.Store(nil)
 	o.activeReqShape.Store(nil)
 	o.admission.Store(nil)
+	o.contextUsage.Store(nil)
 }
 
 func (a *Agent) setPromptTokenCalibration(promptTokens int, shape requestCalibrationShape) {

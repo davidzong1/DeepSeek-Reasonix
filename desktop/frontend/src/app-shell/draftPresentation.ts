@@ -9,9 +9,14 @@ const DRAFT_ATTENTION_PHASES = new Set([
   "terminal_failed",
 ]);
 
+export function sameDraftError(left: string, right: string | undefined): boolean {
+  const normalize = (value: string) => value.trim().replace(/^Error:\s*/, "");
+  return Boolean(right) && normalize(left) === normalize(right!);
+}
+
 /** Healthy drafts use the new-session landing; recovery controls need room. */
 export function draftSurfaceNeedsAttention(draft: SessionDraftSurface): boolean {
-  return draft.saveState === "conflict" || draft.saveState === "error" || Boolean(draft.taskError)
+  return draft.saveState === "conflict" || draft.saveState === "error" || Boolean(draft.taskError) || Boolean(draft.submissionError)
     || Boolean(draft.operation && DRAFT_ATTENTION_PHASES.has(draft.operation.phase));
 }
 

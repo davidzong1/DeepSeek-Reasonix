@@ -138,6 +138,9 @@ export function entriesFor(messages: PersistentMessage[], snapshotSequence: numb
 }
 
 export async function canonicalHistoryWindow(tabId: string, req: HistoryWindowRequestView): Promise<HistoryWindowPageView> {
+  const { readNativeTranscriptWindow } = await import("./nativeTranscriptHistory");
+  const native = await readNativeTranscriptWindow(tabId, req);
+  if (native) return native;
   const remote = identityFor(tabId) === "remote";
   const { readCanonicalHistoryWindow } = await import("./canonicalHistoryWindow");
   return readCanonicalHistoryWindow(tabId, req, remote);

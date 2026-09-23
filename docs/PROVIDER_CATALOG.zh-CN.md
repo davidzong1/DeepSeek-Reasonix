@@ -1,6 +1,6 @@
 # 服务商目录
 
-桌面预设目录按品牌显示一个入口。账号平台、接入方式和 API 格式共同选择一个
+桌面预设目录按品牌显示一个入口。依次选择接入方式、账号平台和 API 格式来确定一个
 具体预设，仅展示后端登记过的组合。OpenCode Go 和 Zen 保留为不同接入方式，
 模型专用路由在对应接入方式内选择。
 
@@ -39,11 +39,33 @@ go run scripts/generate-provider-catalog.go
 
 | 契约 | 兼容行为 |
 | --- | --- |
-| 已保存 TOML 与密钥 | 不改变，无迁移或自动重写 |
+| 已保存 TOML 与密钥 | 浏览不写入；下述 MiMo 一次性模型升级保留密钥引用与已有选择 |
 | 原有预设 ID | 保留 |
 | 桌面 `ProviderPresetView.catalog` | 新增展示字段，旧客户端忽略 |
 | 新前端连接旧后端 | 已知 ID 使用生成的目录回退，未知预设仍可独立访问 |
 | 模型请求前缀 | 不加入目录元数据 |
+
+## MiMo 按量 API 与 Token Plan
+
+先选择**按量 API**或 **Token Plan**。按量 API 使用 `MIMO_API_KEY`，不显示地区选项；
+Token Plan 使用 `MIMO_TOKEN_PLAN_API_KEY`，再选择中国、新加坡或欧洲服务集群。
+切换集群时，若目标预设支持当前协议，则保留协议选择。Token Plan 仅限受支持的
+AI 编程工具使用，其密钥和额度与普通 API 相互独立。
+
+新建连接默认使用 `mimo-v2.6-pro`，同时提供 `mimo-v2.6-flash`，保留 V2.5 模型 ID。
+配置版本 12 会为符合条件的官方 V2.5 连接一次性追加 V2.6 模型，保留原默认模型、
+模型顺序、自定义价格、密钥引用与未知字段。第三方端点和自定义请求 URL 不参与升级。
+模型与迁移标记在配置编辑锁内原子写入；用户之后删除模型，重启不会再次补回。
+
+| 字段或格式 | 旧数据行为 | 新版读取 | 上一版（配置版本 11）读取 | 结论 |
+| --- | --- | --- | --- | --- |
+| `models`、`default`、模型引用 | 保留 V2.5 顺序和默认选择 | 仅一次追加 V2.6，不切换默认模型 | 可读写模型 ID，保持原默认 | 兼容 |
+| `config_version = 12` | 旧版本可触发启动迁移 | 防止删除后重复追加 | 保存时保留标记 | 兼容 |
+| `prices`、`vision_models`、未知字段 | 保留用户价格与显式视觉选择 | 扩展已知预设视觉列表，补齐 V2.6 价格；迁移保留未知数据 | 可读取原有字段和规范嵌套价格表 | 未增加持久化字段类型 |
+
+官方参考：[Token Plan](https://mimo.mi.com/docs/zh-CN/tokenplan/Token%20Plan/subscription)、
+[API 定价](https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go)、
+[API 速率限制](https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit)。
 
 ## 连接显示名称
 

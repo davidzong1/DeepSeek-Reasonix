@@ -270,11 +270,11 @@ func (a *App) validateDesktopWorkspaceMembership(ctx context.Context, workspaceI
 	if err := validateLocalSessionRef(ref); err != nil {
 		return err
 	}
-	state, err := a.workspaceRegistry().Load(ctx)
+	snapshot, err := a.workspaceRegistry().VerifySnapshot(ctx)
 	if err != nil {
 		return err
 	}
-	workspace, ok := state.Workspaces[strings.TrimSpace(workspaceID)]
+	workspace, ok := snapshot.WorkspaceMetadata(strings.TrimSpace(workspaceID))
 	if !ok {
 		return workspacestate.ErrWorkspaceNotFound
 	}
@@ -327,7 +327,17 @@ func (a *App) attachForkedDesktopSession(ctx context.Context, source *WorkspaceT
 			break
 		}
 	}
-	return a.workspaceRegistry().AttachSession(ctx, "", workspaceID, childSessionID, beforeID)
+	if err := a.workspaceRegistry().AttachSession(ctx, "", workspaceID, childSessionID, beforeID); err != nil {
+		return err
+	}
+	// Canonical forks use workspace membership, not the directory catalog.
+	// Invalidate the paged sidebar even if opening the child tab later fails.
+	root := ""
+	if workspaceID != workspacestate.GlobalWorkspaceID {
+		root = workspace.Root
+	}
+	a.emitProjectTreeChangedV2(a.currentSessionCatalogStatus().Revision, []string{root}, "membership")
+	return nil
 }
 
 func (a *App) verifyCanonicalTabRegistryBeforePrune(tab *WorkspaceTab) error {
@@ -371,13 +381,24 @@ func (a *App) persistHiddenTabBeforePrune(id string, tab *WorkspaceTab) error {
 }
 
 func (a *App) prepareDesktopSessionRotation(ctx context.Context, request control.SessionRotationRequest) (control.SessionRotationPlan, error) {
-	if err := validateLocalSessionRef(request.Source); err != nil {
-		return control.SessionRotationPlan{}, err
+	if request.SourcePath == "" {
+		if err := validateLocalSessionRef(request.Source); err != nil {
+			return control.SessionRotationPlan{}, err
+		}
 	}
 	a.mu.RLock()
 	var owner *WorkspaceTab
 	for _, tab := range a.runtimeTabsLocked() {
-		if tab != nil && tab.SessionID == request.Source.SessionID {
+		if tab != nil && tab.SessionID == "" && tab.SessionPath != "" && request.Source.SessionID != "" {
+			if identity, ok := tab.Ctrl.(control.IdentityLifecycle); ok {
+				if ref, bound := identity.SessionRef(); bound && ref == request.Source {
+					owner = tab
+					request.SourcePath = tab.SessionPath
+					break
+				}
+			}
+		}
+		if tab != nil && ((request.SourcePath != "" && sameDesktopPath(tab.SessionPath, request.SourcePath)) || (request.Source.SessionID != "" && tab.SessionID == request.Source.SessionID)) {
 			owner = tab
 			break
 		}
@@ -394,16 +415,18 @@ func (a *App) prepareDesktopSessionRotation(ctx context.Context, request control
 			return control.SessionRotationPlan{}, err
 		}
 	}
-	contained, err := a.workspaceRegistry().Contains(ctx, request.Source.SessionID)
-	if err != nil {
-		return control.SessionRotationPlan{}, err
-	}
-	if !contained {
-		if err := a.validateDesktopWorkspaceMembership(ctx, workspaceID, request.Source); err != nil {
+	if request.SourcePath == "" {
+		contained, err := a.workspaceRegistry().Contains(ctx, request.Source.SessionID)
+		if err != nil {
 			return control.SessionRotationPlan{}, err
 		}
-		if err := a.workspaceRegistry().AttachSession(ctx, "", workspaceID, request.Source.SessionID, ""); err != nil {
-			return control.SessionRotationPlan{}, err
+		if !contained {
+			if err := a.validateDesktopWorkspaceMembership(ctx, workspaceID, request.Source); err != nil {
+				return control.SessionRotationPlan{}, err
+			}
+			if err := a.workspaceRegistry().AttachSession(ctx, "", workspaceID, request.Source.SessionID, ""); err != nil {
+				return control.SessionRotationPlan{}, err
+			}
 		}
 	}
 	sessionID := "desktop-" + strings.TrimPrefix(newTabID(), "tab_")

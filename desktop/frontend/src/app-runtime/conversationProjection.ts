@@ -57,6 +57,7 @@ export function projectConversation({ local, remote, tab, activeTabId, backgroun
     turnTokens: runtime.turnTokens, turnOutputTokens: runtime.turnOutputTokens,
     turnOutputCharsAtUsage: runtime.turnOutputCharsAtUsage,
     turnModelActiveAt: runtime.turnModelActiveAt, turnModelActiveMs: runtime.turnModelActiveMs,
+    turnRateOutputQuarters: runtime.turnRateSample?.outputQuarters,
     turnArgChars: runtime.turnArgChars, retry: runtime.retry,
     turnOutputEstimated: runtime.turnOutputEstimated,
     lastTurnOutputEstimated: runtime.lastTurnOutputEstimated,

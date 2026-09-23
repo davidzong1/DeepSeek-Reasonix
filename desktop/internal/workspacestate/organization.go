@@ -148,16 +148,23 @@ func mirrorOrganizationOrder(w *Workspace) {
 		return
 	}
 	ids := []string{}
+	members := make(map[string]bool, len(w.SessionIDs))
+	seen := make(map[string]bool, len(w.SessionIDs))
+	for _, sid := range w.SessionIDs {
+		members[sid] = true
+	}
 	for _, key := range w.Organization.Order {
 		if sid, ok := strings.CutPrefix(key, "ref\x00local\x00"); ok {
-			if slices.Contains(w.SessionIDs, sid) && !slices.Contains(ids, sid) {
+			if members[sid] && !seen[sid] {
 				ids = append(ids, sid)
+				seen[sid] = true
 			}
 		}
 	}
 	for _, sid := range w.SessionIDs {
-		if !slices.Contains(ids, sid) {
+		if !seen[sid] {
 			ids = append(ids, sid)
+			seen[sid] = true
 		}
 	}
 	w.SessionIDs = ids

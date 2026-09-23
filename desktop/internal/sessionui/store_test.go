@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestCASPreservesLosingWriterAcrossStores(t *testing.T) {
+func TestComposerCASAcrossStoresDoesNotCreateRecoveryCopies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session-ui.sqlite")
 	a, b := New(path), New(path)
 	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
@@ -47,7 +47,7 @@ func TestCASPreservesLosingWriterAcrossStores(t *testing.T) {
 		t.Fatalf("conflicts=%d", conflicts)
 	}
 	var count int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM conflicts`).Scan(&count); err != nil || count != 1 {
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM conflicts`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("conflict copy count=%d err=%v", count, err)
 	}
 	_ = a.Close()

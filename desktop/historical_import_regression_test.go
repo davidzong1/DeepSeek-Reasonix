@@ -226,22 +226,28 @@ func TestHistoricalRegressionShutdownPreservesPendingBatch(t *testing.T) {
 	}
 }
 
-func TestHistoricalRegressionShutdownDrainsStartupDiscovery(t *testing.T) {
+func TestHistoricalRegressionShutdownDrainsStartupWorker(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := newHistoricalLifecycleApp(t)
 	c := &app.historicalImports
-	c.discoveryMu.Lock()
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(proceed) }) }
+	t.Cleanup(release)
+	app.projectTreeChangedHook = func() { close(entered); <-proceed }
 	app.startDesktopSessionMigration(t.Context())
+	<-app.desktopMigrationDone
+	app.markTabsRestored()
+	<-entered
 	stopped := make(chan struct{})
 	go func() { app.stopHistoricalImports(); close(stopped) }()
 	<-c.ctx.Done()
 	select {
 	case <-stopped:
-		c.discoveryMu.Unlock()
-		t.Fatal("shutdown did not drain startup discovery")
+		t.Fatal("shutdown did not drain the startup worker")
 	default:
 	}
-	c.discoveryMu.Unlock()
+	release()
 	<-stopped
 	select {
 	case <-app.desktopMigrationDone:

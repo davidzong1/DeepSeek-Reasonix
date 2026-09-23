@@ -1125,7 +1125,7 @@ func TestSaveRewriteAppendsReplaceEventAndRefreshesCheckpoint(t *testing.T) {
 	}
 }
 
-func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
+func TestSaveSnapshotKeepsLegacyJSONLNative(t *testing.T) {
 	path := schemaOneSessionPath(t, "legacy.jsonl")
 	if err := os.WriteFile(path, []byte(`{"role":"system","content":"sys"}`+"\n"+`{"role":"user","content":"legacy"}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write legacy jsonl: %v", err)
@@ -1138,9 +1138,8 @@ func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
 	if err := loaded.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot legacy append: %v", err)
 	}
-	events := readSessionEventsForTest(t, path)
-	if len(events) != 1 || events[0].Type != sessionEventTypeReplace {
-		t.Fatalf("legacy migration events = %+v, want one replace seed", events)
+	if _, err := os.Stat(SessionEventLogPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("legacy snapshot created an event log: %v", err)
 	}
 	reloaded, err := LoadSession(path)
 	if err != nil {
@@ -1149,8 +1148,8 @@ func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
 	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "migrated" {
 		t.Fatalf("migrated tail = %q, want migrated", got)
 	}
-	if _, err := os.Stat(SessionEventIndexPath(path)); err != nil {
-		t.Fatalf("event index missing: %v", err)
+	if _, err := os.Stat(SessionEventIndexPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("legacy snapshot created an event index: %v", err)
 	}
 }
 

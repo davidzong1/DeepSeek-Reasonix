@@ -7,7 +7,7 @@ export function submissionBindingCurrent(current: State | undefined, expected: S
   return current?.sessionGen === expected.sessionGen && sessionIdentityStableKey(current?.meta) === sessionIdentityStableKey(expected.meta);
 }
 
-export function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnUsage" | "turnOutputTokens" | "turnOutputChars" | "turnOutputCharsAtUsage" | "turnOutputEstimated" | "turnModelActiveAt" | "turnModelActiveMs" | "turnCost" | "turnRateBand" | "turnArgChars" | "pendingRequestModelMs"> {
+export function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnDoneAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnUsage" | "turnOutputTokens" | "turnOutputChars" | "turnOutputCharsAtUsage" | "turnOutputEstimated" | "turnModelActiveAt" | "turnModelActiveMs" | "turnRateSample" | "turnCost" | "turnRateBand" | "turnArgChars" | "pendingRequestModelMs"> {
   return {
     turnStartAt: now,
     turnDoneAt: 0,
@@ -22,6 +22,7 @@ export function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "
     turnOutputEstimated: false,
     turnModelActiveAt: undefined,
     turnModelActiveMs: 0, pendingRequestModelMs: undefined,
+    turnRateSample: undefined,
     turnCost: 0,
     turnRateBand: undefined,
     turnArgChars: 0,

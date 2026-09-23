@@ -61,7 +61,9 @@ func (a *App) listSessionsFromDir(dir, active string) []SessionMeta {
 	}
 	adopted := map[string]bool{}
 	for _, mapping := range state.SourceMappings {
-		adopted["source\x00local\x00"+mapping.SourceKey] = true
+		for _, key := range state.SourceKeys(mapping.SourceKey) {
+			adopted["source\x00local\x00"+key] = true
+		}
 		if sourceMappingHasPathAlias(mapping) {
 			adopted[sessionRuntimeKey(mapping.Path)] = true
 		}

@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version-file: .node-version
       - id: paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -90,7 +90,7 @@ jobs:
           run_install: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
       - name: Install memory dependencies
@@ -130,7 +130,7 @@ jobs:
           run_install: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
       - name: Install memory dependencies
@@ -188,7 +188,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.memory == 'true'
         with:
-          node-version: "24"
+          node-version-file: .node-version
       - uses: actions/download-artifact@v8
         if: needs.changes.outputs.memory == 'true'
         with:

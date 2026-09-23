@@ -56,6 +56,7 @@ test("Windows PR contract selector covers shell identity, lifecycle and cancella
   assert.match(source, /run: node scripts\/windows-pr-contract-tests\.mjs/);
   const selected = new Set(windowsPRContractGroups.flatMap(group => group.tests));
   for (const required of [
+    "TestConfigJunctionAccessAndLockNames",
     "TestWorkspacePassesBashTimeout",
     "TestBashSchemaUnchangedWithSessionTemp",
     "TestBashUnsupportedOSSandboxUsesToolLayerPermissionBoundary",
@@ -73,5 +74,12 @@ test("Windows PR contract selector covers shell identity, lifecycle and cancella
     assert.equal(args.at(-1), group.package);
     for (const name of group.tests) assert.match(args[3], new RegExp(`\\b${name}\\b`));
   }
-  assert.deepEqual(windowsPRContractArgs(windowsPRContractGroups[0], { fullBuiltin: true }), ["test", "-timeout=5m", "./internal/tool/builtin"]);
+  const builtin = windowsPRContractGroups.find(group => group.package === "./internal/tool/builtin");
+  assert.deepEqual(windowsPRContractArgs(builtin, { fullBuiltin: true }), ["test", "-timeout=5m", "./internal/tool/builtin"]);
+});
+
+test("Windows PR smoke executes the native junction and lock owners", () => {
+  const native = ["pathidentity", "identitylock", "workspacelease", "desktopinstance", "sessioncatalog"]
+    .map(name => `reasonix/internal/${name}`);
+  assert.deepEqual(selectPackages(native, "smoke"), native);
 });

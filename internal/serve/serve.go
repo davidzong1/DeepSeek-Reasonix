@@ -1143,7 +1143,7 @@ func (s *Server) resumeIdentitySession(w http.ResponseWriter, r *http.Request, h
 		return
 	}
 	ctrl, ok := s.ctl().(*control.Controller)
-	if !ok || !ctrl.UsesExclusiveSession() {
+	if !ok || ctrl.SessionService() == nil {
 		http.Error(w, "session identity protocol is unavailable", http.StatusConflict)
 		return
 	}

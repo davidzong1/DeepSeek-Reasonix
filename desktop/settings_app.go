@@ -1974,6 +1974,7 @@ func (a *App) rebuildSettingTurnLockedWithModel(setting string, tab *WorkspaceTa
 		retireReplacedController(oldCtrl, ctrl)
 	}
 	a.persistTabSessionPath(tab, path)
+	a.syncTabSessionIdentity(tab, ctrl)
 	a.clearDeferredRebuildVersion(tab.ID, pendingSequence)
 	a.notifyTabRuntimeRebuilt(tab)
 	a.emitReady(a.ctx)

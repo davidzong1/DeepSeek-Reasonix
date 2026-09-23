@@ -55,6 +55,9 @@ func (a *App) NewSessionForTab(tabID string) error {
 		}
 		a.persistTabSessionPath(tab, ctrl.SessionPath())
 		releaseAdmission()
+		if err := a.ensureReusableBlankIdentity(tab); err != nil {
+			return err
+		}
 		return a.applyNewSessionDefaultModel(tab)
 	}
 
@@ -101,6 +104,12 @@ func (a *App) syncTabSessionIdentity(tab *WorkspaceTab, ctrl control.SessionAPI)
 	}
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current == tab {
+		if tab.SessionID == "" && tab.SessionPath != "" && identity.SessionService() != a.desktopSessionService("") {
+			// A historical directory has an identity only within its original
+			// store. Keep the path locator until a new canonical session is bound.
+			a.mu.Unlock()
+			return
+		}
 		if tab.SessionID != ref.SessionID {
 			tab.SessionGeneration++
 			if tab.sink != nil {
@@ -108,6 +117,7 @@ func (a *App) syncTabSessionIdentity(tab *WorkspaceTab, ctrl control.SessionAPI)
 			}
 		}
 		tab.SessionID = ref.SessionID
+		tab.SessionHeadID = ""
 		tab.SessionPath = ""
 		a.bindSessionRuntimeKeyLocked(tab, tab.currentSessionIdentity())
 	}

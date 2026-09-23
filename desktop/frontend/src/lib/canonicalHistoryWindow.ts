@@ -1,6 +1,7 @@
 import { app } from "./bridge";
 import { asArray } from "./array";
 import { entriesFor } from "./canonicalTranscriptBackend";
+import { readBoundHistoryWindow } from "./historyReadBinding";
 import type { HistoryWindowPage, PersistentMessage } from "../generated/desktopContract.generated";
 import type { HistoryWindowPageView, HistoryWindowRequestView } from "./types";
 
@@ -20,10 +21,15 @@ export async function readCanonicalHistoryWindow(tabId: string, req: HistoryWind
     }
     page = await app.RemoteSessionHistoryWindowForTab(tabId, req);
   } else {
+	const bound = await readBoundHistoryWindow(tabId, req);
+	if (bound && "entries" in bound) return bound;
+	if (bound) page = bound;
+	else {
     if (typeof app.SessionHistoryWindowForTab !== "function") {
       return unsupportedWindow();
     }
     page = await app.SessionHistoryWindowForTab(tabId, req);
+	}
   }
   const status = (page.status || "ready") as HistoryWindowPageView["status"];
   if (status === "unsupported") {

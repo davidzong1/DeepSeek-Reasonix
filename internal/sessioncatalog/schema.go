@@ -304,5 +304,31 @@ func sessionMigrations() []projectiondb.Migration {
 			_, err := tx.ExecContext(ctx, migrationV13)
 			return err
 		}},
+		{Version: 14, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `CREATE TABLE catalog_pending_roots (
+				path_key TEXT PRIMARY KEY, path TEXT NOT NULL, scope TEXT NOT NULL,
+				workspace_root TEXT NOT NULL, sequence INTEGER NOT NULL)`)
+			return err
+		}},
+		{Version: 15, Apply: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `ALTER TABLE catalog_sessions ADD COLUMN topic_pinned INTEGER NOT NULL DEFAULT 0;
+			UPDATE catalog_sessions SET topic_pinned=COALESCE((SELECT pinned FROM catalog_topics t WHERE t.scope=catalog_sessions.scope AND t.workspace_root_key=catalog_sessions.workspace_root_key AND t.topic_id=catalog_sessions.topic_id),0);
+			CREATE TRIGGER catalog_session_insert_pin AFTER INSERT ON catalog_sessions BEGIN
+			 UPDATE catalog_sessions SET topic_pinned=COALESCE((SELECT pinned FROM catalog_topics t WHERE t.scope=NEW.scope AND t.workspace_root_key=NEW.workspace_root_key AND t.topic_id=NEW.topic_id),0) WHERE path=NEW.path;
+			END;
+			CREATE TRIGGER catalog_session_move_pin AFTER UPDATE OF scope,workspace_root_key,topic_id ON catalog_sessions WHEN NEW.scope<>OLD.scope OR NEW.workspace_root_key<>OLD.workspace_root_key OR NEW.topic_id<>OLD.topic_id BEGIN
+			 UPDATE catalog_sessions SET topic_pinned=COALESCE((SELECT pinned FROM catalog_topics t WHERE t.scope=NEW.scope AND t.workspace_root_key=NEW.workspace_root_key AND t.topic_id=NEW.topic_id),0) WHERE path=NEW.path;
+			END;
+			CREATE TRIGGER catalog_topic_update_pin AFTER UPDATE OF pinned ON catalog_topics WHEN NEW.pinned<>OLD.pinned BEGIN
+			 UPDATE catalog_sessions SET topic_pinned=NEW.pinned WHERE scope=NEW.scope AND workspace_root_key=NEW.workspace_root_key AND topic_id=NEW.topic_id;
+			END;
+			CREATE TRIGGER catalog_topic_insert_pin AFTER INSERT ON catalog_topics WHEN NEW.pinned<>0 BEGIN
+			 UPDATE catalog_sessions SET topic_pinned=NEW.pinned WHERE scope=NEW.scope AND workspace_root_key=NEW.workspace_root_key AND topic_id=NEW.topic_id;
+			END;
+			CREATE INDEX idx_catalog_sessions_flat_activity ON catalog_sessions(scope,workspace_root_key,topic_pinned DESC,COALESCE(NULLIF(last_activity_at,0),created_at) DESC,topic_id,path) WHERE ordinary_visible=1 AND missing_since=0 AND health<>'missing';
+			CREATE INDEX idx_catalog_sessions_flat_created ON catalog_sessions(scope,workspace_root_key,topic_pinned DESC,COALESCE(NULLIF(created_at,0),last_activity_at) DESC,topic_id,path) WHERE ordinary_visible=1 AND missing_since=0 AND health<>'missing';
+			CREATE INDEX idx_catalog_sessions_multihead ON catalog_sessions(scope,workspace_root_key) WHERE head_count>1;`)
+			return err
+		}},
 	}
 }

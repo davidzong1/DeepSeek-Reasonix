@@ -404,12 +404,12 @@ func (q *Query) LocateMessage(ctx context.Context, ref SessionRef, messageID str
 	return location, err
 }
 
-func (q *Query) prepareHistoryLocator(filesystem *FilesystemPersistence, sessionID, path string) *historyPreparation {
+func (q *Query) prepareHistoryLocator(filesystem *FilesystemPersistence, sessionID, path string, callers ...context.Context) *historyPreparation {
 	q.historyMu.Lock()
 	if current := q.historyBuilds[sessionID]; current != nil {
 		select {
 		case <-current.done:
-			if current.err != nil {
+			if current.err != nil && !errors.Is(current.err, context.Canceled) {
 				q.historyMu.Unlock()
 				return current
 			}
@@ -431,18 +431,26 @@ func (q *Query) prepareHistoryLocator(filesystem *FilesystemPersistence, session
 	}
 	q.rebuildWG.Add(1)
 	q.rebuildMu.Unlock()
+	ctx := q.historyReadContext(sessionID, callers...)
 	go func() {
 		defer q.rebuildWG.Done()
 		// A user-requested history page or locate: highest slot priority.
-		if err := q.slots.acquire(q.rebuildCtx, rebuildPriorityUser); err != nil {
+		if err := q.slots.acquire(ctx, rebuildPriorityUser); err != nil {
 			preparation.err = err
 			close(preparation.done)
 			return
 		}
 		defer q.slots.release()
+		release, err := q.acquireHistoryPreparation(ctx)
+		if err != nil {
+			preparation.err = err
+			close(preparation.done)
+			return
+		}
+		defer release()
 		lock := q.projectionLock("history", sessionID)
 		lock.Lock()
-		preparation.err = ensureHistoryIndex(q.rebuildCtx, filesystem, sessionID, path)
+		preparation.err = ensureHistoryIndex(ctx, filesystem, sessionID, path)
 		lock.Unlock()
 		close(preparation.done)
 	}()

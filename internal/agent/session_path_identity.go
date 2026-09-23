@@ -83,6 +83,14 @@ func CanonicalSessionPath(path string) string {
 	return identity.Key
 }
 
+// SessionSourceKeyFromIdentity hashes an already resolved source identity and
+// branch. It performs no filesystem access, so retained metadata snapshots can
+// compare the same source keys as Desktop without resolving every source again.
+func SessionSourceKeyFromIdentity(pathKey, head string) string {
+	sum := sha256.Sum256([]byte(pathKey + "\x00" + head))
+	return hex.EncodeToString(sum[:])
+}
+
 func resolveSessionPathIdentity(path string) (pathidentity.Identity, error) {
 	baseDir := ""
 	if !filepath.IsAbs(strings.TrimSpace(path)) {

@@ -213,6 +213,7 @@ func TestSidebarKeepsCanonicalSessionsWithSharedTopicIndependent(t *testing.T) {
 	app := NewApp()
 	t.Cleanup(app.closeSessionServices)
 	app.ctx = t.Context()
+	installNoopRuntimeEvents(app)
 	app.desktopSessions.root = filepath.Join(root, "desktop-sessions-v5", "by-id")
 	app.desktopSessions.workspaceState = workspacestate.NewStore(filepath.Join(root, "desktop", "workspace-state-v1.json"))
 	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
@@ -249,6 +250,19 @@ func TestSidebarKeepsCanonicalSessionsWithSharedTopicIndependent(t *testing.T) {
 	}
 	if !seen["branch-a"] || !seen["branch-b"] {
 		t.Fatalf("lost a durable branch: %#v", seen)
+	}
+	// A topic-level adoption marker must never hide another canonical member
+	// when just one of the sessions sharing that topic is permanently deleted.
+	victim := session.SessionRef{HostID: localDesktopHostID, SessionID: "branch-a"}
+	if err := app.ArchiveCanonicalSession(victim); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.PurgeCanonicalSession(victim); err != nil {
+		t.Fatal(err)
+	}
+	page, err = app.unifiedProjectTopics(ProjectTopicPageRequest{Scope: "project", WorkspaceRoot: root, Limit: 1})
+	if err != nil || len(page.Items) != 1 || page.Items[0].Session == nil || page.Items[0].Session.SessionID != "branch-b" || page.NextCursor != "" {
+		t.Fatalf("purging one sibling hid or duplicated the live member: %#v, %v", page, err)
 	}
 }
 

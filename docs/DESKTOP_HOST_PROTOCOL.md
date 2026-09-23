@@ -51,7 +51,7 @@ fails with `-32002 not_ready`.
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // new for every service process
-  "instance": {"identityVersion":2,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
+  "instance": {"identityVersion":3,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
   "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}

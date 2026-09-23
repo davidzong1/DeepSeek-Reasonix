@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { runGoTest } from "./go-test-groups.mjs";
 
 export const windowsPRContractGroups = [
+  { package: "./internal/config", tests: ["TestConfigJunctionAccessAndLockNames",
+    "TestCredentialAccessRepairsLegacyDenyThroughLinkedHome", "TestCredentialSaveResetsDenyWithoutSandboxRecord"] },
   {
     package: "./internal/tool/builtin",
     tests: [

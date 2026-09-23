@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { releaseReadSnapshot } from "./readSnapshot";
+import { invalidateProjectTreeTopicLoads } from "./projectTreeTopic";
 import {
   createProjectTreeRequestLimiter,
   projectTreeRuntimeWindowLimits,
@@ -15,7 +16,7 @@ export function useProjectTreeListRuntime() {
   const updateTopicPageState = useCallback((key: string, next: ProjectTreeListPageState) => {
     // Publish synchronously so sibling effects see the same request/cache state
     // before React commits the corresponding render.
-    const updated = { ...topicPageStateRef.current, [key]: next };
+    const updated = { ...topicPageStateRef.current, [key]: { ...next, refreshing: Boolean(next.loading && next.refreshing) } };
     topicPageStateRef.current = updated;
     setTopicPageState(updated);
   }, []);
@@ -42,16 +43,14 @@ export function useProjectTreeListRuntime() {
   const topicLoadErrorRef = useRef<Record<string, string>>({});
   const invalidateProjectTopicLists = useCallback((projectKey: string) => {
     const prefix = `${projectKey}\u001f`;
-    for (const key of Object.keys(topicLoadSeqRef.current)) {
-      if (key.startsWith(prefix)) topicLoadSeqRef.current[key] += 1;
-    }
+    invalidateProjectTreeTopicLoads(topicLoadSeqRef.current, [projectKey]);
     for (const records of [topicLoadPendingRef.current, topicRevisionRef.current, topicCompletePageRef.current]) {
       for (const key of Object.keys(records)) if (key.startsWith(prefix)) delete records[key];
     }
     const next = Object.fromEntries(Object.entries(topicPageStateRef.current).map(([key, state]) => {
       if (!key.startsWith(prefix)) return [key, state];
       releaseReadSnapshot(state.snapshotId);
-      return [key, { ...state, snapshotId: undefined, nextCursor: undefined, loading: false, initialized: false, error: undefined }];
+      return [key, { ...state, snapshotId: undefined, nextCursor: undefined, loading: false, refreshing: false, initialized: false, error: undefined }];
     }));
     topicPageStateRef.current = next;
     setTopicPageState(next);

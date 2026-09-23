@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,7 @@ future_desktop_field = true
 		t.Fatalf("upgrade=%v err=%v", changed, err)
 	}
 	got, _ := os.ReadFile(path)
-	want := strings.ReplaceAll(raw, `config_version = 7`, `config_version = 11`)
+	want := strings.ReplaceAll(raw, `config_version = 7`, fmt.Sprintf("config_version = %d", Default().ConfigVersion))
 	want = strings.ReplaceAll(want, `models = ["deepseek-v4-flash", "deepseek-v4-pro"]`, `models = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"]`)
 	want = strings.ReplaceAll(want, `kind = "anthropic"`, `kind = "openai"`)
 	want = strings.ReplaceAll(want, `base_url = "https://api.deepseek.com/anthropic"`, `base_url = "https://api.deepseek.com"`)

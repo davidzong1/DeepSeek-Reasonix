@@ -42,7 +42,7 @@ try {
   }
   function Invoke-UpgradeStartup([string]$installRoot, [string]$version, [string]$fixtureHome, [string]$text, [string]$evidence, [bool]$prepareHistorical) {
     Assert-True ($text -eq 'assistant-only marker') 'Startup must require the assistant marker.'
-    Assert-True ($prepareHistorical -eq ((Split-Path $evidence -Leaf) -eq 'first')) 'Only the first launch explicitly prepares old content; canonical restart restores automatically.'
+    Assert-True ($prepareHistorical -eq ((Split-Path $evidence -Leaf) -eq 'first')) 'Only the first launch may need explicit preparation; restart must reopen the legacy history.'
     $script:calls.Add('startup-' + (Split-Path $evidence -Leaf))
   }
   $evidence = Join-Path $testRoot 'success'
@@ -153,9 +153,14 @@ try {
   $missing = Wait-VisibleUpgradeHistory -ReadRoot { $script:upgradeWaitRoot } -Text $marker -TimeoutSeconds 1
   Assert-True (-not $missing.Found -and $missing.ElapsedMilliseconds -eq 1000) 'Missing history still fails within the bounded wait.'
   $script:upgradeWaitNow = 0
+  $script:clicked = 0
   $body.Current.Name = $marker
+  $script:upgradeWaitRoot.Children = @($transcript)
+  $alreadyReadable = Wait-VisibleUpgradeHistory -ReadRoot { $script:upgradeWaitRoot } -Text $marker -PrepareHistoricalSession -TimeoutSeconds 1
+  Assert-True ($alreadyReadable.Found -and $alreadyReadable.Prepared -and $script:clicked -eq 0) 'Readable history must pass without forcing runtime activation.'
+  $script:upgradeWaitRoot.Children = @($transcript, $pending)
   $unprepared = Wait-VisibleUpgradeHistory -ReadRoot { $script:upgradeWaitRoot } -Text $marker -PrepareHistoricalSession -TimeoutSeconds 1
-  Assert-True (-not $unprepared.Found -and -not $unprepared.Prepared) 'A matching body cannot bypass explicit preparation.'
+  Assert-True (-not $unprepared.Found) 'A matching body cannot bypass a still-pending preparation action.'
   Write-Host 'Windows upgrade orchestration and UI evidence contracts passed (mocked native boundaries).'
 } finally {
   Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

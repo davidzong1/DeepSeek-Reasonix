@@ -10,11 +10,19 @@ import type {
   SearchHistoryPage,
   SessionHistoryContentChunk,
   SessionOpenView,
+  SessionHistoryReadHandle,
   FollowRequest, TranscriptFollowResponse, Change,
 } from "../generated/desktopContract.generated";
 import type { HistoryContentChunk, HistoryContentRef, HistoryMessage, HistorySlice, HistorySliceRequest, WireEvent } from "./types";
 
 export interface SessionReaderBindings {
+  BeginSessionHistoryReadForTab(tabID: string): Promise<SessionHistoryReadHandle>;
+  ReleaseSessionHistoryRead(id: string): Promise<void>;
+  ReadSessionHistoryWindow(id: string, req: HistoryWindowRequest): Promise<HistoryWindowPage>;
+  ReadSessionHistorySlice(id: string, req: HistorySliceRequest): Promise<{ status: string; page: HistorySlice }>;
+  ReadSessionHistoryOutline(id: string, req: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
+  LocateSessionHistoryMessage(id: string, messageID: string, snapshot: number): Promise<MessageLocation>;
+  SearchSessionHistoryRead(id: string, text: string, cursor: string, limit: number): Promise<SearchHistoryPage>;
   SessionHistoryOutlineForTab?(tabID: string, req: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
   RemoteSessionHistoryOutlineForTab?(tabID: string, req: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
   TranscriptFollowForTab(tabID: string, request: FollowRequest): Promise<TranscriptFollowResponse>;
@@ -185,6 +193,13 @@ export function makeMockSessionReaderBindings(): SessionReaderBindings {
     return { ...response, changes: [...follower.queue] };
   }
   const bindings: SessionReaderBindings = {
+    async BeginSessionHistoryReadForTab(tabID) { return { id: tabID, storageBackend: "canonical", sessionGeneration: 0, capabilities: [] }; },
+    async ReleaseSessionHistoryRead() {},
+    async ReadSessionHistoryWindow(this: MockSessionReaderHost, id, req) { return this.SessionHistoryWindowForTab(id, req); },
+    async ReadSessionHistorySlice(this: MockSessionReaderHost, id, req) { return { status: "ready", page: await this.HistorySliceForTab(id, req) }; },
+    async ReadSessionHistoryOutline() { return { entries: [], status: "unsupported", totalTurns: 0, nextTurn: 0, done: true, snapshotSequence: 0, coverageSequence: 0, generation: "" }; },
+    async LocateSessionHistoryMessage(_id, messageID) { return { status: "not_found", messageId: messageID, snapshotSequence: 0, coverageSequence: 0 }; },
+    async SearchSessionHistoryRead() { return search(); },
     TranscriptFollowForTab: follow,
     RemoteTranscriptFollowForTab: follow,
     async SessionHistoryPageForTab(this: MockSessionReaderHost, tabID, cursor, limit) {

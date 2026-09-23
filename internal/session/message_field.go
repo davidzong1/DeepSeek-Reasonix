@@ -72,7 +72,7 @@ func (q *Query) ReadMessageField(ctx context.Context, ref SessionRef, messageID 
 	}
 	path := historyIndexPath(filesystem.Root, ref.SessionID)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		preparation := q.prepareHistoryLocator(filesystem, ref.SessionID, path)
+		preparation := q.prepareHistoryLocator(filesystem, ref.SessionID, path, ctx)
 		select {
 		case <-preparation.done:
 			if preparation.err != nil {

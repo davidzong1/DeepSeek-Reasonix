@@ -1,5 +1,6 @@
 import type { Todo } from "../lib/tools";
 import { modelSettingsAllowSubmission } from "../lib/authenticationTypes";
+import { sessionIdentityFields, sessionIdentityRoute } from "../lib/sessionIdentity";
 import type { RewindUndoState } from "../lib/rewindTypes";
 import type { WorkspaceConflictView } from "../lib/types";
 import type { DecisionSurfaceKind as MockDecisionSurfaceKind } from "../lib/decisionSurfaceMock";
@@ -15,8 +16,6 @@ import type { useComposerModeActions } from "../lib/useComposerModeActions";
 import type { useComposerGoalCommands } from "../app-runtime/useComposerGoalCommands";
 import type { useRemoteComposerRuntimeActions } from "../lib/useRemoteComposerIntegration";
 import type { useControllerProfileCommands } from "../lib/useControllerProfileCommands";
-import { draftSubmissionLocksEditing, type useSessionDraftSurface } from "../app-runtime/useSessionDraftSurface";
-import { draftSurfaceNeedsAttention } from "./draftPresentation";
 import type {
   ApprovalProps,
   AskProps,
@@ -254,7 +253,6 @@ export type ComposerSurfaceInput = {
     controllerReady: boolean;
     showContextWindowRing: boolean;
     submitDisabledReason?: string;
-    draftHint?: string;
   };
   base: ComposerBase;
   tab: { readOnly?: boolean; session?: import("../lib/sessionRef").SessionRef | null; sessionPath?: string; workspaceRoot?: string; authentication?: ComposerProps["authentication"]; modelSettingsPending?: boolean; remote?: { hostId: string; workspace: string } } | undefined;
@@ -284,13 +282,12 @@ export type ComposerSurfaceInput = {
   fileRefRefreshKey: ComposerProps["fileRefRefreshKey"];
   guidance: { key: string; itemId?: string; text: string } | null;
   guidanceQueuePreviewItems: ComposerProps["guidanceQueuePreviewItems"];
-  draft?: ReturnType<typeof useSessionDraftSurface>;
 };
 
 export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFooterRegionProps["composer"] {
   const { base, view, profile, router, modes, goals, remoteGoal, modelSwitch, inserts, control, remoteComposer } = input;
   const surface: DecisionFooterRegionProps["composer"] = {
-    empty: !input.tabId && !input.draft?.surface ? input.empty : undefined,
+    empty: !input.tabId ? input.empty : undefined,
     hidden: view.hidden,
     inert: view.inert,
     hero: view.hero,
@@ -303,6 +300,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       goal: profile.goal,
       tabId: input.tabId,
       formalSessionRef: view.remote ? undefined : input.tab?.session ?? undefined,
+      sessionIdentity: input.tab ? sessionIdentityFields(input.tab) : undefined,
       workspaceRoot: input.tab?.workspaceRoot,
       onSend: view.remote ? remoteComposer.send : router.handleSend,
       onInvocationMetadataChange: input.onInvocationMetadataChange,
@@ -331,7 +329,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       suspendedByDecision: view.decisionActive,
       transientDismissSignal: input.transientDismissSignal,
       sessionKey: input.sessionKey,
-      inboxSessionPath: input.tab?.sessionPath,
+      inboxSessionPath: sessionIdentityRoute(input.tab),
       inboxHostId: input.tab?.remote?.hostId,
       inboxWorkspace: input.tab?.remote?.workspace,
       workspaceScopeKey: input.workspaceScopeKey,
@@ -339,7 +337,7 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       // selection configures a new empty session. Once the transcript has
       // content, the session keeps its established workspace and the composer
       // returns to the compact follow-up layout.
-      workspaceContext: view.hero || input.draft?.surface ? input.workspaceContext : undefined,
+      workspaceContext: view.hero ? input.workspaceContext : undefined,
       fileRefRefreshKey: input.fileRefRefreshKey,
       guidanceConsumedKey: input.guidance?.key,
       guidanceConsumedItemId: input.guidance?.itemId,
@@ -349,98 +347,5 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
       heroMode: view.hero && view.showContextWindowRing,
     },
   };
-  const draft = input.draft?.surface;
-  if (!draft || !input.draft) return surface;
-  const draftController = input.draft;
-  const operationActive = draft.preparingSubmission || draftSubmissionLocksEditing(draft.operation);
-  const needsAttention = draftSurfaceNeedsAttention(draft);
-  return {
-    hidden: false,
-    inert: false,
-    hero: !needsAttention,
-    headline: input.view.headline,
-    hint: needsAttention ? undefined : input.view.draftHint,
-    props: {
-      ...surface.props,
-      running: operationActive && draft.operation?.phase !== "accepted",
-      collaborationMode: (draft.settings.collaborationMode || "normal") as ComposerProps["collaborationMode"],
-      toolApprovalMode: (draft.settings.toolApprovalMode || "ask") as ComposerProps["toolApprovalMode"],
-      goal: draft.settings.goal,
-      cwd: draft.draft.workspaceRoot,
-      workspaceRoot: draft.draft.workspaceRoot,
-      modelLabel: draft.settings.model,
-      commandCatalog: draft.commands,
-      tabId: undefined,
-      onCaptureSubmit: () => draftController.captureSubmission(draft.draft.id, draft.generation),
-      onReleaseSubmit: draftController.releasePreparation,
-      onPrepareSubmit: draftController.flushPreparation,
-      onSend: (display, submit, tabId, structured, capture) => (
-        draftController.submitFrom(draft.draft.id, draft.generation, display, submit, tabId, structured, capture)
-      ),
-      onSteer: undefined,
-      onCycleMode: () => draftController.updateSettingsFor(draft.draft.id, draft.generation, { collaborationMode: draft.settings.collaborationMode === "plan" ? "normal" : "plan" }),
-      readOnly: false,
-      attachmentInputEnabled: true,
-      imageInputEnabled: draft.models?.find(model => model.ref === draft.settings.model)?.vision ?? false,
-      imageUnderstandingEnabled: false,
-      onCancel: async () => {
-        await draftController.cancelSubmission();
-        return { discardedItemIds: [] };
-      },
-      onSetMode: (mode) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { mode }),
-      onSetCollaborationMode: (collaborationMode) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { collaborationMode }),
-      onSetToolApprovalMode: (toolApprovalMode) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { toolApprovalMode }),
-      onClearGoal: () => draftController.updateSettingsFor(draft.draft.id, draft.generation, { goal: "", collaborationMode: "normal" }),
-      onEditGoal: (goal) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { goal, collaborationMode: goal ? "goal" : "normal" }),
-      onPauseGoal: () => {},
-      onResumeGoal: () => {},
-      onSwitchModel: (model) => { draftController.updateSettingsFor(draft.draft.id, draft.generation, { model, modelSource: "explicit" }); return true; },
-      onSetEffort: (effort) => draftController.updateSettingsFor(draft.draft.id, draft.generation, { effort }),
-      effort: {
-        supported: true,
-        current: draft.settings.effort || "auto",
-        default: "auto",
-        levels: ["auto", "low", "medium", "high", "max"],
-      },
-      disabled: operationActive,
-      submitDisabled: draft.saveState === "conflict" || draft.pendingTasks > 0 || operationActive,
-      submitDisabledReason: draft.saveState === "conflict" ? "Resolve the draft conflict before sending." : undefined,
-      decisionPending: operationActive,
-      ready: true,
-      liveStore: undefined,
-      suspendedByDecision: false,
-      sessionKey: `draft:${draft.draft.id}`,
-      inboxSessionPath: undefined,
-      inboxHostId: undefined,
-      inboxWorkspace: undefined,
-      workspaceScopeKey: `draft:${draft.draft.workspaceId}`,
-      workspaceContext: surface.props.workspaceContext ? {
-        ...surface.props.workspaceContext,
-        scope: draft.draft.scope === "project" ? "project" : "global",
-        workspaceRoot: draft.draft.workspaceRoot,
-        workspaceName: draft.draft.scope === "project"
-          ? draft.draft.workspaceRoot?.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop()
-          : undefined,
-        // Drafts have no formal tab. Git RPCs require that tab's identity and
-        // must never target the session that happened to be open beforehand.
-        tabId: undefined,
-        gitBranch: undefined,
-        scopeKey: `draft:${draft.draft.workspaceId}`,
-        remote: false,
-      } : undefined,
-      persistentDraft: {
-        draftId: draft.draft.id,
-        generation: draft.generation,
-        initial: draft.content,
-        revision: draft.draft.revision,
-        onChange: draftController.updateContentFor,
-        onPatch: draftController.patchContentFor,
-        isCurrent: draftController.isCurrentHandle,
-        canEdit: draftController.canEditHandle,
-        trackTask: draftController.trackTask,
-        onTaskError: draftController.reportTaskError,
-      },
-      composerTarget: { kind: "draft", draftId: draft.draft.id },
-    },
-  };
+  return surface;
 }

@@ -28,7 +28,7 @@ func (s *Server) commitLoadedResume(w http.ResponseWriter, cur control.SessionAP
 	var tag *sessionTagSink
 	if concrete {
 		tag = s.tagFor(ctrl)
-		if tag != nil {
+		if tag != nil && !ctrl.UsesExclusiveSession() {
 			tag.BufferPath(realPath)
 		}
 	}
@@ -36,25 +36,51 @@ func (s *Server) commitLoadedResume(w http.ResponseWriter, cur control.SessionAP
 		hook()
 	}
 	if identity, ok := cur.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
-		ref, err := identity.ContinueLegacySession(context.Background(), realPath, "")
-		if err != nil {
+		ctrl, concrete := cur.(*control.Controller)
+		if !concrete || controllerHasActiveRuntimeWork(ctrl) {
 			_ = s.rebindSessionLease(cur.SessionPath())
-			http.Error(w, "migrate session: "+err.Error(), http.StatusConflict)
+			http.Error(w, "open legacy session: controller replacement is unavailable", http.StatusConflict)
 			return false
 		}
-		w.Header().Set(sessionIDHeader, ref.SessionID)
-		// The identity is the live route now. Leaving the frame tag on the
-		// frozen legacy path would stamp every later turn with it, and
-		// identity-routed subscribers drop those.
-		s.setControllerPath(ctrl, "")
+		next, tag, err := s.buildTaggedMode(context.Background(), currentModelRef(ctrl), false, true)
+		if err != nil {
+			_ = s.rebindSessionLease(cur.SessionPath())
+			http.Error(w, "open legacy session: "+err.Error(), http.StatusConflict)
+			return false
+		}
+		if err := next.ResumeNativeSession(loaded, realPath); err != nil {
+			s.closeTaggedController(next)
+			_ = s.rebindSessionLease(cur.SessionPath())
+			http.Error(w, "open historical session: "+err.Error(), http.StatusConflict)
+			return false
+		}
+		next.EnableInteractiveApproval()
+		next.SetToolApprovalMode(ctrl.ToolApprovalMode())
+		next.SetPlanMode(ctrl.PlanMode())
+		next.SetOnSessionRecovered(s.sessionRecoveryHandler(next, s.leases))
 		if s.leases != nil {
-			// Migration has frozen and published the source. It is now a
-			// read-only legacy artifact, so the Serve must release that lease.
-			if err := s.leases.Rebind(""); err != nil {
-				http.Error(w, "release legacy session lease: "+err.Error(), http.StatusInternalServerError)
+			if err := s.leases.BindControllerAuthority(next); err != nil {
+				s.closeTaggedController(next)
+				_ = s.rebindSessionLease(cur.SessionPath())
+				http.Error(w, "bind legacy session authority: "+err.Error(), http.StatusInternalServerError)
 				return false
 			}
 		}
+		if ref, ok := next.SessionRef(); ok {
+			tag.PrimeIdentity(realPath, ref.SessionID)
+		} else {
+			tag.PrimePath(realPath)
+		}
+		if !s.publishControllerSwap(cur, next, realPath) {
+			s.closeTaggedController(next)
+			_ = s.rebindSessionLease(cur.SessionPath())
+			http.Error(w, "session changed during resume", http.StatusConflict)
+			return false
+		}
+		tag.Activate()
+		cur.Close()
+		s.forgetSessionTag(ctrl)
+		return true
 	} else {
 		cur.Resume(loaded, realPath)
 	}

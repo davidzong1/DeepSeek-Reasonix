@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/session"
 	"reasonix/internal/sessioncontent"
@@ -77,31 +76,19 @@ func (a *App) canonicalTabHistoryFingerprint(tab *WorkspaceTab) (int64, string, 
 	if tab == nil || strings.TrimSpace(tab.SessionID) == "" {
 		return 0, "", false
 	}
-	var query *session.Query
-	var ref session.SessionRef
 	if identity, ok := tab.Ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
 		if boundRef, bound := identity.SessionRef(); bound {
 			if service := identity.SessionService(); service != nil {
-				query, ref = service.Query(), boundRef
+				if runtime, live := service.Runtime(boundRef); live {
+					recent := runtime.Session().RecentSnapshot()
+					return int64(recent.DurableSequence), recent.StorageGeneration, recent.StorageGeneration != ""
+				}
 			}
 		}
 	}
-	if query == nil {
-		service := a.desktopSessionService(tabSessionDir(tab))
-		if service == nil {
-			return 0, "", false
-		}
-		query = service.Query()
-		ref = session.SessionRef{HostID: service.HostID(), SessionID: strings.TrimSpace(tab.SessionID)}
-	}
-	if query == nil {
-		return 0, "", false
-	}
-	view, err := query.OpenSession(context.Background(), ref)
-	if err != nil || strings.TrimSpace(view.StorageGeneration) == "" {
-		return 0, "", false
-	}
-	return int64(view.SnapshotSequence), view.StorageGeneration, true
+	// Cold identities are validated by the off-lock reader. Tab metadata must
+	// never open a service, read a snapshot, or probe a filesystem under App.mu.
+	return 0, "", false
 }
 
 func (a *App) tabHistoryFingerprint(tab *WorkspaceTab, sessionPath string) (int64, string) {
@@ -109,8 +96,10 @@ func (a *App) tabHistoryFingerprint(tab *WorkspaceTab, sessionPath string) (int6
 		return revision, digest
 	}
 	if tab != nil && strings.TrimSpace(tab.SessionID) == "" {
-		if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
-			return meta.Revision, meta.ContentDigest
+		if ctrl, ok := tab.Ctrl.(historyWindowController); ok {
+			if state, known := ctrl.SessionPersistedState(); known {
+				return state.Revision, state.DigestHex
+			}
 		}
 	}
 	return 0, ""

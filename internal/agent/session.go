@@ -77,8 +77,20 @@ type Session struct {
 	// first true conflict. It bounds repeated saves by this live controller to
 	// one recovery file without letting a replacement controller overwrite it.
 	recoveryLane string
-	head         sessionHeadState
+	// persistFormat pins sessions loaded from the legacy checkpoint/schema-1
+	// family to that writer. Explicit migration owns format conversion;
+	// zero keeps ordinary new-session selection.
+	persistFormat sessionPersistFormat
+	head          sessionHeadState
 }
+
+type sessionPersistFormat uint8
+
+const (
+	sessionPersistAuto sessionPersistFormat = iota
+	sessionPersistLegacy
+	sessionPersistDAG
+)
 
 // NewSession initializes a session with an optional system prompt.
 func NewSession(system string) *Session {
@@ -444,6 +456,8 @@ func (s *Session) CloneWithMessages(msgs []provider.Message) *Session {
 		eventLogDamaged:         s.eventLogDamaged,
 		rawMessages:             append([]provider.Message(nil), s.rawMessages...),
 		pendingContentReasons:   append([]string(nil), s.pendingContentReasons...),
+		persistFormat:           s.persistFormat,
+		head:                    s.head.clone(),
 	}
 }
 
@@ -475,6 +489,8 @@ func (s *Session) CloneWithMessagesIfCompatible(msgs []provider.Message) (*Sessi
 		eventLogDamaged:         s.eventLogDamaged,
 		rawMessages:             append([]provider.Message(nil), s.rawMessages...),
 		pendingContentReasons:   append([]string(nil), s.pendingContentReasons...),
+		persistFormat:           s.persistFormat,
+		head:                    s.head.clone(),
 	}, true
 }
 

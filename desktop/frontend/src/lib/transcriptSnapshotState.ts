@@ -3,6 +3,7 @@ import type { Item, State } from "./useController";
 import type { TranscriptRecord, TranscriptSnapshot } from "./transcriptProtocol";
 import { canonicalUserConfirmations, settleLocalSubmissions, settleRebasedSubmissions } from "./localSubmissionState";
 import { mergeSessionOperationItem, reconcileSessionOperationItems } from "./sessionMaintenanceOperation";
+import { resetTurnTiming } from "./submissionReducer";
 
 export function snapshotRecords(snapshot: TranscriptSnapshot): TranscriptRecord[] {
   if (!Number.isSafeInteger(snapshot.totalRecords) || snapshot.totalRecords < 0) {
@@ -107,6 +108,8 @@ export function transcriptPageState(state: State, page: TranscriptSnapshot, conv
  * The event projector advances coverage only after this function commits. */
 export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapshot, convert: Convert, applyEvent: ApplyEvent, clock: number, projectedItems?: Item[]): State {
   const sessionId = snapshot.identity.sessionId;
+  const sameTurn = state.transcriptSessionId === sessionId && Boolean(snapshot.runtime.turnId)
+    && state.activeTurnId === snapshot.runtime.turnId && state.runtimeStatusEpoch === snapshot.identity.runtimeEpoch;
   if (state.transcriptSessionId && state.transcriptSessionId !== sessionId) {
     state = { ...state, localSubmissions: {}, localSubmissionOrder: [], visibleSubmissionHandoffs: {},
       pendingSubmissionId: undefined, pendingUser: undefined, sessionGen: state.sessionGen + 1 };
@@ -145,6 +148,14 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     && state.localSubmissions[state.pendingSubmissionId].status !== "failed");
   let next: State = {
     ...state,
+    ...(!sameTurn ? resetTurnTiming(snapshot.runtime.startedAt ?? 0) : {}),
+    // Snapshot content predates this observer. Its provider-output intervals
+    // are unavailable, so start a fresh matched numerator/denominator window.
+    turnModelActiveAt: undefined,
+    turnModelActiveMs: 0,
+    pendingRequestModelMs: undefined,
+    lastRequestTps: null,
+    turnRateSample: active ? { outputQuarters: 0, requestStartQuarters: 0, requestStartModelMs: 0 } : undefined,
     transcriptSessionId: sessionId,
     transcriptProtocol: 1,
     transcriptItemOrder: order,

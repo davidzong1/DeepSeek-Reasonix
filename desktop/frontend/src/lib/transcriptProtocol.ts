@@ -26,10 +26,12 @@ export interface TranscriptSnapshot extends TranscriptSnapshotBoundary {
   totalRecords: number;
 	totalTurns: number;
   stale: boolean;
+  notFound?: boolean;
 }
 
 export interface TranscriptPageRequest {
   snapshotId?: string;
+  messageId?: string;
   before?: number;
   records?: number;
   bytes?: number;

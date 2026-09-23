@@ -17,6 +17,55 @@ import (
 	"reasonix/internal/session"
 )
 
+// NativeLegacySession identifies a path-backed controller across hot rebuilds.
+func (c *Controller) NativeLegacySession() bool {
+	if c == nil {
+		return false
+	}
+	c.v3BindingMu.RLock()
+	defer c.v3BindingMu.RUnlock()
+	return c.nativeLegacySession
+}
+
+// ResumeNativeSession switches to an already validated, path-backed transcript.
+// Hosts serialize admission and acquire its path lease before calling this.
+func (c *Controller) ResumeNativeSession(s *agent.Session, path string) error {
+	if s == nil || strings.TrimSpace(path) == "" {
+		return errors.New("native session and path are required")
+	}
+	if service := c.SessionService(); service != nil {
+		if ref, found, err := service.ExistingCanonicalForLegacy(path, s); err != nil {
+			return err
+		} else if found {
+			_, err = c.OpenSession(context.Background(), ref)
+			return err
+		}
+	}
+	if err := c.Snapshot(); err != nil {
+		return err
+	}
+	_, previousRuntime, _ := c.v3Binding()
+	if err := c.ReleaseSessionRuntimeBinding(); err != nil {
+		return err
+	}
+	c.v3BindingMu.Lock()
+	c.exclusiveSession = false
+	c.nativeLegacySession = true
+	c.v3BindingMu.Unlock()
+	// The retired canonical cache is owned by its service, never by the path
+	// adapter. Drop the borrowed pointer before rebinding legacy state.
+	c.turnEvents.mu.Lock()
+	if previousRuntime != nil {
+		c.turnEvents.v3 = nil
+		c.turnEvents.v3Runtime = nil
+		c.turnEvents.v3Path = ""
+		c.turnEvents.v3Release = nil
+	}
+	c.turnEvents.mu.Unlock()
+	c.Resume(s, path)
+	return c.turnEventLedgerError()
+}
+
 func bindInitialSessionRuntime(opts Options) (*session.Runtime, *session.ClientBinding) {
 	runtime := opts.SessionRuntime
 	if opts.SessionService == nil || runtime == nil {
@@ -110,7 +159,7 @@ func (c *Controller) BindFreshSessionWithOptions(ctx context.Context, options se
 }
 
 func (c *Controller) bindFreshSessionWithCommit(ctx context.Context, options session.CreateOptions, commit func(context.Context, session.SessionRef) error) (session.SessionRef, error) {
-	service, _, _ := c.v3Binding()
+	service := c.SessionCreationService()
 	if c == nil || service == nil || c.executor == nil {
 		return session.SessionRef{}, errors.New("v3 session service is unavailable")
 	}
@@ -133,7 +182,7 @@ func (c *Controller) bindFreshSessionWithCommit(ctx context.Context, options ses
 		_ = service.Discard(context.Background(), prepared)
 		return session.SessionRef{}, err
 	}
-	if _, err = c.publishSessionRuntimeWithCommit(ctx, candidate, fresh, true, commit); err != nil {
+	if _, err = c.publishSessionRuntimeWithCommit(ctx, candidate, fresh, true, commit, service); err != nil {
 		// This attempt published the identity, so an owner-scoped close is the
 		// correct cleanup. It still refuses while any client is bound.
 		_ = owner.Close(context.Background())
@@ -251,18 +300,6 @@ func (c *Controller) OpenSession(ctx context.Context, ref session.SessionRef) (s
 		}
 	}
 	binding, err := service.Open(ctx, ref)
-	if errors.Is(err, session.ErrUnsupportedVersion) {
-		var upgraded *session.Runtime
-		upgraded, _, err = service.ContinueStoredPreview(ctx, ref.SessionID)
-		if err != nil {
-			return session.SessionRef{}, err
-		}
-		owner, ownerErr := service.Owner(upgraded)
-		if ownerErr != nil {
-			return session.SessionRef{}, ownerErr
-		}
-		return c.publishAttachedSession(upgraded, "upgrade", owner.Close)
-	}
 	if err != nil {
 		return session.SessionRef{}, err
 	}
@@ -372,11 +409,14 @@ func (c *Controller) publishSessionRuntime(candidate *session.Runtime, prepared 
 	return c.publishSessionRuntimeWithCommit(context.Background(), candidate, prepared, rotateSessionTemp, nil)
 }
 
-func (c *Controller) publishSessionRuntimeWithCommit(ctx context.Context, candidate *session.Runtime, prepared *agent.Session, rotateSessionTemp bool, commit func(context.Context, session.SessionRef) error) (*session.Runtime, error) {
+func (c *Controller) publishSessionRuntimeWithCommit(ctx context.Context, candidate *session.Runtime, prepared *agent.Session, rotateSessionTemp bool, commit func(context.Context, session.SessionRef) error, creationService ...*session.Service) (*session.Runtime, error) {
 	if candidate == nil || prepared == nil {
 		return nil, errors.New("v3 runtime publication candidate is unavailable")
 	}
 	service, _, _ := c.v3Binding()
+	if len(creationService) != 0 {
+		service = creationService[0]
+	}
 	if service == nil {
 		return nil, errors.New("v3 session service is unavailable")
 	}
@@ -419,8 +459,10 @@ func (c *Controller) publishSessionRuntimeWithCommit(ctx context.Context, candid
 	old := c.sessionRuntime
 	oldBinding := c.sessionBinding
 	c.sessionRuntime = candidate
+	c.sessionService = service
 	c.sessionBinding = binding
 	c.exclusiveSession = true
+	c.nativeLegacySession = false
 	c.v3BindingMu.Unlock()
 	c.bindAttachmentService()
 	c.bindExecutionControl()
@@ -442,6 +484,9 @@ func (c *Controller) publishSessionRuntimeWithCommit(ctx context.Context, candid
 	// prior identity immediately; the next query rebuilds from the exact v3
 	// projection without reading or writing a legacy sidecar.
 	c.turnEvents.mu.Lock()
+	if c.turnEvents.projection != nil {
+		c.turnEvents.projection.CloseFollowers()
+	}
 	c.turnEvents.projection = nil
 	c.turnEvents.projectionErr = nil
 	c.turnEvents.mu.Unlock()
@@ -530,11 +575,22 @@ func (c *Controller) SessionBinding() (*session.Service, *session.Runtime, bool)
 // SessionService exposes the host query/management owner without requiring
 // an active runtime. Cold history listing must not create an Agent or writer.
 func (c *Controller) SessionService() *session.Service {
-	service, _, exclusive := c.v3Binding()
-	if !exclusive {
+	service, _, _ := c.v3Binding()
+	return service
+}
+
+// SessionCreationService keeps newly created sessions in the current store
+// even while this controller is attached to a historical directory.
+func (c *Controller) SessionCreationService() *session.Service {
+	if c == nil {
 		return nil
 	}
-	return service
+	c.v3BindingMu.RLock()
+	defer c.v3BindingMu.RUnlock()
+	if c.sessionCreateService != nil {
+		return c.sessionCreateService
+	}
+	return c.sessionService
 }
 
 // UsesExclusiveSession reports the configured execution contract even when
@@ -551,8 +607,9 @@ func (c *Controller) sessionEngineEnabled() bool {
 }
 
 type SessionRotationRequest struct {
-	Source session.SessionRef
-	Reason string
+	Source     session.SessionRef
+	SourcePath string
+	Reason     string
 }
 
 type SessionRotationPlan struct {

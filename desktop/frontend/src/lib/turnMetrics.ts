@@ -3,6 +3,14 @@ export interface LiveOutputBuffers {
   readonly reasoning: string;
 }
 
+/** A snapshot has output but no provider timings. Measure only new output. */
+export interface TurnRateSample {
+  outputQuarters: number;
+  requestStartQuarters: number;
+  requestStartModelMs: number;
+  argChars?: number;
+}
+
 export interface TurnMetricInput {
   now: number;
   turnStartAt: number | undefined;
@@ -17,6 +25,7 @@ export interface TurnMetricInput {
   turnOutputCharsAtUsage?: number;
   turnArgChars?: number;
   turnModelActiveMs: number;
+  turnRateOutputQuarters?: number;
   turnModelActiveAt?: number;
   liveModelActiveAt?: number;
   live?: LiveOutputBuffers;
@@ -115,8 +124,10 @@ export function turnMetrics(input: TurnMetricInput): TurnMetrics | null {
   const modelElapsedMs = Math.max(0, input.turnModelActiveMs
     + (modelActiveAt && modelActiveAt > 0 ? Math.max(0, metricsNow - modelActiveAt) : 0));
   // Below the gate the reading is too noisy to be worth a number.
-  const tps = outputTokens > 0 && modelElapsedMs >= 500
-    ? Math.round(outputTokens / (modelElapsedMs / 1000))
+  const rateTokens = input.turnRateOutputQuarters === undefined
+    ? outputTokens : tokensFromQuarters(input.turnRateOutputQuarters);
+  const tps = rateTokens > 0 && modelElapsedMs >= 500
+    ? Math.round(rateTokens / (modelElapsedMs / 1000))
     : null;
   const estimated = input.turnDoneAt
     ? input.lastTurnOutputEstimated === true

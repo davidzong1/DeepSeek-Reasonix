@@ -22,13 +22,21 @@ Object.assign(globalThis, {
 
 let intent = 0;
 let commands!: ReturnType<typeof useSessionNavigationCommands>;
-const firstDismiss = deferred();
-const secondDismiss = deferred();
-const dismissals: ReturnType<typeof deferred>[] = [];
+const creationStarted = deferred();
+const finishCreation = deferred();
+let blockCreation = false;
 const created: string[] = [];
-installDesktopHostStub(makeSessionUIMock(async (_scope,_root,id) => { created.push(id); }));
+const legacyCalls: string[] = [];
+const retired = (name: string) => async () => { legacyCalls.push(name); throw new Error("retired draft database is unreadable"); };
+installDesktopHostStub({
+  ...makeSessionUIMock(async (_scope,_root,id) => {
+    created.push(id);
+    if (blockCreation) { creationStarted.resolve(); await finishCreation.promise; }
+  }),
+  ListSessionDraftSummaries: retired("list"), OpenSessionDraftForTarget: retired("open"),
+  DismissSessionDraft: retired("dismiss"), SetSessionDraftRestoreTarget: retired("restore"),
+});
 const enqueued: Array<{ request: unknown; intent: number }> = [];
-const openedDrafts: Array<[string, string]> = [];
 
 function Probe() {
   commands = useSessionNavigationCommands({
@@ -54,10 +62,6 @@ function Probe() {
     enterConversation: () => {},
     pickWorkspace: async () => "",
     switchWorkspace: async () => {},
-    draft: {
-      open: async (scope, workspaceRoot) => { openedDrafts.push([scope, workspaceRoot]); },
-      dismiss: () => dismissals.shift()?.promise ?? Promise.resolve(),
-    },
     ports: {
       openTaskSessionForTab: async () => ({ ok: false }),
       listSessionsForTab: async () => [],
@@ -74,34 +78,30 @@ try {
     await commands.openBlankSession("project", "/workspace");
     await commands.handleNewTab();
   });
-  assert.deepEqual(openedDrafts, [], "manual new never opens or creates a project draft");
+  assert.deepEqual(legacyCalls, [], "manual new never touches retired input, even if its database is unreadable");
   assert.equal(new Set(created).size, 3, "each click has its own formal identity");
   assert.equal(enqueued.length,3);
   enqueued.length=0;
-  dismissals.push(firstDismiss,secondDismiss);
+  blockCreation = true;
 
   let stale!: Promise<void>;
-  let latest!: Promise<void>;
   act(() => {
-    stale = commands.handleOpenTopic("project", "/workspace", "topic-a");
-    latest = commands.openCanonicalSession({ hostId: "local", sessionId: "session-b" });
+    stale = commands.openBlankSession("project", "/workspace");
   });
-
-  firstDismiss.resolve();
+  await act(async () => { await creationStarted.promise; });
+  await act(async () => { await commands.openCanonicalSession({ hostId: "local", sessionId: "session-b" }); });
+  finishCreation.resolve();
   await act(async () => { await stale; });
-  assert.deepEqual(enqueued, [], "navigation superseded during draft cleanup cannot enqueue afterward");
-
-  secondDismiss.resolve();
-  await act(async () => { await latest; });
   assert.equal(enqueued.length, 1);
-  assert.equal(enqueued[0]?.intent, 5, "the winning request keeps the intent captured before its first await");
+  assert.equal(enqueued[0]?.intent, 5, "late formal creation cannot override newer navigation");
   assert.deepEqual(enqueued[0]?.request, {
     kind: "canonical-session",
     ref: { hostId: "local", sessionId: "session-b" },
   });
+  assert.deepEqual(legacyCalls, [], "navigation never waits for or writes old drafts");
 
   await act(async () => { root.unmount(); });
-  console.log("session navigation draft fence: stale cleanup completion cannot override the latest target");
+  console.log("session navigation: retired drafts are untouched; late formal creation preserves the newest selection");
 } finally {
   dom.window.close();
 }

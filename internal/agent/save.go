@@ -312,7 +312,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 	if err != nil {
 		return err
 	}
-	probe, err := probeLogForSave(path)
+	probe, err := s.probeNativeLogForSave(path)
 	if err != nil {
 		return err
 	}
@@ -1304,6 +1304,28 @@ func LoadSession(path string) (*Session, error) {
 	return loadSessionUnlocked(path)
 }
 
+// LoadSessionContext restores an interactive runtime without accepting a
+// damaged prefix as its complete execution context. Both save-lock admission
+// and replay are cancellable; ordinary replay budgets remain in force.
+func LoadSessionContext(ctx context.Context, path string) (*Session, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if unlock, ok := tryLockSessionSavePath(path); ok {
+			defer unlock()
+			return loadSessionUnlockedWithContextMode(ctx, path, defaultSessionReplayLimits, true)
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func loadSessionUnlocked(path string) (*Session, error) {
 	return loadSessionUnlockedWithContext(context.Background(), path, defaultSessionReplayLimits)
 }
@@ -1326,7 +1348,11 @@ func loadSessionUnlockedWithContextMode(ctx context.Context, path string, limits
 		return nil, fmt.Errorf("%w: authoritative event log has no complete recoverable prefix", ErrSessionHistoryDamaged)
 	}
 	msgs := res.msgs
-	s := &Session{Messages: msgs, eventLogDamaged: res.damaged, head: sessionHeadState{ref: res.head, dag: res.dag, headCount: res.headCount, state: res.state, openTurn: res.openTurn, events: res.events}}
+	persistFormat := sessionPersistLegacy
+	if res.dag {
+		persistFormat = sessionPersistDAG
+	}
+	s := &Session{Messages: msgs, eventLogDamaged: res.damaged, persistFormat: persistFormat, head: sessionHeadState{ref: res.head, dag: res.dag, headCount: res.headCount, state: res.state, openTurn: res.openTurn, events: res.events}}
 	// Repair persisted-history-safe issues before anything reads the session.
 	// Old sessions (pre adde2d3e) and interrupted turns can carry empty tool-call
 	// names, dangling tool_calls, or half-streamed argument JSON that DeepSeek

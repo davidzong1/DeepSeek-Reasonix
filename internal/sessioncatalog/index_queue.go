@@ -6,10 +6,30 @@ import (
 	"time"
 )
 
-// RequestIndexSession coalesces an authoritative session write by path. It is
-// intentionally non-blocking so a saturated projection can never delay JSONL
-// or sidecar persistence.
+// RequestIndexSession coalesces an authoritative session write by path. A full
+// queue journals a root invalidation before returning; notification consumers
+// must use TryRequestIndexSession and coalesce overflow at their own boundary.
 func (c *Catalog) RequestIndexSession(target DirectoryTarget, path string) bool {
+	if c == nil || cleanCatalogAccessPath(path) == "" {
+		return false
+	}
+	if c.TryRequestIndexSession(target, path) {
+		return true
+	}
+	if target.Path == "" {
+		target.Path = filepath.Dir(cleanCatalogAccessPath(path))
+	}
+	// Losing a wake-up must not lose the authoritative write. The root
+	// queue coalesces overflow and retains it until reconciliation.
+	c.RequestReconcile(target)
+	return false
+}
+
+// TryRequestIndexSession never waits for filesystem or database work. On false
+// the caller owns the root invalidation, including retrying failed journal
+// admission. This lets filesystem consumers drain bursts without doing one
+// synchronous journal transaction for every overflowing file notification.
+func (c *Catalog) TryRequestIndexSession(target DirectoryTarget, path string) bool {
 	if c == nil {
 		return false
 	}

@@ -16,10 +16,14 @@ func (a *App) closeSessionServices() {
 }
 
 func (a *App) closeSessionServicesResult() error {
+	a.closeHistoryReaders()
 	a.desktopSessions.readSnapshots.close()
 	a.sessionServicesMu.Lock()
 	services := make([]*session.Service, 0, len(a.sessionServices))
 	for _, service := range a.sessionServices {
+		services = append(services, service)
+	}
+	for _, service := range a.historicalSessionServices {
 		services = append(services, service)
 	}
 	a.sessionServicesMu.Unlock()

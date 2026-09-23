@@ -1,31 +1,50 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
-	"reasonix/desktop/internal/sessionui"
+	"time"
 )
 
-func (a *App) startManualSessionTab(tab *WorkspaceTab) error {
-	// Register cancellation before shutdown can freeze new worker admission.
+func (a *App) startManualSessionTab(ctx context.Context, tab *WorkspaceTab, report func(string)) error {
+	// Build registration and shutdown admission share the same boundary.
 	a.manualCreationMu.Lock()
-	if a.shuttingDown.Load() {
+	if a.shuttingDown.Load() || ctx.Err() != nil {
 		a.manualCreationMu.Unlock()
-		return errors.New("application is shutting down")
+		return context.Canceled
 	}
 	a.mu.RLock()
-	done, ready := tab.buildDone, tab.Ctrl != nil
+	ready, build := tab.Ctrl != nil, tab.buildExecution
 	a.mu.RUnlock()
-	if !ready && done == nil {
-		a.startTabControllerBuild(tab)
-		a.mu.RLock()
-		done = tab.buildDone
-		a.mu.RUnlock()
+	if !ready && build == nil {
+		a.startTabControllerBuildMode(tab, true)
 	}
 	a.manualCreationMu.Unlock()
-	if done != nil {
-		<-done
+	for {
+		a.mu.RLock()
+		builds := make([]*tabBuildExecution, 0, len(tab.buildExecutions))
+		for execution := range tab.buildExecutions {
+			builds = append(builds, execution)
+		}
+		a.mu.RUnlock()
+		if len(builds) == 0 {
+			break
+		}
+		for _, execution := range builds {
+			select {
+			case <-execution.done:
+			case <-ctx.Done():
+				report("stopping")
+				for _, pending := range builds {
+					pending.cancel()
+				}
+				<-execution.done // Only actual execution exit closes this channel.
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -35,60 +54,42 @@ func (a *App) startManualSessionTab(tab *WorkspaceTab) error {
 	return nil
 }
 
-func (a *App) failManualCreation(record sessionui.Record, view ManualSessionCreationView, cause error) {
-	view.Phase, view.Error = "failed", sessionOperationErrorForTarget(cause, view.Ref.SessionID, view.OperationID).Error()
-	payload, _ := json.Marshal(view)
-	if _, err := a.sessionUIStore().Save(a.bootContext(), "creation", view.OperationID, record.Revision, payload); err != nil {
-		slog.Warn("desktop: persist failed manual creation", "operation", view.OperationID, "err", err)
-	}
-}
-
-func (a *App) startManualCreationWorker(record sessionui.Record) {
-	a.manualCreationMu.Lock()
-	defer a.manualCreationMu.Unlock()
-	if a.shuttingDown.Load() {
-		return
-	}
-	a.manualCreationTasks.Add(1)
-	a.goSafe("manualSessionCreation", func() { defer a.manualCreationTasks.Done(); a.runManualSessionCreation(record) })
-}
-
-func (a *App) ListManualSessionCreations() ([]ManualSessionCreationView, error) {
+func (a *App) ListManualSessionCreations() (views []ManualSessionCreationView, err error) {
+	defer func() { err = sessionUIError(err, "", "") }()
 	rows, err := a.sessionUIStore().List(a.bootContext(), "creation")
+	views = []ManualSessionCreationView{}
 	if err != nil {
-		return []ManualSessionCreationView{}, err
+		return views, err
 	}
-	views := []ManualSessionCreationView{}
 	for _, row := range rows {
 		var view ManualSessionCreationView
 		if err := json.Unmarshal(row.Payload, &view); err != nil {
 			return views, err
 		}
 		if view.Phase != "ready" {
-			views = append(views, view)
+			views = append(views, a.creationView(view))
 		}
 	}
 	return views, nil
 }
 
 func (a *App) reconcileManualSessionCreations() {
+	m := a.creationManager()
 	select {
 	case <-a.tabsRestoredSignal():
-	case <-a.bootContext().Done():
-		return
+		m.armRecovery()
+	case <-m.ctx.Done():
 	}
-	rows, err := a.sessionUIStore().List(a.bootContext(), "creation")
-	if err != nil {
-		slog.Warn("desktop: read pending manual creations", "err", err)
-		return
+}
+
+func (a *App) stopManualCreations() error {
+	a.manualCreationMu.Lock()
+	m := a.manualCreations
+	a.manualCreationMu.Unlock()
+	if m == nil {
+		return nil
 	}
-	for _, row := range rows {
-		var view ManualSessionCreationView
-		if json.Unmarshal(row.Payload, &view) != nil {
-			continue
-		}
-		if view.Phase == "reserved" || view.Phase == "starting" {
-			a.startManualCreationWorker(row)
-		}
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return m.CancelAndWait(ctx)
 }

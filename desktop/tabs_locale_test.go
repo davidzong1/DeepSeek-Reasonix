@@ -148,6 +148,24 @@ func TestSetTrayLocaleDoesNotChangeAutoCurrency(t *testing.T) {
 	}
 }
 
+func TestSetTrayLocalePublishesPresentationWithoutHistoryDiscovery(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	scans, notifications := 0, 0
+	app.projectTreeCatalogRefreshHook = func() { scans++ }
+	app.projectTreeChangedHook = func() { notifications++ }
+	// The renderer sends this after every mount, including a restored launch
+	// whose initial background discovery may already have dispatched.
+	for _, locale := range []string{"en", "en", "zh-CN", "zh-TW"} {
+		if err := app.SetTrayLocale(locale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scans != 0 || notifications != 4 {
+		t.Fatalf("locale must publish labels without scanning sources: scans=%d notifications=%d", scans, notifications)
+	}
+}
+
 func TestSetTrayLocaleKeepsExplicitCurrencyRuntime(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	cfg := config.Default()

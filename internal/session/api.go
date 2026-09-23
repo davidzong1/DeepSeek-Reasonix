@@ -41,7 +41,7 @@ func VisitCommits(ctx context.Context, dir string, visit func(Commit) error) err
 	if manifest.Codec == Codec {
 		err = scanV4CommitFile(ctx, file, 0, 1, contentStoreForSessionDir(dir), nil, adapter)
 	} else {
-		err = scanCommitFileCodec(file, 0, 1, manifest.Codec, nil, adapter)
+		err = scanCommitFileCodecBoundaries(ctx, file, 0, 1, manifest.Codec, nil, func(start, _ int64, commit Commit) bool { return adapter(start, commit) })
 	}
 	return errors.Join(err, visitErr)
 }
@@ -175,6 +175,13 @@ func (p *FilesystemPersistence) Create(options CreateOptions) (*Session, error) 
 }
 
 func (p *FilesystemPersistence) Open(sessionID string, mode AccessMode) (*Session, error) {
+	return p.OpenContext(context.Background(), sessionID, mode)
+}
+
+func (p *FilesystemPersistence) OpenContext(ctx context.Context, sessionID string, mode AccessMode) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	id := strings.TrimSpace(sessionID)
 	if err := validateSessionID(id); err != nil {
 		return nil, err
@@ -197,7 +204,7 @@ func (p *FilesystemPersistence) Open(sessionID string, mode AccessMode) (*Sessio
 	} else if err != nil {
 		return nil, err
 	}
-	return OpenWithOptions(dir, id, OpenOptions{ExternalHistory: true})
+	return OpenWithOptions(dir, id, OpenOptions{ExternalHistory: true, Context: ctx})
 }
 
 func (p *FilesystemPersistence) Stat(ctx context.Context, sessionID string) (SessionInfo, error) {
@@ -477,7 +484,7 @@ func readCommitPageWithCache(ctx context.Context, dir, cacheDir string, offset u
 	if manifest.Codec == Codec {
 		err = scanV4CommitFile(ctx, file, checkpoint.Offset, checkpoint.FirstSequence, contentStoreForSessionDir(dir), nil, visit)
 	} else {
-		err = scanCommitFileCodec(file, checkpoint.Offset, checkpoint.FirstSequence, manifest.Codec, nil, visit)
+		err = scanCommitFileCodecBoundaries(ctx, file, checkpoint.Offset, checkpoint.FirstSequence, manifest.Codec, nil, func(start, _ int64, commit Commit) bool { return visit(start, commit) })
 	}
 	if err != nil {
 		return EventPage{}, err

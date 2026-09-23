@@ -7,7 +7,7 @@ import { beneath, internalRoots, listPackages, runGoTest } from "./go-test-group
 export const isolatedGroups = ["acp", "agent", "boot", "bot", "control", "serve", "session", "worktree"];
 const smokeRoots = internalRoots(
   "appidentity", "checkpoint", "cli", "desktoplauncher", "extension/sidecar",
-  "filelock", "fileops", "fileutil", "hook", "instruction", "mcplaunch", "notify",
+  "desktopinstance", "filelock", "fileops", "fileutil", "hook", "identitylock", "instruction", "mcplaunch", "notify",
   // persistentshell exercises native Git Bash pipes and PowerShell named pipes;
   // Windows is the only lane that can prove the actual Windows runtimes.
   "persistentshell", "proc",

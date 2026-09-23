@@ -63,7 +63,10 @@ func (a *App) resolveLegacyCleanupSourceTarget(item legacycleanup.Candidate) (le
 	if err != nil {
 		return legacyCleanupSourceTarget{}, "unknown", "workspace_unavailable", false
 	}
-	mapping, ok := state.SourceMappings[desktopSourceKey(item.SourcePath, item.SourceHeadID)]
+	mapping, ok, resolveErr := state.ResolveSource(desktopSourceKey(item.SourcePath, item.SourceHeadID))
+	if resolveErr != nil {
+		return legacyCleanupSourceTarget{}, "protected", "migration_identity_changed", false
+	}
 	if !ok {
 		return legacyCleanupSourceTarget{}, "unknown", "legacy_session_requires_migration", false
 	}
@@ -114,8 +117,8 @@ func (a *App) archiveLegacyCleanupSource(item legacycleanup.Candidate, target le
 	}
 	defer sourceGuard.Release()
 	verify := func(ctx context.Context, latest workspacestate.State) error {
-		current, exists := latest.SourceMappings[desktopSourceKey(item.SourcePath, item.SourceHeadID)]
-		if !exists || current.SessionID != target.mapping.SessionID || current.WorkspaceID != target.mapping.WorkspaceID ||
+		current, exists, resolveErr := latest.ResolveSource(desktopSourceKey(item.SourcePath, item.SourceHeadID))
+		if resolveErr != nil || !exists || current.SessionID != target.mapping.SessionID || current.WorkspaceID != target.mapping.WorkspaceID ||
 			!sameDesktopPath(current.Path, item.SourcePath) || current.HeadID != item.SourceHeadID {
 			return fmt.Errorf("%w: migration mapping changed", errLegacyCleanupStateChanged)
 		}
@@ -163,7 +166,7 @@ func (a *App) bindLegacyCleanupMigration(ctx context.Context, path, headID, sess
 		return nil
 	}
 	ref := session.SessionRef{HostID: localDesktopHostID, SessionID: sessionID}
-	info, err := a.desktopSessionService("").Query().Stat(ctx, ref)
+	info, err := a.desktopSessionService("").Query().RefreshMetadata(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -253,8 +256,8 @@ func (a *App) classifyLegacyCleanupRegistry(ctx context.Context, ref session.Ses
 
 func classifyLegacyCleanupSourceMappings(state workspacestate.State, ref session.SessionRef, frozen legacycleanup.Candidate) (legacyCleanupDecision, bool) {
 	for _, source := range frozen.Sources {
-		mapping, exists := state.SourceMappings[desktopSourceKey(source.Path, source.HeadID)]
-		if !exists || mapping.SessionID != ref.SessionID || mapping.WorkspaceID != frozen.WorkspaceID || mapping.Format != "legacy" ||
+		mapping, exists, resolveErr := state.ResolveSource(desktopSourceKey(source.Path, source.HeadID))
+		if resolveErr != nil || !exists || mapping.SessionID != ref.SessionID || mapping.WorkspaceID != frozen.WorkspaceID || mapping.Format != "legacy" ||
 			!sameDesktopPath(mapping.Path, source.Path) || mapping.HeadID != source.HeadID {
 			return legacyCleanupDecision{"protected", "legacy_mapping_changed", session.SessionInfo{}, session.Snapshot{}}, false
 		}

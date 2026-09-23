@@ -11,17 +11,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
-	"strings"
-	"time"
-	"unicode/utf8"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/historywork"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
 	"reasonix/internal/store"
+	"slices"
+	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 // This file implements the windowed history paging API (Phase B1 of the
@@ -93,16 +92,25 @@ type HistorySliceRequest struct {
 	Turns   int    `json:"turns"`   // default 12
 	Entries int    `json:"entries"` // default 120
 	Bytes   int    `json:"bytes"`   // inline byte budget, default 512KiB
+	Newer   bool   `json:"newer,omitempty"`
+	// Bound native readers resolve anchors within their existing projection.
+	Anchor           string  `json:"anchor,omitempty"`
+	Turn             int     `json:"turn,omitempty"`
+	MessageID        string  `json:"messageId,omitempty"`
+	Generation       string  `json:"generation,omitempty"`
+	SnapshotSequence *uint64 `json:"snapshotSequence,omitempty"`
 }
 
 // HistoryContentRef marks a string field that exceeded the inline threshold.
 // The field carries a rune-safe preview prefix; the full value is retrievable
 // in chunks via HistoryContentForTab.
 type HistoryContentRef struct {
-	EntryID string `json:"entryId"`
-	Field   string `json:"field"` // "content", "reasoning", "submitText", "detail", "code", "summary", "archive", "toolResultError", "toolArguments", "toolSubject", "toolSummary", "toolDiff"
-	Size    int    `json:"size"`
-	Chunks  int    `json:"chunks"`
+	// Bound native windows keep content reads on the same cancellable owner.
+	ReadHandleID string `json:"readHandleId,omitempty"`
+	EntryID      string `json:"entryId"`
+	Field        string `json:"field"` // "content", "reasoning", "submitText", "detail", "code", "summary", "archive", "toolResultError", "toolArguments", "toolSubject", "toolSummary", "toolDiff"
+	Size         int    `json:"size"`
+	Chunks       int    `json:"chunks"`
 	// ToolCallID identifies the tool call for tool* fields.
 	ToolCallID string `json:"toolCallId,omitempty"`
 	// Revision/RevKnown/Digest bind the ref to the session state it was cut
@@ -130,14 +138,16 @@ type HistoryEntry struct {
 
 // HistorySlice is one page of history toward older messages.
 type HistorySlice struct {
-	Entries    []HistoryEntry `json:"entries"`
-	NextCursor string         `json:"nextCursor"` // toward older; empty when none
-	HasOlder   bool           `json:"hasOlder"`
-	TotalTurns int            `json:"totalTurns"`
-	StartTurn  int            `json:"startTurn"` // oldest visible turn in the page (0 when none)
-	EndTurn    int            `json:"endTurn"`   // newest visible turn in the page (0 when none)
-	Stale      bool           `json:"stale"`     // cursor bound to an older session revision
-	Revision   int64          `json:"revision"`  // session revision the page was cut from (0 when unknown)
+	Entries     []HistoryEntry `json:"entries"`
+	NextCursor  string         `json:"nextCursor"` // toward older; empty when none
+	HasOlder    bool           `json:"hasOlder"`
+	HasNewer    bool           `json:"hasNewer"`
+	NewerCursor string         `json:"newerCursor,omitempty"`
+	TotalTurns  int            `json:"totalTurns"`
+	StartTurn   int            `json:"startTurn"` // oldest visible turn in the page (0 when none)
+	EndTurn     int            `json:"endTurn"`   // newest visible turn in the page (0 when none)
+	Stale       bool           `json:"stale"`     // cursor bound to an older session revision
+	Revision    int64          `json:"revision"`  // session revision the page was cut from (0 when unknown)
 	// RevisionKnown and Digest expose the complete canonical identity already
 	// carried by cursors. They let same-path resident frontend projections be
 	// invalidated after another process advances or rewrites the session.
@@ -224,6 +234,7 @@ type historySliceCursor struct {
 	RevKnown bool   `json:"revKnown"`
 	Digest   string `json:"digest"`
 	Before   int    `json:"before"` // next page covers messages/rows with index < Before
+	Source   string `json:"source,omitempty"`
 }
 
 func encodeHistorySliceCursor(c historySliceCursor) string {
@@ -257,6 +268,7 @@ func decodeHistorySliceCursor(s string) (historySliceCursor, error) {
 // page: per-message visible turns and roles plus bounded message fetches.
 type historySliceSource struct {
 	sessionID  string // transcript basename minus .jsonl
+	sourceID   string // storage root and selected branch identity for cold cursors
 	total      int    // total provider messages
 	turns      []int  // turns[i] = visible turn of message i (1-based; 0 = before first turn)
 	roles      []provider.Role
@@ -273,6 +285,46 @@ type historySliceSource struct {
 	// windowBytes estimates the raw transcript span of [lo, hi); 0 means
 	// unbounded-but-cheap (in-memory). Used to cap cold-path reads.
 	windowBytes func(lo, hi int) int64
+	position    func(int) (agent.DisplayIndexEntry, error)
+	usersBefore func(int) (int, error)
+	readErr     error
+	maxFetch    int
+	// Disk projections already preserve the available per-record timestamps.
+	// Missing optional display timestamps must never trigger whole-log replay.
+	windowOnly bool
+}
+
+func (src *historySliceSource) turnAt(index int) int {
+	if src.position == nil {
+		return src.turns[index]
+	}
+	entry, err := src.position(index)
+	if err != nil {
+		src.readErr = err
+	}
+	return entry.AuthoredTurn
+}
+
+func (src *historySliceSource) roleAt(index int) provider.Role {
+	if src.position == nil {
+		return src.roles[index]
+	}
+	entry, err := src.position(index)
+	if err != nil {
+		src.readErr = err
+	}
+	return historyPersistedUserRole(entry.Role, entry.PinnedContextRevision)
+}
+
+func (src *historySliceSource) userCountBefore(index int) int {
+	if src.usersBefore == nil {
+		return countRoleBefore(src.roles, index, provider.RoleUser)
+	}
+	count, err := src.usersBefore(index)
+	if err != nil {
+		src.readErr = err
+	}
+	return count
 }
 
 // identityMatches reports whether the cursor/ref identity describes the same
@@ -515,140 +567,6 @@ func newInMemoryHistorySliceSource(sessionID string, msgs []provider.Message, re
 	return src
 }
 
-// coldHistorySlice pages a session file with no running controller. It never
-// loads the whole session: a valid on-disk display index + byte-offset reads
-// serve the window; a missing/stale/corrupt index is rebuilt by streaming
-// scan (constant memory) and the first page is served from the scan result.
-func (a *App) coldHistorySlice(sessionDir, path string, req HistorySliceRequest) (HistorySlice, error) {
-	sessionPath, _, err := validateSessionPath(sessionDir, path)
-	if err != nil {
-		return emptyHistorySlice(), err
-	}
-	info, err := os.Stat(sessionPath)
-	if err != nil {
-		return emptyHistorySlice(), err
-	}
-	if info.IsDir() {
-		return emptyHistorySlice(), fmt.Errorf("not a session file: %s", sessionPath)
-	}
-	if historySessionLooksEventFormat(sessionPath) {
-		// Legacy event-record format: stream-decode (constant memory) and page
-		// the decoded rows. Only ancient sessions take this path.
-		slice, err := coldEventHistorySlice(sessionPath, info, req)
-		slice.Source = "scan"
-		return slice, err
-	}
-	resolver := sessionDisplayResolver(sessionDir, sessionPath)
-	indexPath := store.SessionDisplayIndex(sessionPath)
-	idx, err := agent.LoadSessionDisplayIndex(indexPath)
-	identity, identityKnown, identityErr := agent.SessionContentIdentity(sessionPath)
-	if identityErr != nil {
-		return emptyHistorySlice(), identityErr
-	}
-	indexIdentityValid := false
-	if idx != nil && err == nil {
-		if identityKnown {
-			indexIdentityValid = agent.ValidateSessionDisplayIndex(idx, identity.Revision, identity.RevisionKnown, identity.Digest, info.Size())
-		} else {
-			// Legacy sessions have no ledger digest. Atomic index publication
-			// after the transcript plus exact structural/size validation is their
-			// generation stamp; a later rewrite advances the transcript mtime.
-			indexIdentityValid = !idx.RevisionKnown
-		}
-	}
-	if idx != nil && err == nil && idx.TranscriptSize == info.Size() && indexIdentityValid && historyIndexTimestampValid(indexPath, sessionPath, info, idx, true) {
-		slice, pageErr := a.pageHistorySliceSource(coldHistorySliceSource(sessionPath, idx), req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
-		if pageErr != nil {
-			return emptyHistorySlice(), pageErr
-		}
-		slice.Source = "index"
-		return slice, nil
-	}
-
-	// A missing/corrupt sidecar is cheap to repair when the checkpoint itself is
-	// still the authoritative transcript. Scan once and compare its digest to
-	// the ledger before falling back to a full event-log replay. This preserves
-	// the bounded cold path for ordinary legacy/index-migration reads while
-	// still rejecting same-size anchor rewrites.
-	scanned, scanErr := agent.ScanSessionDisplayIndex(sessionPath)
-	if scanErr == nil {
-		if !identityKnown || scanned.ContentDigest == identity.DigestHex {
-			if identityKnown {
-				scanned.Revision = identity.Revision
-				scanned.RevisionKnown = identity.RevisionKnown
-			}
-			if writeErr := agent.WriteSessionDisplayIndex(store.SessionDisplayIndex(sessionPath), scanned); writeErr != nil {
-				slog.Debug("desktop: history display index republish failed", "path", sessionPath, "err", writeErr)
-			}
-			slice, pageErr := a.pageHistorySliceSource(coldHistorySliceSource(sessionPath, scanned), req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
-			if pageErr != nil {
-				return emptyHistorySlice(), pageErr
-			}
-			slice.Source = "scan"
-			return slice, nil
-		}
-	}
-
-	// The event log is authoritative. During append-only saves its transcript
-	// is newer than the compatibility .jsonl anchor, so scanning the anchor
-	// would silently omit the tail even when a display index covers it.
-	if eventInfo, statErr := os.Stat(store.SessionEventLog(sessionPath)); statErr == nil && !eventInfo.IsDir() && eventInfo.Size() > 0 {
-		messages, state, repairable, loadErr := agent.LoadSessionDisplayMessages(sessionPath)
-		if loadErr != nil {
-			return emptyHistorySlice(), loadErr
-		}
-		src := newInMemoryHistorySliceSource(strings.TrimSuffix(filepath.Base(sessionPath), ".jsonl"), messages, resolver, state, true)
-		slice, pageErr := a.pageHistorySliceSource(src, req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
-		if pageErr != nil {
-			return emptyHistorySlice(), pageErr
-		}
-		slice.Source = "event-log"
-		if repairable {
-			a.kickHistoryReadModelRepair(sessionPath)
-		}
-		return slice, nil
-	}
-
-	// Legacy checkpoints have no authoritative ledger identity. Scan their
-	// bytes to obtain the digest before trusting (or republishing) offsets; this
-	// detects same-size external rewrites that a size-only comparison misses.
-	if scanErr != nil {
-		// The bounded scanner rejects malformed or exceptionally large single
-		// records before allocating without limit. A legacy transcript still
-		// remains readable through the ordinary authoritative loader, then gets
-		// a file-exact index in the background for subsequent opens.
-		messages, state, repairable, loadErr := agent.LoadSessionDisplayMessages(sessionPath)
-		if loadErr != nil {
-			return emptyHistorySlice(), errors.Join(scanErr, loadErr)
-		}
-		src := newInMemoryHistorySliceSource(strings.TrimSuffix(filepath.Base(sessionPath), ".jsonl"), messages, resolver, state, true)
-		slice, pageErr := a.pageHistorySliceSource(src, req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
-		if pageErr != nil {
-			return emptyHistorySlice(), pageErr
-		}
-		slice.Source = "scan"
-		if repairable {
-			a.kickHistoryReadModelRepair(sessionPath)
-		}
-		return slice, nil
-	}
-	if identityKnown {
-		if scanned.ContentDigest == identity.DigestHex {
-			scanned.Revision = identity.Revision
-			scanned.RevisionKnown = identity.RevisionKnown
-		}
-	}
-	if writeErr := agent.WriteSessionDisplayIndex(store.SessionDisplayIndex(sessionPath), scanned); writeErr != nil {
-		slog.Debug("desktop: history display index republish failed", "path", sessionPath, "err", writeErr)
-	}
-	slice, pageErr := a.pageHistorySliceSource(coldHistorySliceSource(sessionPath, scanned), req, resolver, sessionPlannerDisplayTurns(sessionDir, sessionPath), nil, sessionPath)
-	if pageErr != nil {
-		return emptyHistorySlice(), pageErr
-	}
-	slice.Source = "scan"
-	return slice, nil
-}
-
 // historyIndexTimestampValid is the cheap file-generation guard for
 // cold offset reads. Save/scan publish the index atomically after the transcript
 // is complete. Equal timestamps are ambiguous on coarse filesystems, so cold
@@ -724,6 +642,10 @@ func coldHistorySliceSource(sessionPath string, idx *agent.SessionDisplayIndex) 
 // readSessionMessagesAtOffsets decodes the message lines for entries, whose
 // byte ranges are contiguous in the transcript, with one read.
 func readSessionMessagesAtOffsets(sessionPath string, entries []agent.DisplayIndexEntry) ([]provider.Message, error) {
+	return readSessionMessagesAtOffsetsContext(context.Background(), sessionPath, entries)
+}
+
+func readSessionMessagesAtOffsetsContext(ctx context.Context, sessionPath string, entries []agent.DisplayIndexEntry) ([]provider.Message, error) {
 	out := make([]provider.Message, 0, len(entries))
 	if len(entries) == 0 {
 		return out, nil
@@ -741,10 +663,13 @@ func readSessionMessagesAtOffsets(sessionPath string, entries []agent.DisplayInd
 	}
 	if spanLength <= historySliceColdWindowBytes {
 		buf := make([]byte, int(spanLength))
-		if _, err := f.ReadAt(buf, spanStart); err != nil {
+		if _, err := io.ReadFull(&historywork.Reader{Context: ctx, Source: io.NewSectionReader(f, spanStart, spanLength)}, buf); err != nil {
 			return nil, err
 		}
 		for _, e := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			start := e.Offset - spanStart
 			end := start + e.Length
 			if start < 0 || end < start || end > int64(len(buf)) {
@@ -763,7 +688,7 @@ func readSessionMessagesAtOffsets(sessionPath string, entries []agent.DisplayInd
 	// allocate and copy a second full record-sized byte slice.
 	for _, e := range entries {
 		var m provider.Message
-		dec := json.NewDecoder(io.NewSectionReader(f, e.Offset, e.Length))
+		dec := json.NewDecoder(&historywork.Reader{Context: ctx, Source: io.NewSectionReader(f, e.Offset, e.Length)})
 		if err := dec.Decode(&m); err != nil {
 			return nil, fmt.Errorf("decode oversized session transcript line %d: %w", e.Index, err)
 		}
@@ -810,12 +735,23 @@ func (a *App) pageHistorySliceSource(src *historySliceSource, req HistorySliceRe
 	cursor, err := decodeHistorySliceCursor(req.Cursor)
 	// An undecodable cursor is treated like a request for the latest page.
 	hasCursor := req.Cursor != "" && err == nil
+	sourceID := src.sourceID
+	if sourceID == "" {
+		sourceID = src.sessionID
+	}
+	if src.windowOnly && req.Cursor != "" && (err != nil || cursor.Before < 0 || cursor.Before > src.total || cursor.Source != sourceID) {
+		return staleHistorySlice(src.revision, src.revKnown, src.digest), nil
+	}
 	if hasCursor && !src.identityMatches(cursor.Revision, cursor.RevKnown, cursor.Digest) {
 		return staleHistorySlice(src.revision, src.revKnown, src.digest), nil
 	}
 	hi := src.total
 	if hasCursor && cursor.Before < hi {
 		hi = cursor.Before
+	}
+	forward := req.Newer && hasCursor
+	if forward {
+		hi = min(src.total, cursor.Before+min(req.Entries, 500))
 	}
 	page := HistorySlice{
 		Entries:       []HistoryEntry{},
@@ -828,25 +764,9 @@ func (a *App) pageHistorySliceSource(src *historySliceSource, req HistorySliceRe
 		return page, nil
 	}
 
-	// Turn budget: the oldest visible turn this page may reach.
-	newestTurn := src.turns[hi-1]
-	oldestTurn := 0
-	if newestTurn > 0 {
-		oldestTurn = max(newestTurn-req.Turns+1, 1)
-	}
-	// turns is non-decreasing: binary-search the first message in the page.
-	candidateLo := sort.Search(hi, func(i int) bool { return src.turns[i] >= oldestTurn })
-	if oldestTurn <= 1 {
-		// A page reaching the first turn also includes the pre-turn messages
-		// (system prompt), mirroring providerMessagesForVisibleTurnRange.
-		candidateLo = 0
-	}
-	// Cold-path raw-span cap: shrink the window forward while the byte span
-	// is excessive (image-dense windows).
-	if src.windowBytes != nil {
-		for candidateLo < hi-1 && src.windowBytes(candidateLo, hi) > historySliceColdWindowBytes {
-			candidateLo++
-		}
+	candidateLo, hi, err := historySliceCandidateRange(src, req, cursor, hi, forward)
+	if err != nil {
+		return emptyHistorySlice(), err
 	}
 
 	window, fetchErr := src.fetch(candidateLo, hi)
@@ -856,7 +776,9 @@ func (a *App) pageHistorySliceSource(src *historySliceSource, req HistorySliceRe
 	if len(window) != hi-candidateLo {
 		return emptyHistorySlice(), fmt.Errorf("history window length %d, want %d", len(window), hi-candidateLo)
 	}
-	window = historyWindowWithPersistedTimes(window, sessionPath, countRoleBefore(src.roles, candidateLo, provider.RoleUser))
+	if !src.windowOnly {
+		window = historyWindowWithPersistedTimes(window, sessionPath, src.userCountBefore(candidateLo))
+	}
 	toolResults := historyToolResultsByID(window)
 	if err := extendHistoryToolResults(src, window, hi, toolResults); err != nil {
 		return emptyHistorySlice(), err
@@ -888,6 +810,11 @@ func (a *App) pageHistorySliceSource(src *historySliceSource, req HistorySliceRe
 		groups = append(groups, g)
 		entryCount += len(g.entries)
 		byteCount += g.bytes
+		if forward && len(groups) > 1 && (entryCount > req.Entries || byteCount > req.Bytes) {
+			groups = groups[:len(groups)-1]
+			hi = i
+			break
+		}
 		// Keep the newest suffix within budget; always keep the newest group
 		// so a single oversized message still makes progress.
 		for len(groups) > 1 && (entryCount > req.Entries || byteCount > req.Bytes) {
@@ -904,27 +831,7 @@ func (a *App) pageHistorySliceSource(src *historySliceSource, req HistorySliceRe
 	for _, g := range groups {
 		page.Entries = append(page.Entries, g.entries...)
 	}
-	for _, e := range page.Entries {
-		if e.Turn <= 0 {
-			continue
-		}
-		if page.StartTurn == 0 || e.Turn < page.StartTurn {
-			page.StartTurn = e.Turn
-		}
-		if e.Turn > page.EndTurn {
-			page.EndTurn = e.Turn
-		}
-	}
-	page.HasOlder = pageStart > 0
-	if page.HasOlder {
-		page.NextCursor = encodeHistorySliceCursor(historySliceCursor{
-			V:        1,
-			Revision: src.revision,
-			RevKnown: src.revKnown,
-			Digest:   src.digest,
-			Before:   pageStart,
-		})
-	}
+	page = completeHistorySlicePage(page, src, pageStart, hi, sourceID)
 	return page, nil
 }
 
@@ -968,7 +875,7 @@ func extendHistoryToolResults(src *historySliceSource, window []provider.Message
 		return nil
 	}
 	for i := hi; i < src.total && len(want) > 0; i++ {
-		if src.roles[i] != provider.RoleTool {
+		if src.roleAt(i) != provider.RoleTool {
 			continue
 		}
 		msgs, err := src.fetch(i, i+1)
@@ -1030,7 +937,7 @@ func primeHistoryPlannerState(src *historySliceSource, state *historyMessageConv
 func newHistoryEntry(src *historySliceSource, entryID string, msgIndex, sub int, row HistoryMessage) HistoryEntry {
 	entry := HistoryEntry{
 		EntryID: entryID,
-		Turn:    src.turns[msgIndex],
+		Turn:    src.turnAt(msgIndex),
 		Order:   msgIndex,
 		Message: row,
 		Refs:    []HistoryContentRef{},
@@ -1177,6 +1084,9 @@ func historyContentChunkAt(s string, index int) (string, int) {
 // session's revision/digest moved past the ref, Stale is set so the frontend
 // reloads.
 func (a *App) HistoryContentForTab(tabID string, ref HistoryContentRef, chunkIndex int) HistoryContentChunk {
+	if ref.ReadHandleID != "" {
+		return a.boundNativeHistoryContent(tabID, ref, chunkIndex)
+	}
 	out := HistoryContentChunk{EntryID: ref.EntryID, Field: ref.Field, Chunk: max(chunkIndex, 0)}
 	msgIndex, sub, legacyRow, ok := parseHistoryEntryID(ref.EntryID)
 	if !ok {
@@ -1278,6 +1188,11 @@ func (a *App) HistoryContentForTab(tabID string, ref HistoryContentRef, chunkInd
 // selected tab or creates a controller.
 func (a *App) HistoryContentForTarget(selector SessionSelector, ref HistoryContentRef, chunkIndex int) (HistoryContentChunk, error) {
 	out := HistoryContentChunk{EntryID: ref.EntryID, Field: ref.Field, Chunk: max(chunkIndex, 0)}
+	if ref.ReadHandleID != "" {
+		// This ref belongs to a navigation reader, not a management target.
+		out.Stale = true
+		return out, nil
+	}
 	target, err := a.resolveSessionTargetWithArchived(selector, true)
 	if err != nil {
 		return out, err
@@ -1398,10 +1313,24 @@ func (a *App) liveHistoryFieldValue(ctrl control.SessionAPI, sessionDir, session
 // authoritative source selection as HistorySliceForTab. It never trusts a
 // stale checkpoint merely because the requested message's old offset exists.
 func (a *App) coldHistoryFieldValue(sessionDir, sessionPath string, msgIndex, sub int, ref HistoryContentRef) (string, bool, bool) {
-	absPath, _, err := validateSessionPath(sessionDir, sessionPath)
+	sessionDir, absPath, err := a.historyReadSource(sessionDir, sessionPath)
 	if err != nil {
 		return "", false, true
 	}
+	var value string
+	var found, stale, handled bool
+	err = a.withNativeHistoryPager(a.bootContext(), absPath, "", func(ctx context.Context, pager *agent.DisplayPager, sourceID string) error {
+		handled = true
+		src := historySourceFromPager(ctx, pager, absPath, sourceID)
+		value, found, stale = a.historyFieldValueForSource(src, msgIndex, sub, ref,
+			sessionDisplayResolver(sessionDir, absPath), sessionPlannerDisplayTurns(sessionDir, absPath), nil)
+		return src.readErr
+	})
+	if handled || nativeHistoryPreparationFailure(err) {
+		return value, found, stale || err != nil
+	}
+	// Formats not handled by the native pager retain their compatibility
+	// reader. A failed read on an admitted native source never falls back.
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", false, true
@@ -1430,13 +1359,10 @@ func (a *App) coldHistoryFieldValue(sessionDir, sessionPath string, msgIndex, su
 		src = coldHistorySliceSource(absPath, scanned)
 	} else {
 		messages, state, repairable, loadErr := agent.LoadSessionDisplayMessages(absPath)
-		if loadErr != nil {
+		if loadErr != nil || !repairable {
 			return "", false, true
 		}
 		src = newInMemoryHistorySliceSource(strings.TrimSuffix(filepath.Base(absPath), ".jsonl"), messages, resolver, state, true)
-		if repairable {
-			a.kickHistoryReadModelRepair(absPath)
-		}
 	}
 	return a.historyFieldValueForSource(src, msgIndex, sub, ref, resolver, sessionPlannerDisplayTurns(sessionDir, absPath), nil)
 }
@@ -1610,103 +1536,4 @@ func (a *App) legacyHistoryFieldValue(sessionPath, sessionDir string, row int, r
 		return "", false
 	}
 	return historyEntryFieldValue(&messages[row], ref.Field, ref.ToolCallID)
-}
-
-// startHistoryIndexMigration arms the startup background worker that builds
-// display indexes for session files that predate the sidecar. Like
-// enableDeferredRebuildRetry it is only called from the Wails startup hook, so
-// test-constructed Apps never spawn the worker.
-func (a *App) startHistoryIndexMigration() {
-	if a.ctx == nil {
-		return
-	}
-	a.historySliceMu.Lock()
-	if a.historyIndexMigrationCancel != nil {
-		a.historySliceMu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.historyIndexMigrationCancel = cancel
-	a.historySliceMu.Unlock()
-	a.goSafe("historyIndexMigration", func() { a.historyIndexMigrationLoop(ctx) })
-}
-
-// stopHistoryIndexMigration stops the startup migration worker; called from
-// shutdown. The worker also stops with the Wails context.
-func (a *App) stopHistoryIndexMigration() {
-	a.historySliceMu.Lock()
-	cancel := a.historyIndexMigrationCancel
-	a.historySliceMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// historyIndexMigrationLoop walks every known session dir once, building
-// missing or stale display indexes. It is single-concurrency, yields between
-// sessions, and is idempotent: a valid index (loadable + transcript size
-// match) is left untouched.
-func (a *App) historyIndexMigrationLoop(ctx context.Context) {
-	for _, dir := range a.knownSessionDirs() {
-		if ctx.Err() != nil {
-			return
-		}
-		// ListSessionOrder is the lightweight listing: it never decodes
-		// transcript content, which keeps this worker cheap on dirs full of
-		// legacy sessions.
-		infos, err := agent.ListSessionOrder(dir)
-		if err != nil {
-			continue
-		}
-		for _, info := range infos {
-			if ctx.Err() != nil {
-				return
-			}
-			path := info.Path
-			if !store.IsSessionTranscriptName(filepath.Base(path)) {
-				continue
-			}
-			if historySessionIndexOnDiskValid(path) || historySessionLooksEventFormat(path) {
-				continue
-			}
-			if err := agent.RepairSessionDisplayReadModel(path); err != nil {
-				slog.Debug("desktop: history read-model migration failed", "path", path, "err", err)
-			}
-			timer := time.NewTimer(25 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}
-}
-
-// historySessionIndexOnDiskValid reports whether the on-disk display index
-// loads and describes the current transcript file size. The size guard is the
-// Phase A stale-anchor rule: append-only saves leave the .jsonl anchor behind
-// the canonical transcript, and the reverse (a rewritten anchor with an old
-// index) must not be sliced by stale offsets either.
-func historySessionIndexOnDiskValid(sessionPath string) bool {
-	indexPath := store.SessionDisplayIndex(sessionPath)
-	idx, err := agent.LoadSessionDisplayIndex(indexPath)
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(sessionPath)
-	if err != nil {
-		return false
-	}
-	if idx.TranscriptSize != info.Size() || !historyIndexTimestampValid(indexPath, sessionPath, info, idx, false) {
-		return false
-	}
-	identity, known, err := agent.SessionContentIdentity(sessionPath)
-	if err != nil {
-		return false
-	}
-	if !known {
-		return !idx.RevisionKnown
-	}
-	return agent.ValidateSessionDisplayIndex(idx, identity.Revision, identity.RevisionKnown, identity.Digest, info.Size())
 }

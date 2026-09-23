@@ -501,8 +501,7 @@ func (c *Controller) rebindTurnEvents(sessionPath string) {
 	if currentV3 == nil || currentV3Path != desiredV3Path || currentV3Runtime != desiredRuntime {
 		v3, releaseV3, v3Err = c.openSessionEventStore(sessionPath)
 	}
-	ledger := turnevent.NewMemory(ledgerID)
-	err := v3Err
+	ledger, err := c.openTurnLedger(sessionPath, ledgerID, v3Err)
 	if err != nil {
 		// Normalize platform-specific open errors behind the same storage
 		// sentinel used by append failures. Keep the original error in the
@@ -555,6 +554,9 @@ func (c *Controller) rebindTurnEvents(sessionPath string) {
 		c.turnEvents.v3Release = releaseV3
 	}
 	c.turnEvents.v3Err = nil
+	if c.turnEvents.projection != nil {
+		c.turnEvents.projection.CloseFollowers()
+	}
 	c.turnEvents.projection = nil
 	c.turnEvents.projectionErr = nil
 	c.turnEvents.projectionPath = sessionPath
@@ -592,6 +594,13 @@ func (c *Controller) rebindTurnEvents(sessionPath string) {
 			slog.Warn("controller: flush and close previous v3 session", "err", closeErr)
 		}
 	}
+}
+
+func (c *Controller) openTurnLedger(path, id string, storeErr error) (*turnevent.Ledger, error) {
+	if storeErr == nil && c.NativeLegacySession() && path != "" {
+		return turnevent.Open(path, id)
+	}
+	return turnevent.NewMemory(id), storeErr
 }
 
 func classifyCommitError(err error) commitFailureKind {

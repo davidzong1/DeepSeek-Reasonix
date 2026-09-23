@@ -759,5 +759,23 @@ function ev(s: typeof initialState, e: WireEvent) {
   eq(s.context.used, 450, "latest-attempt prompt occupancy excludes completion tokens");
 }
 
+{
+  const before = { ...initialState, running: true, turnActive: true,
+    context: { used: 179300, window: 256000, sessionTokens: 0 } };
+  const estimated = ev(before, { kind: "usage", usage: {
+    promptTokens: 270000, completionTokens: 10, totalTokens: 270010,
+    cacheHitTokens: 0, cacheMissTokens: 270000, estimated: true, source: "executor",
+    contextPromptTokens: 270000,
+  } } as WireEvent);
+  eq(estimated.context.used, 179300, "failed-attempt estimate cannot inflate calibrated context to 105 percent");
+  eq(estimated.sessionTokens, 270010, "estimated attempt still contributes to billable session usage");
+  eq(estimated.usageSeq, before.usageSeq + 1, "estimated attempt still requests a fresh authoritative context");
+  const measured = ev(before, { kind: "usage", usage: {
+    promptTokens: 180000, completionTokens: 10, totalTokens: 180010,
+    cacheHitTokens: 0, cacheMissTokens: 180000, source: "executor",
+  } } as WireEvent);
+  eq(measured.context.used, 180000, "measured executor usage can update context during refresh");
+}
+
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

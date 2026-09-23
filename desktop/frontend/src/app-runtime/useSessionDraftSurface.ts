@@ -13,7 +13,7 @@ import type { StructuredInvocationSubmit } from "../lib/invocationDisplay";
 import type { CommandInfo, CollaborationMode, ToolApprovalMode } from "../lib/types";
 import type { PersistentComposerDraft } from "../components/Composer";
 import { applyInheritedModel, canonicalJSON, draftSubmissionLocksEditing, sameDraftSettings, useInheritedDraftModels } from "./draftModelInheritance";
-import { cloneDraftContent, cloneDraftSettings } from "./draftValues";
+import { cloneDraftContent, cloneDraftSettings, contentJSON, parseContent } from "./draftValues";
 import { buildInitialGoalSubmission } from "./sessionSubmissionOwner";
 
 export { draftSubmissionLocksEditing } from "./draftModelInheritance";
@@ -23,42 +23,6 @@ declare global {
     __reasonixFlushSessionDraft?: () => Promise<void>;
     __reasonixResumeSessionDraftEditing?: () => void;
   }
-}
-
-const EMPTY_CONTENT: PersistentComposerDraft = {
-  text: "",
-  invocations: [],
-  attachments: [],
-  workspaceRefs: [],
-  pastedBlocks: [],
-  openPastedLabels: [],
-  sessionRefs: [],
-  selectedTextRefs: [],
-};
-
-function parseContent(raw: string): PersistentComposerDraft {
-  try {
-    const value = JSON.parse(raw || "{}") as Partial<PersistentComposerDraft>;
-    return {
-      text: typeof value.text === "string" ? value.text : "",
-      invocations: Array.isArray(value.invocations) ? value.invocations : [],
-      attachments: Array.isArray(value.attachments) ? value.attachments.map(({ previewUrl: _previewUrl, ...attachment }) => attachment) : [],
-      workspaceRefs: Array.isArray(value.workspaceRefs) ? value.workspaceRefs : [],
-      pastedBlocks: Array.isArray(value.pastedBlocks) ? value.pastedBlocks : [],
-      openPastedLabels: Array.isArray(value.openPastedLabels) ? value.openPastedLabels : [],
-      sessionRefs: Array.isArray(value.sessionRefs) ? value.sessionRefs : [],
-      selectedTextRefs: Array.isArray(value.selectedTextRefs) ? value.selectedTextRefs : [],
-    };
-  } catch {
-    return { ...EMPTY_CONTENT };
-  }
-}
-
-function contentJSON(content: PersistentComposerDraft): string {
-  return JSON.stringify({
-    ...content,
-    attachments: content.attachments.map(({ previewUrl: _previewUrl, ...attachment }) => attachment),
-  });
 }
 
 export type DraftSaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
@@ -77,6 +41,8 @@ export type SessionDraftSurface = {
   preparingSubmission: boolean;
   discarding?: boolean;
   saveState: DraftSaveState;
+  submissionError?: string;
+  resumingSubmission?: boolean;
   error?: string;
   taskError?: string;
   conflict?: SessionDraftView;
@@ -108,6 +74,8 @@ type DraftEntry = {
   visibleIntent: number;
   editVersion: number;
   savedEditVersion: number;
+  submissionError?: string;
+  resumingSubmission?: boolean;
   saving: boolean;
   error?: string;
   taskError?: string;
@@ -156,6 +124,8 @@ function projectEntry(entry: DraftEntry): SessionDraftSurface {
     preparingSubmission: entry.preparingSubmission || Boolean(entry.discarding),
     discarding: Boolean(entry.discarding),
     saveState: saveState(entry),
+    submissionError: entry.submissionError,
+    resumingSubmission: entry.resumingSubmission,
     error: entry.error,
     taskError: entry.taskError,
     conflict: entry.conflict,
@@ -879,14 +849,25 @@ export function useSessionDraftSurface(options: DraftSurfaceOptions) {
   const resumeSubmission = useCallback(async () => {
     const id = visibleDraftIdRef.current;
     const entry = id ? entriesRef.current.get(id) : undefined;
-    if (!id || !entry?.operation) return;
+    if (!id || !entry?.operation?.canResume || entry.resumingSubmission) return;
+    const { operationId, revision } = entry.operation;
+    entry.resumingSubmission = true;
+    entry.submissionError = undefined;
+    publish(id);
     const capture = { handle: { draftId: id, generation: entry.generation }, preparationId: "", draftId: id, generation: entry.generation, workspaceId: entry.draft.workspaceId, editVersion: entry.editVersion, navigationIntent: entry.visibleIntent, content: cloneDraftContent(entry.content), settings: cloneDraftSettings(entry.settings) };
     try {
-      const next = await app.ResumeDraftSubmission(entry.operation.operationId, entry.operation.revision);
+      const next = await app.ResumeDraftSubmission(operationId, revision);
+      if (entriesRef.current.get(id) !== entry || entry.generation !== capture.generation || entry.operation?.operationId !== operationId) return;
       entry.operationCapture = capture;
       await waitForSubmissionOnce(next, capture);
     } catch (error) {
-      if (entriesRef.current.get(id) === entry) { entry.error = String(error); publish(id); }
+      if (entriesRef.current.get(id) === entry && entry.generation === capture.generation
+        && entry.operation?.operationId === operationId && entry.operation.revision <= revision) {
+        entry.submissionError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      entry.resumingSubmission = false;
+      if (entriesRef.current.get(id) === entry) publish(id);
     }
   }, [publish, waitForSubmissionOnce]);
 

@@ -61,7 +61,7 @@ type desktopProjectFile struct {
 // order fields remain available for downgrade compatibility and for rows that
 // have not yet acquired an explicit session identity.
 func (a *App) ReorderSessions(scope, workspaceRoot string, orderedSessionKeys []string) error {
-	id, _, err := a.ensureSessionOrganization(scope, workspaceRoot)
+	id, _, err := a.ensureSessionOrganizationSources(scope, workspaceRoot, true)
 	if err != nil {
 		return err
 	}

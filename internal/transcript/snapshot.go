@@ -21,6 +21,7 @@ const (
 
 type PageRequest struct {
 	SnapshotID string `json:"snapshotId"`
+	MessageID  string `json:"messageId,omitempty"`
 	Before     int    `json:"before"`
 	Records    int    `json:"records"`
 	Bytes      int    `json:"bytes"`
@@ -51,6 +52,7 @@ type Snapshot struct {
 	TotalRecords   int             `json:"totalRecords"`
 	TotalTurns     int             `json:"totalTurns"`
 	Stale          bool            `json:"stale"`
+	NotFound       bool            `json:"notFound,omitempty"`
 }
 
 type ContentRequest struct {
@@ -97,9 +99,10 @@ func (p *Projection) snapshotCurrent(req PageRequest) (Snapshot, error) {
 		budget = defaultPageBytes
 	}
 	budget = min(budget, maxPageBytes)
-	end := len(p.buffer.messages)
-	if req.SnapshotID != "" {
-		end = min(max(req.Before, 0), end)
+	end, found := p.snapshotEnd(req)
+	if !found {
+		out.NotFound = true
+		return out, nil
 	}
 	out.TotalRecords = len(p.buffer.messages)
 	out.TotalTurns = p.buffer.userTurns
@@ -266,6 +269,18 @@ func boundedRecord(message Message, snapshotID string) (Record, error) {
 		return text[:runeBoundary(text, previewBytes)]
 	}).Interface().(Message)
 	return out, nil
+}
+
+func (p *Projection) snapshotEnd(req PageRequest) (int, bool) {
+	if req.MessageID != "" {
+		position, found := p.recordPositions[req.MessageID]
+		return position + 1, found
+	}
+	end := len(p.buffer.messages)
+	if req.SnapshotID != "" {
+		end = min(max(req.Before, 0), end)
+	}
+	return end, true
 }
 
 func runeBoundary(text string, offset int) int {

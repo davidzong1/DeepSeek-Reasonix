@@ -38,7 +38,7 @@ func TestCanonicalInboxTargetEnqueuesAndConfirmsReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	const path = "session-id:queue-target"
-	a := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", Ctrl: ctrl, SessionPath: path, SessionGeneration: 1, Ready: true}}}
+	a := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", Ctrl: ctrl, SessionID: "queue-target", SessionGeneration: 1, Ready: true}}}
 	target, err := a.CaptureInboxTarget("tab", path)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +46,10 @@ func TestCanonicalInboxTargetEnqueuesAndConfirmsReceipt(t *testing.T) {
 	receipt, err := a.EnqueueInboxFollowupForTarget(target, "queued input", "queued input", nil, "request")
 	if err != nil || receipt.ItemID == "" {
 		t.Fatalf("canonical enqueue: %+v %v", receipt, err)
+	}
+	queue, err := a.InboxQueueForTarget(target, control.InboxQueueRequest{Kind: "enqueue_steer", TurnID: "finished-turn", Text: "guidance", Display: "guidance", IdempotencyKey: "guidance-request"})
+	if err != nil || queue.Receipt == nil || queue.Receipt.ItemID == "" {
+		t.Fatalf("canonical guidance: %+v %v", queue, err)
 	}
 	confirmed, err := a.LookupInboxFollowupForTarget(target, "request")
 	if err != nil || confirmed.ItemID != receipt.ItemID {

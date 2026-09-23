@@ -40,7 +40,7 @@ func beginDraftTestOperation(t *testing.T, a *App, phase string) (draftstate.Dra
 		t.Fatal(err)
 	}
 	op, _, err := a.draftStore().BeginOperation(context.Background(), draftstate.Operation{
-		ID: "operation-" + phase, DraftID: draft.ID, WorkspaceID: draft.WorkspaceID,
+		ID: "draft-op-" + phase, DraftID: draft.ID, WorkspaceID: draft.WorkspaceID,
 		DraftRevision: draft.Revision, SessionID: "session-" + phase, TopicID: "topic-" + phase,
 		SubmissionID: "submission-" + phase, Fingerprint: "fingerprint-" + phase, RequestJSON: `{}`,
 	})

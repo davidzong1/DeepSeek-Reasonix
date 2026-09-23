@@ -93,6 +93,11 @@ func (a *App) metadataProjectTopics(scope, workspaceRoot string) []ProjectNode {
 	for _, topicID := range f.DeletedTopics {
 		deleted[topicID] = true
 	}
+	if state, err := a.workspaceRegistry().Load(a.bootContext()); err == nil {
+		for topicID := range purgedCanonicalTopicIDs(state) {
+			deleted[topicID] = true
+		}
+	}
 	ids := f.GlobalTopics
 	pinnedIDs := f.GlobalPinnedTopics
 	manualOrder := f.GlobalManualTopicOrder
@@ -580,6 +585,7 @@ func (a *App) catalogTopicPage(catalog *sessioncatalog.Catalog, req ProjectTopic
 			Limit: limit, Query: req.Query, TimeFilter: req.TimeFilter, SortMode: req.SortMode,
 			ManualOrder: manualOrder, IncludeTopicIDsJSON: req.groupIncludeJSON,
 			ExcludeTopicIDsJSON: req.groupExcludeJSON, ExcludePinned: req.ExcludePinned,
+			PinnedOnly:    req.pinnedOnly,
 			CursorBinding: req.groupCursorBind,
 		})
 		if err != nil {

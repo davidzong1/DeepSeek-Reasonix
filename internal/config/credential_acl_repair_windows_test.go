@@ -102,6 +102,14 @@ func testCredentialAccessRepairsLegacyDeny(t *testing.T, operation string) {
 	if _, err := os.ReadFile(path); err == nil {
 		t.Fatal("legacy deny ACL did not block credential reads")
 	}
+	// Lock identity must be available before ACL repair, without reading the
+	// protected contents or silently lifting the deny as part of resolution.
+	if _, err := resolveConfigAccessPathUnpinned(path, true); err != nil {
+		t.Fatalf("resolve identity before credential ACL repair: %v", err)
+	}
+	if _, err := os.ReadFile(path); err == nil {
+		t.Fatal("identity resolution removed the credential read deny")
+	}
 	markerDir := filepath.Join(os.TempDir(), "windows-sandbox-denylocks")
 	if err := os.MkdirAll(markerDir, 0o700); err != nil {
 		t.Fatal(err)

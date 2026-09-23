@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
@@ -298,7 +299,7 @@ func TestRebuildMigratesSessionState(t *testing.T) {
 	oldCtrl.Close()
 }
 
-func TestRebuildImportsLegacySessionWithHostHeader(t *testing.T) {
+func TestRebuildKeepsLegacySessionNativeWithHostService(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -336,16 +337,86 @@ func TestRebuildImportsLegacySessionWithHostHeader(t *testing.T) {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	t.Cleanup(rebuilt.Controller.Close)
-	ref, ok := rebuilt.Controller.SessionRef()
-	if !ok {
-		t.Fatal("rebuilt controller has no canonical identity")
+	if _, ok := rebuilt.Controller.SessionRef(); ok || !rebuilt.Controller.NativeLegacySession() {
+		t.Fatal("rebuild converted historical storage")
 	}
-	info, err := service.Query().Stat(t.Context(), ref)
+	if rebuilt.Controller.SessionPath() != old.Controller.SessionPath() || rebuilt.Controller.SessionService() != service {
+		t.Fatal("rebuild lost native path or current-store service")
+	}
+	if got := rebuilt.Controller.History(); len(got) != 2 || got[1].Content != "legacy history" {
+		t.Fatalf("rebuild lost history: %+v", got)
+	}
+	if entries, err := os.ReadDir(storeRoot); err != nil && !os.IsNotExist(err) || len(entries) != 0 {
+		t.Fatalf("rebuild created canonical history: %v %v", entries, err)
+	}
+	other, err := session.NewService("local", session.NewFilesystemPersistence(filepath.Join(dir, "other-root")))
 	if err != nil {
-		t.Fatalf("Stat: %v", err)
+		t.Fatal(err)
 	}
-	if info.CWD != workspace || info.Origin != session.SessionOriginLegacyImport {
-		t.Fatalf("import header = cwd:%q origin:%q", info.CWD, info.Origin)
+	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	next, err := Rebuild(context.Background(), rebuilt.Controller, Options{SessionService: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(next.Controller.Close)
+	if next.Controller.SessionService() != service || next.Controller.SessionCreationService() != service || next.Controller.SessionPath() != rebuilt.Controller.SessionPath() {
+		t.Fatal("second rebuild replaced the authoritative store or creation service")
+	}
+}
+
+func TestNativeRebuildPreservesSelectedDAGHead(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeRuntimeFixture(t, dir)
+	old := buildRuntimeFixture(t)
+	t.Cleanup(old.Controller.Close)
+	path := filepath.Join(dir, "selected.jsonl")
+	s := agent.NewSession(systemMessage(old.Controller.History()))
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "question"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "main answer"})
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ForkHead(path, s.Snapshot()[1].ID, agent.HeadKindFork, "alternate"); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "alternate answer"})
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := agent.LoadSessionHeadReadOnly(path, agent.SessionMainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Controller.ResumeNativeSession(selected, path); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := Rebuild(t.Context(), old.Controller, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rebuilt.Controller.Close)
+	head, ok := rebuilt.Controller.SessionHead()
+	if !ok || head.HeadID != agent.SessionMainHead {
+		t.Fatalf("rebuild switched head: %+v", head)
+	}
+	if err := rebuilt.Controller.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := agent.LoadSessionHeadReadOnly(path, agent.SessionMainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history := reopened.Snapshot(); history[len(history)-1].Content != "main answer" {
+		t.Fatalf("rebuild overwrote selected history: %+v", history)
+	}
+	other, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history := other.Snapshot(); history[len(history)-1].Content != "alternate answer" {
+		t.Fatalf("rebuild changed default head: %+v", history)
 	}
 }
 

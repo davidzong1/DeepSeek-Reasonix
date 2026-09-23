@@ -199,18 +199,12 @@ func TestRebuildSessionCatalogFailureKeepsProjectionAndRestartsWatcher(t *testin
 		t.Fatalf("seed topic missing before failed rebuild: ok=%v err=%v", ok, err)
 	}
 	metaPath := agent.BranchMetaPath(path)
-	var metaBody []byte
-	var err error
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		metaBody, err = os.ReadFile(metaPath)
-		if err == nil && strings.Contains(string(metaBody), `"schema_version": 2`) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	metaBody, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(metaBody), `"schema_version": 2`) {
-		t.Fatalf("listing sidecar did not settle before rebuild: %v: %s", err, metaBody)
+	if strings.Contains(string(metaBody), `"schema_version": 2`) {
+		t.Fatal("metadata-only discovery unexpectedly repaired content-derived sidecars")
 	}
 
 	projectRoot := filepath.Join(t.TempDir(), "broken-project")

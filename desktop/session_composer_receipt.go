@@ -28,6 +28,6 @@ func (a *App) composerGuidanceAccepted(view SessionComposerState) (bool, error) 
 	if !ok {
 		return false, nil
 	}
-	receipt, found, err := reader.LookupInboxReceiptForSession(meta.SessionPath, view.SubmissionID)
+	receipt, found, err := reader.LookupInboxReceiptForSession(sessionRoute(view.Ref.SessionID), view.SubmissionID)
 	return found && receipt.ItemID != "", err
 }

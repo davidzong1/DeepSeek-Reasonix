@@ -16,6 +16,25 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestNativeCanonicalFollowsJunctionAndRejectsMissingImage(t *testing.T) {
+	root := t.TempDir()
+	target, alias := filepath.Join(root, "target"), filepath.Join(root, "alias")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", alias, target).CombinedOutput(); err != nil {
+		t.Fatalf("create junction: %v: %s", err, out)
+	}
+	left, err := canonical(alias)
+	right, rightErr := canonical(target)
+	if err != nil || rightErr != nil || left != right {
+		t.Fatalf("instance identity split: %q / %q, %v / %v", left, right, err, rightErr)
+	}
+	if _, err := canonical(filepath.Join(alias, "missing.exe")); !os.IsNotExist(err) {
+		t.Fatalf("missing executable accepted: %v", err)
+	}
+}
+
 func TestNativeStatusPipeValidatesIdentityAndProtocol(t *testing.T) {
 	p, err := openProcess(windows.GetCurrentProcessId(), 0)
 	if err != nil {

@@ -126,8 +126,8 @@ func TestResumeLegacySessionReturnsActiveCanonicalMirror(t *testing.T) {
 	m.runResumeCommand("/resume " + strconv.Itoa(idx))
 
 	ref, bound := ctrl.SessionRef()
-	if !bound || ref == held {
-		t.Fatalf("controller after /resume = %+v bound=%v, want the imported legacy transcript", ref, bound)
+	if bound || ctrl.SessionPath() != legacy || !ctrl.NativeLegacySession() {
+		t.Fatalf("controller after /resume = %+v bound=%v, want the native legacy transcript", ref, bound)
 	}
 	loaded := false
 	for _, msg := range ctrl.History() {

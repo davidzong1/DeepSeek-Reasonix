@@ -6,11 +6,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"reasonix/internal/historywork"
 )
 
 type sessionMetadataRead struct {
@@ -33,7 +36,7 @@ func (p *FilesystemPersistence) cachedSessionInfo(ctx context.Context, id string
 		return SessionInfo{}, err
 	}
 	id = strings.TrimSpace(id)
-	input, key, err := p.readSessionMetadata(id)
+	input, key, err := p.readSessionMetadata(ctx, id)
 	if err != nil {
 		return SessionInfo{}, err
 	}
@@ -79,7 +82,7 @@ type sessionMetadataInput struct {
 	revision        logRevision
 }
 
-func (p *FilesystemPersistence) readSessionMetadata(id string) (sessionMetadataInput, [32]byte, error) {
+func (p *FilesystemPersistence) readSessionMetadata(ctx context.Context, id string) (sessionMetadataInput, [32]byte, error) {
 	var input sessionMetadataInput
 	var zero [32]byte
 	dir, err := p.sessionDir(id, true)
@@ -95,7 +98,7 @@ func (p *FilesystemPersistence) readSessionMetadata(id string) (sessionMetadataI
 	cacheDir := filepath.Join(filepath.Dir(dir), ".query-cache", filepath.Base(dir))
 	paths := []string{filepath.Join(dir, "manifest.json"), filepath.Join(dir, sessionHeaderName), catalogMetadataPath(cacheDir)}
 	for index, path := range paths {
-		body, readErr := os.ReadFile(path)
+		body, readErr := readListingMetadata(ctx, path)
 		if index == 0 {
 			if readErr != nil {
 				if os.IsNotExist(readErr) {
@@ -136,6 +139,22 @@ func (p *FilesystemPersistence) readSessionMetadata(id string) (sessionMetadataI
 	}
 	copy(zero[:], h.Sum(nil))
 	return input, zero, nil
+}
+
+// Listing metadata is optional display information. An oversized sidecar must
+// not turn discovery into an unbounded read; its caller keeps the source as an
+// unknown/degraded entry and explicit session recovery uses its native reader.
+func readListingMetadata(ctx context.Context, path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(&historywork.Reader{Context: ctx, Source: f}, historywork.ReadChunk+1))
+	if err == nil && len(body) > historywork.ReadChunk {
+		return nil, fmt.Errorf("listing metadata exceeds read budget")
+	}
+	return body, err
 }
 
 func (in sessionMetadataInput) info(id string) (SessionInfo, error) {

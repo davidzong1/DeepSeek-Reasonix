@@ -15,6 +15,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"reasonix/internal/pathidentity"
 )
 
 var user32 = windows.NewLazySystemDLL("user32.dll")
@@ -34,11 +36,16 @@ func canonical(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
+	// Instance/process validation requires an existing path; the shared
+	// resolver also supports absent tails for creation workflows.
+	if _, err := os.Stat(absolute); err != nil {
+		return "", err
+	}
+	resolved, err := pathidentity.Resolve(absolute, pathidentity.Options{FollowLeaf: true})
 	if err != nil {
 		return "", err
 	}
-	return filepath.Clean(resolved), nil
+	return resolved.PhysicalPath, nil
 }
 
 func sameUser(handle windows.Handle) (bool, error) {

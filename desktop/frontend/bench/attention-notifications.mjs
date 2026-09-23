@@ -40,8 +40,17 @@ try {
   await input.focus();
   const selected = await readActiveSessionLabel(page);
   await page.evaluate(async () => {
+    const { app } = await import("/src/lib/bridge.ts");
+    const { installDesktopHostStub } = await import("/src/__tests__/desktopHostStub.ts");
+    const { DESKTOP_COMMANDS } = await import("/src/generated/desktopContract.generated.ts");
     const { runtimeStateStore } = await import("/src/lib/runtimeStateStore.ts");
     const { setAttentionPreference } = await import("/src/lib/sound.ts");
+    const fallback = Object.fromEntries(DESKTOP_COMMANDS.map(key => [key, app[key]]));
+    const readRuntime = async () => { window.__attentionReads++; return runtimeStateStore.getSnapshot(); };
+    window.__attentionReads = 0;
+    // Focus and periodic reads must use the same producer as the injected
+    // frames, including while the notification module is held at its gate.
+    installDesktopHostStub({ ...fallback, SyncRuntimeState: readRuntime, GetRuntimeStateSnapshot: readRuntime });
     setAttentionPreference("synth");
     window.__attentionContexts = [];
     const NativeAudioContext = window.AudioContext;
@@ -67,6 +76,9 @@ try {
     window.__publishAttention();
   });
   assert.equal(await page.evaluate(() => window.__attentionContexts.length), 0, "fixture holds the notification module until a background prompt is pending");
+  await page.evaluate(() => { window.__attentionReads = 0; window.dispatchEvent(new Event("focus")); });
+  await page.waitForFunction(() => window.__attentionReads > 0);
+  assert.equal(await page.evaluate(async () => (await import("/src/lib/runtimeStateStore.ts")).runtimeStateStore.getFailed()), false, "background prompt remains authoritative across focus synchronization");
   releaseNotificationModule();
   await page.getByText("Conversation A is waiting for your answer", { exact: true }).waitFor();
   assert.equal(await input.inputValue(), "B draft remains here while A asks");

@@ -53,6 +53,7 @@ for (const emptyHero of [true, false]) {
     { saveState: "conflict" as const },
     { saveState: "error" as const },
     { taskError: "Attachment failed" },
+    { submissionError: "Startup failed" },
   ]) {
     assert.equal(creationHeroVisible({ ...surface, ...failure }, emptyHero), false,
       "draft recovery is never collapsed by a hidden empty formal session");
@@ -94,6 +95,22 @@ try {
   /></LocaleProvider>));
   assert.ok(document.querySelector(".session-draft-attention[role=alert]"), "a conflict keeps its recovery actions visible");
   assert.equal(document.querySelectorAll(".session-draft-attention button").length, 2, "both conflict resolutions remain available");
+
+  let resumed = 0;
+  const runtimeFailure = "create session runtime: path unavailable";
+  await act(async () => root.render(<LocaleProvider><ChatPaneRegion
+    transitioning={false} t={((key: string) => key) as Translator} imDetail={null} remote={undefined}
+    draft={{ ...draftActions, onResume: () => { resumed++; }, surface: { ...surface,
+      submissionError: runtimeFailure, taskError: `Error: ${runtimeFailure}`,
+      operation: { operationId: "original", requestId: "request", draftId: surface.draft.id, submissionId: "submission", phase: "runtime_failed", revision: 1, updatedAt: 1,
+        canResume: true, canEdit: false, canCancel: true, canDiscard: false, error: runtimeFailure },
+    } }} transcript={transcript} onRetryHistory={async () => {}} commands={commands}
+  /></LocaleProvider>));
+  assert.equal(document.querySelector('[role="status"]')?.textContent, "draft.startFailed");
+  assert.equal(document.querySelectorAll(".session-draft-surface__error").length, 1, "one runtime error is rendered once");
+  assert.ok(!document.body.textContent?.includes("draft.retrySave"), "runtime recovery does not offer a save retry");
+  await act(async () => document.querySelector<HTMLButtonElement>(".session-draft-attention button")!.click());
+  assert.equal(resumed, 1, "runtime recovery retries the original submission");
 
   let discarded = 0;
   const mcpSelections: boolean[] = [];

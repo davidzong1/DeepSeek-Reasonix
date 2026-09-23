@@ -303,12 +303,13 @@ func (a *App) resolveCanonicalSessionTargetState(ref session.SessionRef, topicID
 	if target.TopicID == "" {
 		target.TopicID = topicID
 	}
-	state, loadErr := a.workspaceRegistry().Load(a.bootContext())
+	snapshot, loadErr := a.workspaceRegistry().VerifySnapshot(a.bootContext())
 	if loadErr != nil {
 		return SessionTarget{}, loadErr
 	}
-	status, registered := state.SessionStates[ref.SessionID]
-	if !registered || status.Lifecycle == workspacestate.Deleted {
+	metadata := snapshot.Session(ref.SessionID)
+	status := metadata.State
+	if !metadata.Registered || status.Lifecycle == workspacestate.Deleted {
 		return SessionTarget{}, newSessionOperationError(sessionOperationTargetNotFound, "The session no longer exists.")
 	}
 	if status.Lifecycle != workspacestate.Active && !allowArchived {
@@ -317,28 +318,15 @@ func (a *App) resolveCanonicalSessionTargetState(ref session.SessionRef, topicID
 	target.LifecycleGeneration = status.Generation
 	target.Lifecycle = status.Lifecycle
 	// Presentation belongs to this exact session, never a caller's stale topic.
-	target.TopicID = state.Presentation[ref.SessionID].TopicID
-	for id, presentation := range state.Presentation {
-		if id != ref.SessionID && target.TopicID != "" && presentation.TopicID == target.TopicID && state.SessionStates[id].Lifecycle == workspacestate.Active {
-			target.SharedTopic = true
-		}
+	target.TopicID, target.SharedTopic = metadata.Presentation.TopicID, metadata.SharedTopic
+	if metadata.OwnershipConflict {
+		return SessionTarget{}, errSessionWorkspaceConflict
 	}
-	if loadErr == nil {
-		for _, workspace := range state.Workspaces {
-			for _, id := range workspace.SessionIDs {
-				if id != ref.SessionID {
-					continue
-				}
-				target.WorkspaceRoot = workspace.Root
-				target.WorkspaceID = workspace.ID
-				target.Scope = "project"
-				if workspace.ID == "global" {
-					target.Scope, target.WorkspaceRoot = "global", ""
-				}
-				if target.TopicID == "" {
-					target.TopicID = state.Presentation[id].TopicID
-				}
-			}
+	if workspace := metadata.Workspace; workspace.ID != "" {
+		target.WorkspaceRoot, target.WorkspaceID = workspace.Root, workspace.ID
+		target.Scope = canonicalWorkspaceScope(workspace)
+		if target.Scope == "global" {
+			target.WorkspaceRoot = ""
 		}
 	}
 	if target.TopicID == "" {

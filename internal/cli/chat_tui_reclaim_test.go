@@ -79,8 +79,8 @@ func TestTakeoverOfFreeLegacySessionAfterReclaimSkipsSnapshot(t *testing.T) {
 	if m.sessionReclaimed {
 		t.Fatal("/takeover of the remembered legacy session left the TUI in reclaimed mode")
 	}
-	if _, bound := ctrl.SessionRef(); !bound {
-		t.Fatal("controller did not attach to the legacy session")
+	if ctrl.SessionPath() != legacy || !ctrl.NativeLegacySession() {
+		t.Fatal("controller did not attach to the native legacy session")
 	}
 	loaded := false
 	for _, msg := range ctrl.History() {

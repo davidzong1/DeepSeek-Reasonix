@@ -16,7 +16,7 @@ import { readTranscriptContent } from "./transcriptContentRead";
 import { appendLivePageEntries, type TranscriptWindowPage } from "./transcriptLiveWindow";
 import { RESOURCE_BUDGETS } from "./resourceBudgets";
 import { reclaimInvisibleBodies } from "./transcriptMemory";
-import { bindTranscriptSession, boundSessionKey, detachTranscriptTab, type TranscriptTabBinding } from "./transcriptSessionBinding";
+import { bindTranscriptSession, boundSessionKey, detachTranscriptTab, releaseTranscriptSessionRead, type TranscriptTabBinding } from "./transcriptSessionBinding";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 import type {
   HistoryEntry,
@@ -241,6 +241,7 @@ export class TranscriptStore {
 
   private evictSession(session: SessionTranscript): void {
     session.generation += 1; // in-flight responses discard against a missing/stale session
+    releaseTranscriptSessionRead(this.tabBindings, session);
     this.sessions.delete(session.key);
     this.historyEvictions += 1;
     if (!this.isPinned(session)) {
@@ -259,7 +260,10 @@ export class TranscriptStore {
     const evictable = (): SessionTranscript[] =>
       Array.from(this.sessions.values()).filter((s) => s.records.length > 0 && !this.isPinned(s));
     let candidates = evictable();
-    let resident = candidates.length;
+    // Pins protect owners from eviction, but their windows still occupy the
+    // same cache. Counting only evictable entries allowed an extra active
+    // window (and one more for every live tab) beyond the resident budget.
+    let resident = this.residentSessionCount();
     while (resident > this.maxResidentSessions && candidates.length > 0) {
       const victim = candidates.shift();
       if (!victim) break;

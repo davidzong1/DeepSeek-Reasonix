@@ -29,37 +29,10 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	filtered := records[:0]
-	for _, record := range records {
-		pathKey := c.pathKey(record.Path)
-		if c.pathMutationAllowed(pathKey, record.enqueueSequence) {
-			filtered = append(filtered, record)
-		}
-	}
-	records = filtered
-	if len(records) == 0 {
-		return dirtyDirectories, nil
-	}
-	if mode == upsertExactSource {
-		prepared := make([]SessionRecord, 0, len(records))
-		for _, raw := range records {
-			record, skip, projectionDirty, err := c.prepareExactPathProjection(ctx, raw)
-			if err != nil {
-				return dirtyDirectories, err
-			}
-			if projectionDirty {
-				dirtyDirectories[c.pathKey(record.Directory)] = DirectoryTarget{
-					Path: record.Directory, Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot,
-				}
-			}
-			if !skip {
-				prepared = append(prepared, record)
-			}
-		}
-		records = prepared
-		if len(records) == 0 {
-			return dirtyDirectories, nil
-		}
+	var err error
+	records, err = c.prepareUpsertRecords(ctx, records, dirtyDirectories, mode)
+	if err != nil || len(records) == 0 {
+		return dirtyDirectories, err
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -68,6 +41,7 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 	affected := map[TopicKey]struct{}{}
 	roots := map[string]struct{}{}
 	directoryGenerations := map[string]int64{}
+	changed := false
 	for _, raw := range records {
 		record := normalizeSessionRecord(raw)
 		pathKey := c.pathKey(record.Path)
@@ -80,14 +54,6 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		for _, key := range remapped {
 			affected[key] = struct{}{}
 		}
-		var previous TopicKey
-		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,workspace_root_key,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
-			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.workspaceKey, &previous.TopicID); err == nil && previous.TopicID != "" {
-			affected[previous] = struct{}{}
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			_ = tx.Rollback()
-			return dirtyDirectories, err
-		}
 		generation := int64(0)
 		if generations != nil {
 			generation = generations[record.Path]
@@ -96,6 +62,24 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 		} else {
 			_ = tx.QueryRowContext(ctx, `SELECT scan_generation FROM catalog_directories WHERE path_key=?`, directoryKey).Scan(&generation)
 			directoryGenerations[directoryKey] = generation
+		}
+		if c.opts.MetadataOnly && mode == upsertDirectoryProjection && record.metadataUnchanged && len(remapped) == 0 {
+			seen, err := refreshUnchangedMetadata(ctx, tx, record, pathKey, generation)
+			if err != nil {
+				_ = tx.Rollback()
+				return dirtyDirectories, err
+			}
+			if seen {
+				continue
+			}
+		}
+		var previous TopicKey
+		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,workspace_root_key,topic_id FROM catalog_sessions WHERE path_key=?`, pathKey).
+			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.workspaceKey, &previous.TopicID); err == nil && previous.TopicID != "" {
+			affected[previous] = struct{}{}
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return dirtyDirectories, err
 		}
 		if err := c.upsertSessionRow(ctx, tx, record, pathKey, directoryKey, generation, mode); err != nil {
 			_ = tx.Rollback()
@@ -110,6 +94,12 @@ func (c *Catalog) upsertSessionsWithNotification(ctx context.Context, records []
 			return dirtyDirectories, err
 		}
 		roots[record.WorkspaceRoot] = struct{}{}
+		changed = true
+	}
+	if !changed {
+		// Presence belongs to scan completion. An unchanged batch must not
+		// rewrite topic aggregates or make every sidebar refresh its snapshot.
+		return dirtyDirectories, tx.Commit()
 	}
 	for key := range affected {
 		if err := c.recomputeTopic(ctx, tx, key); err != nil {

@@ -82,8 +82,15 @@ func (c *Controller) AdoptHistory(msgs []provider.Message, path string) {
 				}
 				return
 			}
-			if _, err := c.ContinueLegacySession(context.Background(), path, ""); err != nil {
-				slog.Warn("controller: legacy continue into v3 failed", "path", path, "err", err)
+			loaded, err := agent.LoadSession(path)
+			if err == nil && len(msgs) > 0 {
+				loaded = loaded.CloneWithMessages(msgs)
+			}
+			if err == nil {
+				err = c.ResumeNativeSession(loaded, path)
+			}
+			if err != nil {
+				slog.Warn("controller: native legacy continue failed", "path", path, "err", err)
 				c.failTurnEventLedger(err)
 			}
 		}
@@ -112,9 +119,24 @@ func (c *Controller) AdoptHistory(msgs []provider.Message, path string) {
 	}
 }
 
-// AdoptRebuiltModelContext applies a model/settings rebuild to an already
-// bound v3 session. It changes only the provider-visible context; UI history
-// and stable message identity remain sourced from the original event stream.
+// AdoptNativeRebuiltContext retains the original format and selected head.
+func (c *Controller) AdoptNativeRebuiltContext(old *Controller, msgs []provider.Message, path string) error {
+	if old == nil || old.executor == nil || old.executor.Session() == nil {
+		return errors.New("native rebuild requires the original session")
+	}
+	// Carry the loaded format and selected DAG head, including unsaved state.
+	// Reloading the path here would select the disk's default head instead.
+	if err := c.ResumeNativeSession(old.executor.Session().CloneWithMessages(msgs), path); err != nil {
+		return err
+	}
+	if c.UsesExclusiveSession() {
+		return c.AdoptRebuiltModelContext(msgs)
+	}
+	return nil
+}
+
+// AdoptRebuiltModelContext changes only the provider-visible context of a
+// bound canonical session; display history stays on its original event stream.
 func (c *Controller) AdoptRebuiltModelContext(msgs []provider.Message) error {
 	if !c.sessionEngineEnabled() {
 		return errors.New("model-context adoption requires an exclusive v3 session")

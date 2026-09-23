@@ -19,6 +19,7 @@ type desktopPersistenceState struct {
 	sessionUI                   *sessionui.Store
 	manualCreationMu            sync.Mutex
 	manualCreationTasks         sync.WaitGroup
+	manualCreations             *manualCreationManager
 	legacyCleanup               *legacycleanup.Store
 	desktopMigrationDone        chan struct{}
 	desktopMigrationFailed      atomic.Bool
@@ -59,7 +60,6 @@ func (a *App) startDesktopPersistenceReconciliation() {
 		}
 	})
 	a.goSafe("reconcileManualSessionCreations", a.reconcileManualSessionCreations)
-	a.goSafe("reconcileDraftSubmissions", func() {
-		a.reconcileDraftSubmissionOperations()
-	})
+	// Workspace drafts are retired, including unsent content and interrupted
+	// draft submissions. Do not open or reconcile their historical database.
 }

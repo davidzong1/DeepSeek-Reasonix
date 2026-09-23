@@ -2,7 +2,6 @@ import type { RemoteTabRefView } from "../lib/types";
 import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import type { TopicShortcutEntry } from "../lib/topicShortcuts";
 import type { ProjectTreeVariant } from "../lib/projectTreeTopic";
-import type { SessionDraftSummary } from "../generated/desktopContract.generated";
 
 type ProjectTreeImTopicSource = {
   platform?: string;
@@ -31,6 +30,4 @@ export interface ProjectTreeProps {
   showShortcutBadges?: boolean;
   shortcutPlatform?: ShortcutPlatform;
   onVisibleTopicsChange?: (topics: TopicShortcutEntry[]) => void;
-  draftSummaries?: SessionDraftSummary[];
-  onOpenDraft?: (scope: string, workspaceRoot: string) => Promise<void> | void;
 }

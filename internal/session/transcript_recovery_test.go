@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -78,11 +77,10 @@ func TestTranscriptLongTurnRemainsReachableAfterBoundedEvictionAndRestart(t *tes
 		t.Fatalf("publisher exceeded resident budget: total=%d page=%d error=%v", before.TotalRecords, len(before.Records), err)
 	}
 	ref, query := runtime.Ref(), service.Query()
-	// Materialize the locator synchronously so this reachability regression
-	// does not depend on the unrelated asynchronous index polling budget.
-	indexCtx, cancelIndex := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancelIndex()
-	if _, _, err := query.prepareHistoryIndex(indexCtx, ref); err != nil {
+	// Test reachability under the package timeout, not a disk-speed cutoff.
+	// Materialize synchronously; history_preparation_test independently covers
+	// nonblocking readers while an index rebuild is pending.
+	if _, _, err := query.prepareHistoryIndex(t.Context(), ref); err != nil {
 		t.Fatal(err)
 	}
 	seen := make(map[string]provider.Message)

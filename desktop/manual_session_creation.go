@@ -1,13 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +13,6 @@ import (
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/identitylock"
 	"reasonix/internal/session"
 )
 
@@ -27,15 +24,16 @@ type ManualSessionCreationRequest struct {
 }
 
 type ManualSessionCreationView struct {
-	OperationID   string               `json:"operationId"`
-	WorkspaceID   string               `json:"workspaceId"`
-	Scope         string               `json:"scope"`
-	WorkspaceRoot string               `json:"workspaceRoot"`
-	Ref           session.SessionRef   `json:"ref"`
-	TopicID       string               `json:"topicId"`
-	Phase         string               `json:"phase"`
-	Error         string               `json:"error,omitempty"`
-	Settings      SessionDraftSettings `json:"settings"`
+	OperationID   string                  `json:"operationId"`
+	WorkspaceID   string                  `json:"workspaceId"`
+	Scope         string                  `json:"scope"`
+	WorkspaceRoot string                  `json:"workspaceRoot"`
+	Ref           session.SessionRef      `json:"ref"`
+	TopicID       string                  `json:"topicId"`
+	Phase         string                  `json:"phase"`
+	Error         string                  `json:"error,omitempty"`
+	Settings      SessionDraftSettings    `json:"settings"`
+	Progress      *ManualCreationProgress `json:"progress,omitempty"`
 }
 
 func (a *App) sessionUIStore() *sessionui.Store {
@@ -48,6 +46,7 @@ func (a *App) sessionUIStore() *sessionui.Store {
 }
 
 func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (result ManualSessionCreationView, err error) {
+	defer func() { result = a.creationView(result) }()
 	defer func() { err = sessionUIError(err, req.WorkspaceID, req.OperationID) }()
 	if a.shuttingDown.Load() {
 		return ManualSessionCreationView{}, errors.New("application is shutting down")
@@ -85,6 +84,9 @@ func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (resu
 		if view.WorkspaceID != workspaceID {
 			return view, workspacestate.ErrMutationConflict
 		}
+		if view.Phase == "reserved" || view.Phase == "starting" {
+			a.creationManager().Ensure(id, "begin", "")
+		}
 		return view, nil
 	}
 	scope, root := canonicalWorkspaceScope(w), w.Root
@@ -106,16 +108,20 @@ func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (resu
 		if err == nil && view.WorkspaceID != workspaceID {
 			err = workspacestate.ErrMutationConflict
 		}
+		if err == nil && (view.Phase == "reserved" || view.Phase == "starting") {
+			a.creationManager().Ensure(id, "begin", "")
+		}
 		return view, err
 	}
 	if err != nil {
 		return view, err
 	}
-	a.startManualCreationWorker(record)
+	a.creationManager().Ensure(record.Key, "begin", "")
 	return view, nil
 }
 
 func (a *App) GetManualSessionCreation(operationID string) (result ManualSessionCreationView, err error) {
+	defer func() { result = a.creationView(result) }()
 	defer func() { err = sessionUIError(err, "", operationID) }()
 	r, err := a.sessionUIStore().Get(a.bootContext(), "creation", operationID)
 	var view ManualSessionCreationView
@@ -130,6 +136,7 @@ func (a *App) GetManualSessionCreation(operationID string) (result ManualSession
 }
 
 func (a *App) RetryManualSessionCreation(operationID string) (result ManualSessionCreationView, err error) {
+	defer func() { result = a.creationView(result) }()
 	defer func() { err = sessionUIError(err, "", operationID) }()
 	r, err := a.sessionUIStore().Get(a.bootContext(), "creation", operationID)
 	var view ManualSessionCreationView
@@ -145,56 +152,17 @@ func (a *App) RetryManualSessionCreation(operationID string) (result ManualSessi
 	if view.Phase != "failed" && view.Phase != "reserved" && view.Phase != "starting" {
 		return view, nil
 	}
-	a.startManualCreationWorker(r)
+	a.creationManager().Ensure(r.Key, "retry", r.Revision)
 	return view, nil
 }
 
-func (a *App) runManualSessionCreation(record sessionui.Record) {
-	var view ManualSessionCreationView
-	if json.Unmarshal(record.Payload, &view) != nil {
-		return
-	}
-	lockRoot := filepath.Join(filepath.Dir(a.sessionUIStore().Path()), "manual-creation-locks")
-	if err := os.MkdirAll(lockRoot, 0700); err != nil {
-		a.failManualCreation(record, view, err)
-		return
-	}
-	release, err := identitylock.TryAcquire(filepath.Join(lockRoot, view.Ref.SessionID+".lock"))
-	if err != nil {
-		if !errors.Is(err, identitylock.ErrHeld) {
-			a.failManualCreation(record, view, err)
-		}
-		return
-	}
-	defer release()
-	current, err := a.sessionUIStore().Get(a.bootContext(), "creation", view.OperationID)
-	if err != nil || current.Revision != record.Revision {
-		return
-	}
-	view.Phase, view.Error = "starting", ""
-	payload, _ := json.Marshal(view)
-	record, err = a.sessionUIStore().Save(a.bootContext(), "creation", view.OperationID, record.Revision, payload)
-	if err != nil {
-		return
-	}
-	err = a.createManualSessionRuntime(view)
-	view.Phase = "ready"
-	if err != nil {
-		view.Phase, view.Error = "failed", sessionOperationErrorForTarget(err, view.Ref.SessionID, view.OperationID).Error()
-	}
-	payload, _ = json.Marshal(view)
-	if _, saveErr := a.sessionUIStore().Save(a.bootContext(), "creation", view.OperationID, record.Revision, payload); saveErr != nil {
-		slog.Warn("desktop: persist manual creation result", "operation", view.OperationID, "err", saveErr)
-	}
-	a.emitProjectTreeChanged()
-}
-
-func (a *App) createManualSessionRuntime(view ManualSessionCreationView) error {
-	tab, err := a.reserveManualSessionTab(view)
+func (a *App) createManualSessionRuntime(ctx context.Context, view ManualSessionCreationView, report func(string)) error {
+	tab, err := a.reserveManualSessionTab(ctx, view, report)
 	if err != nil {
 		return err
 	}
-	err = a.startManualSessionTab(tab)
+	report("building_runtime")
+	err = a.startManualSessionTab(ctx, tab, report)
 	if err == nil {
 		a.mu.Lock()
 		tab.PendingCreateOperationID = ""
@@ -204,12 +172,16 @@ func (a *App) createManualSessionRuntime(view ManualSessionCreationView) error {
 	return err
 }
 
-func (a *App) reserveManualSessionTab(view ManualSessionCreationView) (*WorkspaceTab, error) {
+func (a *App) reserveManualSessionTab(ctx context.Context, view ManualSessionCreationView, report func(string)) (*WorkspaceTab, error) {
+	report("waiting_runtime")
 	defer a.lockRuntimeMutation("reserve manual session")()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if a.shuttingDown.Load() {
 		return nil, errors.New("application is shutting down")
 	}
-	ctx := a.bootContext()
+	report("preparing_storage")
 	state, err := a.workspaceRegistry().Load(ctx)
 	if err != nil {
 		return nil, err

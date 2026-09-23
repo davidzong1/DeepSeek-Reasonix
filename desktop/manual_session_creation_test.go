@@ -15,10 +15,15 @@ func newManualSessionTestApp(t *testing.T) *App {
 	a.ctx = t.Context()
 	installNoopRuntimeEvents(a)
 	t.Cleanup(func() {
-		a.manualCreationTasks.Wait()
+		if err := a.stopManualCreations(); err != nil {
+			t.Fatal(err)
+		}
 		for _, tab := range a.tabs {
 			if tab.Ctrl != nil {
 				tab.Ctrl.Close()
+				if closed, ok := tab.Ctrl.(interface{ Closed() <-chan struct{} }); ok {
+					<-closed.Closed()
+				}
 			}
 		}
 		a.closeSessionServices()
@@ -143,7 +148,7 @@ func TestManualCreationCancelledBuildRetainsIdentityForRetry(t *testing.T) {
 	close(release)
 	a.manualCreationTasks.Wait()
 	failed, err := a.GetManualSessionCreation(operation.OperationID)
-	if err != nil || failed.Phase != "failed" || failed.Ref != operation.Ref {
+	if err != nil || failed.Phase != "starting" || failed.Ref != operation.Ref {
 		t.Fatalf("cancelled creation=%+v %v", failed, err)
 	}
 	a.shuttingDown.Store(false)

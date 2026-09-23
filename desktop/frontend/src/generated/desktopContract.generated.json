@@ -1710,6 +1710,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "BeginSessionHistoryReadForTab",
+      "owner": "App.BeginSessionHistoryReadForTab",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionHistoryReadHandle"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "tabID"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.BeginSessionHistoryReadForTab"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/bot_runtime_app.go",
       "name": "BotRuntimeStatus",
       "owner": "App.BotRuntimeStatus",
@@ -4518,6 +4544,25 @@
       },
       "sources": [
         "desktop/goal_diagnostics_export.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/manual_creation_export.go",
+      "name": "ExportManualCreationDiagnostics",
+      "owner": "App.ExportManualCreationDiagnostics",
+      "params": [],
+      "result": {
+        "kind": "string"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.ExportManualCreationDiagnostics"
+      },
+      "sources": [
+        "desktop/manual_creation_export.go"
       ]
     },
     {
@@ -7844,6 +7889,40 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "LocateSessionHistoryMessage",
+      "owner": "App.LocateSessionHistoryMessage",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "integer"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "session.MessageLocation"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id",
+          "messageID",
+          "snapshot"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.LocateSessionHistoryMessage"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/session_history_service.go",
       "name": "LocateSessionMessageForTab",
       "owner": "App.LocateSessionMessageForTab",
@@ -10517,6 +10596,99 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "ReadSessionHistoryOutline",
+      "owner": "App.ReadSessionHistoryOutline",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "object",
+          "ref": "session.HistoryOutlineRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "session.HistoryOutlinePage"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id",
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadSessionHistoryOutline"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "ReadSessionHistorySlice",
+      "owner": "App.ReadSessionHistorySlice",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "object",
+          "ref": "main.HistorySliceRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.SessionHistoryReadSlice"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id",
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadSessionHistorySlice"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "ReadSessionHistoryWindow",
+      "owner": "App.ReadSessionHistoryWindow",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "object",
+          "ref": "session.HistoryWindowRequest"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "session.HistoryWindowPage"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id",
+          "req"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReadSessionHistoryWindow"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/attachment_targets.go",
       "name": "RebindDraftImageForTarget",
       "owner": "App.RebindDraftImageForTarget",
@@ -10885,6 +11057,27 @@
       },
       "sources": [
         "desktop/read_snapshot_store.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "ReleaseSessionHistoryRead",
+      "owner": "App.ReleaseSessionHistoryRead",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "scope": {
+        "inputs": [
+          "id"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ReleaseSessionHistoryRead"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
       ]
     },
     {
@@ -15734,6 +15927,44 @@
       },
       "sources": [
         "desktop/session_history_service.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/session_history_binding.go",
+      "name": "SearchSessionHistoryRead",
+      "owner": "App.SearchSessionHistoryRead",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "integer"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "session.SearchHistoryPage"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "id",
+          "text",
+          "cursor",
+          "limit"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SearchSessionHistoryRead"
+      },
+      "sources": [
+        "desktop/session_history_binding.go"
       ]
     },
     {
@@ -23367,6 +23598,13 @@
             },
             "kind": "nullable"
           }
+        },
+        {
+          "name": "storageBackend",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
         }
       ]
     },
@@ -26922,6 +27160,52 @@
           "optional": true,
           "type": {
             "kind": "string"
+          }
+        }
+      ]
+    },
+    "historywork.Diagnostics": {
+      "fields": [
+        {
+          "name": "foregroundActive",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "backgroundActive",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "backgroundSlices",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "instrumentedReadBytes",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "instrumentedReadCalls",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "canceledReadCheckpoints",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "lastBackgroundSliceMs",
+          "type": {
+            "kind": "number"
           }
         }
       ]
@@ -30762,6 +31046,13 @@
     "main.HistoryContentRef": {
       "fields": [
         {
+          "name": "readHandleId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "entryId",
           "type": {
             "kind": "string"
@@ -31357,6 +31648,19 @@
           }
         },
         {
+          "name": "hasNewer",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "newerCursor",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "totalTurns",
           "type": {
             "kind": "integer"
@@ -31440,6 +31744,51 @@
           "name": "bytes",
           "type": {
             "kind": "integer"
+          }
+        },
+        {
+          "name": "newer",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "anchor",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "turn",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "messageId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "generation",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "snapshotSequence",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "integer"
+            },
+            "kind": "nullable"
           }
         }
       ]
@@ -32617,6 +32966,54 @@
         }
       ]
     },
+    "main.ManualCreationProgress": {
+      "fields": [
+        {
+          "name": "status",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "stage",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "stageStartedAt",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "elapsedMs",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "nextRetryAt",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "errorCode",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "slow",
+          "type": {
+            "kind": "boolean"
+          }
+        }
+      ]
+    },
     "main.ManualSessionCreationRequest": {
       "fields": [
         {
@@ -32704,6 +33101,17 @@
           "type": {
             "kind": "object",
             "ref": "main.SessionDraftSettings"
+          }
+        },
+        {
+          "name": "progress",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "main.ManualCreationProgress"
+            },
+            "kind": "nullable"
           }
         }
       ]
@@ -38354,6 +38762,17 @@
     "main.SessionArchitectureDiagnostics": {
       "fields": [
         {
+          "name": "historyMaintenance",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "object",
+              "ref": "historywork.Diagnostics"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
           "name": "readSnapshots",
           "optional": true,
           "type": {
@@ -39408,6 +39827,54 @@
           "name": "done",
           "type": {
             "kind": "boolean"
+          }
+        }
+      ]
+    },
+    "main.SessionHistoryReadHandle": {
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "storageBackend",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "sessionGeneration",
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
+          "name": "capabilities",
+          "type": {
+            "elem": {
+              "kind": "string"
+            },
+            "kind": "array"
+          }
+        }
+      ]
+    },
+    "main.SessionHistoryReadSlice": {
+      "fields": [
+        {
+          "name": "status",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "page",
+          "type": {
+            "kind": "object",
+            "ref": "main.HistorySlice"
           }
         }
       ]
@@ -47227,6 +47694,13 @@
           }
         },
         {
+          "name": "messageId",
+          "optional": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
           "name": "before",
           "type": {
             "kind": "integer"
@@ -47478,6 +47952,13 @@
         },
         {
           "name": "stale",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "notFound",
+          "optional": true,
           "type": {
             "kind": "boolean"
           }

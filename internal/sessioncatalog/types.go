@@ -11,10 +11,11 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
+	"reasonix/internal/historywork"
 )
 
 const (
-	SchemaVersion       = 13
+	SchemaVersion       = 15
 	repairEngineVersion = 1
 	DefaultLimit        = 50
 	MaxLimit            = 200
@@ -88,14 +89,28 @@ type Options struct {
 	Path          string
 	InMemory      bool
 	DisableRepair bool
-	MissingGrace  time.Duration
-	QueueCapacity int
-	Now           func() time.Time
-	OnRevision    func(uint64, []string, string)
+	// MetadataOnly never reads transcripts or repairs content as a side effect
+	// of discovering sessions. Explicit content readers own that work.
+	MetadataOnly bool
+	// DeferredMetadataIntegrity is restricted to advisory metadata catalogs.
+	// The owner must replace the catalog after Invalidated closes.
+	DeferredMetadataIntegrity bool
+	RevisionFloor             uint64
+	StartPaused               bool // Desktop resumes discovery after the shell and watchers are ready.
+	Maintenance               *historywork.Coordinator
+	MissingGrace              time.Duration
+	QueueCapacity             int
+	Now                       func() time.Time
+	OnRevision                func(uint64, []string, string)
+	// OnDiscovery observes root admission and scan boundaries without source
+	// paths or content. It must return promptly and must not call the catalog.
+	OnDiscovery func(DiscoveryEvent)
 	// repairSession replaces the filesystem repair. Open installs it before
 	// starting repairLoop, so scheduler tests can drive the real wake path
 	// without racing the hook assignment.
-	repairSession func(context.Context, string) (agent.SessionListingRepairResult, error)
+	repairSession     func(context.Context, string) (agent.SessionListingRepairResult, error)
+	verifyMetadata    func(context.Context) error
+	waitMetadataRetry func(context.Context, time.Duration) error
 }
 
 type DirectoryTarget struct {
@@ -129,6 +144,7 @@ type SessionRecord struct {
 	Path              string `json:"path"`
 	pathKey           string
 	enqueueSequence   uint64
+	metadataUnchanged bool
 	Directory         string     `json:"directory"`
 	Scope             string     `json:"scope"`
 	WorkspaceRoot     string     `json:"workspaceRoot,omitempty"`
@@ -226,6 +242,7 @@ type TopicPageRequest struct {
 	IncludeTopicIDsJSON string `json:"-"`
 	ExcludeTopicIDsJSON string `json:"-"`
 	ExcludePinned       bool   `json:"-"`
+	PinnedOnly          bool   `json:"-"`
 	CursorBinding       string `json:"-"`
 	// ManualOrder makes sort_order the primary key within each pinned bucket.
 	// It is intentionally request-scoped: users who have never reordered keep
@@ -257,7 +274,7 @@ type SessionPage struct {
 }
 
 // DefaultPath is the disposable cache file under CacheDir ("" when unavailable).
-// v9.sqlite isolates path-identity-v2 keys from older writers.
+// v10.sqlite isolates progressive maintenance state from older writers.
 // Session JSONL/WAL/sidecars remain authoritative and older binaries may keep
 // using their own disposable cache without cross-writing this one.
 func DefaultPath() string {
@@ -265,5 +282,5 @@ func DefaultPath() string {
 	if cache == "" {
 		return ""
 	}
-	return filepath.Join(cache, "session-catalog", "v9.sqlite")
+	return filepath.Join(cache, "session-catalog", "v10.sqlite")
 }

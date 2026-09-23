@@ -61,7 +61,7 @@ func (c *Catalog) HasWorkspaceRecords(ctx context.Context, scope, workspaceRoot 
 	}
 	scope, workspaceRoot = normalizeScope(scope, workspaceRoot)
 	var n int
-	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_sessions WHERE scope=? AND workspace_root_key=? AND missing_since=0`,
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_sessions WHERE scope=? AND workspace_root_key=? AND missing_since=0 LIMIT 1)`,
 		scope, c.workspaceRootKey(scope, workspaceRoot)).Scan(&n)
 	return err == nil && n > 0
 }

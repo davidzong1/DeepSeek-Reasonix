@@ -121,9 +121,9 @@ try {
   calls.length = 0; preparationReads = 0;
   const legacy = api.enqueueNavigation({ kind: "resume-session", session: { scope: "global", topicId: "legacy-topic", title: "Legacy", path: "legacy.jsonl",
     source: { hostId: "local", sourceKey: "legacy", path: "legacy.jsonl" } } as SessionMeta });
-  await finish("legacy-topic", legacy);
-  assert.ok(calls.includes("prepare:legacy"), "legacy navigation prepares through the shared coordinator");
-  assert.equal(preparationReads, 2, "navigation polls revisioned preparation until ready");
+	await finish("legacy-topic", legacy);
+	assert.ok(!calls.includes("prepare:legacy"), "legacy navigation opens the source without implicit conversion");
+	assert.equal(preparationReads, 0, "normal navigation never polls a migration task");
 
   calls.length = 0; preparationReads = 0;
   const sidebarRequest = projectTreeTopicOpenRequest({ kind: "global_topic", key: "cold-v4", label: "Cold v4",
@@ -131,9 +131,9 @@ try {
   assert.ok(sidebarRequest?.sessionPath?.startsWith("session-source:"), "headless canonical sources keep their explicit identity");
   const sidebar = api.enqueueNavigation({ kind: "topic", ...sidebarRequest! });
   const sidebarIntent = intent;
-  await finish("cold-topic", sidebar);
-  assert.ok(calls.includes("prepare:cold-v4"), "sidebar uses the same preparation owner as history");
-  assert.equal(preparationReads, 2);
+	await finish("cold-topic", sidebar);
+	assert.ok(!calls.includes("prepare:cold-v4"), "sidebar opens the historical source without implicit conversion");
+	assert.equal(preparationReads, 0);
   assert.equal(acceptedTopics.at(-1), sidebarIntent, "prepared sidebar navigation retains topic acceptance");
 
   calls.length = 0;

@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	goaldomain "reasonix/internal/goal"
+	"reasonix/internal/provider"
 	"reasonix/internal/session"
 	"reasonix/internal/tool"
 )
@@ -43,6 +44,8 @@ func TestGoalDiagnosticExportReadsCompleteDurableV3Log(t *testing.T) {
 	exec := agent.New(nil, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
 	c := newOwnedTestController(t, Options{Executor: exec, Sink: event.Discard, SessionService: service, SessionRuntime: runtime, ExclusiveSession: true})
 	t.Cleanup(c.Close)
+	c.recordProviderRequest("turn-diagnostic", provider.RequestObservation{ID: 1, Phase: "request_started"})
+	c.recordProviderRequest("turn-diagnostic", provider.RequestObservation{ID: 1, Phase: "body_received", BodyBytes: 13740})
 	payload, err := c.ExportGoalDiagnostics(t.Context(), GoalDiagnosticMetadata{ApplicationVersion: "1.2.3", BuildCommit: "abc", ProtocolVersion: 4, Capabilities: []string{"goal-lifecycle-v2"}})
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +57,18 @@ func TestGoalDiagnosticExportReadsCompleteDurableV3Log(t *testing.T) {
 	var document map[string]any
 	if err := json.Unmarshal(payload, &document); err != nil {
 		t.Fatalf("diagnostic export is not valid JSON: %v\n%s", err, text)
+	}
+	transport, ok := document["providerDiagnostics"].(map[string]any)
+	if !ok {
+		t.Fatal("missing provider diagnostics export")
+	}
+	requests, ok := transport["requests"].([]any)
+	if !ok || len(requests) != 1 {
+		t.Fatalf("transport requests = %#v", transport["requests"])
+	}
+	request := requests[0].(map[string]any)
+	if request["turnId"] != "turn-diagnostic" || request["phase"] != "body_received" || request["bodyBytes"] != float64(13740) {
+		t.Fatalf("transport evidence changed during export: %#v", request)
 	}
 	for _, want := range []string{`"schemaVersion": 1`, `"applicationVersion": "1.2.3"`, `"sessionCodec": "` + session.Codec + `"`, `"full diagnostic output`, `"goal-lifecycle-v2"`, `"activationChanges"`, `"activation": "armed"`, `"inferred": true`, `"persistenceStatus": "ready"`, `"unavailable"`} {
 		if !strings.Contains(text, want) {

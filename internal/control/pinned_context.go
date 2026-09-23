@@ -99,6 +99,10 @@ func (c *Controller) runModelTurn(ctx context.Context, input string) error {
 	if c == nil || c.runner == nil {
 		return nil
 	}
+	turnID := c.RuntimeStatus().TurnID
+	ctx = provider.WithRequestObserver(ctx, func(observation provider.RequestObservation) {
+		c.recordProviderRequest(turnID, observation)
+	})
 	if c.goals.active() {
 		ctx = agent.WithContinuationPolicy(ctx, agent.ContinuationExplicitFlow)
 	}

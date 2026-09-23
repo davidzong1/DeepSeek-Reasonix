@@ -41,13 +41,12 @@ try {
  assert.equal(JSON.parse((await backend.GetSessionComposerState(b)).contentJson).text,"attachment completed");
  await act(async()=>resumeSessionComposerEditing());
 
- // A second writer cannot silently replace either input.
+ // A second writer must not replace what this window is editing.
  const prior=await backend.GetSessionComposerState(b);
  await backend.SaveSessionComposerState({ref:b,expectedRevision:prior.revision,contentJson:'{"text":"other window"}',contentVersion:1});
  await act(async()=>patch("local window"));
- await act(async()=>{await assert.rejects(flushAllSessionComposers(),/another window/);});
- assert.equal(editor.blocked,true);
- await act(async()=>editor.keepLocal());
+ await persist();
+ assert.equal(editor.blocked,false);
  assert.equal(JSON.parse((await backend.GetSessionComposerState(b)).contentJson).text,"local window");
 
  // A lost response preserves input and must never call the send callback again.

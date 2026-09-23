@@ -8,6 +8,9 @@ import (
 
 // ListProjectTopics surfaces topic-state failures instead of hiding them as empty pages.
 func (a *App) ListProjectTopics(req ProjectTopicPageRequest) (ProjectTopicPage, error) {
+	if catalog := a.sessionCatalog.Load(); catalog != nil {
+		catalog.PrioritizeWorkspace(req.Scope, req.WorkspaceRoot)
+	}
 	// Remote roots come from Serve and must never map to local metadata paths.
 	if strings.HasPrefix(strings.TrimSpace(req.WorkspaceRoot), "remote-project:") {
 		return ProjectTopicPage{Items: []ProjectNode{}}, nil

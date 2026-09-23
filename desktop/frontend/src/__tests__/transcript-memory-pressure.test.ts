@@ -57,4 +57,26 @@ await canonicalStore.requestFullContent("canonical", "owner", "content");
 canonicalStore.noteActiveTab("other", "canonical");
 assert.ok(removedTool, "reclamation publishes removal of tool rows revealed by an expanded canonical body");
 assert.ok(canonicalStore.isResident("canonical", "/canonical"), "structural reclamation preserves the live session");
+{
+  const backend = new FakeBackend([{ role: "user", content: "u" }, { role: "assistant", content: "a" }]);
+  const store = new TranscriptStore(backend, { maxResidentSessions: 3 });
+  let previous: string | undefined;
+  for (let i = 0; i < 8; i++) {
+    const tab = `active-${i}`;
+    store.noteActiveTab(tab, previous);
+    await store.loadLatest(tab, `/s/${i}.jsonl`);
+    assert.equal(store.residentSessionCount(), Math.min(i + 1, 3), "continuous navigation includes active window in resident cap");
+    assert.equal(store.isResident(tab, `/s/${i}.jsonl`), true, "active reader is protected");
+    previous = tab;
+  }
+  const protectedStore = new TranscriptStore(backend, { maxResidentSessions: 1 });
+  for (const tab of ["running-a", "running-b"]) {
+    protectedStore.setPinned(tab, true);
+    await protectedStore.loadLatest(tab, `/s/${tab}`);
+  }
+  assert.equal(protectedStore.residentSessionCount(), 2, "budget pressure does not evict live execution owners");
+  protectedStore.setPinned("running-a", false);
+  assert.equal(protectedStore.residentSessionCount(), 1, "ending a live pin immediately restores the cache budget");
+}
+
 console.log("transcript memory pressure: passed");

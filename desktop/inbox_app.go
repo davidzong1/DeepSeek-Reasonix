@@ -195,8 +195,9 @@ func (a *App) EnqueueInboxSteer(tabID, display, submit, idempotency string) (Inb
 
 // EnqueueInboxSteerForTurn durably records guidance while ensuring its
 // mid-turn injection is fenced to the exact turn observed by the frontend.
-// A raced completion keeps the item as a follow-up instead of steering the
-// replacement turn.
+// This legacy tab-only API cannot establish ownership after the observed turn
+// ends, so it must reject that case. New callers use InboxQueueForTarget for
+// session-fenced durable follow-up fallback even after turn completion.
 func (a *App) EnqueueInboxSteerForTurn(tabID, turnID, display, submit, idempotency string) (InboxReceiptView, error) {
 	turnID = strings.TrimSpace(turnID)
 	if turnID == "" {

@@ -2,7 +2,7 @@
 //
 // Ticketed topic activation (StartTopicActivation + "topic:activation"
 // events): rapid A→B→C navigation with out-of-order lifecycle events hydrates
-// only the last click; a terminal "failed" surfaces the hydrate-error UI; a
+// only the last click; runtime failure leaves independent history readable; a
 // terminal event that beats the ticket resolution is stashed and replayed;
 // the legacy agent:ready flow and the tab:meta refresh push still work.
 
@@ -29,6 +29,7 @@ import type {
   WireEvent,
 } from "../lib/types";
 import { installDesktopHostStub } from "./desktopHostStub";
+import { makeMockSessionReaderBindings } from "../lib/sessionReaderBridge";
 
 let passed = 0;
 let failed = 0;
@@ -135,7 +136,7 @@ const effort: EffortInfo = { supported: true, current: "auto", default: "auto", 
 const balance: BalanceInfo = { available: false, display: "" };
 const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
-const tabA = tabMeta("tab-a", { active: true });
+const tabA = tabMeta("tab-a", { active: true, ready: false });
 const tabB = tabMeta("tab-b");
 const tabC = tabMeta("tab-c");
 const tabR = tabMeta("tab-r", { running: true, cancellable: true });
@@ -154,6 +155,9 @@ let historyGate: { tabId: string; promise: Promise<void> } | undefined;
 const transientHistoryFailures = new Map<string, { remaining: number; beforeThrow?: () => Promise<void> }>();
 let failSetActiveTabId = "";
 let restoredTabSeq = 0;
+let followStarts = 0;
+const followTabs: string[] = [];
+const readerBindings = makeMockSessionReaderBindings();
 
 function emitActivation(event: TopicActivationEvent): void {
   desktopStub.emit("topic:activation", event);
@@ -172,6 +176,14 @@ function hasHistory(tabID: string): boolean {
 const desktopStub = installDesktopHostStub(({
   main: {
     App: {
+      async TranscriptFollowForTab(tabID, request) {
+        if (!request.subscription && !request.close) {
+          followStarts++;
+          followTabs.push(tabID);
+          if (tabsById.get(tabID)?.startupErr) throw new Error("runtime lease blocked");
+        }
+        return readerBindings.TranscriptFollowForTab.call(this, tabID, request);
+      },
       RegisterNavigationIntent: async () => {},
       ListTabs: async () => Array.from(tabsById.values()).map((tab) => ({ ...tab, active: tab.id === backendActiveId })),
       MetaForTab: async (tabID: string) => metaFor(tabsById.get(tabID) ?? tabA),
@@ -192,7 +204,8 @@ const desktopStub = installDesktopHostStub(({
           await transientFailure.beforeThrow?.();
           throw new Error("session runtime is still publishing its history");
         }
-        return historySliceFromMessages(tabID, historyFor(tabID), req);
+        return historySliceFromMessages(tabID, historyFor(tabID), req,
+          tabsById.get(tabID)?.startupErr ? { digest: `native-digest-${tabID}` } : {});
       },
       HistoryCheckpointTurnsForTab: async () => [],
       StartTopicActivation: async (req: TopicActivationRequest) => {
@@ -244,6 +257,14 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("initial tab", () => controller?.activeTabId === "tab-a" && hasHistory("tab-a"));
+eq(controller?.state.meta?.ready, false, "startup history is readable while execution is still recovering");
+eq(controller?.state.hydrating, false, "cold startup settles the history window independently");
+ok(controller?.state.transcriptProtocol !== 2, "cold startup does not invent a live Follow subscription");
+tabsById.set(tabA.id, { ...tabA, ready: true });
+await act(async () => { desktopStub.emit("agent:ready", tabA.id); await flushPromises(); });
+await waitFor("startup live handoff", () => controller?.state.transcriptProtocol === 2 && controller.state.meta?.ready === true);
+eq(controller?.state.items.filter(item => item.kind === "user" && item.text === "history tab-a").length, 1,
+  "runtime handoff replaces the cold cut without duplicating history");
 
 // ── rapid A→B→C with out-of-order events: only C hydrates ──────────────────
 await act(async () => {
@@ -312,12 +333,43 @@ await act(async () => {
   emitActivation({ requestId: requestIdByTab.get(tabB.id) ?? "", tabId: tabB.id, phase: "failed" });
   await flushPromises();
 });
-ok(Boolean(controller?.state.hydrateError), "runtime failure before history does not falsely report a readable cut");
+eq(controller?.state.hydrateError, undefined, "runtime failure is not a history read failure");
+eq(controller?.state.hydrating, true, "history preparation continues after runtime failure");
+tabsById.set(tabB.id, { ...tabB, ready: false, startupErr: "lease blocked", runtime: { phase: "lease_blocked", epoch: "blocked" } });
+const followsBeforeBlockedRefresh = followStarts;
+const readsBeforeBlockedRefresh = historyRequests;
+await act(async () => { desktopStub.emit("agent:ready", tabB.id); await flushPromises(); });
+eq(followStarts, followsBeforeBlockedRefresh, "blocked metadata refresh never starts live Follow");
+eq(historyRequests, readsBeforeBlockedRefresh, "blocked metadata refresh joins the pending cold read");
 await act(async () => { releaseHistory(); await flushPromises(); });
 await waitFor("history succeeds after runtime failure", () => hasHistory(tabB.id));
 eq(controller?.state.hydrateError, undefined, "a late valid baseline clears the history error");
 eq(controller?.state.meta?.ready, false, "late history cannot clear the failed runtime write fence");
 historyGate = undefined;
+const readsAfterBlockedHistory = historyRequests;
+const itemsAfterBlockedHistory = JSON.stringify(controller?.state.items);
+const mutationAfterBlockedHistory = controller?.state.historyMutation.seq;
+await act(async () => { await controller?.syncActiveTab(false, true, { preserveCachedHistory: true }); });
+eq(historyRequests, readsAfterBlockedHistory, "settled blocked metadata refresh keeps the certified window without a latest-page read");
+eq(JSON.stringify(controller?.state.items), itemsAfterBlockedHistory, "passive blocked refresh preserves the reader's current items");
+eq(controller?.state.historyMutation.seq, mutationAfterBlockedHistory, "passive blocked refresh does not publish another history replacement");
+const blockedFollowsBeforeRebuild = followTabs.filter(id => id === tabB.id).length;
+await act(async () => {
+  desktopStub.emit("runtime:rebuilt", tabB.id, "blocked-rebuilt");
+  desktopStub.emit("runtime:rebuilt");
+  await flushPromises();
+});
+eq(followTabs.filter(id => id === tabB.id).length, blockedFollowsBeforeRebuild, "rebuild notifications do not follow a blocked runtime");
+ok(hasHistory(tabB.id), "rebuild notifications retain independent readable history");
+// An actual read error, independently of execution recovery, settles locally.
+getTranscriptStore().evictTab(tabB.id);
+failedHistoryTabId = tabB.id;
+await act(async () => { await controller?.activateTopic("project", tabB.workspaceRoot, tabB.topicId ?? ""); await flushPromises(); });
+await waitFor("cold read error", () => Boolean(controller?.state.hydrateError));
+eq(controller?.activeTabId, tabB.id, "cold read error keeps the selected blocked session");
+eq(controller?.state.hydrating, false, "cold read failure does not leave a permanent skeleton");
+failedHistoryTabId = "";
+tabsById.set(tabB.id, tabB);
 
 await act(async () => {
   await controller?.activateTopic("project", tabC.workspaceRoot, tabC.topicId ?? "");

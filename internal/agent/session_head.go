@@ -22,6 +22,19 @@ type sessionHeadState struct {
 	openTurn  *sessionDAGTurn
 }
 
+// clone retains execution identity without sharing the mutable replay cache.
+// Pending entries are turn markers containing only scalar fields.
+func (h sessionHeadState) clone() sessionHeadState {
+	h.state = nil
+	h.events = slices.Clone(h.events)
+	h.pending = slices.Clone(h.pending)
+	if h.openTurn != nil {
+		turn := *h.openTurn
+		h.openTurn = &turn
+	}
+	return h
+}
+
 // HeadEvent reports a head-level fact a save discovered; the controller turns
 // it into a user-facing notice.
 type HeadEvent struct {

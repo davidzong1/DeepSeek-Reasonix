@@ -148,15 +148,16 @@ func TestTopicIndexReusesOrderAndObservesPresentationChanges(t *testing.T) {
 	}
 }
 
-func TestCatalogWatchSettledRootsStayCleanAndUnavailableRootsRetry(t *testing.T) {
+func TestCatalogWatchSettledAndUnavailableRootsWaitForRotatingAudit(t *testing.T) {
 	good, missing := t.TempDir(), t.TempDir()
+	good, missing = canonicalWorkspaceRoot(good), canonicalWorkspaceRoot(missing)
 	targets := []sessioncatalog.DirectoryTarget{{Path: good}, {Path: missing}}
 	watched, dirty := map[string]bool{good: true}, map[string]bool{}
 	current := refreshCatalogWatchTargets(nil, nil, targets, watched, dirty)
 	clear(dirty)
 	current = refreshCatalogWatchTargets(nil, current, targets, watched, dirty)
-	if dirty[good] || !dirty[missing] {
-		t.Fatalf("idle watched root scanned or fallback lost: %v", dirty)
+	if len(dirty) != 0 {
+		t.Fatalf("metadata refresh bypassed the rotating discovery audit: %v", dirty)
 	}
 	current = refreshCatalogWatchTargets(nil, current, targets[:1], watched, dirty)
 	if len(current) != 1 || dirty[missing] {

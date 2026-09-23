@@ -21,7 +21,7 @@ import { useAppRuntimeAdapter } from "./app-runtime/useAppRuntimeAdapter";
 import { useAppShellStores } from "./app-runtime/useAppShellStores";
 import { useAppSessionComposition } from "./app-runtime/useAppSessionComposition";
 import { useAppNavigationComposition } from "./app-runtime/useAppNavigationComposition";
-import { useSessionDraftSurface } from "./app-runtime/useSessionDraftSurface";
+import { useSessionComposerLifecycle } from "./app-runtime/useSessionComposerLifecycle";
 import { useRetiredProjectTreeUiMigration } from "./app-runtime/useLocalUiLifecycles";
 import logoSymbol from "./assets/logo-symbol.svg";
 
@@ -116,18 +116,7 @@ export function AppRuntime() {
   const refreshComposerFileRefs = useCommittedCommand(() => setFileRefRefreshKey((value) => value + 1));
   const composerFileRefRefreshKey = `${dockRefreshKey}:${fileRefRefreshKey}`;
   const [projectRevision, setProjectRevision] = useState(0);
-  const acceptedDraftSessionRef = useRef<((ref: import("./lib/sessionRef").SessionRef) => Promise<void>) | null>(null);
-  const openAcceptedDraftSession = useCommittedCommand(async (ref: import("./lib/sessionRef").SessionRef) => {
-    await acceptedDraftSessionRef.current?.(ref);
-  });
-  const markDraftChanged = useCommittedCommand(() => setProjectRevision((value) => value + 1));
-  const drafts = useSessionDraftSurface({
-    onAccepted: openAcceptedDraftSession,
-    onChanged: markDraftChanged,
-    claimNavigationIntent: runtime.navigation.noteNavigationIntent,
-    currentNavigationIntent: runtime.navigation.currentNavigationIntent,
-    isNavigationIntentCurrent: runtime.navigation.isNavigationIntentCurrent,
-  });
+  useSessionComposerLifecycle();
 
   const session = useAppSessionComposition({
     runtime,
@@ -168,7 +157,6 @@ export function AppRuntime() {
       setSidebarImDetailConnectionId, setTasksOpen,
     },
     session,
-    draft: drafts,
   });
   const openCleanupTrash = useCommittedCommand(() => navigation.historyCommands.openTrash());
   const cleanupNoticeBatchRef = useRef("");
@@ -197,7 +185,6 @@ export function AppRuntime() {
     void app.GetLegacyEmptySessionCleanupStatus().then(showCleanupNotice).catch(() => {});
     return () => { live = false; unsubscribe(); };
   }, [openCleanupTrash, showToast, t]);
-  acceptedDraftSessionRef.current = navigation.navigationCommands.openCanonicalSession;
 
   return (
     <Suspense fallback={<AppRuntimeViewFallback />}>
@@ -210,7 +197,6 @@ export function AppRuntime() {
       session={session}
       navigation={navigation}
       runtime={runtime}
-      draft={drafts}
       local={{
         tasksOpen, setTasksOpen,
         sidebarImDetailConnectionId, setSidebarImDetailConnectionId,

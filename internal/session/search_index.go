@@ -72,7 +72,7 @@ func (q *Query) SearchHistory(ctx context.Context, ref SessionRef, textQuery, cu
 	}
 	path := searchIndexPath(filesystem.Root, ref.SessionID)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		preparation := q.prepareSearchIndex(filesystem, ref.SessionID, path)
+		preparation := q.prepareSearchIndex(filesystem, ref.SessionID, path, ctx)
 		select {
 		case <-preparation.done:
 			if preparation.err != nil {
@@ -146,25 +146,51 @@ func (q *Query) SearchHistory(ctx context.Context, ref SessionRef, textQuery, cu
 	return page, nil
 }
 
-func (q *Query) prepareSearchIndex(filesystem *FilesystemPersistence, sessionID, path string) *searchPreparation {
+func (q *Query) prepareSearchIndex(filesystem *FilesystemPersistence, sessionID, path string, callers ...context.Context) *searchPreparation {
 	q.searchMu.Lock()
 	if current := q.searchBuilds[sessionID]; current != nil {
-		q.searchMu.Unlock()
-		return current
+		select {
+		case <-current.done:
+			if !errors.Is(current.err, context.Canceled) {
+				q.searchMu.Unlock()
+				return current
+			}
+		default:
+			q.searchMu.Unlock()
+			return current
+		}
 	}
 	preparation := &searchPreparation{done: make(chan struct{})}
 	q.searchBuilds[sessionID] = preparation
 	q.searchMu.Unlock()
+	q.rebuildMu.Lock()
+	if q.closed {
+		q.rebuildMu.Unlock()
+		preparation.err = context.Canceled
+		close(preparation.done)
+		return preparation
+	}
+	q.rebuildWG.Add(1)
+	q.rebuildMu.Unlock()
+	ctx := q.historyReadContext(sessionID, callers...)
 	go func() {
-		if err := q.slots.acquire(q.rebuildCtx, rebuildPrioritySearch); err != nil {
+		defer q.rebuildWG.Done()
+		if err := q.slots.acquire(ctx, rebuildPrioritySearch); err != nil {
 			preparation.err = err
 			close(preparation.done)
 			return
 		}
 		defer q.slots.release()
+		release, err := q.acquireHistoryPreparation(ctx)
+		if err != nil {
+			preparation.err = err
+			close(preparation.done)
+			return
+		}
+		defer release()
 		lock := q.projectionLock("search", sessionID)
 		lock.Lock()
-		preparation.err = ensureSearchIndex(q.rebuildCtx, filesystem, sessionID, path)
+		preparation.err = ensureSearchIndex(ctx, filesystem, sessionID, path)
 		lock.Unlock()
 		close(preparation.done)
 	}()

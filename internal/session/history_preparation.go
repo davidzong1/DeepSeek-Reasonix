@@ -25,7 +25,7 @@ func (q *Query) historyLocatorReady(ctx context.Context, filesystem *FilesystemP
 	if current {
 		return true, nil
 	}
-	preparation := q.prepareHistoryLocator(filesystem, sessionID, path)
+	preparation := q.prepareHistoryLocator(filesystem, sessionID, path, ctx)
 	select {
 	case <-preparation.done:
 		return preparation.err == nil, preparation.err

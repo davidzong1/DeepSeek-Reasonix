@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reasonix/internal/historywork"
 )
 
 func preflightSessionEventMessages(ctx context.Context, path string, raw []byte, existingMessages, existingCollectionItems int, limits sessionReplayLimits) (messageCount, collectionItems int, err error) {
@@ -107,6 +108,9 @@ type contextReader struct {
 func (r *contextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
+	}
+	if len(p) > historywork.ReadChunk {
+		p = p[:historywork.ReadChunk]
 	}
 	return r.reader.Read(p)
 }

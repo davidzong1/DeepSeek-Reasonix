@@ -239,8 +239,22 @@ func TestNewSessionWaitsForPinAndClearsItsResult(t *testing.T) {
 	if len(state.Files) != 0 || len(tab.GetPinnedFiles()) != 0 {
 		t.Fatalf("new session inherited racing pin: sidecar=%v cache=%v", state.Files, tab.GetPinnedFiles())
 	}
-	if _, err := os.Stat(store.SessionPinnedContext(tab.currentSessionPath())); err != nil {
-		t.Fatalf("new session did not write an empty pinned sidecar: %v", err)
+	identity, ok := tab.Ctrl.(control.IdentityLifecycle)
+	if !ok || !identity.UsesExclusiveSession() {
+		t.Fatal("new session did not enter the current store")
+	}
+	ref, bound := identity.SessionRef()
+	if !bound {
+		t.Fatal("new session has no durable identity")
+	}
+	history, err := identity.SessionService().Query().History(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range history {
+		if agent.IsPinnedContextRevision(message) {
+			t.Fatal("new session persisted the racing pin")
+		}
 	}
 	if got := tab.Ctrl.SystemPrompt(); got == "" || strings.Contains(got, "<pinned_context>") {
 		t.Fatalf("new controller retained pinned prompt: %q", got)

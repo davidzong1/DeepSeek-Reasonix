@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,6 +15,24 @@ import (
 	"reasonix/internal/tool"
 	"reasonix/internal/transcript"
 )
+
+func TestTranscriptFollowSupportsLegacyProjection(t *testing.T) {
+	c := newOwnedTestController(t, Options{SessionPath: filepath.Join(t.TempDir(), "legacy.jsonl"), Sink: event.Discard})
+	t.Cleanup(c.Close)
+	response, err := c.TranscriptFollow(t.Context(), transcript.FollowRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ProtocolVersion != transcript.FollowProtocolVersion || response.Subscription == "" || response.Snapshot == nil {
+		t.Fatalf("legacy follow response = %+v", response)
+	}
+	if response.History != nil {
+		t.Fatalf("legacy follow unexpectedly materialized canonical history: %+v", response.History)
+	}
+	if _, err := c.TranscriptFollow(context.Background(), transcript.FollowRequest{Subscription: response.Subscription, Close: true}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTranscriptReplayResetsOversizedWirePage(t *testing.T) {
 	for _, body := range []string{strings.Repeat("x", 2<<20), strings.Repeat("<", 400000)} {

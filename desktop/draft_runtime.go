@@ -152,7 +152,7 @@ func (a *App) prepareDraftRuntime(op draftstate.Operation, settings SessionDraft
 }
 
 func (a *App) lockDraftRuntimePublication(operationID string) (func(), error) {
-	if operationID == "" {
+	if !strings.HasPrefix(operationID, "draft-op-") {
 		return func() {}, nil
 	}
 	release, err := a.draftStore().PublicationLease(a.bootContext(), operationID)
@@ -160,10 +160,6 @@ func (a *App) lockDraftRuntimePublication(operationID string) (func(), error) {
 		return nil, err
 	}
 	op, err := a.draftStore().Operation(a.bootContext(), operationID)
-	if errors.Is(err, draftstate.ErrOperationNotFound) && !strings.HasPrefix(operationID, "draft-op-") {
-		release()
-		return func() {}, nil
-	}
 	if err != nil || op.Phase != "starting" {
 		release()
 		if err != nil {
