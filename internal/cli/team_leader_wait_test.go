@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -564,5 +565,54 @@ func TestLeaderWaitHoldsNoLockTheFramePathNeeds(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the parked wait was not released by the teardown")
+	}
+}
+
+// TestLeaderWaitStatesItsBoundsWhereTheModelCanSeeThem pins the fix for a real
+// failure: a leader called leader_wait with a short timeout_seconds, the schema
+// refused it as "minimum", and the model had no way to know the floor because
+// neither the description nor the violation text named it. The bounds must be
+// legible in all three places a model or a reader can look.
+func TestLeaderWaitStatesItsBoundsWhereTheModelCanSeeThem(t *testing.T) {
+	service, _ := leaderWaitFixture(t)
+	wait := leaderWaitToolFrom(t, service)
+	minSeconds, maxSeconds := int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds())
+
+	// 1. The description — what a model reads when deciding the arguments.
+	desc := wait.Description()
+	for _, want := range []string{strconv.Itoa(minSeconds), strconv.Itoa(maxSeconds)} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description does not state the bound %s:\n%s", want, desc)
+		}
+	}
+
+	// 2. The schema's own property description, not just its numeric keywords.
+	var doc struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(wait.Schema(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	property := doc.Properties["timeout_seconds"]
+	if !strings.Contains(property.Description, strconv.Itoa(minSeconds)) {
+		t.Errorf("schema property description does not state the floor:\n%s", property.Description)
+	}
+
+	// 3. The refusal itself, which is all a model sees when the call is blocked
+	// before execution.
+	result := tool.ValidateArguments(wait, json.RawMessage(`{"timeout_seconds":60}`))
+	if len(result.Violations) != 1 || result.Violations[0].Keyword != "minimum" {
+		t.Fatalf("below-floor call violations = %+v, want one minimum violation", result.Violations)
+	}
+	if got := result.Violations[0].Expected; !strings.Contains(got, strconv.Itoa(minSeconds)) || !strings.Contains(got, "60") {
+		t.Errorf("the minimum violation must name the floor and the value it received, got %q", got)
+	}
+
+	// The constants and the prose cannot drift apart: both are generated from
+	// the same two values, so a bound change moves every one of the three.
+	if minSeconds >= maxSeconds {
+		t.Fatalf("floor %d is not below ceiling %d", minSeconds, maxSeconds)
 	}
 }

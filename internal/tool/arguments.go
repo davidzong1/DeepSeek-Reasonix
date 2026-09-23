@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"strconv"
 	"strings"
 	"sync"
@@ -268,6 +269,14 @@ func expectedForErrorKind(errorKind jsonschema.ErrorKind) string {
 		return "one of: " + boundedSchemaValues(k.Want)
 	case *kind.Const:
 		return "constant: " + boundedSchemaValue(k.Want)
+	case *kind.Minimum:
+		return "at least " + ratText(k.Want) + " (got " + ratText(k.Got) + ")"
+	case *kind.Maximum:
+		return "at most " + ratText(k.Want) + " (got " + ratText(k.Got) + ")"
+	case *kind.ExclusiveMinimum:
+		return "greater than " + ratText(k.Want) + " (got " + ratText(k.Got) + ")"
+	case *kind.ExclusiveMaximum:
+		return "less than " + ratText(k.Want) + " (got " + ratText(k.Got) + ")"
 	case *kind.MinProperties:
 		return "at least " + strconv.Itoa(k.Want) + " properties"
 	case *kind.MaxProperties:
@@ -298,6 +307,20 @@ func boundedSchemaValue(value any) string {
 		return "declared schema value"
 	}
 	return truncateASCII(string(b), 256)
+}
+
+// ratText renders a schema bound as the model wrote it. The bound arrives as a
+// big.Rat because JSON numbers have no width; an integral value prints without a
+// decimal point ("1200", not "1200/1"), which matters because the model has to
+// copy it back verbatim.
+func ratText(v *big.Rat) string {
+	if v == nil {
+		return "the declared bound"
+	}
+	if v.IsInt() {
+		return truncateASCII(v.Num().String(), 64)
+	}
+	return truncateASCII(v.FloatString(6), 64)
 }
 
 func lastKeyword(path []string) string {

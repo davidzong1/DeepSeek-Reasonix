@@ -99,12 +99,16 @@ func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []t
 // A host that wired no bus still gets a bounded wait rather than a stuck one:
 // the timeout is the wait's own, not a configuration.
 func newLeaderWaitTool(service *teamTaskService, teamName, leaderID string) tool.Tool {
-	const desc = "Block until the team reports something worth acting on (a member result, a cancellation, a refused dispatch, a queued escalation, or new user input), then return the reasons. " +
+	// The bounds are stated in the prose as well as the schema: a model that reads
+	// only the description invents a short wait, which the schema then refuses
+	// before anything runs. Both come from the same constants.
+	minSeconds, maxSeconds := int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds())
+	desc := "Block until the team reports something worth acting on (a member result, a cancellation, a refused dispatch, a queued escalation, or new user input), then return the reasons. " +
 		"Use this instead of sleeping in bash or re-reading leader_check_member_status: the reason arrives in this result, so waking costs no extra request. " +
 		"User text sent while this wait is blocked is guidance for the current task, applied at the next step, not a new task. " +
-		"Returns timeout when nothing arrived before timeout_seconds."
-	schema := fmt.Sprintf(`{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":%d,"maximum":%d,"description":"Seconds to wait before returning timeout. Defaults to %d."}},"additionalProperties":false}`,
-		int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds()), int(leaderWaitDefaultTimeout.Seconds()))
+		fmt.Sprintf("Returns timeout when nothing arrived before timeout_seconds, which defaults to %d and must be between %d and %d; omit it unless the wait genuinely needs to be shorter.", minSeconds, minSeconds, maxSeconds)
+	schema := fmt.Sprintf(`{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":%d,"maximum":%d,"description":"Seconds to wait before returning timeout. Defaults to %d; must be between %d and %d."}},"additionalProperties":false}`,
+		minSeconds, maxSeconds, minSeconds, minSeconds, maxSeconds)
 	return &leaderWaitTool{
 		teamTaskTool: &teamTaskTool{name: "leader_wait", desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, memberID: leaderID, leader: true},
 		signal:       leaderWaitSignalSource(service),
