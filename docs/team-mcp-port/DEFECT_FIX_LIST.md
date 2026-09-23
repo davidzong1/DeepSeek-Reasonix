@@ -15,6 +15,8 @@ Delete this file once the sweep lands.
 U2 also depended on D1 and D2 below: both make a member genuinely not run while the
 board still says `working`.
 
+| U3 | done | Members keep printing `Bash #blocked: the current constraints forbid state mutation` in their context history; 12 `member_publish_deliverable` refusals in one team alone, and the member had to report "cannot provide deliverable id" | Two causes: (a) the member's turn text **is** the leader's order (`[task: id]\n<desc>` + peer-written board view) and it was parsed as user instruction text in `withPlannerTurnMetadata`/`beginRunTurn`, so an order clause starting with 只读 ("只读审计…") became a turn-wide `ForbidMutation`; (b) under the ban, `MutatesState()` is true whenever the classifier cannot prove a call read-only, so ordinary audits (`git -c … status`, `ls | awk`, `pytest --collect-only`, `python3 -c`) were refused as "state mutation" and the refusal read like a decision instead of a guess |
+
 ## P0 — confirmed reproducible
 
 | ID | Status | Defect | Location |

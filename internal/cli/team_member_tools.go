@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/runtimepolicy"
 	"reasonix/internal/team"
 	"reasonix/internal/tool"
 )
@@ -101,7 +102,8 @@ func newLeaderWaitTool(service *teamTaskService, teamName string) tool.Tool {
 	const desc = "Block until the team reports something worth acting on (a member result, a cancellation, a refused dispatch, a queued escalation, or new user input), then return the reasons. " +
 		"Use this instead of sleeping in bash or re-reading leader_check_member_status: the reason arrives in this result, so waking costs no extra request. " +
 		"Returns timeout when nothing arrived before timeout_seconds."
-	const schema = `{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":1,"maximum":600,"description":"Seconds to wait before returning timeout. Defaults to 120."}},"additionalProperties":false}`
+	schema := fmt.Sprintf(`{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":%d,"maximum":%d,"description":"Seconds to wait before returning timeout. Defaults to %d."}},"additionalProperties":false}`,
+		int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds()), int(leaderWaitDefaultTimeout.Seconds()))
 	return &leaderWaitTool{
 		teamTaskTool: &teamTaskTool{name: "leader_wait", desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, leader: true},
 		signal:       leaderWaitSignalSource(service),
@@ -187,7 +189,8 @@ func (t *teamTaskTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("task %s assigned to %s (status=%s)", assignment.TaskID, assignment.MemberID, assignment.Status), nil
+		return fmt.Sprintf("task %s assigned to %s (status=%s)", assignment.TaskID, assignment.MemberID, assignment.Status) +
+			dispatchConstraintNotice(ctx), nil
 	case "leader_assign_task_to_relevant":
 		selected, roles, err := t.service.selectMembers(p.Task, p.RequiredRoles)
 		if err != nil {
@@ -257,7 +260,29 @@ func (t *teamTaskTool) assignToRelevant(ctx context.Context, selected, roles []s
 	// distinct files instead of serializing them on the team write token.
 	return fmt.Sprintf("task assigned to %s (roles=%s)%s",
 		strings.Join(assigned, ", "), strings.Join(roles, ", "),
-		fanoutWriteAreas(payload, len(assigned))), nil
+		fanoutWriteAreas(payload, len(assigned))) + dispatchConstraintNotice(ctx), nil
+}
+
+// dispatchConstraintNotice warns the leader when its own turn forbids mutation.
+//
+// A member's turn carries no constraint of its own: its text is host-framed, so
+// the order's wording never binds it (see runtimepolicy.DispatchFramed). That is
+// the right rule, but it means an implementation order sent from a read-only
+// leader turn silently contradicts the ban the leader is running under — the
+// member writes where the user said not to. Nobody but the leader can resolve
+// that, so the assignment result says so at dispatch time instead of letting the
+// member burn a turn discovering it.
+func dispatchConstraintNotice(ctx context.Context) string {
+	constraints, ok := runtimepolicy.FromContext(ctx)
+	if !ok || constraints.AllowsMutation() {
+		return ""
+	}
+	reason := "this turn forbids mutation"
+	if constraints.PlanModeReadOnly {
+		reason = "plan mode is read-only"
+	}
+	return "\nnote: " + reason + ", and a dispatched member is not bound by it — its turn text is host-framed. " +
+		"If the work must be written, resolve that state first (leave Plan mode / re-issue without the read-only instruction) before relying on the result."
 }
 
 // execRedrive routes the leader's three recovery tools onto their service

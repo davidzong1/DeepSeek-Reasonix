@@ -58,6 +58,12 @@ func plannerTurnMetadataFromContext(ctx context.Context) (plannerTurnMetadata, b
 func (c *Controller) withPlannerTurnMetadata(ctx context.Context, userText string, synthetic bool, priorMessages int) context.Context {
 	text := strings.TrimSpace(agent.StripTransientUserBlocks(userText))
 	constraints := runtimepolicy.ParseConstraints(runtimepolicy.StripQuotedConstraints(text))
+	if runtimepolicy.DispatchFramed(ctx) {
+		// A host-dispatched work order is not a user instruction: see
+		// runtimepolicy.DispatchFramed. The dispatching turn owns the user's
+		// constraints, so this turn derives none from the order's wording.
+		constraints = runtimepolicy.Constraints{}
+	}
 	planMode := c.PlanMode()
 	if planMode {
 		constraints.PlanModeReadOnly = true

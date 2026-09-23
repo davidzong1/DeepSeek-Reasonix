@@ -83,7 +83,9 @@ func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 	}
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "Hello answer"}) // answer begins → block collapses
-	if len(m.transcript) != 2 || !strings.Contains(m.transcript[0], "thought for") {
+	// Three blocks: the collapsed summary, the separator, and the live answer
+	// block the first chunk opens (the answer streams in as it arrives).
+	if len(m.transcript) != 3 || !strings.Contains(m.transcript[0], "thought for") {
 		t.Fatalf("block should collapse to a duration summary plus answer separator, transcript=%v", m.transcript)
 	}
 	if strings.TrimSpace(m.transcript[1]) != "" {
@@ -99,7 +101,7 @@ func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 		t.Errorf("reasoning buffer should be cleared after commit")
 	}
 
-	m.commitPending() // turn end
+	m.commitPending() // turn end: the same block, now carrying the whole answer
 	if len(m.transcript) != 3 || !strings.Contains(m.transcript[2], "Hello") {
 		t.Fatalf("answer should commit as a separate entry, transcript=%v", m.transcript)
 	}
@@ -167,7 +169,9 @@ func TestVerboseReasoningInsertsTextUnderSummary(t *testing.T) {
 	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "step two"})
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "Answer"}) // closes the block
 
-	if len(m.transcript) != 3 {
+	// Four blocks: the summary, the verbose text, the answer separator, and the
+	// live answer block the first chunk opens.
+	if len(m.transcript) != 4 {
 		t.Fatalf("verbose block should be summary + text + answer separator, transcript=%v", m.transcript)
 	}
 	if !strings.Contains(m.transcript[0], "thought for") {
@@ -206,8 +210,9 @@ func TestIngestEventFlushesAnswer(t *testing.T) {
 }
 
 // TestStreamAnswerFlushesCompletedParagraphs proves a multi-paragraph answer
-// appears chunk by chunk: a closed paragraph renders to scrollback while the
-// still-streaming one stays buffered, and turn end flushes the remainder.
+// appears chunk by chunk: a closed paragraph renders to scrollback and the
+// paragraph still being written follows it as a live preview, and turn end
+// replaces the preview with the whole answer.
 func TestStreamAnswerFlushesCompletedParagraphs(t *testing.T) {
 	m := newTestChatTUI()
 
@@ -219,8 +224,13 @@ func TestStreamAnswerFlushesCompletedParagraphs(t *testing.T) {
 	if !strings.Contains(joined, "First paragraph.") {
 		t.Errorf("completed paragraph should be on screen, transcript=%v", m.transcript)
 	}
-	if strings.Contains(joined, "Second para") {
-		t.Errorf("the still-streaming paragraph must stay buffered, transcript=%v", m.transcript)
+	// The in-progress paragraph is painted too: withholding it until its blank
+	// line arrives is what made a paragraph answer look frozen and then jump.
+	if !strings.Contains(joined, "Second para") {
+		t.Errorf("the streaming paragraph should be previewed live, transcript=%v", m.transcript)
+	}
+	if !strings.Contains(joined, "First paragraph.") {
+		t.Errorf("the preview must keep the closed block above it, transcript=%v", m.transcript)
 	}
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "is done now."})

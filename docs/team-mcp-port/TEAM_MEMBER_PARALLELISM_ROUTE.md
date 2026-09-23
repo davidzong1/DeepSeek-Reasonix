@@ -821,3 +821,77 @@ go test -race <targeted concurrency tests>
 5. A/B 合并后新增一组跨段并发回归用例，再决定是否启动预热 backend 或其他不在本轮范围的优化。
 
 最终验收标准应从“两个 Agent 各自通过定向测试”提升为：**文件边界无越界、跨段 API 有记录、运行时并发契约可证明、合并后全量门禁通过。**
+
+---
+
+## 8. 并发是否影响「思考速度」——数据面判据（2026-09-23）
+
+§2 已证明**仓库侧**无跨成员互斥（provider 路径零 mutex/semaphore、`maxParallel` 是 per-controller 局部量、
+pump 非阻塞、无背压）。本节回答剩下的一半：**如果现场确实变慢，用现有数据能不能判读、怎么判读。**
+
+### 8.1 结论先行：时间戳在数据面上不存在，TTFT 无法构造
+
+| 面 | 是否有时间 | 证据 |
+| --- | --- | --- |
+| `event.Event` | **无时间字段** | `internal/event/event.go` 全部 Kind 无 TS |
+| `trajectory.Record` | 有 `TS`（`internal/trajectory/recorder.go:27`），**但成员后端不写 trajectory** | 全仓 `trajectory.` 在 `internal/boot/`、`internal/control/` 零命中；只在 `internal/cli/run_sink.go:56` 由 CLI 的 `--trajectory` 装配 |
+| `provider.Message`（落盘 transcript） | **无时间字段** | `internal/provider/provider.go:46-66` |
+| `session.Manifest` | 仅 `CreatedAt` | `internal/session/store.go:67` |
+| `owner` 元数据 | `UpdatedAt`/`CreatedAt`，**只在历史身份变更时推进** | `internal/team/ownerstore.go:96,104` |
+| `board_events` | 有 `created_at` 列，**但全部为空** | 实测 `0001-01-01T00:00:00Z` |
+
+因此「TTFT vs 并发成员数」这条曲线**无法从现有数据构造**。要从 transcript 反推只能退到文件 mtime，
+那是「最后一次写入」而非「首次 token」。→ 该判据**需要先新增采集**（见 §8.5）。
+
+### 8.2 现有唯一可用的判据：`stats` 的 `requests / usage 行`
+
+`provider.Usage.RequestCount` 计数**逻辑流上每一个 HTTP 请求，含 header 重试与安全重连**
+（`internal/provider/retry.go:91-99`），并被归集进 stats（`internal/stats/recorder.go:269`）。
+故 **`requests / usage 行` 就是「每次逻辑请求实际发了几次 HTTP」**——直接回答「上游有没有在打回我们」。
+
+### 8.3 实测基线（本机全部历史，2026-08-22 → 09-23，3,987 条 usage 行）
+
+| 指标 | 值 |
+| --- | --- |
+| `requests / usage 行` | **1.036** |
+| 其中 `requests == 1` 的行 | 3,883 / 3,987（**97.4%**） |
+| `requests == 2` | 91 |
+| `requests >= 3` | 13（最大 11） |
+| 输入缓存命中率（全部） | **84.9%** |
+| 含 ≥2 个不同 model 的分钟 vs 其余分钟 | `requests/行` **1.026 vs 1.051**；命中率 **87.9% vs 80.5%** |
+| 最活跃日 09-22（1,990 行 / 3 model） | `requests/行` **1.028**，命中率 **92.9%** |
+
+**判读：并发窗口的 `requests/行` 与命中率都不比单 model 窗口差**（命中率反而更高，是长会话的缓存效应）。
+即**本机没有上游限流或配额打回的证据**：真有 429/5xx 重试时该比值会显著 >1。
+
+**必须写明的读数陷阱**：`requests/行 = 24.158`（若按 turn 标记行算）**是错的**。
+usage 行是**按流**记录的（一个 turn 内每次工具调用后都发一次请求、各记一行），
+turn 标记行只标记 turn 边界。做基线时分子分母必须同口径。同理 `requests/行 = 1.036` 这个数
+**不因该缺口而虚高**——缺失的恰好是「零请求即失败」的行，它们只会**拉低**分子。
+
+### 8.4 现场判读表
+
+| 观察 | 结论 | 依据 |
+| --- | --- | --- |
+| `requests/行` 稳定在 1.0x | 上游没有打回，本地也没有排队 | §8.3 |
+| `requests/行` 随团队活跃度上升 | 上游在打回（限流/配额），看 429 与 `retry-after` | `internal/provider/retry.go:198-201` |
+| `requests/行` 平稳但 UI 卡 | 帧线程，回到 Part A 残留项 | §3.1 |
+| 某成员整个变慢/换模型 | 配额耗尽触发 failover，**不是限流** | `internal/provider/quota.go`、`internal/cli/team_failover.go` |
+
+实时旁证：`Retrying` 事件（`internal/agent/agent.go:1339-1341`）带 attempt/max，现场能直接看到；
+但它**不是受保护事件**（`internal/event/event.go` 的 `memberEventProtected` 名单里没有它），
+队列溢出时会被淘汰，也不落账。
+
+### 8.5 新增节点 T1：TTFT / 重试落账（独立立项，需拍板）
+
+要让 §8.1 那条曲线存在，最小改动是在 agent 的流式入口记
+「请求发出 → 首个 `Text`/`Reasoning` delta」的间隔，并作为 `Usage` 的旁路字段落进 trajectory 或 stats。
+
+- **不属 Part A/Part B**：它是**新增可观测性**，不改并发语义、不动帧路径。
+- **前置拍板**：① 落 trajectory 还是 stats；② 是否只在 `--trajectory` 开启时采集；
+③ 字段是否进入 provider 可见前缀（**不应进入**，它只是遥测）。
+- **验收**：一条用例证明该字段在正常流、重试流、以及「零 delta 即失败」三种路径下都被正确填写。
+
+| 节点 | 主题 | 所属 | 状态 | 证据 |
+| --- | --- | --- | --- | --- |
+| T1 | TTFT / 重试落账 | 独立（新增可观测性） | **未开始（阻塞于拍板）** | 本节 §8.5 |

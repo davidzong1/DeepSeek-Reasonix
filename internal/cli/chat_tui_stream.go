@@ -50,6 +50,7 @@ func (m *chatTUI) clearTranscriptDisplay() {
 	m.toolTail = nil
 	m.toolPartial = ""
 	m.toolLineCount = 0
+	m.resetAnswerStream()
 }
 
 // scrollChunkHeight is the largest block (in lines) finalize prints at once in
@@ -715,80 +716,6 @@ func (m *chatTUI) commitReasoningBeforeAnswer() {
 	if hadReasoning {
 		m.commitSpacer()
 	}
-}
-
-// streamAnswer renders the answer streamed so far up to its last completed
-// paragraph (flushableMarkdownPrefix) and writes it as one transcript block,
-// rewritten in place as later paragraphs land — so a long reply appears chunk by
-// chunk instead of all at once on turn end. The trailing, still-streaming block
-// stays buffered (a half-written fence/list never renders early), and it only
-// re-renders when a new paragraph actually closes.
-func (m *chatTUI) streamAnswer() {
-	if m.nativeScrollback {
-		return
-	}
-	prefix := flushableMarkdownPrefix(m.pending.String())
-	if len(prefix) <= m.answerFlushed {
-		return
-	}
-	source := transcriptSource{kind: transcriptSourceMarkdown, raw: prefix}
-	m.answerFlushed = len(prefix)
-	if m.answerIdx < 0 {
-		m.answerIdx = len(m.transcript)
-		m.commitTranscriptSource(source)
-	} else {
-		// setTranscriptBlock invalidates the wrap suffix from answerIdx so the
-		// next Update only re-wraps the live answer block — not the full history.
-		block := m.renderTranscriptSource(source, m.width)
-		m.setTranscriptBlock(m.answerIdx, block, source)
-	}
-}
-
-// commitPending freezes the full accumulated answer as markdown — overwriting the
-// streamed block if one is open (streamAnswer), else committing fresh. Joining
-// commitReasoning then commitPending puts the answer on its own line, restoring
-// the thinking→answer break the renderer strips.
-func (m *chatTUI) commitPending() {
-	if m.pending.Len() == 0 {
-		m.answerIdx = -1
-		m.answerFlushed = 0
-		return
-	}
-	raw := m.pending.String()
-	source := transcriptSource{kind: transcriptSourceMarkdown, raw: raw}
-	if m.answerIdx < 0 {
-		m.commitTranscriptSource(source)
-	} else {
-		block := m.renderTranscriptSource(source, m.width)
-		m.setTranscriptBlock(m.answerIdx, block, source)
-	}
-	m.pending.Reset()
-	m.answerIdx = -1
-	m.answerFlushed = 0
-}
-
-// flushableMarkdownPrefix returns the longest prefix of buf made of complete
-// markdown blocks — text up to the last blank line outside any open fenced code
-// block. A blank line inside a ``` / ~~~ fence isn't a boundary, so a half-written
-// code block stays buffered until it closes.
-func flushableMarkdownPrefix(buf string) string {
-	lines := strings.Split(buf, "\n")
-	inFence := false
-	boundary := -1
-	for i, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
-			inFence = !inFence
-			continue
-		}
-		if !inFence && t == "" {
-			boundary = i
-		}
-	}
-	if boundary <= 0 {
-		return ""
-	}
-	return strings.Join(lines[:boundary], "\n")
 }
 
 // finalizeStreamed freezes any in-progress reasoning + answer into scrollback so

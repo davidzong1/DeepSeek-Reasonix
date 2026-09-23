@@ -1549,7 +1549,8 @@ func TestRecoveryPauseTurnDoneIsInformational(t *testing.T) {
 // event stream: model answer text starting with "[" — a markdown link, a slice
 // literal, even a quoted "[… · planning]" — is a Text event, so it can never be
 // mistaken for a coordinator phase marker the way prefix-sniffing a flattened
-// byte stream once could. It stays in the answer buffer and renders as markdown.
+// byte stream once could. It stays in the answer buffer and renders as markdown,
+// which is to say it lands in the live answer block, never as an event line.
 func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	for _, txt := range []string{
 		"[link](https://example.com)",
@@ -1558,11 +1559,15 @@ func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	} {
 		m := newTestChatTUI()
 		m.ingestEvent(event.Event{Kind: event.Text, Text: txt})
-		if len(*m.pendingCommit) != 0 {
-			t.Errorf("answer text %q should stay live, not commit as an event line: %v", txt, *m.pendingCommit)
-		}
 		if m.pending.String() != txt {
 			t.Errorf("answer text should buffer verbatim, got %q want %q", m.pending.String(), txt)
+		}
+		if len(*m.pendingCommit) != 1 || m.answerIdx != 0 {
+			t.Errorf("answer text %q should open the live answer block, commits=%v idx=%d",
+				txt, *m.pendingCommit, m.answerIdx)
+		}
+		if kind := m.transcriptSources[m.answerIdx].kind; kind != transcriptSourceMarkdown {
+			t.Errorf("answer text %q should be a markdown source, got kind %d", txt, kind)
 		}
 	}
 }

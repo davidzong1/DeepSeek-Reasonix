@@ -155,8 +155,12 @@ case <-ctx.Done():             // Esc / Ctrl+C 或超时：立刻返回，不等
 3. **I5 等待是否计入 task budget**：**计入 wall 轴**，不做特殊记账，不改 `internal/agent`。
    `TaskBudget` 三个轴默认全关（`run_budget.go:16-17`），普通 chat 无影响；只有显式配了
    wall 预算的无人值守循环才会感知到等待。
-4. **默认超时 / 上限**：默认 **120s**，上限 **600s**（兼容旧 `leader_sleep(max_seconds=600)`）。
-   宿主侧与 schema（`minimum 1 / maximum 600`）双重校验。
+4. **默认超时 / 上限**：~~默认 **120s**，上限 **600s**（兼容旧 `leader_sleep(max_seconds=600)`）。
+   宿主侧与 schema（`minimum 1 / maximum 600`）双重校验。~~
+   **已修订（2026-09-23，用户裁定）**：下限/默认 **1200s**，上限 **3600s**；宿主与 schema
+   （`minimum 1200 / maximum 3600`）双重校验，schema 由常量生成而非手写，三处不会再漂移。
+   理由：等待是事件驱动的，正常应被成员唤醒而不是被时钟唤醒，短默认值只会让 leader 反复
+   重新规划；3600s 同时对齐旧 `leader_sleep` 的上限。
 5. **首版不做「仅切片」分支**：见 §4.2 的修订——§8.3 的唯一 dispatcher 模型把轮询从等待侧
    移到了 dispatcher，等待侧因此没有轮询臂。
 
@@ -243,7 +247,7 @@ internal/cli/team_escalation_test.go    （收尾：修掉 -race 门禁上的测
    `TeamLifecycleStateWriter()=false`（等待不写任何团队状态，可达性由 ReadOnly 保证，声明写者会
    描述一个不存在的副作用）；`EffectHint{Known,ReadOnly}`；
    **实现 `BatchClassifier` 返回 `Known+ReadOnly+!ParallelSafe`**（§8.4 已推翻原文「不实现分类器」）；
-   `timeout_seconds` 默认 120s、上限 600s，宿主与 schema 双重校验。
+   `timeout_seconds` 下限/默认 1200s、上限 3600s（2026-09-23 修订），宿主与 schema 双重校验。
 4. I6 取消语义与 I8 工具面的验证见下。
 5. **retain 改为「每个订阅各自持有」**：`waitBus.retainedForLocked` 把保留窗口交给每个该 team 的
    新订阅，不再被第一个订阅取走（原文的 consume-on-subscribe 会让日后的第二个消费者饿死第一个）。
@@ -415,7 +419,7 @@ internal/cli/chat_tui.go                    （两处 composer 入队点各一�
 ### 5.3.1 收尾缺陷：调用点覆盖不全，leader 在 `leader_wait` 里收不到输入（2026-09-22）
 
 **现象**：leader 处于 `leader_wait` 时输入对话不会被唤醒，输入一直留在队列里，直到等待自己的超时
-（默认 120s）。上一条「验收范围的诚实说明」预判的正是这个缺口，实际发生了。
+（当时默认 120s；现为 1200s）。上一条「验收范围的诚实说明」预判的正是这个缺口，实际发生了。
 
 **根因（三条，互相独立）**：
 
