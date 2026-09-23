@@ -21,6 +21,7 @@ schema 不再暴露这些旧名。
 | `delete_range` | false | 用精确 start/end 文本锚点删除文件中的连续范围。 |
 | `delete_symbol` | false | 用 Go AST 删除 Go 源文件中的命名符号。 |
 | `edit_file` | false | 将文件中的唯一精确字符串替换为另一个字符串。 |
+| `atomic_read` | true | 低成本读取文件。mode=auto|window（带行号，offset/limit；auto 在文件较大时先给大纲）、outline（仅符号/章节地图）、delta（仅回自某个 read_id 以来变化的 hunk，用于自己或队友刚改过之后）、tail（末尾若干行）。每次读取都会记录写工具所依赖的快照；结果有界并标注未交付的部分。 |
 | `glob` | true | 查找匹配 glob pattern 的文件。无依赖的 glob 应同轮下发。 |
 | `get_goal` | true | 读取当前目标及其进程内 activation 和停跑原因；会话没有目标时返回 `goal: null`。 |
 | `grep` | true | 在文件或目录下按正则搜索文本。无依赖的搜索应同轮下发。 |

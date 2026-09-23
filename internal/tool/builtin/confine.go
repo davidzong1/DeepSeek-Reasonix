@@ -143,6 +143,7 @@ func ConfineReaders(forbidRoots []string) []tool.Tool {
 	rs := realRoots(forbidRoots)
 	return []tool.Tool{
 		readFile{forbidRoots: rs},
+		atomicRead{forbidRoots: rs},
 		viewImage{forbidRoots: rs},
 		listDir{forbidRoots: rs},
 		globTool{forbidRoots: rs},
