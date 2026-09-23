@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
@@ -659,11 +660,53 @@ func (s *teamTaskService) report(memberID, taskID, result string) (string, error
 	}
 	// Complete can lose the registry to a concurrent close; the durable row
 	// then picks the member's answer, never the raw runtime refusal.
-	if err := s.runtime.Complete(target.ID, strings.TrimSpace(result)); err != nil {
+	stored, clipped := reportTitleAndSummary(result)
+	if err := s.runtime.Complete(target.ID, stored); err != nil {
 		return "", s.translateCompleteError(target, err)
 	}
-	s.captureTurn(memberID, result)
-	return fmt.Sprintf("task %s reported to leader", target.ID), nil
+	s.captureTurn(memberID, stored)
+	msg := fmt.Sprintf("task %s reported to leader\nstored title and summary (%d bytes)", target.ID, len(stored))
+	if clipped {
+		msg += "\nlonger text was not stored; publish it with member_publish_deliverable and quote the id"
+	}
+	return msg, nil
+}
+
+// A report that later readers see is a title plus a short summary. The full
+// document belongs in a deliverable; the report quotes its id.
+const (
+	reportTitleMaxRunes   = 120
+	reportSummaryMaxRunes = 400
+)
+
+func reportTitleAndSummary(result string) (stored string, clipped bool) {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return "", false
+	}
+	title, rest, _ := strings.Cut(text, "\n")
+	title = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(title), "#"))
+	title, titleCut := clipRunes(title, reportTitleMaxRunes)
+	summary := strings.Join(strings.Fields(rest), " ")
+	summary, summaryCut := clipRunes(summary, reportSummaryMaxRunes)
+	if summary == "" {
+		return title, titleCut
+	}
+	return title + "\n" + summary, titleCut || summaryCut
+}
+
+func clipRunes(s string, max int) (string, bool) {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s, false
+	}
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i], true
+		}
+		n++
+	}
+	return s, false
 }
 
 // pickReportTarget resolves which of a member's live tasks a report closes. A

@@ -118,3 +118,44 @@ func TestSchemaFingerprintStable(t *testing.T) {
 		t.Fatal("fingerprint not stable")
 	}
 }
+
+// A numeric bound must name the bound. The generic fallback used to say "value
+// satisfying minimum", which tells a model that it was wrong without telling it
+// what to write instead — and the model cannot see the schema it violated when
+// the call arrives through a capability proxy. This is the leader_wait case that
+// surfaced it: a model that guesses 60 seconds for a wait whose floor is 1200.
+func TestNumericBoundsAreNamedInTheViolation(t *testing.T) {
+	tl := schemaTool{name: "bounded", schema: json.RawMessage(
+		`{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":1200,"maximum":3600}},"additionalProperties":false}`)}
+
+	for _, tc := range []struct {
+		args     string
+		keyword  string
+		contains []string
+	}{
+		{`{"timeout_seconds":60}`, "minimum", []string{"at least 1200", "got 60"}},
+		{`{"timeout_seconds":7200}`, "maximum", []string{"at most 3600", "got 7200"}},
+	} {
+		result := ValidateArguments(tl, json.RawMessage(tc.args))
+		if len(result.Violations) != 1 {
+			t.Fatalf("%s: violations = %+v, want exactly one", tc.args, result.Violations)
+		}
+		v := result.Violations[0]
+		if v.Keyword != tc.keyword {
+			t.Errorf("%s: keyword = %q, want %q", tc.args, v.Keyword, tc.keyword)
+		}
+		if v.Path != "/timeout_seconds" {
+			t.Errorf("%s: path = %q, want /timeout_seconds", tc.args, v.Path)
+		}
+		for _, want := range tc.contains {
+			if !strings.Contains(v.Expected, want) {
+				t.Errorf("%s: expected text %q missing from %q", tc.args, want, v.Expected)
+			}
+		}
+	}
+
+	// In-range values still pass, so the added text is not masking acceptance.
+	if result := ValidateArguments(tl, json.RawMessage(`{"timeout_seconds":1200}`)); len(result.Violations) != 0 {
+		t.Fatalf("an in-range value was rejected: %+v", result.Violations)
+	}
+}

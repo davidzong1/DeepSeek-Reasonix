@@ -37,7 +37,8 @@ Publishing the same body again is a no-op that returns the same id. Publishing
 different bytes for the same slug returns a **new** id and leaves the earlier
 document readable, so a reader holding an old id never loses what it read.
 
-Quote the id in the **text** of your report instead of pasting the document in:
+The stored report keeps a title line and a short summary. Quote the id in that
+summary instead of pasting the document in:
 `member_report_result` takes a result string (and an optional `artifact_path`
 for a file in the shared context area), not a deliverable id — write something
 like `result="route published; deliverable_id coder-claude-route-1a2b3c4d5e6f.md"`
