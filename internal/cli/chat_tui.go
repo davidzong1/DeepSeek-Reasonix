@@ -1150,15 +1150,25 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+c", "super+c", "meta+c":
+			// Selection copy wins over every Ctrl+C gesture, in both states: the
+			// terminal convention is "Ctrl+C copies the selection", and the user can
+			// still clear the composer once the selection is gone. Hoisting it above
+			// the branches also stops a press from dismissing a selection AND wiping
+			// the draft the user was typing.
+			if sel.active && !sel.empty() {
+				m.sel = sel
+				text := m.selectedText()
+				m.sel = selection{}
+				cmds = append(cmds, m.copySelectionWithNotice(text))
+				return m, finalize(m, cmds)
+			}
+			// A team member's live turn is stopped next, whatever this window's own
+			// flag says, and the press is spent — including a second press while that
+			// cancel is in flight. The quit gesture below is this window's own.
+			if m.interruptBoundMember() {
+				return m, nil
+			}
 			if m.state == tuiRunning {
-				// Selection takes precedence: copy instead of cancel, same as idle.
-				if sel.active && !sel.empty() {
-					m.sel = sel
-					text := m.selectedText()
-					m.sel = selection{}
-					cmds = append(cmds, m.copySelectionWithNotice(text))
-					return m, finalize(m, cmds)
-				}
 				if m.bubblePending {
 					m.unsendPending() // server not yet replied — restore text, leave no trace
 				} else if m.cancelRequested() {
@@ -1168,21 +1178,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ctrl.Cancel()
 				}
 				return m, nil
-			}
-			// Idle: an active text selection takes precedence over the
-			// composer-clear / double-press-quit gestures. Standard terminal
-			// convention is "Ctrl+C copies the selection" — the user can still
-			// clear the input with a second Ctrl+C once the selection is gone.
-			// Hoisting this branch above the clear branch also stops the
-			// previous behaviour where Ctrl+C would dismiss a selection AND
-			// wipe any draft text the user was typing — felt like the
-			// selection was being silently lost.
-			if sel.active && !sel.empty() {
-				m.sel = sel // restore so selectedText() can read it
-				text := m.selectedText()
-				m.sel = selection{}
-				cmds = append(cmds, m.copySelectionWithNotice(text))
-				return m, finalize(m, cmds)
 			}
 			// No selection: if the composer has text, a single press clears it
 			// (like Esc); on an empty composer a double-press within 1.5s quits.
@@ -1284,13 +1279,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, finalize(m, cmds)
 				}
 				body := m.expandPastedBlocks(line)
-				if handled, err := m.queueLeaderInputWhileRunning(body, body); handled {
-					if err != nil {
-						return m, finalize(m, cmds)
-					}
-					m.resetComposerInput()
-					m.pastedBlocks = nil
-					m.resetQueueNavigation()
+				if m.consumeLeaderLineWhileRunning(body) {
 					return m, finalize(m, cmds)
 				}
 				items := m.inboxPreviews()

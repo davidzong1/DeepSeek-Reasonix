@@ -344,8 +344,11 @@ func TestThirtySteersApplyAndAckExactlyOnce(t *testing.T) {
 	if items := c.InboxSnapshot().Items; len(items) != 0 {
 		t.Fatalf("accepted steers were not all acknowledged: %+v", items)
 	}
-	if got := len(prov.requests); got != steerCount+1 {
-		t.Fatalf("provider requests = %d, want %d", got, steerCount+1)
+	// A burst costs one model round, not one per steer: every steer queued before
+	// this step's model call is written by that step. The exactly-once checks
+	// below are what this test is really about.
+	if got := len(prov.requests); got != 2 {
+		t.Fatalf("provider requests = %d, want the initial turn plus one batched step", got)
 	}
 	messages := sess.Snapshot()
 	for i := range steerCount {

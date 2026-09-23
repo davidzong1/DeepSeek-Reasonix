@@ -9,20 +9,13 @@ import (
 	"reasonix/internal/tool"
 )
 
-// The symbol locator for mode=patch: when a model already knows which outline
-// symbol it wants to change, the host resolves that symbol's span on the bytes
-// this same call read, so no numbered window has to travel back to the model
-// first. It is the only patch locator that does not require an earlier
-// atomic_read.
-//
-// Nothing here does I/O. The span is a pure function of (path, content), so the
-// bytes the splice is cut from are the bytes the caller read, and the matching
-// rules can be exercised without a filesystem.
+// The symbol locator for mode=patch: the host resolves the named symbol's span on
+// the bytes this same call read, so no numbered window has to travel back to the
+// model first. Nothing here does I/O — the span is a pure function of the bytes.
 
 // atomicSymbolCandidateMax bounds the candidate list a non-unique-symbol
-// rejection carries. The list is there to let the model disambiguate on its next
-// call; it is not a second copy of the outline, so it stays short and never
-// carries a function body.
+// rejection carries: it exists to let the model disambiguate on its next call, so
+// it stays short and never carries a function body.
 const atomicSymbolCandidateMax = 8
 
 // atomicWriteSymbols is the outline's collector set WITHOUT its indent
@@ -142,11 +135,9 @@ func atomicResolveSymbolSpan(content, path, symbol string) (start, end int, labe
 			break
 		}
 	}
-	// A line carrying more than one symbol (a `var a, b = ...` spec) cannot give
-	// either one a span that does not cross the other, so the span collapses to
-	// that line instead of growing on to the next distinct symbol. The same clamp
-	// covers the next symbol landing on this line, which would otherwise produce an
-	// end before the start.
+	// A line carrying several symbols (a `var a, b = ...` spec) cannot give either
+	// one a span that does not cross the other, so the span collapses to that line
+	// — which also covers the next symbol landing on it, an end before the start.
 	if end < start || atomicSymbolsOnLine(sorted, start) > 1 {
 		end = start
 	}

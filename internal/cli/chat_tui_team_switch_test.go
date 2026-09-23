@@ -39,6 +39,13 @@ type stubBackend struct {
 	closed   *int                  // nil when the test does not care about teardown
 	status   control.RuntimeStatus // injected busy state; zero = idle
 	replays  *int                  // nil when the test does not assert prompt replay
+	// live is the backend's turn, read through Running() by the esc/Ctrl+C gate —
+	// a pointer so a test can settle it. cancels counts interrupts; canceled
+	// pre-sets an in-flight cancel and requested flips once Cancel lands.
+	live      *bool
+	cancels   *int
+	canceled  bool
+	requested *bool
 	// stamp is the durable history identity this stub reports and reloads
 	// against. reloads counts accepted reloads; reloadErr drives the failure path.
 	stamp     string
@@ -109,6 +116,24 @@ func (s stubBackend) Close() {
 // nothing in flight. Tests inject Running/PendingPrompt/BackgroundJobs to pin
 // the switch gate's per-condition behavior.
 func (s stubBackend) RuntimeStatus() control.RuntimeStatus { return s.status }
+
+// Running/Cancel/CancelRequested are the esc-interrupt surface. A stub that does
+// not implement them promotes from the embedded nil port and panics, so every
+// one is answered here: the default is an idle backend that ignores cancels.
+func (s stubBackend) Running() bool { return s.live != nil && *s.live }
+
+func (s stubBackend) Cancel() {
+	if s.cancels != nil {
+		*s.cancels++
+	}
+	if s.requested != nil {
+		*s.requested = true
+	}
+}
+
+func (s stubBackend) CancelRequested() bool {
+	return s.canceled || (s.requested != nil && *s.requested)
+}
 
 // AutoApproveTools is otherwise promoted from the embedded interface, which a
 // stub leaves nil: the status footer reads it, so a stub bound as the window's

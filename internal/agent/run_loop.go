@@ -161,6 +161,33 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string, pinned pinnedRev
 	return rawInput, state, nil
 }
 
+// applyQueuedSteers persists every steer queued since the last step, so the model
+// sees it as guidance (with a prefix), not as a new task. Writing them before this
+// step's model call is what makes a burst held back for leader_wait land as one
+// batch of guidance — one cache miss for the batch, not one per later step.
+func (a *Agent) applyQueuedSteers(ctx context.Context) error {
+	for {
+		text, itemID, ok := a.consumeSteer()
+		if !ok && itemID == "" {
+			return nil
+		}
+		if !ok {
+			// Loader failed after dequeue: durable entry stays for inspection
+			// (unapplied path marks uncertain + pause via the notice sink).
+			a.RecordUnappliedSteer("(body load failed)", itemID)
+			continue
+		}
+		steerMessage := provider.Message{
+			Role: provider.RoleUser, Origin: provider.MessageOriginUser,
+			Content: a.withTurnPreferences(midTurnSteerMessage(text)), RawContent: text,
+		}
+		if err := a.appendCommittedMessages(ctx, "mid-turn-steer", steerMessage); err != nil {
+			return err
+		}
+		a.svc.sink.Emit(event.Event{Kind: event.Steer, Text: text, ItemID: itemID})
+	}
+}
+
 // runToolLoop owns the main tool-round budget and dispatches each streamed
 // assistant turn into final-response or tool-round handling.
 func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr error) {
@@ -169,32 +196,8 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 	ctx = a.withAgentContext(ctx)
 	truncatedRounds := 0
 	for step := 0; state.runMaxSteps <= 0 || step < state.runMaxSteps || state.graceRound; step++ {
-		// Consume a queued steer and persist it to the session so it
-		// survives tab switches and history replay. The model sees it as
-		// guidance (with a prefix), not a new task. One cache miss per
-		// steer is unavoidable — the model must see the new instruction.
-		// Every steer already queued is written before this step's model call,
-		// so a burst held for leader_wait arrives as one batch of guidance
-		// rather than one line per later step.
-		for {
-			text, itemID, ok := a.consumeSteer()
-			if !ok && itemID == "" {
-				break
-			}
-			if !ok {
-				// Loader failed after dequeue: durable entry stays for inspection
-				// (unapplied path marks uncertain + pause via the notice sink).
-				a.RecordUnappliedSteer("(body load failed)", itemID)
-				continue
-			}
-			steerMessage := provider.Message{
-				Role: provider.RoleUser, Origin: provider.MessageOriginUser,
-				Content: a.withTurnPreferences(midTurnSteerMessage(text)), RawContent: text,
-			}
-			if err := a.appendCommittedMessages(ctx, "mid-turn-steer", steerMessage); err != nil {
-				return err
-			}
-			a.svc.sink.Emit(event.Event{Kind: event.Steer, Text: text, ItemID: itemID})
+		if err := a.applyQueuedSteers(ctx); err != nil {
+			return err
 		}
 		schemas := a.providerToolSchemas()
 		prefixShape := a.capturePrefixShape(schemas)

@@ -133,15 +133,14 @@ func TestEnterWhileTheLeaderWaitsSteers(t *testing.T) {
 }
 
 // TestEnterOnAnIdleWindowWithABusyLeaderHoldsUntilTheWait pins the split the
-// defect turned on: a member's turn survives a switch, and bindBackend idles
-// the window's own flag while the backend keeps running. Enter therefore takes
-// prepareControllerTurn's already-running branch. Outside leader_wait that
-// branch holds the line; it does not start a follow-up turn.
+// defect turned on: a member's turn survives a switch, and Enter must hand the
+// line to the running leader rather than race it. The window's own flag now
+// follows the backend, so the test drives the idle half explicitly: outside
+// leader_wait the already-running branch holds the line for the next wait — it
+// starts no follow-up turn and does not wake the bus.
 func TestEnterOnAnIdleWindowWithABusyLeaderHoldsUntilTheWait(t *testing.T) {
 	m, stub := composerRig(t)
-	if m.state != tuiIdle {
-		t.Fatalf("precondition: a fresh member bind idles the window's own flag, state = %v", m.state)
-	}
+	m.state = tuiIdle
 	if !m.ctrl.Running() {
 		t.Fatal("precondition: the bound leader's backend is still running its turn")
 	}
@@ -287,10 +286,13 @@ func (failingEnqueueBackend) TryEnqueueAndSteer(control.InboxRequest) (sessionin
 	return sessioninbox.InboxReceipt{}, sessioninbox.ErrClosed
 }
 
-// TestMemberTurnStartedLeavesTheWindowIdle documents the state split the fix
-// works around: a member backend's TurnStarted reaches the window's ingest only
-// as a todo reset, so m.state stays idle for a turn the window did not submit.
-// The composer paths therefore must not gate their signal on m.state.
+// TestMemberTurnStartedLeavesTheWindowIdle documented the state split the
+// composer paths had to work around: a member's TurnStarted used to reach the
+// window's ingest only as a todo reset, so m.state stayed idle for a turn the
+// window did not submit. The window now follows the backend's live turn, so the
+// assertion is inverted — the composer paths still must not gate their signal on
+// m.state (they gate on controllerRunning), but a thinking member is no longer
+// invisible to the footer.
 func TestMemberTurnStartedLeavesTheWindowIdle(t *testing.T) {
 	m, _ := composerRig(t)
 	m.handleMemberEvent(memberEventMsg{member: "lead", ev: event.Event{Kind: event.TurnStarted}})
@@ -298,8 +300,8 @@ func TestMemberTurnStartedLeavesTheWindowIdle(t *testing.T) {
 		member: "lead",
 		ev:     event.Event{Kind: event.TurnPhase, PhaseName: "working"},
 	})
-	if m.state != tuiIdle {
-		t.Fatalf("a bound member's TurnStarted must not set the window's running flag, state = %v", m.state)
+	if m.state != tuiRunning {
+		t.Fatalf("a bound member's TurnStarted must show as running, state = %v", m.state)
 	}
 	if m.turnPhase != "working" {
 		t.Fatalf("turnPhase = %q, want the member's own phase", m.turnPhase)
