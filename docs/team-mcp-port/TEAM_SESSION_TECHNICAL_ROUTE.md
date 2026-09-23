@@ -372,11 +372,24 @@ RuntimeEvent {
 | `Ctrl+Up` / `Ctrl+Down` | 输入框获得焦点时切换成员 |
 | `Tab` / `Shift+Tab` | 循环切换成员 |
 | `↑` / `↓` | 输入框内移动光标/浏览输入历史 |
-| `Ctrl+C` | 停止当前成员正在运行的请求，不退出 TEAM |
+| `Ctrl+C` | **中断当前成员正在运行的请求，且不退出 TEAM**。成员 turn 在飞时（含取消已在飞）按键被消费，绝不落到主窗口的「再按一次退出」分支；成员空闲时保持原语义（清空草稿 / 空闲双击退出）。 |
 | `r` | 停止并重新启动当前成员 runtime |
-| `Esc` | 关闭团队会话，返回成员管理界面 |
+| `Esc` | **成员在思考时：中断该成员的 turn（不关面板、不退出会话）；再按一次才关面板 / 返回成员管理界面。** 成员空闲时保持原语义（逐层回退）。 |
 
 成员列表显示当前成员、Leader、Role、runtime 状态和未读数。切换成员时只改变显示目标和发送目标，不复制、清空或合并上下文。
+
+**术语（防歧义，2026-09-23 补）**：上表出现的三个动词互不等价，并且**没有一个等于「清空上下文」**：
+
+| 措辞 | 指什么 | 不指什么 | 实现 |
+|---|---|---|---|
+| **清空草稿** | 输入框里**还没按 Enter** 的那段文字被丢掉（连同这次粘贴的块引用） | **不是**清空上下文：会话历史、成员 context、`.reasonix/team/context/<team>/<member>/` 下的消息一概不动 | `resetComposerInput()`（`slash_cache.go`）+ `m.pastedBlocks = nil` |
+| **撤回**（un-send） | 刚按 Enter、**服务端还没回**的那一轮：user 气泡从 transcript 移掉、文字还原回输入框，并把这次提交 `Cancel()` 掉 | 不是「让它继续跑」：这一轮被标记 discarded，不留痕也不提交历史；也不是清空更早的记录 | `unsendPending()`（`chat_tui_input.go`），由 `bubblePending` 门控 |
+| **中断** | `m.ctrl.Cancel()`：该成员 turn 的 ctx 被取消，正在跑的工具调用（含 `leader_wait`）立即返回 | 不清输入框、不退会话、不丢历史；已落盘的 turn 内容保留 | `cancelBoundMember()` / `interruptBoundMember()`（`team_session_esc.go`） |
+
+口径对齐的依据：上下文只由**成员自己的 controller / 会话**写盘，TUI 的输入框不在那条写路径上——`resetComposerInput` 只碰 `m.input` 与 slash 参数快照，三个动词都不触碰 member 的 messages、任务状态或任何历史文件。唯一会**删除上下文**的入口是 roster 上的 `k`（解除 Leader，见 §6）与 `c`（清理团队历史），两者都要经过确认态，且都不在会话按键表里。
+
+> **Esc / Ctrl+C 中断语义落地（2026-09-23）**：用户报告 `Ctrl+C` 已被占用为退出接口、绑定成员无法中断。落地为
+> `internal/cli/team_session_esc.go` 的 `escBoundSession`（由 `chat_tui_team_switch.go` 的 `handleTeamKey` esc 分支调用）四级顺序——① 本窗口刚发出且服务端未回（`bubblePending`）→ `unsendPending`（撤回，不取消）；② `cancelBoundMember()` 为真 → `m.ctrl.Cancel()` 并**保持会话**；③ 面板开 → 关面板；④ 关会话。门控读 backend 而不是 `m.state`（`boundMemberRunning()` → `controllerRunning(m.ctrl)`，内部 recover，typed-nil 安全），因为**每次绑定都会把 `m.state` 压回 idle**，而 leader 派发的 turn 从不设置它——这正是「按 Esc 没反应」的根因。取消已在飞时（`CancelRequested()`）第二次 Esc 直接落到关会话，避免成员停止慢时吞掉所有 Esc。**同时补上可见性**：`bindBackend` 在绑定后按 `controllerRunning(backend)` 调 `noteControllerTurnStarted()`，`routeMemberEvent` 对绑定成员的 `TurnStarted` 同样进入 running，于是「被派发而开始思考」的成员会显示 `ChatStatusThinkingFmt` 的 `Esc cancels` 行、取消后显示 `stopping…`；会话面板提示随状态在 `Esc stop` / `Esc hide panel` 之间切换（`renderTeamSession` 新增 `busy` 参数）。只读 follower（`Running()` 恒 false、`Cancel()` 空操作）天然降级为原逐层回退。**Ctrl+C 同批接上**（`chat_tui.go` 的 `ctrl+c` 分支）：选区复制优先不变，随后 `interruptBoundMember()` 在同一处判定——绑定会话里成员 turn 在飞（含取消已在飞）就消费按键并保持会话，既不落到「取消已在飞 → `shutdownNow`」的退出分支，也不落到空闲双击退出；非绑定会话（无 teamPick）行为一字未动。为此把选区复制与中断判定上提到两个状态分支之前，`Update` 的复杂度增长同时被抵消（`chat_tui.go` complexity 回到基线）。Ctrl+C 用例另加 3 条（中断且两次都不退出 / 窗口 idle 但成员在跑仍中断 / 绑定会话之外手势不变；主窗口的双击退出仍由 `TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested` 钉住）。用例：新增 `internal/cli/team_session_esc_test.go` 7 条（中断不离开 / 取消在飞时第二次 Esc 离开 / 空闲仍是逐层回退 / 窗口 idle 但 backend 在跑仍可中断 / 绑定运行中成员即显示运行行 / 成员 TurnStarted 进 running / follower 落回关会话 / 面板文案跟随状态）；语义变更同步更新 `team_wake_composer_test.go` 的两条前置断言（`TestEnterOnAnIdleWindowWithABusyLeaderWakesItsWait` 显式驱动 idle 半边，`TestMemberTurnStartedLeavesTheWindowIdle` 反转为断言 running——它要保护的「composer 不能按 `m.state` 门控信号」仍由 `turn_lifecycle.go:94` 的 `controllerRunning(m.ctrl)` 分支保证）。门禁：`go test ./internal/cli/` 全包绿、`gofmt`/`go vet` 干净、`repolint` 改动文件零新增。
 
 > **入口状态机对齐（2026-08-22，tui-researcher）**：点击 `[TEAM]` 的目标态定义为——`session.active=true`、`current=选定团队 leader`（`restoreSession` 改为一律 `firstLeader()`，不再读持久化 selection）、普通 composer 隐藏（`hideComposer` 的 `teamPick != nil` 门）、session 历史从 `(teamName, leaderID)` 独立 context 加载、TEAM 顶栏保留成员栏并可切换（右侧 roster 列 + `stepSession` 重订阅）。Esc 关闭 session 落回团队列表（roster 管理页再 Enter 进入），overlay 保持、composer 保持隐藏；session 打开期间所有键归 session（`handleTeamPickerKey` session 分支优先），重入/点按不会落回 roster 或默认 composer。无 Leader 团队点击 `[TEAM]` 安静停留管理页（Leader 标记即门禁，与 `t` 一致；roster 的 `l` 可补授）。`TestTeamSessionReopenLandsOnLeader` 钉住"重开回 Leader 而非上次成员"，`TestTeamButtonOpensLeaderSession`/`TestTeamButtonSessionKeepsKeysFromChatComposer`/`TestTeamButtonEscapeReturnsToTeamList` 钉住目标态（session active/leader current/composer 隐藏/leader 历史加载/成员栏/键隔离/退出落点）。此变更废弃 §4.2 selection 恢复语义：`WriteSelection` 保留（seam 单向写，切换仍持久化），`restoreSession` 不再消费。受影响测试同步适配：`TestTeamSessionRestoresSelection` → `TestTeamSessionReopenLandsOnLeader`、`TestSessionSelectionFallsBackToLeaderAfterMemberRemoved`/`TestSessionSelectionNoLeaderStaysOnRosterWithReason` → `TestTeamButtonOpensOnLeaderAfterMemberRemoved`/`TestTeamButtonNoLeaderStaysOnManagementPage`、`openRoster` helper 加 session 感知（先 Esc 再 Enter）、cli-researcher 的 entry_test.go 两处断言与 `TestTeamOverlayCloseStopsEveryInstance` 双 Esc。门禁：gofmt clean、`go test ./internal/cli/... ./internal/team/...` 8 包全绿、vet/build exit 0；repolint 仅 `chat_tui.go` function-size 既有基线项（1316/1311，本节点未触碰 chat_tui.go、未加宽 baseline）。
 

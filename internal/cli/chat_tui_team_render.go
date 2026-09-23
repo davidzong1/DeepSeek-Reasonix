@@ -34,7 +34,7 @@ func (m chatTUI) renderTeamPicker() string {
 		if p.sessionPanelHidden() {
 			return ""
 		}
-		return p.renderTeamSession(m.width)
+		return p.renderTeamSession(m.width, m.boundMemberRunning())
 	}
 	if p.reset.kind != leaderResetNone {
 		return p.renderLeaderReset(m.width)
@@ -536,7 +536,10 @@ func (p *teamPicker) teamProxyFieldValue(i int) string {
 // switching (unread terminal-event counts on non-current members), and
 // session-scoped errors. It is opt-in — [ TEAM ] reveals it — because the bound
 // member's history is the main transcript, which this panel only shortens.
-func (p *teamPicker) renderTeamSession(w int) string {
+//
+// busy is whether the bound backend is running a turn; it decides what esc does,
+// so the panel's hint is rendered from it rather than guessed.
+func (p *teamPicker) renderTeamSession(w int, busy bool) string {
 	var b strings.Builder
 	b.WriteString(accent(p.session.teamName+" · session") + "\n")
 	if p.session.errMsg != "" {
@@ -592,7 +595,13 @@ func (p *teamPicker) renderTeamSession(w int) string {
 		// cursor the user moved: an unnamed hint would not say whose approval.
 		hint += " · Ctrl+A approve " + member + " · Ctrl+X deny"
 	}
-	hint += " · Esc hide panel · " + teamExitHint
+	// The key and its label move together: while the member thinks, esc stops the
+	// turn; once it is idle, esc is back to hiding the panel.
+	escHint := "Esc hide panel"
+	if busy {
+		escHint = "Esc stop"
+	}
+	hint += " · " + escHint + " · " + teamExitHint
 	b.WriteString(dim(hint))
 	return choicePanelStyle.Width(w).Render(b.String())
 }

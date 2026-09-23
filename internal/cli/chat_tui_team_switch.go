@@ -90,6 +90,12 @@ func (m *chatTUI) routeMemberEvent(msg memberEvent) {
 	}
 	if msg.member == m.boundMember() {
 		m.noteWatchdogHeartbeat(watchdogAgentSource(msg.ev.Kind))
+		// A turn the window did not submit still has to show as running, or the
+		// member the leader dispatched looks idle while it works. The window
+		// cannot see this from m.state, which only ever tracks its own submits.
+		if msg.ev.Kind == event.TurnStarted {
+			m.noteControllerTurnStarted()
+		}
 		// The event is filed under the member it came from, not under whoever is
 		// bound when it is ingested: an event that arrives after a switch has
 		// already moved the window must not mount its state on the new member.
@@ -398,6 +404,13 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey, mode r
 	m.turnPhase = ""
 	m.elapsed = 0
 	m.turnTokens = 0
+	// The incoming member may already be working — the leader dispatched a task
+	// and the window was elsewhere. Without this the session shows a member in
+	// full flow as idle, and esc has nothing to interrupt or report.
+	var runningCmd tea.Cmd
+	if controllerRunning(backend) {
+		runningCmd = m.noteControllerTurnStarted()
+	}
 	m.sessionSwitch = true
 	// Discard the outgoing member's transcript: without this the viewport
 	// accumulates every member ever bound, and the scroll offset lands inside
@@ -411,7 +424,7 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey, mode r
 	if owner.Member != "" {
 		m.prefetchMemberInbox(owner.Member)
 	}
-	return m.commitBackendReplay(backend, mode)
+	return tea.Batch(runningCmd, m.commitBackendReplay(backend, mode))
 }
 
 // prefetchMemberInbox starts the bound member's read-ahead command batch. It is
@@ -583,13 +596,7 @@ func (m chatTUI) handleTeamKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		return m, nil, false
 	case "esc":
-		// The panel is a layer over the session, so esc dismisses it before the
-		// session itself: leaving the team is one esc further out.
-		if m.teamPick.session.panel {
-			m.setSessionPanel(false)
-			return m, nil, true
-		}
-		m.closeSession()
+		m.escBoundSession()
 		return m, nil, true
 	}
 	return m, nil, false
