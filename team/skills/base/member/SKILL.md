@@ -20,7 +20,7 @@ team task, reassign yourself, or act as the leader.
 3. Confirm the file boundary and look for concurrent edits. Coordinate through
    the repository's atomic/CAS write path where applicable; do not use the
    retired `member_acquire_file_lock` family of tools.
-4. Use `atomic_read`/`atomic_write`, never `cat`/`sed`/`>>`.
+4. Use `atomic_read`/`atomic_write`, never `cat`/`sed`/`>>`. To insert beside a line, `patch` that single line with `range` and put the original line plus the new lines in `content`.
 
 ## Execute
 
