@@ -204,6 +204,14 @@ func (c codeIndex) parseGo(path string) ([]codeSymbol, error) {
 	if err != nil {
 		return nil, err
 	}
+	return goSymbols(fset, f, c.displayPath(path)), nil
+}
+
+// goSymbols is the pure half of parseGo: given a parsed file and the display
+// name to report it under, it returns the file's symbols. Callers that already
+// hold the source text (the atomic outline, which must describe the bytes it
+// read rather than the bytes on disk) parse in memory and call this directly.
+func goSymbols(fset *token.FileSet, f *ast.File, display string) []codeSymbol {
 	var out []codeSymbol
 	add := func(name, kind string, pos token.Pos, parent, sig string) {
 		if name == "" {
@@ -212,7 +220,7 @@ func (c codeIndex) parseGo(path string) ([]codeSymbol, error) {
 		out = append(out, codeSymbol{
 			Name:      name,
 			Kind:      kind,
-			File:      c.displayPath(path),
+			File:      display,
 			Line:      fset.Position(pos).Line,
 			Parent:    parent,
 			Signature: sig,
@@ -249,7 +257,7 @@ func (c codeIndex) parseGo(path string) ([]codeSymbol, error) {
 			}
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (c codeIndex) parseText(path string) ([]codeSymbol, error) {

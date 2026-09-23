@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
 
 	"reasonix/internal/event"
@@ -16,6 +17,38 @@ import (
 )
 
 const effectExtraToolProviderKind = "boot-effect-extra-tool"
+
+// effectExtraToolRegisterOnce makes the recorder factory registrable from more
+// than one test: provider.Register panics on a duplicate kind, so a second
+// caller must reuse the first registration and swap the current recorder
+// through the mutex instead.
+var (
+	effectExtraToolRegisterOnce sync.Once
+	effectExtraToolRecorderMu   sync.Mutex
+	effectExtraToolCurrent      *effectRecordingProvider
+)
+
+func effectExtraToolRecorder() *effectRecordingProvider {
+	effectExtraToolRecorderMu.Lock()
+	defer effectExtraToolRecorderMu.Unlock()
+	return effectExtraToolCurrent
+}
+
+// setEffectExtraToolRecorder points the registered factory at rec for this test
+// and clears it afterwards, so a later test never records into a finished one.
+func setEffectExtraToolRecorder(t *testing.T, rec *effectRecordingProvider) {
+	t.Helper()
+	effectExtraToolRecorderMu.Lock()
+	effectExtraToolCurrent = rec
+	effectExtraToolRecorderMu.Unlock()
+	t.Cleanup(func() {
+		effectExtraToolRecorderMu.Lock()
+		if effectExtraToolCurrent == rec {
+			effectExtraToolCurrent = nil
+		}
+		effectExtraToolRecorderMu.Unlock()
+	})
+}
 
 type effectExtraTool struct{ name string }
 
@@ -37,9 +70,12 @@ func effectExtraToolStage(t *testing.T) *effectRecordingProvider {
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	rec := &effectRecordingProvider{}
-	provider.Register(effectExtraToolProviderKind, func(provider.Config) (provider.Provider, error) {
-		return rec, nil
+	effectExtraToolRegisterOnce.Do(func() {
+		provider.Register(effectExtraToolProviderKind, func(provider.Config) (provider.Provider, error) {
+			return effectExtraToolRecorder(), nil
+		})
 	})
+	setEffectExtraToolRecorder(t, rec)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 

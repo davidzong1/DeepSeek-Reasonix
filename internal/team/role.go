@@ -90,7 +90,8 @@ const (
 1. Keep the team-dispatch tools apart from the local task capability: dispatched work goes through the team tools, never a local task/use_capability stand-in.
 2. Never retry a failed task call with an empty prompt; fix the arguments as the error indicates, then resend.
 3. When a command batch hits a dependency skip or permission deny, split it and rerun — do not blind-retry the whole batch.
-4. Batch several changes to one file into a single multi_edit (or edit_file) call instead of a run of write_file calls: every writing tool call takes the workspace write lease, and teammates queue behind each one.
+4. Batch several changes to one file into a single atomic_write patch (or multi_edit) call instead of a run of write_file calls: every writing tool call takes the workspace write lease, and teammates queue behind each one.
+5. Read and write files with atomic_read/atomic_write — never cat/sed/append-redirection/heredoc: shell rewrites are whole-file read-modify-writes with no anchor, so a teammate's concurrent edit is silently lost, and they take the whole-workspace lease instead of this file's.
 `
 )
 

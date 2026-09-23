@@ -58,6 +58,7 @@ func TestMergeBackRejectsSplitIndexWithoutLosingEitherVersion(t *testing.T) {
 }
 
 func TestMergeBackAutoCommitUsesExactTreeWithoutHooks(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("executable Git hook permissions are not portable to Windows")

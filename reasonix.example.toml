@@ -134,6 +134,7 @@ offline = false  # set true when outbound network access is unavailable; prevent
 
 [tools]
 enabled = []   # empty = all built-in tools
+atomic_fs = "team"   # "team" (default) swaps read_file/write_file/edit_file for atomic_read/atomic_write on team builds; "all" on every build; "off" keeps the legacy trio everywhere
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 mcp_startup_timeout_seconds = 30   # background initialize + tools/list safety cap; per-server overrides may raise it
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool overrides may raise it

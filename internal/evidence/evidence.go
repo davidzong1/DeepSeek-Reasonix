@@ -2049,7 +2049,7 @@ func isReadReceipt(name string, readOnly bool) bool {
 
 func isWriterTool(name string) bool {
 	switch name {
-	case "write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol":
+	case "write_file", "atomic_write", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol":
 		return true
 	default:
 		return false
@@ -2058,7 +2058,7 @@ func isWriterTool(name string) bool {
 
 func isReaderTool(name string) bool {
 	switch name {
-	case "read_file", "ls", "grep":
+	case "read_file", "atomic_read", "ls", "grep":
 		return true
 	default:
 		return false
@@ -2075,7 +2075,7 @@ func extractPaths(fields map[string]json.RawMessage) []string {
 	for _, key := range []string{"paths", "file_paths"} {
 		paths = append(paths, stringSliceField(fields, key)...)
 	}
-	return paths
+	return append(paths, opPathsField(fields, "ops")...)
 }
 
 func stringField(fields map[string]json.RawMessage, key string) string {

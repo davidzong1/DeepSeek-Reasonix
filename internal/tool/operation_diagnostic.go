@@ -30,10 +30,15 @@ type OperationDiagnostic struct {
 }
 
 const (
-	FSNotObserved        = "FS_NOT_OBSERVED"
-	FSStaleVersion       = "FS_STALE_VERSION"
-	FSNotFound           = "FS_NOT_FOUND"
-	FSAlreadyExists      = "FS_ALREADY_EXISTS"
+	FSNotObserved   = "FS_NOT_OBSERVED"
+	FSStaleVersion  = "FS_STALE_VERSION"
+	FSNotFound      = "FS_NOT_FOUND"
+	FSAlreadyExists = "FS_ALREADY_EXISTS"
+	// FSTooLarge refuses an operation whose single payload exceeds the limit that
+	// makes it atomic. It is distinct from a size warning: the caller must take a
+	// different route (split the payload, or use a mode that streams), because
+	// chunking the operation would break the atomicity it was asked for.
+	FSTooLarge           = "FS_TOO_LARGE"
 	ReadPartial          = "READ_PARTIAL"
 	ReadCursorInvalid    = "READ_CURSOR_INVALID"
 	ReadSourceChanged    = "READ_SOURCE_CHANGED"

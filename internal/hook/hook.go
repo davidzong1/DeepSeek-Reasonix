@@ -514,7 +514,9 @@ func buildClaudeToolNames() map[string]string {
 		"bash":            "Bash",
 		"pwsh":            "Bash",
 		"read_file":       "Read",
+		"atomic_read":     "Read",
 		"write_file":      "Write",
+		"atomic_write":    "Write",
 		"edit_file":       "Edit",
 		"multi_edit":      "MultiEdit",
 		"glob":            "Glob",
@@ -595,8 +597,12 @@ func claudeFacingToolName(name string) string {
 // extra key. parallel_tasks is a structural mismatch handled separately in
 // claudeFacingToolInput.
 var claudeToolInputKeyRenames = map[string]map[string]string{
-	"read_file":       {"path": "file_path"},
-	"write_file":      {"path": "file_path"},
+	"read_file":   {"path": "file_path"},
+	"atomic_read": {"path": "file_path"},
+	"write_file":  {"path": "file_path"},
+	// atomic_write renames only its top-level path: an ops transaction has no
+	// single file_path, so its array passes through rather than a synthesized path.
+	"atomic_write":    {"path": "file_path"},
 	"edit_file":       {"path": "file_path"},
 	"multi_edit":      {"path": "file_path"},
 	"notebook_edit":   {"path": "notebook_path"},
@@ -689,6 +695,9 @@ func claudeFacingToolInput(toolName string, args json.RawMessage, cwd string) js
 		}
 		changed = true
 	}
+	if toolName == "atomic_write" && fillAtomicWritePaths(obj, cwd) {
+		changed = true
+	}
 	if toolName == "ask" && fillClaudeAskDefaults(obj) {
 		changed = true
 	}
@@ -706,33 +715,11 @@ func claudeFacingToolInput(toolName string, args json.RawMessage, cwd string) js
 			}
 		}
 	}
-	if isAgent {
-		var prompt string
-		_ = json.Unmarshal(obj["prompt"], &prompt)
-		if strings.TrimSpace(prompt) != "" {
-			var description string
-			_ = json.Unmarshal(obj["description"], &description)
-			if strings.TrimSpace(description) == "" {
-				if v, err := json.Marshal(defaultAgentDescription); err == nil {
-					obj["description"] = v
-					changed = true
-				}
-			}
-		}
+	if isAgent && fillClaudeAgentDescription(obj, defaultAgentDescription) {
+		changed = true
 	}
-	for _, key := range claudeAbsolutePathInputKeys {
-		v, exists := obj[key]
-		if !exists || cwd == "" {
-			continue
-		}
-		var p string
-		if err := json.Unmarshal(v, &p); err != nil || p == "" || filepath.IsAbs(p) {
-			continue
-		}
-		if abs, err := json.Marshal(filepath.Join(cwd, p)); err == nil {
-			obj[key] = abs
-			changed = true
-		}
+	if absolutizeClaudePathKeys(obj, cwd) {
+		changed = true
 	}
 	if !changed {
 		return args

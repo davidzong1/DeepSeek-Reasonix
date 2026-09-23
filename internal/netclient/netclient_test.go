@@ -60,8 +60,13 @@ func TestCustomProxyHonorsNoProxy(t *testing.T) {
 }
 
 func TestDirectHostsBypassProxy(t *testing.T) {
+	// Clear the lowercase spelling too: httpproxy.FromEnvironment reads
+	// https_proxy before HTTPS_PROXY on POSIX, so an ambient lowercase value
+	// would win and the test would silently assert against the wrong proxy.
+	t.Setenv("https_proxy", "")
 	t.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
 	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	pf, err := proxyFunc(ProxySpec{Mode: "auto", DirectHosts: []string{"token-plan-cn.xiaomimimo.com"}})
 	if err != nil {
 		t.Fatalf("proxyFunc: %v", err)
@@ -85,8 +90,10 @@ func TestDirectHostsBypassProxy(t *testing.T) {
 }
 
 func TestNoDirectHostsKeepsEveryoneProxied(t *testing.T) {
+	t.Setenv("https_proxy", "")
 	t.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
 	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	pf, err := proxyFunc(ProxySpec{Mode: "env"}) // no DirectHosts → nothing special-cased
 	if err != nil {
 		t.Fatalf("proxyFunc: %v", err)

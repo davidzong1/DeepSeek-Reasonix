@@ -227,6 +227,11 @@ func approvalToolLabel(toolName string) string {
 		return i18n.M.ApprovalToolLabelBash
 	case "edit_file":
 		return i18n.M.ApprovalToolLabelEditFile
+	case "atomic_write":
+		// The atomic writer covers both replacing a file and patching it, so its
+		// approval prompt names the operation the user is authorizing rather than
+		// borrowing the edit-only label.
+		return i18n.M.ApprovalToolLabelEditFile
 	case "write_file":
 		return i18n.M.ApprovalToolLabelWriteFile
 	case "multi_edit":

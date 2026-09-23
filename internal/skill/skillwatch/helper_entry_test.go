@@ -13,6 +13,7 @@ import (
 // the same default command here so the missing entry fails on every platform
 // instead of only on Windows CI.
 func TestDefaultHelperCommandServesTheRealBinaryEntry(t *testing.T) {
+	requireWatchBackend(t)
 	dir := t.TempDir()
 	svc := NewService(Options{Stderr: io.Discard, ForceHelper: true})
 	defer svc.Close()

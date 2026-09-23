@@ -57,6 +57,7 @@ func startRunHelper(ctx context.Context) (helperProcess, error) {
 }
 
 func TestHelperProtocolEvents(t *testing.T) {
+	requireWatchBackend(t)
 	dir := t.TempDir()
 	svc := NewService(Options{Stderr: io.Discard, ForceHelper: true, HelperCommand: startRunHelper})
 	defer svc.Close()
@@ -81,6 +82,7 @@ func TestHelperProtocolEvents(t *testing.T) {
 }
 
 func TestHelperRestartBudgetDegradesThenScans(t *testing.T) {
+	requireWatchBackend(t)
 	dir := t.TempDir()
 	var procMu sync.Mutex
 	var current *pipeHelperProcess

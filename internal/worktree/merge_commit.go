@@ -344,6 +344,31 @@ func verifyWorktreeMergeIdentity(ctx context.Context, inspection MergeInspection
 	return nil
 }
 
+// mergeTreePreflightMinVersion is the first Git release with
+// `merge-tree --write-tree` (and its --name-only conflict listing). Older Git
+// treats those flags as the three-argument legacy form and exits with a usage
+// error, which would otherwise surface as a confusing "preflight merge
+// conflicts" blocker on a host whose Git is simply too old.
+const mergeTreePreflightMinVersion = "2.38"
+
+// mergeTreeUnsupportedError reports that this host's Git cannot run the merge
+// preflight, so the caller can fail closed with an actionable reason instead of
+// misreporting a usage error as a merge conflict.
+type mergeTreeUnsupportedError struct {
+	version string
+	cause   error
+}
+
+func (e *mergeTreeUnsupportedError) Error() string {
+	found := "unknown"
+	if e.version != "" {
+		found = e.version
+	}
+	return fmt.Sprintf("merge preflight needs git >= %s (found %s): %v", mergeTreePreflightMinVersion, found, e.cause)
+}
+
+func (e *mergeTreeUnsupportedError) Unwrap() error { return e.cause }
+
 func mergeTree(ctx context.Context, root, targetHead, worktreeHead string) (string, bool, []string, error) {
 	out, stderr, err := runGit(ctx, root, "merge-tree", "--write-tree", "--name-only", targetHead, worktreeHead)
 	lines := strings.Split(out, "\n")
@@ -358,6 +383,12 @@ func mergeTree(ctx context.Context, root, targetHead, worktreeHead string) (stri
 		return tree, false, []string{}, nil
 	}
 	if exitCode(err) != 1 {
+		// Exit 1 is the documented "merged with conflicts" result. Any other exit
+		// is a usage or environment failure, and the commonest cause is a Git too
+		// old for --write-tree: report that as itself, not as a conflict.
+		if version, ok := gitVersion(ctx, root); !ok || versionOlderThan(version, mergeTreePreflightMinVersion) {
+			return "", false, []string{}, &mergeTreeUnsupportedError{version: version, cause: err}
+		}
 		return "", false, []string{}, fmt.Errorf("preflight merge conflicts: %w%s", err, stderrSuffix(stderr))
 	}
 	paths := []string{}

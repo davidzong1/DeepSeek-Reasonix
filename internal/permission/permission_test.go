@@ -399,3 +399,37 @@ func TestLegacyLiteralRuleMatchesExactly(t *testing.T) {
 		t.Errorf("literal rule wildcard-matched %q — '*' must stay literal", "rm secrets.log")
 	}
 }
+
+// TestAtomicWriteSharesTheFileMutationGrant pins the team surface's only writer
+// into the shared "Edit" grant. Without it a card's "always allow" stores a bare
+// `atomic_write` rule while the user was shown "Edit", and a pre-existing Edit
+// rule stops covering the writer — so every write on a team surface re-prompts.
+func TestAtomicWriteSharesTheFileMutationGrant(t *testing.T) {
+	if !IsFileMutationTool("atomic_write") {
+		t.Fatal("atomic_write must count as a file mutation")
+	}
+	if got := SessionGrantRuleForScope("atomic_write", ""); got != "Edit" {
+		t.Fatalf("session grant for atomic_write = %q, want %q", got, "Edit")
+	}
+	if got := RememberRuleForScope("atomic_write", ""); got != "Edit" {
+		t.Fatalf("remembered rule for atomic_write = %q, want %q", got, "Edit")
+	}
+	// An existing Edit rule must cover the pair's writer, and the file_mutation
+	// alias must reach it too.
+	if !ruleToolMatches("Edit", "atomic_write") {
+		t.Fatal(`an existing "Edit" rule must cover atomic_write`)
+	}
+	if !ruleToolMatches("file_mutation", "atomic_write") {
+		t.Fatal(`the "file_mutation" rule must cover atomic_write`)
+	}
+	if !ruleToolCompatible("file_mutation", "atomic_write") {
+		t.Fatal(`"file_mutation" and atomic_write must be compatible rules`)
+	}
+	// atomic_read is a reader: it must NOT join the mutation grant.
+	if IsFileMutationTool("atomic_read") {
+		t.Fatal("atomic_read must not count as a file mutation")
+	}
+	if got := SessionGrantRuleForScope("atomic_read", ""); got != "atomic_read" {
+		t.Fatalf("session grant for atomic_read = %q, want the bare tool name", got)
+	}
+}

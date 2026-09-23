@@ -46,6 +46,7 @@ func assertRetainedCleanup(t *testing.T, repo string, result MergeResult, cleanu
 }
 
 func TestFinalizeMergeRetainsRegisteredRecoveryWorktreeAndBranch(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	request := cleanupFromMerge(result)
@@ -73,6 +74,7 @@ func TestFinalizeMergeRetainsRegisteredRecoveryWorktreeAndBranch(t *testing.T) {
 }
 
 func TestFinalizeMergePreservesOpenFileWritesAtRecoveryPath(t *testing.T) {
+	requireMergeTreePreflight(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows may refuse to move a checkout containing an open file")
 	}
@@ -110,6 +112,7 @@ func TestFinalizeMergePreservesOpenFileWritesAtRecoveryPath(t *testing.T) {
 }
 
 func TestFinalizeMergePreservesLateContentAtFormerPath(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	latePath := filepath.Join(created.WorktreeRoot, "late-user.txt")
@@ -142,6 +145,7 @@ func TestFinalizeMergePreservesLateContentAtFormerPath(t *testing.T) {
 }
 
 func TestFinalizeMergeMoveFailureLeavesOriginalAndBranch(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	mergeStepHook = func(step string) {
@@ -171,6 +175,7 @@ func TestFinalizeMergeMoveFailureLeavesOriginalAndBranch(t *testing.T) {
 }
 
 func TestFinalizeMergeResumesPlannedRecoveryMove(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	metadata, _, _, err := readMergeMetadataForCleanup(created.WorktreeRoot, managed)
@@ -203,6 +208,7 @@ func TestFinalizeMergeResumesPlannedRecoveryMove(t *testing.T) {
 }
 
 func TestFinalizeMergeMigratesRegisteredLegacyJournal(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	metadata, _, _, err := readMergeMetadataForCleanup(created.WorktreeRoot, managed)
@@ -238,6 +244,7 @@ func TestFinalizeMergeMigratesRegisteredLegacyJournal(t *testing.T) {
 }
 
 func TestFinalizeMergeRestoresPreparedLegacyDetachedCheckout(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	metadata, _, _, err := readMergeMetadataForCleanup(created.WorktreeRoot, managed)
@@ -273,6 +280,7 @@ func TestFinalizeMergeRestoresPreparedLegacyDetachedCheckout(t *testing.T) {
 }
 
 func TestFinalizeMergePreservesUnregisteredLegacyDetachedCheckout(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	metadata, _, _, err := readMergeMetadataForCleanup(created.WorktreeRoot, managed)
@@ -315,6 +323,7 @@ func TestFinalizeMergePreservesUnregisteredLegacyDetachedCheckout(t *testing.T) 
 }
 
 func TestFinalizeMergePreservesWorktreeMovedOutsideRecovery(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	externalRoot := filepath.Join(t.TempDir(), "externally-moved")
@@ -330,6 +339,7 @@ func TestFinalizeMergePreservesWorktreeMovedOutsideRecovery(t *testing.T) {
 }
 
 func TestFinalizeMergeRejectsUnknownCleanupJournalVersion(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo, managed, created, result := mergedWorktreeFixture(t)
 	journal := cleanupJournalPath(mergeMetadata{WorktreeRoot: created.WorktreeRoot})

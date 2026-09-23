@@ -21,6 +21,8 @@ schema 不再暴露这些旧名。
 | `delete_range` | false | 用精确 start/end 文本锚点删除文件中的连续范围。 |
 | `delete_symbol` | false | 用 Go AST 删除 Go 源文件中的命名符号。 |
 | `edit_file` | false | 将文件中的唯一精确字符串替换为另一个字符串。 |
+| `atomic_read` | true | 低成本读取文件。mode=auto|window（带行号，offset/limit；auto 在文件较大时先给大纲）、outline（仅符号/章节地图）、delta（仅回自某个 read_id 以来变化的 hunk，用于自己或队友刚改过之后）、tail（末尾若干行）。每次读取都会记录写工具所依赖的快照；结果有界并标注未交付的部分。 |
+| `atomic_write` | false | 原子且低成本地写文件。mode=create（文件已存在则失败）、replace（整体内容）、append（追加到 EOF，替代 echo >>）、patch（edits:[{old,new}] 或 range:{start,end}+content，替代 sed -i）、delete。当磁盘内容与所读不一致时拒绝并附变更 hunk；不提供强制覆盖。ops:[{path,mode,...}] 把多个文件作为一个事务提交。只回有界回执，绝不回文件内容。 |
 | `glob` | true | 查找匹配 glob pattern 的文件。无依赖的 glob 应同轮下发。 |
 | `get_goal` | true | 读取当前目标及其进程内 activation 和停跑原因；会话没有目标时返回 `goal: null`。 |
 | `grep` | true | 在文件或目录下按正则搜索文本。无依赖的搜索应同轮下发。 |
@@ -128,6 +130,12 @@ registry 中供调度，但不会展开到 top-level provider schema；模型通
 POSIX 上的 `bash` 或 Windows 上的 `pwsh`、`job_output`、`job_kill`、
 `edit_file`、`read_file`、`view_image`、`write_file`、`compress`（若注册），
 以及 `use_capability`。
+
+团队会话构建携带原子读写对：默认 `[tools] atomic_fs = "team"` 时，
+团队构建的 provider 面把 `read_file`/`write_file`/`edit_file` 换成
+`atomic_read`/`atomic_write`。设为 `"all"` 则在所有构建上都替换，设为 `"off"`
+则处处保留旧三件。旧三件仍保留在 registry 中供 `use_capability`
+与回放使用，因此这是 provider 面的收窄，不是删除。
 
 可选工具（`glob`、`grep`、`ls`、`web_fetch`、MCP、skills、subagents、docs、会话历史、
 记忆写入、workflow 等）仍在 host registry 中可调度；模型通过 `use_capability` 列举、

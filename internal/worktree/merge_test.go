@@ -34,6 +34,7 @@ func TestInspectMergeUsesRecordedLinkedSource(t *testing.T) {
 }
 
 func TestMergeBackRequiresExplicitDirtyCommitAndFinalizesSeparately(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -83,6 +84,7 @@ func TestMergeBackRequiresExplicitDirtyCommitAndFinalizesSeparately(t *testing.T
 }
 
 func TestMergeBackRejectsTargetHeadDrift(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -190,6 +192,7 @@ func TestMergeBackRejectsExtraCommitAfterAutoCommit(t *testing.T) {
 }
 
 func TestMergeBackStopsWhenSourceBranchChangesBeforePrepare(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -212,6 +215,7 @@ func TestMergeBackStopsWhenSourceBranchChangesBeforePrepare(t *testing.T) {
 }
 
 func TestMergeBackReportsRecoveryRequiredWhenPreparedSourceDrifts(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -238,6 +242,7 @@ func TestMergeBackReportsRecoveryRequiredWhenPreparedSourceDrifts(t *testing.T) 
 }
 
 func TestMergeBackRechecksConflictAfterDirtyCommit(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
@@ -324,6 +329,7 @@ func TestInspectMergeBlocksSourceBranchAndDirtyState(t *testing.T) {
 }
 
 func TestFinalizeMergePreservesIgnoredContentAndSupportsRetry(t *testing.T) {
+	requireMergeTreePreflight(t)
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()

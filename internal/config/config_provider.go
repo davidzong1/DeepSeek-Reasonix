@@ -276,12 +276,66 @@ func clonePricing(p *provider.Pricing) *provider.Pricing {
 // ToolsConfig selects which built-in tools are enabled. Empty means all of them.
 type ToolsConfig struct {
 	Enabled                  []string             `toml:"enabled"`
+	AtomicFS                 string               `toml:"atomic_fs"`
 	BashTimeoutSeconds       *int                 `toml:"bash_timeout_seconds"`
 	MCPStartupTimeoutSeconds *int                 `toml:"mcp_startup_timeout_seconds"`
 	MCPCallTimeoutSeconds    *int                 `toml:"mcp_call_timeout_seconds"`
 	BackgroundJobs           BackgroundJobsConfig `toml:"background_jobs"`
 	Search                   SearchConfig         `toml:"search"`
 	Shell                    ShellConfig          `toml:"shell"`
+}
+
+// Atomic FS surface modes (tools.atomic_fs).
+const (
+	// AtomicFSOff keeps every provider surface exactly as it was before the
+	// atomic read/write pair existed. It is the explicit opt-out.
+	AtomicFSOff = "off"
+	// AtomicFSTeam mounts the pair on team builds only: the team provider surface
+	// swaps read_file/write_file/edit_file for atomic_read/atomic_write, while
+	// every non-team build keeps the legacy three byte-for-byte. This is the
+	// default, because the pair's advantage is a team property — its measured win
+	// is per member per turn on a shared surface (route §5.3, §5.5), and an
+	// ordinary single-agent session gains nothing from the swap.
+	AtomicFSTeam = "team"
+	// AtomicFSAll mounts the pair on every provider surface.
+	AtomicFSAll = "all"
+)
+
+// AtomicFSMode normalizes tools.atomic_fs. An empty value means the default
+// (team); an unrecognized value means the same default and reports ok=false, so
+// a typo cannot silently widen a non-team build's surface.
+func (c *Config) AtomicFSMode() (string, bool) {
+	if c == nil {
+		return AtomicFSTeam, true
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Tools.AtomicFS)) {
+	case "":
+		return AtomicFSTeam, true
+	case AtomicFSOff:
+		return AtomicFSOff, true
+	case AtomicFSTeam:
+		return AtomicFSTeam, true
+	case AtomicFSAll:
+		return AtomicFSAll, true
+	default:
+		return AtomicFSTeam, false
+	}
+}
+
+// AtomicFSSurfaceEnabled reports whether the atomic pair replaces the legacy
+// read_file/write_file/edit_file trio on this build's provider surface. team
+// reports whether the build is a team session build, which is what separates the
+// default's two arms.
+func (c *Config) AtomicFSSurfaceEnabled(team bool) bool {
+	mode, _ := c.AtomicFSMode()
+	switch mode {
+	case AtomicFSTeam:
+		return team
+	case AtomicFSAll:
+		return true
+	default:
+		return false
+	}
 }
 
 const (
