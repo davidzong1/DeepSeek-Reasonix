@@ -8,8 +8,38 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/session"
+	"reasonix/internal/sessioninbox"
 	"reasonix/internal/tool"
 )
+
+func TestTargetGuidanceDoesNotSteerSuccessorTurn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	prov := &inboxSteerProvider{started: make(chan struct{}), release: make(chan struct{})}
+	exec := agent.New(prov, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
+	c := newOwnedTestController(t, Options{Runner: exec, Executor: exec, SessionDir: dir, SessionPath: path, Sink: event.Discard})
+	c.Submit("successor turn")
+	prov.awaitStarted(t, c)
+	current := c.RuntimeStatus().TurnID
+	if current == "" {
+		t.Fatal("active turn has no identity")
+	}
+	stale, err := c.InboxQueue(path, InboxQueueRequest{Kind: "enqueue_steer", TurnID: "previous-turn", Text: "for the previous turn", IdempotencyKey: "stale"})
+	if err != nil || stale.Receipt == nil || stale.Receipt.Disposition != sessioninbox.DispositionQueuedFollowup {
+		t.Fatalf("stale guidance: %+v %v", stale, err)
+	}
+	meta, _, err := c.ReadInboxItem(stale.Receipt.ItemID)
+	if err != nil || meta.State != sessioninbox.StateQueued || meta.Intent != sessioninbox.IntentFollowup {
+		t.Fatalf("stale item: %+v %v", meta, err)
+	}
+	matching, err := c.InboxQueue(path, InboxQueueRequest{Kind: "enqueue_steer", TurnID: current, Text: "for the current turn", IdempotencyKey: "matching"})
+	if err != nil || matching.Receipt == nil || matching.Receipt.Disposition != sessioninbox.DispositionSteerAccepted {
+		t.Fatalf("matching guidance: %+v %v", matching, err)
+	}
+	if c.RuntimeStatus().TurnID != current {
+		t.Fatal("guidance replaced the running turn")
+	}
+}
 
 func TestInboxExpectedSessionCannotSubmitOrConfirmReplacement(t *testing.T) {
 	dir := t.TempDir()

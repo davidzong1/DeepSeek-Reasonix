@@ -211,10 +211,16 @@ func (a *App) runShutdown(c *desktopShutdownCoordinator) (err error) {
 		a.lifecycle.tracker.markShutdown(reason, "cancelling_background", "in_progress")
 		a.manualCreationMu.Lock()
 		a.shuttingDown.Store(true)
+		m := a.manualCreations
 		a.manualCreationMu.Unlock()
+		if m != nil {
+			m.StopAdmission()
+		}
 		c.runStep("cancel-session-navigation", a.cancelSessionNavigation)
 		c.runStep("cancel-tab-builds", a.cancelAllTabBuilds)
-		c.runStep("manual-session-creation", a.manualCreationTasks.Wait)
+		if err := c.runErrorStep("manual-session-creation", a.stopManualCreations); err != nil {
+			return &shutdownStepError{code: "manual_creation_stop_timeout", err: err}
+		}
 		c.runStep("cancel-session-exports", a.cancelSessionExports)
 		c.runStep("runtime-projections", a.flushRuntimeProjections)
 		c.runStep("tab-layout", a.flushTabLayoutWrites)
@@ -322,7 +328,6 @@ func (a *App) shutdownBody(c *desktopShutdownCoordinator, items []desktopShutdow
 	c.runStep("remote-windows", a.closeAllRemoteWindows)
 	c.runStep("deferred-rebuild", a.stopDeferredRebuildRetry)
 	c.runStep("takeover-mirrors-stop", a.stopTakeoverMirrors)
-	c.runStep("history-index", a.stopHistoryIndexMigration)
 	if a.heartbeat != nil {
 		c.runStep("heartbeat", a.heartbeat.Stop)
 	}

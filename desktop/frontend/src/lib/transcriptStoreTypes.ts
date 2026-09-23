@@ -12,7 +12,7 @@ export interface TranscriptBackend {
 export interface TranscriptStoreOptions {
   /** Injectable preparation scheduler for deterministic lifecycle tests. */
   preparationWait?: HistoryPreparationWait;
-  /** Resident sessions with records (unpinned). Default 3. */
+  /** All resident windows; only unprotected owners can be evicted. Default 3. */
   maxResidentSessions?: number;
   /** Total inline history body bytes across resident sessions. Default 32MiB. */
   historyBodyBudgetBytes?: number;

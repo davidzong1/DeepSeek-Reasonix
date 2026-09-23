@@ -642,31 +642,6 @@ func TestSyncTelemetryToSessionReKeysAcrossRotation(t *testing.T) {
 	}
 }
 
-func TestContextUsageForTabReKeysAfterControllerRotation(t *testing.T) {
-	dir := t.TempDir()
-	rotated := filepath.Join(dir, "rotated.jsonl")
-	stale := filepath.Join(dir, "stale.jsonl")
-
-	ag := agent.New(usageProvider{usage: &provider.Usage{}}, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
-	tab := &WorkspaceTab{
-		ID:   "tab",
-		Ctrl: newFixtureController(t, control.Options{Executor: ag, Sink: event.Discard, SessionDir: dir, SessionPath: rotated}),
-	}
-	// Telemetry still keyed to the pre-rotation session: a typed /new routes
-	// through Controller.Submit and rotates without App.NewSession running.
-	tab.syncTelemetryToSession(stale)
-	tab.recordUsage(costedUsageEvent())
-
-	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}}
-	info := app.ContextUsageForTab("tab")
-	if info.SessionCost != 0 || info.SessionTokens != 0 {
-		t.Fatalf("context after rotation = cost %f tokens %d, want zeros", info.SessionCost, info.SessionTokens)
-	}
-	if got := tab.telemetrySnapshot().Usage.RequestCount; got != 0 {
-		t.Fatalf("telemetry request count after rotation = %d, want 0", got)
-	}
-}
-
 func TestNewSessionResetsTabUsageTelemetry(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

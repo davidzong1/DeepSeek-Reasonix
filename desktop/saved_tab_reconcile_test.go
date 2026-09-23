@@ -270,7 +270,7 @@ func TestReconcileSavedTabsPreservesUnregisteredCanonicalContent(t *testing.T) {
 	}
 }
 
-func TestReconcileSavedTabsArchivesProvablyEmptyWorkspaceConflict(t *testing.T) {
+func TestReconcileSavedTabsPreservesEmptyWorkspaceConflictWithoutRetiredDraftReads(t *testing.T) {
 	app := newSavedTabReconcileTestApp(t)
 	canonicalRoot := t.TempDir()
 	ref, workspaceID := createLegacyCleanupSession(t, app, canonicalRoot, "empty-workspace-conflict", false)
@@ -306,8 +306,8 @@ func TestReconcileSavedTabsArchivesProvablyEmptyWorkspaceConflict(t *testing.T) 
 	}
 
 	got, changed := app.reconcileSavedTabs(t.Context(), file)
-	if !changed || len(got.Tabs) != 0 || len(got.RemoteTabs) != 1 {
-		t.Fatalf("provably empty stale tab was retained: changed=%v file=%+v", changed, got)
+	if changed || len(got.Tabs) != 1 || len(got.RemoteTabs) != 1 || !got.Tabs[0].restoreBlocked {
+		t.Fatalf("formal workspace conflict was not retained for repair: changed=%v file=%+v", changed, got)
 	}
 	if persisted := loadTabsFile(); len(persisted.RemoteTabs) != 1 {
 		t.Fatalf("preflight archive overwrote unpublished tabs: %+v", persisted)
@@ -316,8 +316,11 @@ func TestReconcileSavedTabsArchivesProvablyEmptyWorkspaceConflict(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.SessionStates[ref.SessionID].Lifecycle != workspacestate.Archived {
-		t.Fatalf("empty session lifecycle = %q, want archived", state.SessionStates[ref.SessionID].Lifecycle)
+	if state.SessionStates[ref.SessionID].Lifecycle != workspacestate.Active {
+		t.Fatalf("empty formal session lifecycle = %q, want active", state.SessionStates[ref.SessionID].Lifecycle)
+	}
+	if _, err := os.Stat(app.draftStore().Path()); !os.IsNotExist(err) {
+		t.Fatalf("workspace conflict opened the retired draft database: %v", err)
 	}
 	if len(app.tabs) != 0 || len(app.runtimeByID) != 0 {
 		t.Fatal("empty-session reconciliation created a replacement runtime")
@@ -450,8 +453,9 @@ func mustMarshalJSON(t *testing.T, value any) []byte {
 	return body
 }
 
-func TestReconcileSavedTabsRetainsDurableDraftOperation(t *testing.T) {
+func TestReconcileSavedTabsDropsRetiredDraftOperation(t *testing.T) {
 	app := newSavedTabReconcileTestApp(t)
+	finishSavedTabMigration(app)
 	root := t.TempDir()
 	workspaceID, err := app.ensureDesktopWorkspace(t.Context(), "project", root)
 	if err != nil {
@@ -462,7 +466,7 @@ func TestReconcileSavedTabsRetainsDurableDraftOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	op, _, err := app.draftStore().BeginOperation(context.Background(), draftstate.Operation{
-		ID: "draft-op", DraftID: draft.ID, WorkspaceID: workspaceID, DraftRevision: draft.Revision,
+		ID: "draft-op-retired", DraftID: draft.ID, WorkspaceID: workspaceID, DraftRevision: draft.Revision,
 		SessionID: "draft-session", SubmissionID: "submission", Fingerprint: "fingerprint", RequestJSON: `{}`,
 	})
 	if err != nil {
@@ -470,8 +474,8 @@ func TestReconcileSavedTabsRetainsDurableDraftOperation(t *testing.T) {
 	}
 	file := desktopTabsFile{Tabs: []desktopTabEntry{savedProjectTab("draft", op.SessionID, op.ID, root, workspaceID)}, ActiveTab: "draft"}
 	got, changed := app.reconcileSavedTabs(t.Context(), file)
-	if changed || len(got.Tabs) != 1 || got.Tabs[0].SessionID != op.SessionID {
-		t.Fatalf("durable draft operation was not retained: changed=%v file=%+v", changed, got)
+	if !changed || len(got.Tabs) != 0 {
+		t.Fatalf("retired draft operation was restored: changed=%v file=%+v", changed, got)
 	}
 }
 

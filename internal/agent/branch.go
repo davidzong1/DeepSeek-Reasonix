@@ -4,18 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	fileencoding "reasonix/internal/fileutil/encoding"
+	"reasonix/internal/store"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/store"
 )
 
 // ErrSessionTitleChanged reports that a conditional rename observed a newer
@@ -216,20 +214,7 @@ func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {
 		}
 		return BranchMeta{}, false, err
 	}
-	var m BranchMeta
-	if err := json.Unmarshal(b, &m); err != nil {
-		// Treat an all-NUL/JSON-whitespace sidecar as a torn write so callers
-		// rebuild it; retain errors for partial JSON to avoid swallowing corruption.
-		if metaIsUnparseableAsAbsent(b) {
-			return BranchMeta{}, false, nil
-		}
-		return BranchMeta{}, false, fmt.Errorf("decode branch meta %s: %w", metaPath, err)
-	}
-	if m.ID == "" {
-		m.ID = BranchID(sessionPath)
-	}
-	m.sanitizeDisplayFields()
-	return m, true, nil
+	return decodeBranchMeta(sessionPath, b)
 }
 
 // metaIsUnparseableAsAbsent recognizes an empty or all-NUL/JSON-whitespace torn

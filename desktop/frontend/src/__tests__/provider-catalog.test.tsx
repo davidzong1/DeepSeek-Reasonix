@@ -13,7 +13,7 @@ window.matchMedia = (() => ({matches: true, addEventListener(){}, removeEventLis
 const rootEl = document.getElementById("root")!;
 const root = createRoot(rootEl);
 const choices: CatalogChoice[] = Object.entries(data.catalogs).map(([id, catalog]) => ({
- id, catalog, label: id, keyEnv: `${catalog.region}_KEY`, keySet: false, models: [`${id}-model`], status: "available", statusLabel: "", actionLabel: "Add", canAdd: true,
+ id, catalog, label: id, keyEnv: catalog.brandId === "mimo" ? (catalog.product === "token" ? "MIMO_TOKEN_PLAN_API_KEY" : "MIMO_API_KEY") : `${catalog.region}_KEY`, keySet: false, models: [`${id}-model`], status: "available", statusLabel: "", actionLabel: "Add", canAdd: true,
 }));
 let installed = "";
 let submittedFormat: string | undefined;
@@ -24,7 +24,7 @@ async function change(dimension: string, value: string) {
  await selectSettingsValue(select(dimension), value);
 }
 async function brand(name: string) {
- await act(async () => {Array.from(rootEl.querySelectorAll<HTMLButtonElement>(".provider-catalog__brand")).find(el=>el.textContent===name)!.click();});
+ await act(async () => {Array.from(rootEl.querySelectorAll<HTMLButtonElement>(".provider-catalog__brand")).find(el=>el.textContent?.endsWith(name))!.click();});
 }
 assert.equal(rootEl.querySelectorAll(".provider-catalog__brand").length, new Set(choices.map(c=>c.catalog.brandId)).size);
 await brand("智谱 / Z.AI");
@@ -45,6 +45,25 @@ assert.equal(submittedFormat,"responses","custom protocol reaches connection cre
 await change("format","openai");
 await change("region","global");
 assert.equal(rootEl.querySelector<HTMLInputElement>('input[id$="-url"]')!.value,"https://api.z.ai/api/paas/v4");
+await brand("MiMo");
+assert.deepEqual(await settingsOptionValues(select("product")), ["api", "token"], "MiMo exposes pay-as-you-go and Token Plan explicitly");
+assert.equal(rootEl.querySelector('button.settings-select[id$="-region"]'), null, "MiMo pay-as-you-go API does not pretend to be a regional account platform");
+await change("product", "token");
+assert.deepEqual(await settingsOptionValues(select("region")), ["ams", "cn", "sgp"], "Token Plan exposes its three service clusters");
+await change("region", "cn");
+assert.equal(rootEl.querySelector<HTMLInputElement>('input[id$="-url"]')!.value, "https://token-plan-cn.xiaomimimo.com/v1");
+assert.match(rootEl.querySelector<HTMLInputElement>('input[id$="-key"]')!.placeholder, /MIMO_TOKEN_PLAN_API_KEY/);
+assert.match(rootEl.textContent!, /AI coding tools/);
+await change("format", "anthropic");
+await change("region", "sgp");
+assert.equal(select("format").value, "anthropic", "cluster changes retain an explicitly selected protocol");
+assert.equal(rootEl.querySelector<HTMLInputElement>('input[id$="-url"]')!.value, "https://token-plan-sgp.xiaomimimo.com/anthropic");
+await change("product", "api");
+assert.equal(select("format").value, "anthropic", "product changes retain a supported protocol");
+assert.equal(rootEl.querySelector<HTMLInputElement>('input[id$="-url"]')!.value, "https://api.xiaomimimo.com/anthropic");
+assert.match(rootEl.querySelector<HTMLInputElement>('input[id$="-key"]')!.placeholder, /MIMO_API_KEY/);
+assert.equal(select("region"), null);
+assert.doesNotMatch(rootEl.textContent!, /AI coding tools/);
 await brand("OpenAI");
 await change("format","responses");
 await act(async () => {render(true);});

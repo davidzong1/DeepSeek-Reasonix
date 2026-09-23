@@ -44,7 +44,7 @@ func windowsIdentityKeyBy(path string, caseForDirectory func(string) (bool, bool
 }
 
 func directoryCaseInsensitive(path string) (insensitive, exists bool, err error) {
-	name, err := windows.UTF16PtrFromString(path)
+	name, err := windows.UTF16PtrFromString(extendedWindowsPath(path))
 	if err != nil {
 		return false, false, err
 	}
@@ -87,5 +87,9 @@ func stripExtendedPrefix(path string) string {
 	if strings.HasPrefix(strings.ToUpper(path), `\\?\UNC\`) {
 		return `\\` + path[len(`\\?\UNC\`):]
 	}
-	return strings.TrimPrefix(path, `\\?\`)
+	// A volume GUID has no equivalent spelling without its device prefix.
+	if len(path) >= 7 && strings.HasPrefix(path, `\\?\`) && path[5] == ':' && path[6] == '\\' {
+		return path[4:]
+	}
+	return path
 }

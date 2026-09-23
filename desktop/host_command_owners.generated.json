@@ -882,6 +882,20 @@
       ]
     }
   },
+  "BeginSessionHistoryReadForTab": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.BeginSessionHistoryReadForTab",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.BeginSessionHistoryReadForTab",
+      "inputs": [
+        "tabID"
+      ]
+    }
+  },
   "BotRuntimeStatus": {
     "domain": "desktop/bot_runtime_app.go",
     "owner": "App.BotRuntimeStatus",
@@ -2396,6 +2410,18 @@
     "scope": {
       "kind": "owner-state",
       "resolver": "App.ExportGoalDiagnostics",
+      "inputs": []
+    }
+  },
+  "ExportManualCreationDiagnostics": {
+    "domain": "desktop/manual_creation_export.go",
+    "owner": "App.ExportManualCreationDiagnostics",
+    "sources": [
+      "desktop/manual_creation_export.go"
+    ],
+    "scope": {
+      "kind": "owner-state",
+      "resolver": "App.ExportManualCreationDiagnostics",
       "inputs": []
     }
   },
@@ -4138,6 +4164,22 @@
       "inputs": []
     }
   },
+  "LocateSessionHistoryMessage": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.LocateSessionHistoryMessage",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.LocateSessionHistoryMessage",
+      "inputs": [
+        "id",
+        "messageID",
+        "snapshot"
+      ]
+    }
+  },
   "LocateSessionMessageForTab": {
     "domain": "desktop/session_history_service.go",
     "owner": "App.LocateSessionMessageForTab",
@@ -5561,6 +5603,51 @@
       ]
     }
   },
+  "ReadSessionHistoryOutline": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.ReadSessionHistoryOutline",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ReadSessionHistoryOutline",
+      "inputs": [
+        "id",
+        "req"
+      ]
+    }
+  },
+  "ReadSessionHistorySlice": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.ReadSessionHistorySlice",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ReadSessionHistorySlice",
+      "inputs": [
+        "id",
+        "req"
+      ]
+    }
+  },
+  "ReadSessionHistoryWindow": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.ReadSessionHistoryWindow",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ReadSessionHistoryWindow",
+      "inputs": [
+        "id",
+        "req"
+      ]
+    }
+  },
   "RebindDraftImageForTarget": {
     "domain": "desktop/attachment_targets.go",
     "owner": "App.RebindDraftImageForTarget",
@@ -5788,6 +5875,20 @@
     "scope": {
       "kind": "owner-inputs",
       "resolver": "App.ReleaseReadSnapshot",
+      "inputs": [
+        "id"
+      ]
+    }
+  },
+  "ReleaseSessionHistoryRead": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.ReleaseSessionHistoryRead",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ReleaseSessionHistoryRead",
       "inputs": [
         "id"
       ]
@@ -8335,6 +8436,23 @@
       "inputs": [
         "selector",
         "textQuery",
+        "cursor",
+        "limit"
+      ]
+    }
+  },
+  "SearchSessionHistoryRead": {
+    "domain": "desktop/session_history_binding.go",
+    "owner": "App.SearchSessionHistoryRead",
+    "sources": [
+      "desktop/session_history_binding.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SearchSessionHistoryRead",
+      "inputs": [
+        "id",
+        "text",
         "cursor",
         "limit"
       ]

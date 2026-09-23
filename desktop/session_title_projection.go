@@ -36,11 +36,15 @@ func sessionDisplayTitle(info session.SessionInfo, presentation workspacestate.P
 // canonicalTabTitle resolves the projected name for ref. Callers run it before
 // taking App.mu: the catalog read may touch the filesystem.
 func (a *App) canonicalTabTitle(ctx context.Context, state workspacestate.State, ref session.SessionRef) (string, string) {
+	return a.canonicalTabTitleWithPresentation(ctx, state.Presentation[ref.SessionID], ref)
+}
+
+func (a *App) canonicalTabTitleWithPresentation(ctx context.Context, presentation workspacestate.Presentation, ref session.SessionRef) (string, string) {
 	info, err := a.desktopSessionService("").Query().Stat(ctx, ref)
 	if err != nil {
 		info = session.SessionInfo{}
 	}
-	return sessionDisplayTitle(info, state.Presentation[ref.SessionID])
+	return sessionDisplayTitle(info, presentation)
 }
 
 // publishCanonicalSessionTitle is the single exit of every canonical rename.

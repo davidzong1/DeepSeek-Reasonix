@@ -11,9 +11,15 @@ export type ProjectTreeListPageState = {
   itemKeys?: string[];
   nextCursor?: string;
   loading: boolean;
+  // A pending background read with a resident page keeps the painted UI quiet.
+  refreshing?: boolean;
   initialized?: boolean;
   error?: string;
 };
+
+export function projectTreeListShowsLoading(state: ProjectTreeListPageState | undefined): boolean {
+  return Boolean(state?.loading && !state.refreshing);
+}
 
 const runtimeWindowLimits = new Map<string, number>();
 

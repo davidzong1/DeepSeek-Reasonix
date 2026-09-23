@@ -2,8 +2,22 @@ package main
 
 import (
 	"log/slog"
+	"path/filepath"
 	"strings"
 )
+
+// The tab's workspace chooses where new sessions are created, not where an
+// already admitted historical source lives. Resolve compatibility reads by
+// their captured path while retaining the known-root and symlink checks.
+// Call outside App.mu: known roots can consult project metadata and tab state.
+func (a *App) historyReadSource(sessionDir, sessionPath string) (string, string, error) {
+	if path, _, err := validateSessionPath(sessionDir, sessionPath); err == nil {
+		return sessionDir, path, nil
+	} else if !filepath.IsAbs(sessionPath) {
+		return "", "", err
+	}
+	return a.sessionDirForPath(sessionPath)
+}
 
 // historySliceBeforeController keeps durable history observable when model
 // configuration prevents the tab's execution controller from starting.

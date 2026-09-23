@@ -2,7 +2,6 @@ package sessioncatalog
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 )
 
@@ -28,6 +27,9 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	rootKey := c.workspaceRootKey(req.Scope, req.WorkspaceRoot)
 	args := []any{req.Scope, rootKey}
 	where := `scope=? AND workspace_root_key=?`
+	if req.PinnedOnly {
+		where += ` AND pinned=1`
+	}
 	if query := strings.TrimSpace(req.Query); query != "" {
 		where += ` AND lower(title) LIKE ?`
 		args = append(args, "%"+strings.ToLower(query)+"%")
@@ -131,7 +133,12 @@ func topicPageQuery(req TopicPageRequest, where string, args []any, cursor *page
 		FROM catalog_topics WHERE ` + where + ` ORDER BY ` + orderBy + ` LIMIT ?`, pageArgs
 }
 
-func scanTopicRows(rows *sql.Rows, capacity int) ([]TopicRecord, error) {
+func scanTopicRows(rows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+	Close() error
+}, capacity int) ([]TopicRecord, error) {
 	defer rows.Close()
 	// Drain before hydrating sessions: the nested read needs another connection
 	// and an open cursor deadlocks when the in-memory pool is saturated.

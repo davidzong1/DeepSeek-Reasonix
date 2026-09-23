@@ -1908,7 +1908,7 @@ func TestAddProviderPresetAccessSavesEditableProviderAndKey(t *testing.T) {
 	if !ok {
 		t.Fatal("mimo-api provider not saved")
 	}
-	if p.Kind != "openai" || p.BaseURL != "https://api.xiaomimimo.com/v1" || p.Default != "mimo-v2.5-pro" {
+	if p.Kind != "openai" || p.BaseURL != "https://api.xiaomimimo.com/v1" || p.Default != "mimo-v2.6-pro" {
 		t.Fatalf("mimo-api provider after preset add = %+v", p)
 	}
 	if p.PresetID != "mimo-api" || p.PresetVersion != config.ProviderPresetVersion {
@@ -2036,7 +2036,7 @@ func TestResetProviderPresetAccessOverwritesSameNameProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("mimo-api provider missing after reset")
 	}
-	if got.BaseURL != "https://api.xiaomimimo.com/v1" || got.DefaultModel() != "mimo-v2.5-pro" || got.PresetID != "mimo-api" || got.PresetVersion != config.ProviderPresetVersion {
+	if got.BaseURL != "https://api.xiaomimimo.com/v1" || got.DefaultModel() != "mimo-v2.6-pro" || got.PresetID != "mimo-api" || got.PresetVersion != config.ProviderPresetVersion {
 		t.Fatalf("mimo-api provider after reset = %+v, want preset template", got)
 	}
 	if len(got.Headers) != 0 {
@@ -3185,6 +3185,8 @@ func TestModelsForTabListsMimoAPIPaidAccess(t *testing.T) {
 	models := NewApp().Models()
 	refs := modelRefsFromView(models)
 	for _, want := range []string{
+		"mimo-api/mimo-v2.6-pro",
+		"mimo-api/mimo-v2.6-flash",
 		"mimo-api/mimo-v2.5-pro",
 		"mimo-api/mimo-v2.5",
 	} {
@@ -3192,8 +3194,8 @@ func TestModelsForTabListsMimoAPIPaidAccess(t *testing.T) {
 			t.Fatalf("Models() refs = %+v, missing %s", models, want)
 		}
 	}
-	if len(models) != 2 {
-		t.Fatalf("Models() len = %d, want 2: %+v", len(models), models)
+	if len(models) != 4 {
+		t.Fatalf("Models() len = %d, want 4: %+v", len(models), models)
 	}
 }
 

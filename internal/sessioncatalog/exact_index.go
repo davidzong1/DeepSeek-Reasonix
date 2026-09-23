@@ -36,7 +36,10 @@ func preserveDirectoryProjection(existing SessionRecord, record *SessionRecord) 
 // prepareExactPathProjection avoids publishing unchanged snapshots while
 // retaining known counts when only legacy sidecar metadata is stale.
 func (c *Catalog) prepareExactPathProjection(ctx context.Context, raw SessionRecord) (record SessionRecord, skip, projectionDirty bool, err error) {
-	record = classifyRecoveryLineage(normalizeSessionRecord(raw))
+	record = normalizeSessionRecord(raw)
+	if !c.opts.MetadataOnly {
+		record = classifyRecoveryLineage(record)
+	}
 	if record.LogicalTopicID == "" {
 		record.LogicalTopicID = record.TopicID
 	}
@@ -45,6 +48,10 @@ func (c *Catalog) prepareExactPathProjection(ctx context.Context, raw SessionRec
 		return SessionRecord{}, false, false, err
 	}
 	if !ok || existing.Path == "" || existing.MissingSince != 0 {
+		if c.opts.MetadataOnly {
+			record.OrdinaryVisible = true
+			return record, false, false, nil
+		}
 		if record.Recovered {
 			// A brand-new recovery file has no sibling-aware logical identity yet.
 			// Store a hidden physical shell and let the queued directory pass

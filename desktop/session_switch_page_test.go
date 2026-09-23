@@ -130,10 +130,9 @@ func TestResumeSessionPageBuildsFirstScreenFromOneDurableRead(t *testing.T) {
 	}
 	requireSingleDurableRead(t, page)
 	requireHistoryTurnCount(t, page, 1, "switch page")
-	// The legacy transcript is a rebuildable display cache after v3 adoption.
-	// An external append to it cannot override the event projection owned by the
-	// rebound controller.
-	requireHistoryTurnCount(t, app.HistoryPageForTab(tab.ID, 0, defaultHistoryPageTurns), 1, "v3 page")
+	// The switch uses its one captured read. A subsequent refresh reads the
+	// native source again and must see the append that arrived after that cut.
+	requireHistoryTurnCount(t, app.HistoryPageForTab(tab.ID, 0, defaultHistoryPageTurns), 2, "native refresh")
 }
 
 func TestOpenChannelSessionPageBuildsFirstScreenFromOneDurableRead(t *testing.T) {
@@ -188,11 +187,11 @@ func TestSequentialSwitchesKeepPageIdentityWithTheirSession(t *testing.T) {
 	if first.Digest == "" || second.Digest == "" || first.Digest == second.Digest {
 		t.Fatalf("page digests = %q then %q, want distinct non-empty fingerprints", first.Digest, second.Digest)
 	}
-	if got := tab.currentSessionPath(); got != "" {
-		t.Fatalf("v3 tab retained legacy execution path %q", got)
+	if got := tab.currentSessionPath(); !sameDesktopPath(got, thirdPath) {
+		t.Fatalf("native tab lost execution path %q", got)
 	}
 	snapshot, snapshotErr := app.TranscriptSnapshotForTab(tab.ID, transcript.PageRequest{})
-	if snapshotErr != nil || tab.SessionID == "" || snapshot.Identity.SessionID != tab.SessionID {
+	if snapshotErr != nil || tab.SessionID != "" || snapshot.Identity.SessionID != agent.BranchID(thirdPath) {
 		t.Fatalf("tab session id after sequential switches = %q, snapshot = %q, err = %v", tab.SessionID, snapshot.Identity.SessionID, snapshotErr)
 	}
 	requireHistoryPagesMatch(t, app.HistoryPageForTab(tab.ID, 0, defaultHistoryPageTurns), second, "final page")
@@ -253,7 +252,7 @@ func TestResumeSessionPageRebindFailureKeepsSourceRuntime(t *testing.T) {
 	assertAtomicRebindFailurePreservedSource(t, app, tab, oldCtrl, sourcePath, targetPath, oldEpoch)
 }
 
-func TestResumeSessionPageFollowsCanonicalContinuation(t *testing.T) {
+func TestResumeSessionPageFromCanonicalToNativeContinuation(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := globalTabWorkspaceRoot()
 	dir := desktopSessionDir(root)
@@ -327,14 +326,16 @@ func TestResumeSessionPageFollowsCanonicalContinuation(t *testing.T) {
 		t.Fatalf("continuePathForOpen = %q, want covering leaf %q", got, leafPath)
 	}
 
-	page, err := app.ResumeSessionPageForTab("continuation", parentPath, defaultHistoryPageTurns)
+	// An explicitly opened recovery leaf remains native even when its parent
+	// has already been adopted. A mapped parent itself stays canonical.
+	page, err := app.ResumeSessionPageForTab("continuation", leafPath, defaultHistoryPageTurns)
 	if err != nil {
 		t.Fatalf("ResumeSessionPageForTab: %v", err)
 	}
 	requireSingleDurableRead(t, page)
 	bound := app.controllerForTab(tab)
-	if tab.SessionID == "" || bound.SessionPath() != "" {
-		t.Fatalf("bound identity = session %q path %q, want exclusive v3", tab.SessionID, bound.SessionPath())
+	if tab.SessionID != "" || bound.SessionPath() != leafPath {
+		t.Fatalf("bound identity = session %q path %q, want native continuation", tab.SessionID, bound.SessionPath())
 	}
 	// The window must be the leaf's two turns, not the parent's one.
 	requireHistoryTurnCount(t, page, 2, "continuation page")

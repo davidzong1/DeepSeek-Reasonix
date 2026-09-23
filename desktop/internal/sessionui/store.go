@@ -212,7 +212,9 @@ func (s *Store) Save(ctx context.Context, kind, key, expected string, payload js
 	if err != nil {
 		return r, err
 	}
-	if n == 0 {
+	// Formal composer input has one saved value. A stale writer receives the
+	// current revision and may rebase; it does not create alternate input copies.
+	if n == 0 && kind != "composer" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO conflicts(kind,key,expected,actual,payload) VALUES(?,?,?,?,?)`, kind, key, rev, r.Revision, []byte(payload)); err != nil {
 			return r, err
 		}

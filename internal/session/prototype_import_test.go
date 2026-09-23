@@ -327,8 +327,15 @@ func TestContinueStoredPreviewUpgradesUnpublishedV4Draft(t *testing.T) {
 	if err := writeManifestFile(filepath.Join(draftDir, "manifest.json"), manifest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(draftDir, "draft-v4"); !errors.Is(err, ErrUnsupportedVersion) {
-		t.Fatalf("direct draft Open error = %v", err)
+	native, err := Open(draftDir, "draft-v4")
+	if err != nil {
+		t.Fatalf("native draft Open: %v", err)
+	}
+	if got := native.Snapshot().Projection.ModelMessages; len(got) != 1 || got[0].ID != "user" {
+		t.Fatalf("native draft messages = %+v", got)
+	}
+	if err := native.Close(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 
 	service, err := NewService("local", NewFilesystemPersistence(root))
@@ -364,15 +371,11 @@ func TestContinueStoredPreviewUpgradesUnpublishedV4Draft(t *testing.T) {
 	}
 }
 
-func TestPrototypeRequiresExplicitImportAndPreservesTornTail(t *testing.T) {
+func TestExplicitPrototypeImportPreservesTornTail(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "prototype")
 	payload, _ := json.Marshal(map[string]any{"messages": []provider.Message{{ID: "message-1", Role: provider.RoleUser, Content: "hello"}}, "reason": "prototype"})
 	writePrototypeStore(t, source, []Event{{Kind: "context/replace", Payload: payload}}, `{"torn":`)
-	if _, err := Open(source, "prototype"); !errors.Is(err, ErrUnsupportedVersion) {
-		t.Fatalf("direct prototype Open error = %v", err)
-	}
-
 	result, err := ImportPrototype(t.Context(), source, filepath.Join(root, "final"))
 	if err != nil {
 		t.Fatal(err)

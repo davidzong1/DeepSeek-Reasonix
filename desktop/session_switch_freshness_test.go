@@ -73,11 +73,11 @@ func TestTranscriptSwitchReportsActualLoadWithoutLegacyPage(t *testing.T) {
 				t.Fatalf("snapshot adoption built a legacy page: %+v", phases)
 			}
 			snapshot, err := app.TranscriptSnapshotForTab(tab.ID, transcript.PageRequest{})
-			if err != nil || tab.SessionID == "" || snapshot.Identity.SessionID != tab.SessionID || len(snapshot.Records) == 0 {
+			if err != nil || tab.SessionID != "" || snapshot.Identity.SessionID != agent.BranchID(path) || len(snapshot.Records) == 0 {
 				t.Fatalf("snapshot did not adopt target: %v", err)
 			}
-			if tab.currentSessionPath() != "" {
-				t.Fatalf("v3 tab retained legacy execution path %q", tab.currentSessionPath())
+			if !sameDesktopPath(tab.currentSessionPath(), path) {
+				t.Fatalf("native tab lost execution path %q", tab.currentSessionPath())
 			}
 			if tab.ReadOnly != channel {
 				t.Fatal("switch changed channel write policy")
@@ -106,7 +106,7 @@ func TestLargeTranscriptSwitchPhaseMeasurement(t *testing.T) {
 	}
 	started := time.Now()
 	follow, err := app.TranscriptFollowForTab(tab.ID, transcript.FollowRequest{})
-	if err != nil || follow.Snapshot == nil || follow.History == nil || !follow.History.HasOlder {
+	if err != nil || follow.Snapshot == nil || follow.StorageBackend != "legacy" || follow.Snapshot.TotalRecords <= len(follow.Snapshot.Records) {
 		t.Fatalf("large snapshot: %v", err)
 	}
 	defer app.TranscriptFollowForTab(tab.ID, transcript.FollowRequest{Subscription: follow.Subscription, Close: true})

@@ -4,11 +4,10 @@ import type { QuestionAnswer } from "./types";
 
 type ActiveTurnBindings = Pick<AppBindings, "ListTabs" | "SteerInboxItem" | "SteerInboxItemForTurn">;
 
-export async function resolveActiveTurnId(binding: Pick<AppBindings, "ListTabs">, tabId: string, _known?: string): Promise<string | undefined> {
-  // The cached id can outlive the controller turn during startup, recovery,
-  // or a runtime rebuild. Always refresh from the tab owner before crossing
-  // the exact-turn answer/steer boundary; the optional value is only a hint
-  // for callers that have not received local state yet.
+export async function resolveActiveTurnId(binding: Pick<AppBindings, "ListTabs">, tabId: string, known?: string): Promise<string | undefined> {
+  // Preserve the turn the user observed. Refreshing it could steer a successor
+  // turn instead; the backend owns admission and durable follow-up fallback.
+  if (known?.trim()) return known.trim();
   const authoritative = asArray(await binding.ListTabs()).find((tab) => tab.id === tabId)?.turnId;
   return authoritative;
 }

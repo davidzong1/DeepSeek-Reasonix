@@ -103,7 +103,31 @@ test("composer submission boundaries", async t => {
       host.commands.BeginSessionComposerSubmission = backend.BeginSessionComposerSubmission;
     });
 
-    await t.test("lost registration response requires reconciliation before editing", async () => {
+    await t.test("rejected registration automatically recovers without replacing current input", async () => {
+      const ref: SessionRef = { hostId: "local", sessionId: "registration-conflict" };
+      await paint(ref.sessionId);
+      await act(async () => patch("keep this window input"));
+      host.commands.BeginSessionComposerSubmission = async () => {
+        const current = await backend.GetSessionComposerState(ref);
+        await backend.SaveSessionComposerState({ ref, expectedRevision: current.revision, contentVersion: 1, contentJson: '{"text":"other window input"}' });
+        throw new Error("session_operation:input_conflict:The input changed. Both versions are preserved; review before continuing.");
+      };
+      let sends = 0;
+      try {
+        await act(async () => {
+          await assert.rejects(sendPersistedComposer("race-tab", "keep this window input", "keep this window input", "conflicted-guidance", async () => { sends++; }, undefined, undefined, "guidance"), /input_conflict/);
+        });
+        assert.equal(editor.blocked, false, "automatic recovery must restore editability");
+        assert.equal(editor.target!.initial.text, "keep this window input");
+        await act(async () => editor.retry());
+        assert.equal(JSON.parse((await backend.GetSessionComposerState(ref)).contentJson).text, "keep this window input");
+        assert.equal(sends, 0, "conflict recovery never submits or replays the message");
+      } finally {
+        host.commands.BeginSessionComposerSubmission = backend.BeginSessionComposerSubmission;
+      }
+    });
+
+    await t.test("lost registration response releases only the registration that was never sent", async () => {
       const ref: SessionRef = { hostId: "local", sessionId: "lost-registration" };
       await paint(ref.sessionId);
       await act(async () => { editor.setGoalDraft(true); patch("retained goal input"); });
@@ -116,17 +140,77 @@ test("composer submission boundaries", async t => {
         await assert.rejects(sendPersistedComposer("race-tab", "goal", "goal", "lost-registration-id", async () => { sends++; }), /lost registration/);
       });
       assert.equal(sends, 0);
-      assert.equal(editor.blocked, true);
-      await act(async () => patch("must not replace pending input"));
+      assert.equal(editor.blocked, false);
       assert.equal(editor.target!.initial.text, "retained goal input");
       assert.equal(editor.target!.initial.goalDraft, true);
-      await act(async () => editor.retry());
-      assert.equal(editor.blocked, true);
-      await backend.CompleteSessionComposerSubmission(ref, "lost-registration-id", "not_accepted");
+      assert.equal(sends, 0);
       await act(async () => editor.retry());
       assert.equal(editor.blocked, false);
+      assert.equal((await backend.GetSessionComposerState(ref)).submissionId, undefined);
       assert.equal(editor.target!.initial.goalDraft, true);
       host.commands.BeginSessionComposerSubmission = backend.BeginSessionComposerSubmission;
+    });
+
+    await t.test("unknown delivery is automatically reconciled without a second send", async () => {
+      const ref: SessionRef = { hostId: "local", sessionId: "automatic-receipt" };
+      await paint(ref.sessionId);
+      await act(async () => patch("accepted once"));
+      let sends = 0;
+      host.commands.GetSessionComposerState = async value => {
+        const state = await backend.GetSessionComposerState(value);
+        if (value.sessionId === ref.sessionId && state.submissionId) return backend.CompleteSessionComposerSubmission(value, state.submissionId, "accepted");
+        return state;
+      };
+      try {
+        await act(async () => {
+          await assert.rejects(sendPersistedComposer("race-tab", "accepted once", "accepted once", "automatic-receipt-id", async () => { sends++; throw Error("reply lost"); }), /reply lost/);
+        });
+        assert.equal(sends, 1);
+        assert.equal(editor.blocked, false);
+        assert.equal(editor.target!.initial.text, "");
+        assert.equal(editor.settledId, "automatic-receipt-id");
+      } finally { host.commands.GetSessionComposerState = backend.GetSessionComposerState; }
+    });
+
+    await t.test("history changes retain input and are acknowledged on explicit send", async () => {
+      const ref: SessionRef = { hostId: "local", sessionId: "history-recovery" };
+      await backend.SaveSessionComposerState({ ref, expectedRevision: "0", contentVersion: 1, contentJson: '{"text":"next instruction"}' });
+      host.commands.GetSessionComposerState = async value => ({ ...await backend.GetSessionComposerState(value), historyChanged: value.sessionId === ref.sessionId });
+      let acknowledged = false, sends = 0;
+      host.commands.SaveSessionComposerState = async req => {
+        if (req.ref.sessionId === ref.sessionId) acknowledged = req.acknowledgeHistory === true;
+        return backend.SaveSessionComposerState(req);
+      };
+      try {
+        await paint(ref.sessionId);
+        assert.equal(editor.blocked, false);
+        assert.equal(editor.target!.initial.text, "next instruction");
+        await act(async () => { await sendPersistedComposer("race-tab", "next instruction", "next instruction", "history-recovery-id", async () => { sends++; }); });
+        assert.equal(acknowledged, true);
+        assert.equal(sends, 1);
+      } finally {
+        host.commands.GetSessionComposerState = backend.GetSessionComposerState;
+        host.commands.SaveSessionComposerState = backend.SaveSessionComposerState;
+      }
+    });
+
+    await t.test("another pending submission cannot consume this window's unsent input", async () => {
+      const ref: SessionRef = { hostId: "local", sessionId: "other-pending" };
+      await paint(ref.sessionId);
+      await act(async () => patch("my unsent input"));
+      const saved = await backend.SaveSessionComposerState({ ref, expectedRevision: "0", contentVersion: 1, contentJson: '{"text":"other instruction"}' });
+      await backend.BeginSessionComposerSubmission(ref, saved.revision, "other-submission", "{}");
+      let sends = 0;
+      await act(async () => {
+        await assert.rejects(sendPersistedComposer("race-tab", "my unsent input", "my unsent input", "unsent-id", async () => { sends++; }));
+      });
+      assert.equal(editor.blocked, true);
+      assert.equal(editor.target!.initial.text, "my unsent input");
+      await backend.CompleteSessionComposerSubmission(ref, "other-submission", "accepted");
+      await act(async () => editor.retry());
+      assert.equal(editor.blocked, false);
+      assert.equal(editor.target!.initial.text, "my unsent input");
+      assert.equal(sends, 0);
     });
 
     await t.test("lost settlement response follows durable content instead of reviving input", async () => {

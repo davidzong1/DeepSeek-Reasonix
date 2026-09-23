@@ -272,6 +272,9 @@ type cliBuildOverrides struct {
 	// InteractiveHost marks human-in-the-loop entries (chat TUI); print mode
 	// and bots stay on core-v1.
 	InteractiveHost bool
+	// NativeLegacySession is selected only for an existing path-addressed
+	// transcript. New CLI sessions remain on the canonical session service.
+	NativeLegacySession bool
 	// SessionTemp carries the previous Controller's private temporary directory
 	// manager across model/profile rebuilds so temporary files survive.
 	SessionTemp *sessiontemp.Manager
@@ -303,6 +306,7 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		Sink:                 sink,
 		SessionDir:           sessionDir,
 		SessionService:       cliSessionService(sessionDir),
+		NativeLegacySession:  overrides.NativeLegacySession,
 		SessionHostID:        "local",
 		AgentPreset:          overrides.Preset,
 		WorkspaceRoot:        overrides.WorkspaceRoot,
@@ -673,6 +677,7 @@ func runAgent(args []string, version string) int {
 		HeadlessApprovalMode: permissions.approval,
 		OnSessionRecovered:   cliSessionRecoveredHandler(leases),
 		Ablation:             ablated,
+		NativeLegacySession:  resumePath != "",
 	}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, sink, overrides)
 	if err != nil {
@@ -1088,14 +1093,15 @@ func chatREPL(args []string, version string) int {
 		effortOverride = effort
 	}
 	overrides := cliBuildOverrides{
-		Preset:             deprecatedMode,
-		Effort:             effortOverride,
-		PermissionAllow:    allowedTools,
-		AdditionalDirs:     additionalDirs,
-		WorkspaceRoot:      workspaceRoot,
-		InteractiveHost:    true,
-		Stderr:             diagnostics.Writer(),
-		OnSessionRecovered: cliSessionRecoveredHandler(leases),
+		Preset:              deprecatedMode,
+		Effort:              effortOverride,
+		PermissionAllow:     allowedTools,
+		AdditionalDirs:      additionalDirs,
+		WorkspaceRoot:       workspaceRoot,
+		InteractiveHost:     true,
+		Stderr:              diagnostics.Writer(),
+		OnSessionRecovered:  cliSessionRecoveredHandler(leases),
+		NativeLegacySession: resumePath != "",
 	}
 	diagnostics.Milestone("controller_build_begin")
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, sink, overrides)

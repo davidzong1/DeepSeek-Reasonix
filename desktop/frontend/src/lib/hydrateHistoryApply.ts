@@ -25,57 +25,6 @@ export type SessionHydrateIdentity = SessionIdentity;
 
 export type HydrateSurfacePolicy = "preserve-current" | "replace-surface";
 
-type ActiveTabHydrationTarget = SessionHydrateIdentity & {
-  sessionRevision?: number;
-  sessionDigest?: string;
-};
-
-export type ActiveTabHydrationLoadOptions = ActiveTabHydrationTarget & {
-  preserveCachedHistory: boolean;
-  surfacePolicy?: HydrateSurfacePolicy;
-};
-
-export function activeTabHydrationPlan(
-  target: ActiveTabHydrationTarget,
-  current: SessionHydrateIdentity | undefined,
-  reset: boolean,
-  requestedPolicy?: HydrateSurfacePolicy,
-  requestedCache?: boolean,
-): {
-  sameSession: boolean;
-  surfacePolicy: HydrateSurfacePolicy;
-  loadOptions: ActiveTabHydrationLoadOptions;
-} {
-  const sameSession = sameSessionHydrateIdentity(target, current);
-  const surfacePolicy = requestedPolicy ?? (sameSession ? "preserve-current" : "replace-surface");
-  if (surfacePolicy === "replace-surface") {
-    return {
-      sameSession,
-      surfacePolicy,
-      loadOptions: {
-        preserveCachedHistory: false,
-        surfacePolicy,
-        session: target.session,
-        sessionPath: target.sessionPath,
-        sessionRevision: target.sessionRevision,
-        sessionDigest: target.sessionDigest,
-        sessionGeneration: target.sessionGeneration,
-      },
-    };
-  }
-  return {
-    sameSession,
-    surfacePolicy,
-    loadOptions: {
-      preserveCachedHistory: sameSession && (requestedCache ?? !reset),
-      session: target.session,
-      sessionPath: target.sessionPath,
-      sessionRevision: target.sessionRevision,
-      sessionDigest: target.sessionDigest,
-    },
-  };
-}
-
 type UnboundLiveSurfaceState = HydrateLiveState & {
   hydrateHistoryLoaded?: boolean;
 };

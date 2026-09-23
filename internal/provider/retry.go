@@ -315,19 +315,23 @@ func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOption
 		}
 		retryAfter = 0
 
-		req, err := newReq(ctx)
+		requestCtx, observation := observeRequest(ctx)
+		req, err := newReq(requestCtx)
 		if err != nil {
+			observation.finish(err, "build_error")
 			return nil, &RequestFailure{Identity: identity, Operation: "build request", Err: err}
 		}
 		recordRequestAttempt(ctx)
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			observation.finish(err, "request_error")
 			if !transientErr(err) {
 				return nil, &RequestFailure{Identity: identity, Operation: "request failed", Err: err}
 			}
 			lastErr = &RequestFailure{Identity: identity, Operation: "request failed", Err: err}
 			continue
 		}
+		observation.response(resp)
 		if resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}

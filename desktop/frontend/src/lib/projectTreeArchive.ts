@@ -1,17 +1,14 @@
 import { useCallback, useRef, useState } from "react";
 import { app } from "./bridge";
-import { invalidateProjectTreeTopicLoads, projectTreeFolderKeyForSession, projectTreeFolderKeyForTopic } from "./projectTreeTopic";
+import { projectTreeFolderKeyForSession, projectTreeFolderKeyForTopic } from "./projectTreeTopic";
 import type { ToastContextValue } from "./toast";
 import type { ProjectNode } from "./types";
 import { sessionLifecycleFences } from "./sessionLifecycleFences";
 import { projectSessionIdentity } from "./projectSessionIdentity";
-import { releaseReadSnapshot } from "./readSnapshot";
 import { useT } from "./i18n";
 import type { TopicRemovalInspection, TopicRemovalRequest } from "../generated/desktopContract.generated";
 
 export { projectTreeWithoutTopics } from "./projectTreeTopic";
-
-type TopicPageState = { snapshotId?: string; itemKeys?: string[]; nextCursor?: string; loading: boolean; initialized?: boolean; error?: string };
 
 export type ProjectTreeRefreshOptions = {
   reloadTopicKeys?: string[];
@@ -154,10 +151,7 @@ export function useProjectTreeArchiveState() {
 
 export function useProjectTreeArchiveController({
   treeRef,
-  topicLoadSeqRef,
-  topicLoadPendingRef,
-  topicPageStateRef,
-  updateTopicPageState,
+  invalidateProjectTopicLists,
   refreshRef,
   optimisticallyRemoveTopic,
   optimisticallyRemoveSession,
@@ -167,10 +161,7 @@ export function useProjectTreeArchiveController({
   sessionErrorMessage,
 }: {
   treeRef: { current: ProjectNode[] };
-  topicLoadSeqRef: { current: Record<string, number> };
-  topicLoadPendingRef: { current: Record<string, number> };
-  topicPageStateRef: { current: Record<string, TopicPageState> };
-  updateTopicPageState: (key: string, next: TopicPageState) => void;
+  invalidateProjectTopicLists: (projectKey: string) => void;
   refreshRef: { current: ProjectTreeRefresh };
   optimisticallyRemoveTopic: (topicId: string) => void;
   optimisticallyRemoveSession: (node: ProjectNode) => void;
@@ -217,20 +208,9 @@ export function useProjectTreeArchiveController({
         archive: async () => (await import("./topicRemovalCommand")).removeProjectTopic(topicId, inspectTopicRemoval, topicRemovalRequests.current, t),
         commit: () => {
           commitArchiveTombstone(topicId);
-          // Fence every load that captured the catalog before backend commit,
-          // then remove the topic while the tombstone covers newer arrivals.
-          invalidateProjectTreeTopicLoads(topicLoadSeqRef.current, invalidatedKeys);
-          for (const folderKey of invalidatedKeys) {
-            const prefix = `${folderKey}\u001f`;
-            for (const key of Object.keys(topicLoadPendingRef.current)) {
-              if (key === folderKey || key.startsWith(prefix)) delete topicLoadPendingRef.current[key];
-            }
-            for (const [key, state] of Object.entries(topicPageStateRef.current)) {
-              if (key !== folderKey && !key.startsWith(prefix)) continue;
-              releaseReadSnapshot(state.snapshotId);
-              updateTopicPageState(key, { ...state, snapshotId: undefined, nextCursor: undefined, loading: false, initialized: false, error: undefined });
-            }
-          }
+          // Retire requests and their loading/cursor state together before
+          // the post-commit page replaces the visible list.
+          invalidatedKeys.forEach(invalidateProjectTopicLists);
           optimisticallyRemoveTopic(topicId);
         },
         reload: async () => {
@@ -246,7 +226,7 @@ export function useProjectTreeArchiveController({
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, inspectTopicRemoval, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, t, topicLoadPendingRef, topicLoadSeqRef, topicPageStateRef, treeRef, updateTopicPageState]);
+  }, [beginTrashingTopic, closeMenu, commitArchiveTombstone, endTrashingTopic, inspectTopicRemoval, invalidateProjectTopicLists, onTopicsChanged, optimisticallyRemoveTopic, refreshRef, releaseArchiveTombstone, showToast, t, treeRef]);
 
   const trashSession = useCallback(async (target: ProjectNode) => {
     const sessionPath = (target.sessionPath ?? "").trim();
@@ -269,7 +249,7 @@ export function useProjectTreeArchiveController({
         },
         commit: () => {
           const invalidatedKeys = folderKey ? [folderKey] : treeRef.current.filter((node) => node.kind === "project" || node.kind === "global_folder").map((node) => node.key);
-          invalidateProjectTreeTopicLoads(topicLoadSeqRef.current, invalidatedKeys);
+          invalidatedKeys.forEach(invalidateProjectTopicLists);
           optimisticallyRemoveSession(target);
         },
         reload: async () => {
@@ -288,7 +268,7 @@ export function useProjectTreeArchiveController({
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [closeMenu, commitArchiveTombstone, onTopicsChanged, optimisticallyRemoveSession, refreshRef, releaseArchiveTombstone, sessionErrorMessage, showToast, topicLoadSeqRef, treeRef]);
+  }, [closeMenu, invalidateProjectTopicLists, onTopicsChanged, optimisticallyRemoveSession, refreshRef, sessionErrorMessage, showToast, treeRef]);
 
   return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession, inspectTopicRemoval, topicRemovalInspections };
 }

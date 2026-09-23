@@ -62,6 +62,7 @@ export function createMockRemoteProjects(tabs: MockRemoteTabCatalog): {
           scope: "project",
           workspaceRoot: workspace,
           sessionPath: `${workspace}/sessions/${opts?.sessionName || "intro"}.jsonl`,
+          sessionGeneration: 1,
           workspaceName,
           topicId: "",
           topicTitle: workspaceName,

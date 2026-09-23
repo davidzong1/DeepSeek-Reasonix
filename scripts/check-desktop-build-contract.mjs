@@ -41,10 +41,12 @@ const jobBody = (workflow, jobName) => {
 };
 
 const nodeVersions = (workflow) =>
-  [...workflow.matchAll(/node-version:\s*["']?(\d+)/g)].map(
-    (match) => match[1],
+  [...workflow.matchAll(/node-version(-file)?:\s*["']?([^\s"']+)/g)].map(
+    (match) => match[1] ? read(match[2]).trim() : match[2],
   );
 
+const pinnedNodeVersion = read(".node-version").trim();
+assert.match(pinnedNodeVersion, /^24\.\d+\.\d+$/);
 assert.equal(read("desktop/frontend/.nvmrc").trim(), "24");
 assert.equal(frontendPackage.engines?.node, ">=24");
 assert.equal(frontendPackage.engines?.pnpm, ">=10 <11");
@@ -54,12 +56,12 @@ assert.ok(
 );
 
 for (const jobName of ["desktop-prepare", "desktop-go", "desktop-frontend", "desktop-browser-group", "desktop-macos", "desktop-windows"]) {
-  assert.deepEqual(nodeVersions(jobBody(ciWorkflow, jobName)), ["24"]);
+  assert.deepEqual(nodeVersions(jobBody(ciWorkflow, jobName)), [pinnedNodeVersion]);
 }
 
 const releaseNodeVersions = nodeVersions(releaseWorkflow);
 assert.ok(releaseNodeVersions.length > 0, "release workflow must set up Node");
-assert.deepEqual(new Set(releaseNodeVersions), new Set(["24"]));
+assert.deepEqual(new Set(releaseNodeVersions), new Set([pinnedNodeVersion]));
 
 for (const [name, workflow] of [
   ["CI", ciWorkflow],

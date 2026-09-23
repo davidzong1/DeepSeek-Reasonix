@@ -1,7 +1,6 @@
 // Run: tsx src/__tests__/hydrate-history-apply.test.ts
 
 import {
-  activeTabHydrationPlan,
   canAdoptUnboundLiveSurface,
   duplicateLiveItemIds,
   hasCachedLiveTurn,
@@ -10,6 +9,8 @@ import {
   sameSessionPlaceholderItems,
   shouldPreferResidentHistory,
 } from "../lib/hydrateHistoryApply";
+import { activeTabHydrationPlan, coldHistoryRefreshProof } from "../lib/coldHistoryRefresh";
+import type { Meta, TabMeta } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -207,6 +208,17 @@ ok(
   }) === "replace",
   "empty idle surface still applies history",
 );
+
+const coldTarget = { sessionPath: "/fixture/legacy.jsonl", sessionGeneration: 4 } as TabMeta;
+const coldState = { meta: { ...coldTarget, eventChannel: "agent:event" } as Meta, historyDigest: "verified-cut", historyRevision: 7 };
+ok(coldHistoryRefreshProof(coldTarget, coldState, true)?.digest === "verified-cut", "passive metadata without a digest retains the existing certified cut");
+ok(!coldHistoryRefreshProof(coldTarget, coldState, false), "explicit reset cannot reuse passive proof");
+ok(!coldHistoryRefreshProof({ ...coldTarget, sessionGeneration: 5 }, coldState, true), "a new storage generation cannot reuse the old cut");
+ok(!coldHistoryRefreshProof({ ...coldTarget, sessionDigest: "replacement" }, coldState, true), "a changed content proof requires a fresh read");
+ok(!coldHistoryRefreshProof({ ...coldTarget, sessionRevision: 8 }, coldState, true), "a changed content revision requires a fresh read");
+ok(!coldHistoryRefreshProof(coldTarget, { ...coldState, historyDigest: "" }, true), "an unproven window cannot be retained");
+ok(!coldHistoryRefreshProof(coldTarget, { ...coldState, hydrating: true }, true), "unfinished preparation still joins the reader task");
+ok(!coldHistoryRefreshProof(coldTarget, { ...coldState, hydrateError: "damaged" }, true), "failed history is not certified by metadata refresh");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

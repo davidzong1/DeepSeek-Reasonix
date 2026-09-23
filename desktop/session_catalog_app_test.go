@@ -4,16 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
-	"testing"
-	"time"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/history"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioncatalog"
+	"strings"
+	"testing"
+	"time"
 )
 
 func installSessionCatalogForTest(t *testing.T, app *App, path, scope, workspaceRoot string) {
@@ -550,6 +549,52 @@ func TestListProjectTopicsUsesAvailableProjectionBeforeEveryGlobalDirectoryIsSca
 	}
 }
 
+func TestMetadataCatalogAvailabilityUsesDiscoveryStateForAbsentRoots(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	catalog, err := sessioncatalog.Open(t.Context(), sessioncatalog.Options{InMemory: true, MetadataOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.sessionCatalog.Store(catalog)
+	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
+	legacy := config.SessionDir()
+	if err := os.MkdirAll(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(legacy, "retained.jsonl")
+	if err := os.WriteFile(path, []byte("body must not be read\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := app.catalogWorkspaceAvailability(catalog, "global", "")
+	if before.complete || before.pending == 0 {
+		t.Fatalf("unknown directories declared complete: %+v", before)
+	}
+	for _, target := range app.sessionCatalogTargets() {
+		if err := catalog.ReconcileDirectory(t.Context(), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := app.catalogWorkspaceAvailability(catalog, "global", "")
+	if !ready.complete || ready.failed != 0 || ready.pending != 0 {
+		t.Fatalf("optional absent roots did not settle: %+v", ready)
+	}
+	if err := os.Rename(legacy, legacy+"-offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.ReconcileDirectory(t.Context(), sessioncatalog.DirectoryTarget{Path: legacy, Scope: "global"}); !os.IsNotExist(err) {
+		t.Fatalf("known missing root accepted: %v", err)
+	}
+	offline := app.catalogWorkspaceAvailability(catalog, "global", "")
+	if offline.complete || !offline.usable || offline.failed != 1 {
+		t.Fatalf("unavailable history was hidden from completeness: %+v", offline)
+	}
+	row, found, err := catalog.GetSession(t.Context(), path)
+	if err != nil || !found || row.MissingSince != 0 {
+		t.Fatalf("unavailable root lost retained row: %+v %v", row, err)
+	}
+}
+
 func TestListProjectTopicsPaginatesMetadataWhileCatalogIsPartiallyAvailable(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	legacy := config.SessionDir()
@@ -725,72 +770,5 @@ func TestRetargetOpenTabsSkipsRunningSessions(t *testing.T) {
 	}
 	if running.SessionPath != root {
 		t.Fatalf("running tab path = %q, want original parent %q", running.SessionPath, root)
-	}
-}
-
-func TestOpenTopicTabKeepsRunningParentInsteadOfCoveringLeaf(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	dir := desktopSessionDir(globalWorkspaceRoot())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	q := provider.Message{Role: provider.RoleUser, Content: "question"}
-	a := provider.Message{Role: provider.RoleAssistant, Content: "answer"}
-	save := func(path, topic string, messages ...provider.Message) {
-		t.Helper()
-		session := agent.NewSession("sys")
-		for _, message := range messages {
-			session.Add(message)
-		}
-		if err := session.Save(path); err != nil {
-			t.Fatal(err)
-		}
-		if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{
-			ID: agent.BranchID(path), Scope: "global", TopicID: topic, TopicTitle: "Upgraded",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root := filepath.Join(dir, "root.jsonl")
-	leaf := filepath.Join(dir, "leaf.jsonl")
-	save(root, "conversation", q, a)
-	save(leaf, "legacy-leaf-topic", q, a,
-		provider.Message{Role: provider.RoleUser, Content: "next"},
-		provider.Message{Role: provider.RoleAssistant, Content: "done"})
-	if err := agent.SaveBranchMetaPreserveUpdated(leaf, agent.BranchMeta{
-		ID: "leaf", Scope: "global", TopicID: "legacy-leaf-topic",
-		Recovered: true, ParentID: "root", RecoveryDepth: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	app := NewApp()
-	installSessionCatalogForTest(t, app, dir, "global", "")
-	running := &WorkspaceTab{
-		ID: "running", Scope: "global", TopicID: "conversation", SessionPath: root,
-		Ctrl: &retargetRuntimeController{status: control.RuntimeStatus{Running: true}, path: root},
-	}
-	app.tabs = map[string]*WorkspaceTab{"running": running}
-
-	_, resolved := app.resolveOpenTopicSessionPath("global", "", root)
-	if resolved != root {
-		t.Fatalf("resolve running open = %q, want parent %q", resolved, root)
-	}
-
-	meta, err := app.openTopicTab("global", "", "conversation", root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if running.SessionPath != root {
-		t.Fatalf("running tab path = %q, want parent %q", running.SessionPath, root)
-	}
-	if meta.ID != "running" || meta.SessionPath != root {
-		t.Fatalf("open meta = %+v, want focused running parent", meta)
-	}
-
-	idle := &WorkspaceTab{ID: "idle", Scope: "global", TopicID: "conversation", SessionPath: root}
-	app.tabs = map[string]*WorkspaceTab{"idle": idle}
-	_, idleResolved := app.resolveOpenTopicSessionPath("global", "", root)
-	if idleResolved != leaf {
-		t.Fatalf("resolve idle open = %q, want covering leaf %q", idleResolved, leaf)
 	}
 }

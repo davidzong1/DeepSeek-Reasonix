@@ -76,6 +76,6 @@ func (a *App) indexRestoredSessionPaths(ctx context.Context, catalog *sessioncat
 		if ctx.Err() != nil {
 			return
 		}
-		_ = catalog.IndexSessionPath(ctx, item.target, item.path)
+		catalog.RequestIndexSession(item.target, item.path)
 	}
 }

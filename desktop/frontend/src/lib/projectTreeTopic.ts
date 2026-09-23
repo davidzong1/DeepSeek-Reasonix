@@ -1,22 +1,7 @@
 import { asArray } from "./array";
 import { getLocale, type DictKey, type Translator } from "./i18n";
 import type { ProjectNode, ProjectTopicStatus } from "./types";
-import type { SessionDraftSummary } from "../generated/desktopContract.generated";
 import { projectSessionIdentity, projectSessionExcluded, projectSessionKeys, sameProjectSession } from "./projectSessionIdentity";
-
-/**
- * The workspace badge points at a draft worth returning to: unsent content, or
- * a save that has not settled yet. A clean empty draft is only the landing
- * surface and must not mark its workspace.
- */
-export function workspaceDraftBadge(
-  summaries: readonly SessionDraftSummary[],
-  scope: "global" | "project",
-  workspaceRoot: string,
-): SessionDraftSummary | undefined {
-  return summaries.find((draft) => draft.scope === scope
-    && (scope === "global" || draft.workspaceRoot === workspaceRoot));
-}
 
 export type ProjectTreeVariant = "workbench" | "creation";
 export type WorkbenchSortMode = "created" | "updated";

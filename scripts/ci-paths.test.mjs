@@ -89,6 +89,12 @@ test("mixed changes cannot hide affected work and unknown paths fail closed", ()
     assert.equal(result.flags[name], true, name);
 });
 
+test("shared Node runtime changes validate every frontend artifact surface", () => {
+  const { flags } = classifyPaths([".node-version"]);
+  for (const name of ["code", "desktop", "frontend", "browser", "memory", "memory_full", "electron", "native", "packaging"])
+    assert.equal(flags[name], true, name);
+});
+
 test("release notes and full events are deterministic", () => {
   assert.equal(classifyPaths(["release-notes/v1.md"]).flags.notes_only, true);
   const notesPush = classifyPaths(["release-notes/v1.md"], { full: true }).flags;

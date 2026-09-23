@@ -195,7 +195,7 @@ function testProjectTreeWiresEveryRaceGuard() {
     "utf8",
   );
   assert.match(archiveSource, /await archive\(\)[\s\S]*commit\(\)[\s\S]*await reload\(\)/);
-  assert.match(archiveSource, /commitArchiveTombstone\(topicId\)[\s\S]*invalidateProjectTreeTopicLoads[\s\S]*optimisticallyRemoveTopic\(topicId\)/);
+  assert.match(archiveSource, /commitArchiveTombstone\(topicId\)[\s\S]*invalidatedKeys\.forEach\(invalidateProjectTopicLists\)[\s\S]*optimisticallyRemoveTopic\(topicId\)/);
   assert.match(source, /projectTreeWithoutTopics\(asArray\(page\.items\), currentArchiveTombstones\(\)\)/);
   assert.match(archiveSource, /return previous\.catch\(\(\) => undefined\)\.then\(work\)/);
   assert.match(archiveSource, /pendingLoads = targets\.map[\s\S]*onReloadStarted[\s\S]*await Promise\.all\(pendingLoads\)/);

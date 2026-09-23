@@ -139,9 +139,9 @@ func (a *App) bindTabCanonicalSession(
 			CWD: desktopWorkspaceRoot(scope, workspaceRoot), Origin: session.SessionOriginLegacyImport,
 		})
 		if errors.Is(err, errUnadoptedLegacySourceMissing) {
-			evidence := a.loadSavedTabReconcileEvidence(ctx, false)
-			if evidence.registryErr != nil || evidence.draftErr != nil {
-				return ref, "", errors.Join(errLegacySourceRecoveryPending, evidence.registryErr, evidence.draftErr)
+			evidence := a.loadSavedTabReconcileEvidence(ctx)
+			if evidence.registryErr != nil {
+				return ref, "", errors.Join(errLegacySourceRecoveryPending, evidence.registryErr)
 			}
 			if savedTabHasRecoveryOwner(desktopTabEntry{SessionPath: legacyPath}, evidence) {
 				return ref, "", errLegacySourceRecoveryPending

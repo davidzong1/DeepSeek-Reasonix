@@ -48,9 +48,13 @@ func (p *Projection) freezeLocked(id string) (*Projection, error) {
 	frozen := &Projection{incarnation: p.incarnation, identity: p.identity, revision: p.revision, covered: p.covered, durable: p.durable,
 		runtime: p.runtime, attempts: maps.Clone(p.attempts), prompts: maps.Clone(p.prompts)}
 	frozen.buffer.userTurns = p.buffer.userTurns
+	frozen.recordPositions = make(map[string]int, len(p.buffer.messages))
 	used := 0
-	for _, row := range p.buffer.messages {
+	for position, row := range p.buffer.messages {
 		message := row.materialize()
+		if message.MessageID != "" {
+			frozen.recordPositions[message.MessageID] = position
+		}
 		used += retainedBytes(reflect.ValueOf(message))
 		copy := &bufferedMessage{message: message}
 		if message.Role == "assistant" {
@@ -68,6 +72,7 @@ func (p *Projection) freezeLocked(id string) (*Projection, error) {
 	// paging the body never shrinks navigation and repeated outline reads reuse
 	// one pass. Its previews count against the same cache budget.
 	frozen.outline = buildOutline(frozen.buffer.messages)
+	used += retainedBytes(reflect.ValueOf(frozen.recordPositions))
 	used += retainedBytes(reflect.ValueOf(frozen.outline))
 	runtime, _ := frozen.runtimeLocked()
 	used += retainedBytes(reflect.ValueOf(runtime))

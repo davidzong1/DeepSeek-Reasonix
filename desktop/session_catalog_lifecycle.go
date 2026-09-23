@@ -6,16 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	"reasonix/internal/history"
+	"reasonix/internal/projectiondb"
 	"reasonix/internal/sessioncatalog"
 	"reasonix/internal/taskcatalog"
 )
 
-func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan struct{}) {
+func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan struct{}, metadataRequests <-chan struct{}) {
 	initialReconcileFinished := false
 	defer func() {
 		if !initialReconcileFinished {
@@ -35,63 +33,63 @@ func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan s
 	for _, project := range projects.Projects {
 		taskcatalog.RegisterSharedProject(project.Root, projectDisplayName(project))
 	}
-	catalog, err := sessioncatalog.Open(ctx, sessioncatalog.Options{
-		Path: path,
-		OnRevision: func(revision uint64, roots []string, reason string) {
-			a.emitProjectTreeChangedV2(revision, roots, reason)
-		},
-	})
-	if err != nil {
-		slog.Warn("desktop: open session catalog", "err", err)
-		return
-	}
-	if ctx.Err() != nil || a.shuttingDown.Load() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		_ = catalog.Close(closeCtx)
-		closeCancel()
-		return
-	}
-	a.sessionCatalog.Store(catalog)
-	if err := a.syncSessionCatalogMetadataBounded(ctx, catalog); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Warn("desktop: sync session catalog metadata", "err", err)
-	}
-	select {
-	case <-a.tabsRestoredSignal():
-	case <-ctx.Done():
-		return
-	}
-	// Restored tabs can reveal a project absent from the initial registry.
-	targets = a.sessionCatalogTargets()
-	history.RegisterCatalogRoots(historyCatalogRoots(targets))
-	a.indexRestoredSessionPaths(ctx, catalog)
-	// Directory scans are independent and internally batched/resumable; keep
-	// startup work bounded so a large project set cannot starve the UI.
-	var reconcileGroup errgroup.Group
-	reconcileGroup.SetLimit(4)
-	for _, target := range targets {
-		if ctx.Err() != nil || a.shuttingDown.Load() {
+	var revisionFloor uint64
+	deferredIntegrity := true
+	for ctx.Err() == nil {
+		catalog, err := sessioncatalog.Open(ctx, sessioncatalog.Options{
+			Path: path, MetadataOnly: true, StartPaused: true,
+			DeferredMetadataIntegrity: deferredIntegrity, RevisionFloor: revisionFloor,
+			Maintenance: &a.historyMaintenance,
+			OnDiscovery: func(event sessioncatalog.DiscoveryEvent) {
+				slog.Info("desktop: history discovery", "root", event.Root, "sequence", event.Sequence,
+					"phase", event.Phase, "origin", event.Origin, "failure", event.Failure)
+			},
+			OnRevision: func(revision uint64, roots []string, reason string) {
+				a.emitProjectTreeChangedV2(revision, roots, reason)
+			},
+		})
+		if err != nil {
+			if deferredIntegrity && projectiondb.IsCorruptionError(err) {
+				deferredIntegrity = false
+				continue
+			}
+			slog.Warn("desktop: open session catalog", "err", err)
 			return
 		}
-		reconcileGroup.Go(func() error {
-			if migrated := migrateLegacySessionsIntoGlobalTopics(target.Path); len(migrated) > 0 {
-				_ = a.syncSessionCatalogMetadataBounded(ctx, catalog)
+		// Pair publication with stopSessionCatalog's lifecycle lock. A stopped
+		// owner cannot publish a replacement after shutdown removed its pointer.
+		a.catalogLifecycleMu.Lock()
+		stopped := ctx.Err() != nil || a.shuttingDown.Load()
+		if !stopped {
+			a.sessionCatalog.Store(catalog)
+		}
+		a.catalogLifecycleMu.Unlock()
+		if stopped {
+			_ = catalog.Close(context.Background())
+			return
+		}
+		if freshGeneration {
+			catalog.MarkRepairReason("generation_upgrade")
+		}
+		a.watchSessionCatalog(ctx, catalog, metadataRequests, func() {
+			if !initialReconcileFinished {
+				close(initialReconcileDone)
+				initialReconcileFinished = true
 			}
-			if err := catalog.ReconcileDirectory(ctx, target); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Debug("desktop: reconcile session catalog directory", "dir", target.Path, "err", err)
-			}
-			return nil
 		})
+		select {
+		case <-catalog.Invalidated():
+			// Invalidate the published owner before closing every read lease.
+			// Only then may the normal validating open quarantine the database.
+			a.sessionCatalog.CompareAndSwap(catalog, nil)
+			if err := catalog.Close(context.Background()); err != nil {
+				slog.Warn("desktop: close invalid catalog", "err", err)
+				return
+			}
+			revisionFloor = catalog.Status().Revision + 1
+			deferredIntegrity, freshGeneration = false, true
+		default:
+			return
+		}
 	}
-	_ = reconcileGroup.Wait()
-	close(initialReconcileDone)
-	initialReconcileFinished = true
-	if freshGeneration {
-		catalog.MarkRepairReason("generation_upgrade")
-	}
-	a.retargetOpenTabsToContinuations()
-	a.runSessionCatalogRefreshLoop(ctx, catalog)
-}
-
-func (a *App) runSessionCatalogRefreshLoop(ctx context.Context, catalog *sessioncatalog.Catalog) {
-	a.watchSessionCatalog(ctx, catalog)
 }

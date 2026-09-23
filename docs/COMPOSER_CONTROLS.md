@@ -2,6 +2,26 @@
 
 [简体中文](COMPOSER_CONTROLS.zh-CN.md)
 
+## Messages while a turn is running
+
+You can continue typing while Reasonix works. Add the message to the queue to
+run later, or choose **Guide current turn** to supply it to the active turn at
+its next supported boundary. Guidance is not an immediate interruption of a
+model request. If the turn finishes before guidance is accepted, the inbox
+retains the message for a later turn.
+
+The current input is saved automatically. A rejected submission keeps the text
+and restores editing automatically when its status can be confirmed. If a reply
+is lost, Reasonix checks the existing submission instead of sending it again.
+An unresolved result shows one **Retry** action to check recovery; it does not
+resend the message. Input remains protected until the result is known.
+
+There are no saved/local version choices or recoverable input-copy lists. A
+concurrent save refreshes its revision once while keeping the current text.
+Queue-item editing retains its separate conflict handling.
+
+## Controls
+
 Use the **+** menu to attach content or enable Plan or Goal mode. Reasonix uses
 one standard execution behavior; there is no delivery-quality selector or
 mode chip. Permission remains a separate Read only/Workspace write/Full access menu. Model and

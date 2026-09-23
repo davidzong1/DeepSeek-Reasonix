@@ -50,7 +50,11 @@ function Wait-VisibleUpgradeHistory {
     $polls++
     if ($null -ne $root) {
       if (-not $prepared) { $prepared = Invoke-PendingHistoricalSession $root }
-      $found = $prepared -and (Test-VisibleUpgradeHistory $root $Text)
+      # Lazy history can already be readable without activating a runtime. A
+      # visible, healthy transcript is sufficient even if no preparation action
+      # was ever offered; Test-VisibleUpgradeHistory rejects pending actions.
+      $found = Test-VisibleUpgradeHistory $root $Text
+      if ($found) { $prepared = $true }
     }
     $elapsed = (Get-UpgradeUITimeMilliseconds) - $started
     if ($found -or $elapsed -ge ($TimeoutSeconds * 1000)) { break }

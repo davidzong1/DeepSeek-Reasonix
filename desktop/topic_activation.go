@@ -85,6 +85,15 @@ type TopicActivationEvent struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// Guarded by App.mu. Readiness can finish the public request before background
+// pruning releases its generation, so terminal ownership is tracked separately.
+type topicActivationState struct {
+	activationGen             uint64
+	latestActivationRequestID string
+	pendingActivationTabID    string
+	activationTerminalClaimed bool
+}
+
 func newTopicActivationRequestID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err == nil {
@@ -122,6 +131,10 @@ func (a *App) emitTopicActivation(ev TopicActivationEvent) {
 func (a *App) supersedePendingTopicActivationLocked(exceptTabID string, cancelBuild bool) (string, string) {
 	reqID := a.latestActivationRequestID
 	tabID := a.pendingActivationTabID
+	if a.activationTerminalClaimed {
+		reqID = ""
+	}
+	a.activationTerminalClaimed = false
 	a.activationGen++
 	a.latestActivationRequestID = ""
 	a.pendingActivationTabID = ""
@@ -164,17 +177,19 @@ func (a *App) finishTopicActivation(gen uint64, requestID string) {
 // the same generation, so interleaved legacy and ticketed calls resolve
 // deterministically to the last call.
 func (a *App) StartTopicActivation(req TopicActivationRequest) (TopicActivationTicket, error) {
-	// Claim intent before source adoption can block. A later request must not
+	// Claim intent before source resolution can block. A later request must not
 	// be displaced by this request finishing its I/O last.
 	intent := a.desktopSessions.navigationSeq.Add(1)
 	if req.Selector != nil {
-		target, err := a.resolveSessionMutationTarget(*req.Selector)
+		target, err := a.resolveSessionTarget(*req.Selector)
 		if err != nil {
 			return TopicActivationTicket{}, err
 		}
 		req.Scope, req.WorkspaceRoot, req.TopicID, req.SessionPath = target.Scope, target.WorkspaceRoot, target.TopicID, target.SessionPath
 		if target.SessionRef.SessionID != "" {
 			req.SessionPath = sessionRoute(target.SessionRef.SessionID)
+		} else if target.Source != nil {
+			req.SessionPath = nativeSessionSourceRoute(target.Source)
 		}
 	}
 	a.singleSurfaceMu.Lock()
@@ -329,13 +344,18 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 }
 
 func (a *App) emitTopicActivationReadyIfCurrent(gen uint64, requestID, tabID string) bool {
-	a.mu.RLock()
+	a.mu.Lock()
 	tab := a.tabs[tabID]
 	ok := a.activationGen == gen &&
 		a.latestActivationRequestID == requestID &&
 		a.pendingActivationTabID == tabID &&
-		tab != nil && tab.Ready && tab.Ctrl != nil
-	a.mu.RUnlock()
+		!a.activationTerminalClaimed && tab != nil && tab.Ready && tab.Ctrl != nil
+	if ok {
+		// Claim the terminal event atomically with supersession. Keep the
+		// request identity until prune completes, but never cancel it again.
+		a.activationTerminalClaimed = true
+	}
+	a.mu.Unlock()
 	if !ok {
 		return false
 	}

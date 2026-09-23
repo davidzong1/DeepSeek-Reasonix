@@ -25,8 +25,8 @@ func (a *App) resolveTopicOpenPath(scope, root, topicID string) (string, error) 
 	return path, nil
 }
 
-// Head-specific writes/opening take ownership through the existing migration
-// journal. Resolving or listing a source itself remains read-only.
+// Explicit management operations retain their journaled ownership transition.
+// Navigation and runtime rebuilds must use the read-only resolver instead.
 func (a *App) resolveSessionMutationTarget(selector SessionSelector) (SessionTarget, error) {
 	target, err := a.resolveSessionTarget(selector)
 	if err != nil || target.Source == nil {
@@ -64,6 +64,11 @@ func parseSessionSourceRoute(route string) (*SessionSourceRef, error) {
 		return nil, err
 	}
 	return &source, nil
+}
+
+func nativeSessionSourceRoute(source *SessionSourceRef) string {
+	data, _ := json.Marshal(source)
+	return "session-source:" + url.PathEscape(string(data))
 }
 
 // Session title projection is addressed by the same durable ID as its write.

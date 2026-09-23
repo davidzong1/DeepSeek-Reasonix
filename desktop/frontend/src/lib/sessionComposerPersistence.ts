@@ -6,8 +6,8 @@ import type { SessionComposerState } from "../generated/desktopContract.generate
 import { followupNotSubmitted } from "./pendingFollowup";
 
 export const emptySessionInput = (): PersistentComposerDraft => ({ text: "", invocations: [], attachments: [], workspaceRefs: [], pastedBlocks: [], openPastedLabels: [], sessionRefs: [], selectedTextRefs: [] });
-type Entry = { ref: SessionRef; state?: SessionComposerState; content: PersistentComposerDraft; generation: number; version: number; saved: number; users: number; touched: number; acknowledgeHistory?: boolean; conflictCopies?: string[];
-  error?: string; notice?: string; unreadable?: boolean; registering?: boolean; conflict?: SessionComposerState; tasks: Set<Promise<unknown>>; loading?: Promise<void>; saving?: Promise<void>; timer?: ReturnType<typeof setTimeout> };
+type Entry = { ref: SessionRef; state?: SessionComposerState; content: PersistentComposerDraft; generation: number; version: number; saved: number; users: number; touched: number;
+  error?: string; unreadable?: boolean; registering?: boolean; recovering?: Promise<void>; unsubmittedId?: string; settledId?: string; tasks: Set<Promise<unknown>>; loading?: Promise<void>; saving?: Promise<void>; timer?: ReturnType<typeof setTimeout> };
 const entries = new Map<string, Entry>();
 const tabs = new Map<string, string>();
 const tabOwners = new Map<string, symbol>();
@@ -28,7 +28,10 @@ export function sendPersistedComposer<T>(tabId: string, display: string, submit:
     await complete?.(rejected ? "not_accepted" : "unknown");
     throw error;
   }
- })();
+ })().catch(async error => {
+   if (entry) await recoverInput(entry).catch(() => {});
+   throw error;
+ });
  if (entry) { entry.tasks.add(task); void task.finally(()=>{entry.tasks.delete(task);prune();}).catch(()=>{}); }
  return task;
 }
@@ -39,7 +42,7 @@ const notify = () => { revision++; listeners.forEach(fn => fn()); };
 const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
 const snapshot = () => revision;
 function prune() {
-  const idle=[...entries.entries()].filter(([,entry])=>entry.users===0 && entry.state && !entry.error && !entry.conflict && !entry.loading && !entry.saving && !entry.tasks.size && entry.version===entry.saved).sort((a,b)=>b[1].touched-a[1].touched);
+  const idle=[...entries.entries()].filter(([,entry])=>entry.users===0 && entry.state && !entry.error && !entry.recovering && !entry.loading && !entry.saving && !entry.tasks.size && entry.version===entry.saved).sort((a,b)=>b[1].touched-a[1].touched);
   for (const [key,entry] of idle.slice(20)) {
     if (entry.timer) clearTimeout(entry.timer);
     entries.delete(key);
@@ -69,13 +72,12 @@ function entryFor(ref: SessionRef) {
   if (!entry) { entry = { ref, content: emptySessionInput(), generation: ++serial, version: 0, saved: 0, users:0, touched:Date.now(), tasks: new Set() }; entries.set(key, entry); }
   return entry;
 }
-const locked = (entry: Entry) => !entry.state || Boolean(entry.registering || entry.unreadable || entry.state.submissionId || entry.state.historyChanged || entry.conflict);
+const locked = (entry: Entry) => !entry.state || Boolean(entry.registering || entry.recovering || entry.unreadable || entry.state.submissionId);
 async function load(entry: Entry) {
   if (entry.loading) return entry.loading;
   entry.loading = (async () => {
     try {
       const state = await app.GetSessionComposerState(entry.ref);
-      entry.conflictCopies = await app.ListSessionComposerConflicts(entry.ref);
       if (entry.version !== entry.saved) return;
       const content=parse(state.contentJson);
       entry.state = state; entry.content = content; entry.error = undefined; entry.unreadable = false;
@@ -99,19 +101,26 @@ async function load(entry: Entry) {
   return entry.loading;
 }
 async function flush(entry: Entry) {
+  if (entry.recovering) await entry.recovering;
   if (entry.loading) await entry.loading;
   if (entry.saving) { await entry.saving; if (entry.version > entry.saved) return flush(entry); return; }
-  if (entry.conflict || entry.error || !entry.state) throw new Error(entry.error || "Resolve the saved input conflict first");
-  if (entry.version === entry.saved) return;
+  if (entry.error || !entry.state) throw new Error(entry.error || "Input is not loaded");
+  if (entry.version === entry.saved && !entry.state.historyChanged) return;
   entry.saving = (async () => {
-    while (entry.saved < entry.version) {
-      if (!entry.state || entry.state.submissionId || entry.state.historyChanged) throw new Error("Check the previous submission before editing");
+    let rebased = false;
+    while (entry.saved < entry.version || entry.state?.historyChanged) {
+      if (!entry.state || entry.state.submissionId) throw new Error("Check the previous submission before editing");
       const version = entry.version;
       const result = await app.SaveSessionComposerState({ ref: entry.ref, expectedRevision: entry.state.revision,
-        contentJson: encoded(entry.content), contentVersion: 1, acknowledgeHistory: entry.acknowledgeHistory === true });
-      if (result.conflict) { entry.conflict = result; throw new Error("This input was changed in another window. Both versions have been preserved."); }
+        contentJson: encoded(entry.content), contentVersion: 1, acknowledgeHistory: true });
+      if (result.conflict) {
+        entry.state = result;
+        if (rebased || result.submissionId) throw new Error("Input changed during saving; retry to save the retained input");
+        // Rebase once without replacing the input currently being edited.
+        rebased = true; continue;
+      }
       if (result.historyChanged) { entry.state = result; throw new Error("The conversation changed. Review the saved input."); }
-      entry.state = result; entry.saved = version; entry.acknowledgeHistory = false;
+      entry.state = result; entry.saved = version;
     }
   })();
   try { await entry.saving; } catch (error) { entry.error = String(error); throw error; }
@@ -119,9 +128,11 @@ async function flush(entry: Entry) {
 }
 function edit(entry: Entry, content: PersistentComposerDraft) {
   if (locked(entry)) return;
-  entry.content = content; entry.version++; entry.error = undefined; entry.notice = undefined;
+  entry.content = content; entry.version++; entry.error = undefined;
   if (entry.timer) clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => { void flush(entry).catch(() => {}); }, 250);
+  entry.timer = setTimeout(() => {
+    void flush(entry).catch(async () => { await recoverInput(entry); if (!locked(entry)) await flush(entry); }).catch(() => {});
+  }, 250);
   notify();
 }
 
@@ -131,7 +142,7 @@ export async function flushAllSessionComposers() {
   try {
     for (const entry of entries.values()) {
       while (entry.tasks.size) await Promise.allSettled([...entry.tasks]);
-      if (entry.version > entry.saved || entry.error || entry.conflict) await flush(entry);
+      if (entry.version > entry.saved || entry.error) await flush(entry);
     }
   } catch (error) { exiting = false; throw error; }
 }
@@ -152,17 +163,18 @@ export async function beginPersistedComposerSubmission(tabId: string, submission
   } catch (error) {
     // The host may have committed despite transport failure. Reconcile before
     // allowing edits or another send; never infer rejection from a lost reply.
+    entry.unsubmittedId = submissionId;
     entry.unreadable = true; entry.error = String(error);
     throw error;
   } finally { entry.registering = false; notify(); }
-  if (entry.state.conflict) { entry.conflict = entry.state; notify(); throw new Error("The input changed before submission"); }
+  if (entry.state.conflict) { notify(); throw new Error("The input changed before submission"); }
   notify();
   return (outcome: "accepted" | "not_accepted" | "unknown") => settleSubmission(entry, submissionId, outcome, submittedVersion);
 }
 
 async function settleSubmission(entry: Entry, submissionId: string, outcome: "accepted" | "not_accepted" | "unknown", submittedVersion: number) {
     const result = await app.CompleteSessionComposerSubmission(entry.ref, submissionId, outcome);
-    if (result.conflict) { entry.conflict = result; notify(); throw new Error("The input changed during submission"); }
+    if (result.conflict) { notify(); throw new Error("The input changed during submission"); }
     if (!entry.state || BigInt(result.revision) >= BigInt(entry.state.revision)) {
       entry.state = result;
       // A recovery read may already have settled this send and enabled new
@@ -170,8 +182,47 @@ async function settleSubmission(entry: Entry, submissionId: string, outcome: "ac
       if (!result.submissionId && entry.version === submittedVersion) {
         entry.content = parse(result.contentJson); entry.version++; entry.saved = entry.version;
       }
+      if (!result.submissionId) entry.settledId = submissionId;
     }
     notify();
+}
+
+async function recoverInput(entry: Entry) {
+  if (entry.recovering) return entry.recovering;
+  if (entry.registering) return;
+  entry.recovering = (async () => {
+    if (entry.loading) await entry.loading;
+    if (entry.saving) await entry.saving.catch(() => {});
+    const previous = entry.state;
+    const pending = previous?.submissionId || entry.unsubmittedId;
+    try {
+      let state = await app.GetSessionComposerState(entry.ref);
+      // This renderer never invoked send after a failed registration. Only its
+      // own registration can be released; an absent receipt alone is not proof.
+      if (entry.unsubmittedId && state.submissionId === entry.unsubmittedId) {
+        state = await app.CompleteSessionComposerSubmission(entry.ref, entry.unsubmittedId, "not_accepted");
+      }
+      const content = parse(state.contentJson);
+      if (entry.state && BigInt(state.revision) < BigInt(entry.state.revision)) return;
+      entry.error = undefined; entry.unreadable = false;
+      entry.state = state;
+      if (state.submissionId) return;
+      if (pending) entry.settledId = pending;
+      if (previous?.submissionId && encoded(entry.content) === encoded(parse(previous.contentJson))) {
+        entry.content = content; entry.version++; entry.saved = entry.version;
+      } else if (encoded(content) === encoded(entry.content)) {
+        entry.saved = entry.version;
+      } else if (previous && encoded(content) !== encoded(parse(previous.contentJson))) {
+        // Continue with this window's input on its next save or explicit send.
+        if (entry.version === entry.saved) entry.version++;
+      } else if (!previous) {
+        entry.content = content; entry.saved = entry.version;
+      }
+      entry.unsubmittedId = undefined;
+    } catch (error) { entry.error = String(error); entry.unreadable = true; throw error; }
+  })();
+  notify();
+  try { await entry.recovering; } finally { entry.recovering = undefined; notify(); }
 }
 
 export function useSessionComposerPersistence(ref: SessionRef | undefined, tabId: string | undefined) {
@@ -199,24 +250,14 @@ export function useSessionComposerPersistence(ref: SessionRef | undefined, tabId
     trackTask:(_id,_generation,promise) => { entry.tasks.add(promise); void promise.finally(()=>{entry.tasks.delete(promise);prune();}).catch(()=>{}); return promise; },
     onTaskError:(_id,_generation,error) => { entry.error=error; notify(); },
   } : undefined;
-  return { target, blocked:entry ? exiting || locked(entry) : false, error:entry?.error || entry?.notice,
-    reportSubmissionError:(message:string) => { if (entry) {entry.notice=message;notify();} },
-    conflictCopies:entry?.conflictCopies || [],
-    restoreConflict:async (index:number) => {
-      if (!entry || locked(entry)) return;
-      const raw=entry.conflictCopies?.[index]; if (!raw) return;
-      edit(entry,parse(raw)); await flush(entry);
-    },
-    goalDraft:entry?.content.goalDraft,
+  return { target, blocked:entry ? exiting || locked(entry) : false, error:entry?.error,
+    // Editable retained text does not authorize restoring a mode from older history.
+    goalDraft:!entry?.state?.historyChanged && entry?.content.goalDraft,
     setGoalDraft:(enabled:boolean) => { if (entry) edit(entry,{...entry.content,goalDraft:enabled}); },
     settleSubmission:async (id:string) => { if (entry?.state?.submissionId === id) await settleSubmission(entry,id,"accepted",entry.version); },
-    attention: Boolean(entry?.state?.historyChanged || entry?.state?.submissionId || entry?.conflict),
-    retry:async () => { if (!entry) return; entry.error=undefined; if (entry.version>entry.saved) await flush(entry); else await load(entry); },
-    keepLocal:async () => {
-      if (!entry?.state || entry.state.submissionId) return;
-      if (entry.conflict) entry.state=entry.conflict;
-      entry.conflict=undefined; entry.state={...entry.state,historyChanged:false}; entry.acknowledgeHistory=true; entry.error=undefined; entry.version++; await flush(entry);
-    },
-    useSaved:async () => { if (!entry) return; entry.version=entry.saved; entry.conflict=undefined; entry.error=undefined; await load(entry); },
+    attention: Boolean(entry?.state?.submissionId),
+    recovering: Boolean(entry?.recovering),
+    settledId: entry?.settledId,
+    retry:async () => { if (!entry) return; await recoverInput(entry); if (!locked(entry)) await flush(entry); },
   };
 }

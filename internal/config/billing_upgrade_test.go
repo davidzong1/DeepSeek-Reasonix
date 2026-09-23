@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,8 +67,8 @@ price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "config_version = 11") {
-		t.Fatalf("missing v11:\n%s", text)
+	if !strings.Contains(text, fmt.Sprintf("config_version = %d", Default().ConfigVersion)) {
+		t.Fatalf("missing current config version %d:\n%s", Default().ConfigVersion, text)
 	}
 	if !strings.Contains(text, "display_currency") && !strings.Contains(text, `currency = "CNY"`) {
 		t.Fatalf("display currency not migrated:\n%s", text)

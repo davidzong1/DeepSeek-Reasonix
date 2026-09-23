@@ -103,9 +103,20 @@ func rawTOMLSet(body string, path []string, value any) (string, error) {
 	}
 	keys := make([]string, len(path)-1)
 	for i, k := range path[:len(path)-1] {
-		keys[i] = strconv.Quote(k)
+		keys[i] = rawTOMLSectionKey(k)
 	}
 	return strings.TrimRight(body, "\n") + "\n[" + strings.Join(keys, ".") + "]\n" + assignment + "\n", nil
+}
+
+// rawTOMLSectionKey keeps ordinary section names in the renderer's canonical
+// form. Older incremental writers identify nested sections by bare parents.
+func rawTOMLSectionKey(key string) string {
+	if key != "" && strings.IndexFunc(key, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-')
+	}) == -1 {
+		return key
+	}
+	return strconv.Quote(key)
 }
 
 func rawTOMLKeyPath(s string) []string {

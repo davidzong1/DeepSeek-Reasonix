@@ -74,7 +74,7 @@ func (a *App) normalizeSavedTabRoute(ctx context.Context, entry desktopTabEntry,
 	if id := strings.TrimSpace(entry.SessionID); id != "" && id != candidate.sessionID {
 		return failed("identity_conflict", false, false)
 	}
-	if evidence.registryErr != nil || evidence.draftErr != nil {
+	if evidence.registryErr != nil {
 		return failed("persistence_state_unavailable", false, false)
 	}
 
@@ -177,11 +177,6 @@ func savedTabDurableRouteOwnerIDs(entry desktopTabEntry, candidateID string, evi
 	for sessionID, pending := range evidence.registry.PendingCreates {
 		if (operationID != "" && pending.OperationID == operationID) || (sessionID == candidateID && pending.WorkspaceID == workspaceID) {
 			owners[strings.TrimSpace(sessionID)] = true
-		}
-	}
-	for _, operation := range evidence.draftOps {
-		if operationID != "" && operation.ID == operationID {
-			owners[strings.TrimSpace(operation.SessionID)] = true
 		}
 	}
 	for _, operation := range evidence.registry.PendingOperations {

@@ -2,11 +2,9 @@ package main
 
 import (
 	"os"
-	"strings"
 	"testing"
 	"time"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/config"
 )
 
@@ -25,13 +23,8 @@ func TestRestoreGlobalTopicSessionReindexesProjectTree(t *testing.T) {
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != topicID {
 		t.Fatalf("legacy session should start in Global, got %#v", nodes)
 	}
-	// Catalog publication does not fence the legacy branch-meta migration.
-	// Wait for the sidecar postcondition before moving it so Windows does not
-	// race the migration writer's exclusive file handle.
-	waitFor(t, "restore-global.jsonl.meta to carry the migrated topic", func() bool {
-		meta, ok, err := agent.LoadBranchMeta(sessionPath)
-		return err == nil && ok && strings.TrimSpace(meta.TopicID) == topicID
-	})
+	// The projected identity is sufficient for an explicit archive/restore;
+	// discovery does not need to modify the historical branch metadata first.
 	if err := app.TrashTopic(topicID); err != nil {
 		t.Fatalf("trash global topic: %v", err)
 	}

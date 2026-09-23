@@ -87,11 +87,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if opts.Owner == nil {
 		opts.Owner = old.RuntimeOwner()
 	}
-	if service, runtime, ok := old.SessionBinding(); ok {
-		opts.SessionService = service
-		opts.SessionRuntime = runtime
-		opts.SessionHostID = runtime.Ref().HostID
-	}
+	opts.inheritSessionBinding(old)
 	// Capture migratable state before building: every accessor returns a
 	// copy, so a slow build cannot observe a half-appended turn.
 	m := runtimeMigration{
@@ -216,10 +212,11 @@ func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration, crea
 			}
 		} else if m.prevPath != "" {
 			path := agent.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
-			if _, err := ctrl.ContinueLegacySessionForRebuildWithOptions(context.Background(), path, "", createOptions); err != nil {
+			loaded, err := agent.LoadSession(path)
+			if err != nil {
 				return err
 			}
-			if err := ctrl.AdoptRebuiltModelContext(carried); err != nil {
+			if err := ctrl.ResumeNativeSession(loaded.CloneWithMessages(carried), path); err != nil {
 				return err
 			}
 		} else {
@@ -230,7 +227,13 @@ func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration, crea
 		}
 	} else {
 		path := agent.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
-		ctrl.AdoptHistory(carried, path)
+		if ctrl.NativeLegacySession() {
+			if err := ctrl.AdoptNativeRebuiltContext(old, carried, path); err != nil {
+				return err
+			}
+		} else {
+			ctrl.AdoptHistory(carried, path)
+		}
 	}
 
 	// Re-apply session axes a rebuild must not reset.

@@ -260,27 +260,15 @@ darwin)
 	else
 		# A drag-to-Applications .dmg for first-time human download. cmd/sign uses an
 		# exact filename table, so the .zip stays the updater channel and the .dmg is
-		# release-page only. create-dmg can exit nonzero
-		# while still writing the image, so gate on the file existing, not the exit code.
-		dmgsrc=$(mktemp -d)
-		cp -R "$app" "$dmgsrc/${APPNAME}.app"
+		# release-page only. Validate a fresh image before replacing old output.
 		dmg="$ROOT/dist/${APPNAME}-darwin-${arch}.dmg"
-		create-dmg \
-			--volname "$APPNAME" \
-			--window-size 540 380 \
-			--icon-size 110 \
-			--icon "${APPNAME}.app" 150 190 \
-			--app-drop-link 390 190 \
-			--no-internet-enable \
-			"$dmg" "$dmgsrc" || true
-		[ -f "$dmg" ] || { echo "create-dmg did not produce $dmg" >&2; exit 1; }
+		bash "$ROOT/scripts/package-desktop-dmg.sh" "$app" "$dmg" "$APPNAME"
 		# The .dmg is a separately-downloaded artifact, so sign + notarize + staple the
 		# disk image itself too — the stapled .app inside isn't enough for the image.
 		if [ "${HAS_APPLE_CERT:-}" = "true" ]; then
 			codesign --force --timestamp -s "$identity" "$dmg"
 			node "$ROOT/scripts/notarize-desktop.mjs" "$dmg" "$dmg" dmg "$notary_diagnostics"
 		fi
-		rm -rf "$dmgsrc"
 	fi
 	rm -rf "$staging"
 	;;

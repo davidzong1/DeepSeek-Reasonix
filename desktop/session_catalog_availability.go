@@ -40,9 +40,14 @@ func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scop
 		if target.Scope != scope || scope == "project" && !sameProjectRoot(target.WorkspaceRoot, workspaceRoot) {
 			continue
 		}
-		if _, err := os.Stat(target.Path); os.IsNotExist(err) {
-			continue
+		if !catalog.MetadataOnly() {
+			if _, err := os.Stat(target.Path); os.IsNotExist(err) {
+				continue
+			}
 		}
+		// Metadata discovery owns absence: an unused optional root completes
+		// empty, while a disappeared root with retained history is unavailable.
+		// Re-statting here used to silently omit that failure and claim complete.
 		switch catalog.DirectoryStatus(ctx, target.Path).State {
 		case "ready":
 			availability.ready++

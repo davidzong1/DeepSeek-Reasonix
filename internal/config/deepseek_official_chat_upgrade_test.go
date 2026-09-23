@@ -36,7 +36,7 @@ func TestOfficialDeepSeekV9MigrationAndManualChoice(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := strings.Replace(raw, "config_version = 8", "config_version = 11", 1)
+				want := strings.Replace(raw, "config_version = 8", fmt.Sprintf("config_version = %d", Default().ConfigVersion), 1)
 				want = strings.Replace(want, `kind="`+kind+`"`, `kind="openai"`, 1)
 				want = strings.Replace(want, `base_url="`+base+`"`, `base_url="https://api.deepseek.com"`, 1)
 				want = strings.Replace(want, `request_url="`+endpoint+`"`, `request_url=""`, 1)
@@ -73,7 +73,7 @@ func TestOfficialDeepSeekV9MigrationAndManualChoice(t *testing.T) {
 				c.Providers[0].Kind, c.Providers[0].BaseURL, c.Providers[0].RequestURL = kind, base, endpoint
 				if inline {
 					// Keep this fixture inline, as a user editing TOML would.
-					if err := os.WriteFile(path, []byte(strings.Replace(raw, "config_version = 8", "config_version = 11", 1)), 0600); err != nil {
+					if err := os.WriteFile(path, []byte(strings.Replace(raw, "config_version = 8", fmt.Sprintf("config_version = %d", Default().ConfigVersion), 1)), 0600); err != nil {
 						t.Fatal(err)
 					}
 				} else if err := c.SaveTo(path); err != nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
 	"reasonix/internal/session"
@@ -87,6 +88,10 @@ func TestArchivedHistoricalHeadDoesNotHideUnadoptedSibling(t *testing.T) {
 	if err := legacy.Save(path); err != nil {
 		t.Fatal(err)
 	}
+	before, err := desktopSourceFingerprint(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := NewApp()
 	app.ctx = t.Context()
 	pinDesktopSessionRoot(t, app)
@@ -111,5 +116,31 @@ func TestArchivedHistoricalHeadDoesNotHideUnadoptedSibling(t *testing.T) {
 	page, err = app.ListProjectTopics(ProjectTopicPageRequest{Scope: "global", Limit: 50})
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("restored heads = %+v, %v", page.Items, err)
+	}
+	if result, err := app.ArchiveSessionTarget(selector); err != nil || !result.Committed {
+		t.Fatalf("rearchive one head = %+v, %v", result, err)
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := state.ResolveSource(desktopSourceKey(path, head))
+	if err != nil || !found {
+		t.Fatalf("adopted head missing: %v", err)
+	}
+	ref := session.SessionRef{HostID: localDesktopHostID, SessionID: mapping.SessionID}
+	if err := app.PurgeCanonicalSession(ref); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := desktopSourceFingerprint(path); err != nil || after != before {
+		t.Fatalf("purge damaged independent legacy head: %v", err)
+	}
+	page, err = app.ListProjectTopics(ProjectTopicPageRequest{Scope: "global", Limit: 50})
+	if err != nil || len(page.Items) != 1 || page.Items[0].Source == nil || page.Items[0].Source.HeadID == head {
+		t.Fatalf("purge hid sibling or revived deleted head: %+v %v", page.Items, err)
+	}
+	state, err = app.workspaceRegistry().Load(t.Context())
+	if err != nil || state.SessionStates[ref.SessionID].Lifecycle != workspacestate.Deleted {
+		t.Fatalf("head tombstone lost: %v", err)
 	}
 }

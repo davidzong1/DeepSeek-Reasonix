@@ -45,12 +45,13 @@ recoverable and are not automatically sent again.
 
 ## Old data
 
-`desktop/drafts-v1.sqlite` remains in place. Previous drafts, including settings-only
-drafts, can be opened, edited, submitted or discarded through the recovery entry.
-The old open API only returns an existing draft. It cannot create a replacement.
-Submission reconciliation, cancellation ownership and leases remain active.
-Interrupted dispatch is checked, not replayed. Archived or deleted targets must
-not be resurrected by recovery.
+Workspace drafts are retired, including drafts with unsent content. Desktop no
+longer reads, migrates, restores, reconciles or advertises these records during
+startup or navigation. The historical `desktop/drafts-v1.sqlite` file is left
+untouched; there is no recovery notice or automatic conversion into formal
+conversations. Already-created formal conversations and their histories remain
+ordinary sessions. Formal input persistence in `session-ui-v1.sqlite` continues
+to support saving, switching, restart and the normal exit barrier.
 
 Before a schema 1–3 draft database is upgraded, SQLite `VACUUM INTO` creates a
 consistent `.pre-v4.sqlite` backup including committed WAL content. Existing v4
@@ -89,9 +90,11 @@ Recovery does not require deleting a data directory, clearing caches or reinstal
 跨窗口冲突保留双方副本；发送结果未知时保留恢复状态，不自动重发。
 图片预览重新生成，用户原始附件不因丢弃输入而删除。
 
-“旧版草稿”入口保留升级前的草稿、设置和未完成提交。旧草稿不批量搬移、不自动
-过期，处理后自然隐藏。旧 schema 升级前先生成包含 WAL 内容的一致性备份。
-未知版本和损坏记录保留原文件并显示错误。
+旧草稿机制已停用，包括有未发送内容的草稿。启动和导航不再读取、迁移、恢复或
+协调旧草稿，不显示项目标签或恢复提示，也不自动转成正式会话。历史
+`desktop/drafts-v1.sqlite` 文件留在原处，不主动删除或改写。
+已经创建的正式会话及其聊天记录继续保留；正式会话的新版输入保存、切换恢复、
+重启恢复和正常退出前保存不受影响。
 
 再次升级时，同时比较接收回执和正式用户消息历史，覆盖没有 SubmissionID 的旧路径
 或导入写入。历史推进后保留原输入并要求核实；模型设置变化、助手流式输出不会单独

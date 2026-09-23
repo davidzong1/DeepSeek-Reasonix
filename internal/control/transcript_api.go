@@ -37,13 +37,19 @@ type TranscriptFollowAPI interface {
 
 type TranscriptFollowResponse struct {
 	transcript.FollowResponse
-	History *session.HistoryWindowPage `json:"history,omitempty"`
+	History        *session.HistoryWindowPage `json:"history,omitempty"`
+	StorageBackend string                     `json:"storageBackend,omitempty"`
 }
 
 func (c *Controller) TranscriptFollow(ctx context.Context, req transcript.FollowRequest) (TranscriptFollowResponse, error) {
 	service, runtime, exclusive := c.v3Binding()
 	if !exclusive || runtime == nil {
-		return TranscriptFollowResponse{}, ErrTranscriptProjectionUnavailable
+		projection, err := c.transcriptProjection()
+		if err != nil {
+			return TranscriptFollowResponse{}, err
+		}
+		view, err := projection.Follow(ctx, req)
+		return TranscriptFollowResponse{FollowResponse: view, StorageBackend: "legacy"}, err
 	}
 	view, err := runtime.FollowTranscript(ctx, req)
 	out := TranscriptFollowResponse{FollowResponse: view}

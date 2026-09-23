@@ -19,7 +19,7 @@ import (
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
-	"reasonix/internal/session"
+	"reasonix/internal/provider"
 	"reasonix/internal/sqliteuri"
 	"reasonix/internal/topicstate"
 )
@@ -36,12 +36,10 @@ type fixtureReport struct {
 	Home           string `json:"home"`
 	RegistryPath   string `json:"registryPath"`
 	RegistrySHA256 string `json:"registrySha256"`
-	SessionID      string `json:"sessionId"`
 	TopicID        string `json:"topicId"`
 	VisibleText    string `json:"visibleText"`
 	ProjectRoot    string `json:"projectRoot"`
 	LegacyPath     string `json:"legacyPath"`
-	LegacySHA256   string `json:"legacySha256"`
 }
 
 type legacyMessage struct {
@@ -185,8 +183,7 @@ func createFixture(ctx context.Context, home, reportPath string) error {
 		return err
 	}
 	digest := sha256.Sum256(registry)
-	legacyDigest := sha256.Sum256(legacy)
-	report := fixtureReport{Home: home, RegistryPath: registryPath, RegistrySHA256: hex.EncodeToString(digest[:]), TopicID: fixtureTopicID, VisibleText: fixtureText, ProjectRoot: projectRoot, LegacyPath: legacyPath, LegacySHA256: hex.EncodeToString(legacyDigest[:])}
+	report := fixtureReport{Home: home, RegistryPath: registryPath, RegistrySHA256: hex.EncodeToString(digest[:]), TopicID: fixtureTopicID, VisibleText: fixtureText, ProjectRoot: projectRoot, LegacyPath: legacyPath}
 	return writeJSON(reportPath, report)
 }
 
@@ -246,7 +243,7 @@ func verifyFixture(ctx context.Context, reportPath, phase string) error {
 	if err := verifyRegistryFields(report.RegistryPath); err != nil {
 		return err
 	}
-	return verifyMigratedSession(ctx, report, reportPath, phase)
+	return verifyLegacySessionContinuity(ctx, report, reportPath, phase)
 }
 
 func verifyRegistryFields(path string) error {
@@ -274,53 +271,21 @@ func verifyRegistryFields(path string) error {
 	return nil
 }
 
-func verifyMigratedSession(ctx context.Context, report fixtureReport, reportPath, phase string) error {
+func verifyLegacySessionContinuity(ctx context.Context, report fixtureReport, reportPath, phase string) error {
 	state, err := workspacestate.NewStore(report.RegistryPath).Load(ctx)
 	if err != nil {
 		return err
 	}
-	legacy, err := os.ReadFile(report.LegacyPath)
-	if err != nil {
+	// The restored legacy tab is intentionally not imported. Its final shutdown
+	// snapshot may rewrite JSONL bytes, so verify authored content and identity.
+	if len(state.SourceMappings) != 0 || len(state.Workspaces[workspacestate.GlobalWorkspaceID].SessionIDs) != 0 || len(state.PendingOperations) != 0 {
+		return errors.New("startup imported or recreated the legacy session")
+	}
+	if err := verifyLegacyHistory(report.LegacyPath, fixtureQuestion, report.VisibleText); err != nil {
 		return err
 	}
-	legacyDigest := sha256.Sum256(legacy)
-	if hex.EncodeToString(legacyDigest[:]) != report.LegacySHA256 {
-		return errors.New("legacy JSONL source was modified")
-	}
-	mappings := 0
-	for _, mapping := range state.SourceMappings {
-		if agent.CanonicalSessionPath(mapping.Path) == agent.CanonicalSessionPath(report.LegacyPath) {
-			mappings++
-			report.SessionID = mapping.SessionID
-		}
-	}
-	if mappings != 1 || report.SessionID == "" {
-		return fmt.Errorf("legacy source mappings=%d, session=%q", mappings, report.SessionID)
-	}
-	presentation := state.Presentation[report.SessionID]
-	if presentation.TopicID != report.TopicID || presentation.Title != fixtureTitle {
-		return fmt.Errorf("migrated topic relation mismatch: %+v", presentation)
-	}
-	count := 0
-	for _, id := range state.Workspaces[workspacestate.GlobalWorkspaceID].SessionIDs {
-		if id == report.SessionID {
-			count++
-		}
-	}
-	if count != 1 || len(state.Workspaces[workspacestate.GlobalWorkspaceID].SessionIDs) != 1 || state.SessionStates[report.SessionID].Lifecycle != workspacestate.Active {
-		return fmt.Errorf("session membership count=%d lifecycle=%q", count, state.SessionStates[report.SessionID].Lifecycle)
-	}
-	service, err := session.NewService("desktop", session.NewFilesystemPersistence(config.DesktopSessionStoreDir()))
-	if err != nil {
+	if err := verifyRestoredLegacyTab(report); err != nil {
 		return err
-	}
-	history, err := service.Query().History(ctx, session.SessionRef{HostID: "desktop", SessionID: report.SessionID})
-	_ = service.CloseAll(ctx)
-	if err != nil {
-		return err
-	}
-	if len(history) != 2 || history[0].Role != "user" || history[0].Content != fixtureQuestion || history[1].Role != "assistant" || history[1].Content != report.VisibleText {
-		return fmt.Errorf("history mismatch: %+v", history)
 	}
 	for path, marker := range map[string]string{config.DesktopTopicStatePath(""): "global", config.DesktopTopicStatePath(report.ProjectRoot): "project"} {
 		if err := verifyTopicDatabase(ctx, path, marker); err != nil {
@@ -333,16 +298,56 @@ func verifyMigratedSession(ctx context.Context, report fixtureReport, reportPath
 	resultPath := filepath.Join(filepath.Dir(reportPath), "verification-"+phase+".json")
 	if phase == "restart" {
 		var first struct {
-			SessionID string `json:"sessionId"`
+			LegacyPath string `json:"legacyPath"`
 		}
 		if err := readJSON(filepath.Join(filepath.Dir(reportPath), "verification-first.json"), &first); err != nil {
 			return err
 		}
-		if first.SessionID != report.SessionID {
-			return errors.New("restart changed migrated session identity")
+		if agent.CanonicalSessionPath(first.LegacyPath) != agent.CanonicalSessionPath(report.LegacyPath) {
+			return errors.New("restart changed legacy session identity")
 		}
 	}
-	return writeJSON(resultPath, map[string]any{"phase": phase, "version": state.Version, "sessionId": report.SessionID, "sessionCount": count, "history": report.VisibleText, "legacySha256": report.LegacySHA256, "topicBackups": 2, "unknownData": "preserved", "verifiedAt": time.Now().UTC()})
+	return writeJSON(resultPath, map[string]any{"phase": phase, "version": state.Version, "legacyPath": report.LegacyPath, "history": report.VisibleText, "topicBackups": 2, "unknownData": "preserved", "verifiedAt": time.Now().UTC()})
+}
+
+func verifyLegacyHistory(path, question, answer string) error {
+	messages, _, repairable, err := agent.LoadSessionDisplayMessages(path)
+	if err != nil {
+		return err
+	}
+	if !repairable {
+		return errors.New("legacy history has a damaged authoritative tail")
+	}
+	authored := make([]provider.Message, 0, 2)
+	for _, message := range messages {
+		if message.Role == provider.RoleUser || message.Role == provider.RoleAssistant {
+			authored = append(authored, message)
+		}
+	}
+	if len(authored) != 2 || authored[0].Role != provider.RoleUser || authored[0].Content != question || authored[1].Role != provider.RoleAssistant || authored[1].Content != answer {
+		return errors.New("legacy authored history changed")
+	}
+	return nil
+}
+
+func verifyRestoredLegacyTab(report fixtureReport) error {
+	var saved struct {
+		ActiveTab string `json:"activeTab"`
+		Tabs      []struct {
+			ID          string `json:"id"`
+			TopicID     string `json:"topicId"`
+			SessionPath string `json:"sessionPath"`
+		} `json:"tabs"`
+	}
+	if err := readJSON(filepath.Join(config.ReasonixHomeDir(), "desktop-tabs.json"), &saved); err != nil {
+		return err
+	}
+	for _, tab := range saved.Tabs {
+		if tab.ID == saved.ActiveTab && tab.TopicID == report.TopicID && agent.CanonicalSessionPath(tab.SessionPath) == agent.CanonicalSessionPath(report.LegacyPath) {
+			return nil
+		}
+	}
+	return errors.New("restored tab lost its legacy source or topic")
 }
 
 func verifyBackups(ctx context.Context, report fixtureReport) error {

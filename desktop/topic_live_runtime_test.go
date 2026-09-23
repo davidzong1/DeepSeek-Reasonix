@@ -71,7 +71,7 @@ func TestStartTopicActivationKeepsExplicitRepresentativeSeparateFromLiveSibling(
 	if tab.Ctrl == stub {
 		t.Fatal("explicit history selection reused the same-topic sibling controller")
 	}
-	assertActivatedSourceMapping(t, app, tab, oldPath)
+	assertActivatedNativeSource(t, app, tab, oldPath)
 	if stub.closed.Load() {
 		t.Fatal("live controller was closed while attaching")
 	}
@@ -337,22 +337,24 @@ func TestStartTopicActivationKeepsRecoveryContinuationSeparateFromLiveSibling(t 
 	if tab.Ctrl == stub {
 		t.Fatal("recovery parent selection reused an unrelated same-topic controller")
 	}
-	assertActivatedSourceMapping(t, app, tab, leaf)
+	assertActivatedNativeSource(t, app, tab, leaf)
 	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(leaf) {
 		t.Fatalf("ticket session path = %q, want recovery leaf %q", ticket.Meta.SessionPath, leaf)
 	}
 }
 
-func assertActivatedSourceMapping(t *testing.T, app *App, tab *WorkspaceTab, sourcePath string) {
+func assertActivatedNativeSource(t *testing.T, app *App, tab *WorkspaceTab, sourcePath string) {
 	t.Helper()
+	if tab.SessionID != "" || sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(sourcePath) {
+		t.Fatalf("activated session did not preserve native source %q: %q %q", sourcePath, tab.SessionID, tab.currentSessionPath())
+	}
 	state, err := app.workspaceRegistry().Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, mapping := range state.SourceMappings {
-		if sessionRuntimeKey(mapping.Path) == sessionRuntimeKey(sourcePath) && mapping.SessionID == tab.SessionID && tab.SessionID != "" {
-			return
+		if sessionRuntimeKey(mapping.Path) == sessionRuntimeKey(sourcePath) {
+			t.Fatal("ordinary activation created an import mapping")
 		}
 	}
-	t.Fatalf("activated session %q has no verified mapping for %q: %#v", tab.SessionID, sourcePath, state.SourceMappings)
 }

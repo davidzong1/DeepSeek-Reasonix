@@ -9,13 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reasonix/internal/agent"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"reasonix/internal/agent"
-	"reasonix/internal/projectiondb"
 )
 
 const defaultMissingGrace = 30 * time.Second
@@ -25,6 +23,8 @@ type Catalog struct {
 	opts         Options
 	pathIdentity func(string) string
 	mutationSeq  atomic.Uint64
+	discoveryIDs sync.Map
+	discoverySeq atomic.Uint64
 	revision     atomic.Uint64
 	statusMu     sync.RWMutex
 	status       Status
@@ -34,28 +34,42 @@ type Catalog struct {
 	// mutationMu is the process-local SQLite single-writer boundary. WAL permits
 	// concurrent readers, but repair, metadata, and reconcile mutations must not
 	// race into avoidable SQLITE_BUSY failures.
-	mutationMu       sync.Mutex
-	removedPaths     sync.Map
-	repairCh         chan string
-	repairQueued     sync.Map
-	reconcileCh      chan DirectoryTarget
-	reconcileQueued  sync.Map
-	reconcileDirtyMu sync.Mutex
-	reconcileDirty   map[string]DirectoryTarget
-	verifiedDirsMu   sync.RWMutex
-	verifiedDirs     map[string]string
-	pathCh           chan sessionPathRequest
-	pathQueueMu      sync.Mutex
-	pathQueued       sync.Map
-	directoryLocksMu sync.Mutex
-	directoryLocks   map[string]*sync.Mutex
-	workerCtx        context.Context
-	workerCancel     context.CancelFunc
-	stop             chan struct{}
-	stopOnce         sync.Once
-	workers          sync.WaitGroup
-	closeDone        chan struct{}
-	closeErr         error
+	mutationMu        sync.Mutex
+	metadataSyncOnce  sync.Once
+	metadataSyncGate  chan struct{} // serializes observations without holding the database writer
+	removedPaths      sync.Map
+	repairCh          chan string
+	repairQueued      sync.Map
+	reconcileCh       chan DirectoryTarget
+	reconcileQueued   sync.Map
+	reconcileDirtyMu  sync.Mutex
+	reconcileDirty    map[string]DirectoryTarget
+	reconcileDone     map[string]chan struct{}
+	verifiedDirsMu    sync.RWMutex
+	verifiedDirs      map[string]string
+	pathCh            chan sessionPathRequest
+	pathQueueMu       sync.Mutex
+	pathQueued        sync.Map
+	directoryLocksMu  sync.Mutex
+	directoryLocks    map[string]*sync.Mutex
+	metadataScans     sync.Map
+	discoveryStart    chan struct{}
+	discoveryOnce     sync.Once
+	priorityWorkspace atomic.Value
+	workerCtx         context.Context
+	workerCancel      context.CancelFunc
+	stop              chan struct{}
+	stopOnce          sync.Once
+	workers           sync.WaitGroup
+	closeDone         chan struct{}
+	closeErr          error
+	invalidated       chan struct{}
+	invalidReason     error
+	invalidateOnce    sync.Once
+	integrityDone     chan struct{}
+	readLeasesMu      sync.Mutex
+	readLeases        map[*ReadLease]struct{}
+	readLeasesClosed  bool
 	// testReconcileBatchHook deterministically pauses an uncommitted directory
 	// projection. Production catalogs leave it nil.
 	testReconcileBatchHook func(int)
@@ -71,6 +85,10 @@ type Catalog struct {
 	// testPathMutationLoadedHook pauses after reading a removal generation.
 	// Production catalogs leave it nil.
 	testPathMutationLoadedHook func(string)
+	// testScanProgressWriteHook runs after acquiring the shared writer boundary.
+	testScanProgressWriteHook func()
+	// Runs between committed metadata slices, after releasing the writer.
+	testMetadataSliceHook func(int)
 }
 
 type sessionPathRequest struct {
@@ -90,6 +108,12 @@ type pageCursor struct {
 }
 
 func Open(ctx context.Context, opts Options) (*Catalog, error) {
+	if opts.DeferredMetadataIntegrity && !opts.MetadataOnly {
+		return nil, errors.New("deferred integrity requires an advisory metadata catalog")
+	}
+	if opts.MetadataOnly {
+		opts.DisableRepair = true
+	}
 	if opts.Path == "" {
 		opts.Path = DefaultPath()
 	}
@@ -127,20 +151,21 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		directoryLocks: map[string]*sync.Mutex{},
 		stop:           make(chan struct{}),
 		closeDone:      make(chan struct{}),
+		invalidated:    make(chan struct{}),
+		integrityDone:  make(chan struct{}),
+		readLeases:     map[*ReadLease]struct{}{},
+		discoveryStart: make(chan struct{}),
 		status:         Status{State: StateOpening, Path: opts.Path},
 	}
-	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{
-		Path:         opts.Path,
-		MemoryName:   "session-catalog",
-		Migrations:   sessionMigrations(),
-		InMemory:     opts.InMemory,
-		MaxOpenConns: 4,
-		Now:          opts.Now,
-	})
+	handle, err := openCatalogProjection(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	c.db = handle.DB
+	if err := setCatalogRevisionFloor(ctx, c.db, opts.RevisionFloor); err != nil {
+		_ = c.db.Close()
+		return nil, err
+	}
 	c.status.Mode = Mode(handle.Status.Mode)
 	c.status.State = State(handle.Status.State)
 	if c.status.State == "" {
@@ -157,6 +182,10 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		_ = c.db.Close()
 		return nil, err
 	}
+	if c.readable() != nil {
+		_ = c.db.Close()
+		return nil, c.invalidReason
+	}
 	if !opts.DisableRepair {
 		if err := c.resetRepairSchedule(ctx); err != nil {
 			_ = c.db.Close()
@@ -166,6 +195,16 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 	}
 	c.testRepairSessionHook = opts.repairSession
 	c.workerCtx, c.workerCancel = context.WithCancel(context.Background())
+	if !opts.StartPaused {
+		c.ResumeDiscovery()
+	}
+	if opts.MetadataOnly {
+		if err := c.loadReconcileJournal(ctx); err != nil {
+			c.workerCancel()
+			_ = c.db.Close()
+			return nil, err
+		}
+	}
 	c.workers.Add(1)
 	go c.writerLoop()
 	c.workers.Add(1)
@@ -177,33 +216,30 @@ func Open(ctx context.Context, opts Options) (*Catalog, error) {
 		go c.repairLoop()
 		c.enqueuePersistedRepairs(ctx)
 	}
+	if opts.DeferredMetadataIntegrity {
+		c.workers.Add(1)
+		go c.verifyMetadataIntegrity()
+	} else {
+		close(c.integrityDone)
+	}
 	return c, nil
-}
-
-func (c *Catalog) loadStatus(ctx context.Context) error {
-	var revision uint64
-	if err := c.readDB(ctx).QueryRowContext(ctx, `SELECT revision FROM catalog_state WHERE id=1`).Scan(&revision); err != nil {
-		return err
-	}
-	c.revision.Store(revision)
-	c.statusMu.Lock()
-	c.status.Revision = revision
-	c.statusMu.Unlock()
-	c.refreshCounts(ctx)
-	return nil
-}
-
-func (c *Catalog) Status() Status {
-	if c == nil {
-		return Status{State: StateDegraded, Mode: ModeMemory, LastError: "session catalog unavailable"}
-	}
-	c.statusMu.RLock()
-	defer c.statusMu.RUnlock()
-	return c.status
 }
 
 func (c *Catalog) refreshCounts(ctx context.Context) {
 	if c == nil || c.db == nil {
+		return
+	}
+	if c.opts.MetadataOnly {
+		// Startup and each discovery batch may read root progress, but must
+		// not aggregate every session merely to draw the loading indicator.
+		var indexed, total int64
+		if err := c.readDB(ctx).QueryRowContext(ctx, `SELECT COALESCE(SUM(indexed),0),COALESCE(SUM(total),0) FROM catalog_directories`).Scan(&indexed, &total); err == nil {
+			c.statusMu.Lock()
+			c.status.Indexed, c.status.Total = indexed, max(total, indexed)
+			c.status.SourceCount = max(total, indexed)
+			c.status.Revision = c.revision.Load()
+			c.statusMu.Unlock()
+		}
 		return
 	}
 	var indexed, pending, total, physical, logical, groups, branches, diverged, cleanup int64
@@ -502,6 +538,9 @@ func bumpRevision(ctx context.Context, tx *sql.Tx) (uint64, error) {
 
 func (c *Catalog) publishRevision(revision uint64, roots []string, reason string) {
 	c.rememberRevision(revision)
+	if c.readable() != nil {
+		return
+	}
 	if c.opts.OnRevision != nil {
 		c.opts.OnRevision(revision, c.registeredRevisionRoots(roots), reason)
 	}
@@ -745,30 +784,4 @@ func timeFilterCutoff(filter string, now time.Time) int64 {
 		duration = parsed
 	}
 	return now.Add(-duration).UnixMilli()
-}
-
-func (c *Catalog) Close(ctx context.Context) error {
-	if c == nil {
-		return nil
-	}
-	c.stopOnce.Do(func() {
-		if c.workerCancel != nil {
-			c.workerCancel()
-		}
-		close(c.stop)
-		go func() {
-			c.workers.Wait()
-			c.closeErr = c.db.Close()
-			c.statusMu.Lock()
-			c.status.State = StateClosed
-			c.statusMu.Unlock()
-			close(c.closeDone)
-		}()
-	})
-	select {
-	case <-c.closeDone:
-		return c.closeErr
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }

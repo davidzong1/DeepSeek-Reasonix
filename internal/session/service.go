@@ -289,6 +289,7 @@ type Service struct {
 	idleUsed   int64
 	idleClock  uint64
 	idleBudget int64
+	idlePool   *IdlePool
 	idleTTL    time.Duration
 	query      *Query
 	revision   atomic.Uint64

@@ -112,6 +112,9 @@ func topicIDFilter(ids []string) (string, map[string]struct{}) {
 }
 
 func projectTopicRequestAllows(req ProjectTopicPageRequest, topicID string, pinned bool) bool {
+	if req.pinnedOnly && !pinned {
+		return false
+	}
 	if req.ExcludePinned && pinned {
 		return false
 	}
@@ -176,6 +179,9 @@ func desktopGroupContainsNode(group desktopGroup, node ProjectNode) bool {
 }
 
 func projectNodeRequestAllows(req ProjectTopicPageRequest, node ProjectNode) bool {
+	if req.pinnedOnly && !node.Pinned {
+		return false
+	}
 	if req.ExcludePinned && node.Pinned {
 		return false
 	}

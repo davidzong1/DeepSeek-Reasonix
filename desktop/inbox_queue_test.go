@@ -10,6 +10,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/serve"
 	"reasonix/internal/servecontract"
+	"reasonix/internal/sessioninbox"
 )
 
 func TestRemoteInboxQueueCapabilitiesAndIdentity(t *testing.T) {
@@ -62,5 +63,45 @@ func TestRemoteInboxQueueCapabilitiesAndIdentity(t *testing.T) {
 	stale, err = a.InboxQueueForTarget(target, control.InboxQueueRequest{Kind: "pause", Paused: true})
 	if err != nil || stale.Reason != "session_changed" {
 		t.Fatalf("remote foreground switch: %+v %v", stale, err)
+	}
+}
+
+func TestTargetGuidanceQueuesEndedTurnAndRejectsReplacementSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Sink: event.Discard})
+	cleanupExactTurnController(t, ctrl)
+	if err := ctrl.SetInboxPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{ID: "tab", Ctrl: ctrl, SessionPath: path, SessionGeneration: 1, Ready: true}
+	a := &App{tabs: map[string]*WorkspaceTab{"tab": tab}}
+	target, err := a.CaptureInboxTarget("tab", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := control.InboxQueueRequest{Kind: "enqueue_steer", TurnID: "ended-turn", Text: "preserve guidance", Display: "preserve guidance", IdempotencyKey: "one-guidance"}
+	result, err := a.InboxQueueForTarget(target, request)
+	if err != nil || result.Receipt == nil || result.Receipt.Disposition != sessioninbox.DispositionQueuedFollowup {
+		t.Fatalf("ended turn: %+v %v", result, err)
+	}
+	duplicate, err := a.InboxQueueForTarget(target, request)
+	if err != nil || duplicate.Receipt == nil || duplicate.Receipt.ItemID != result.Receipt.ItemID || len(ctrl.InboxSnapshot().Items) != 1 {
+		t.Fatalf("duplicate: %+v %v", duplicate, err)
+	}
+	confirmed, err := a.LookupInboxFollowupForTarget(target, request.IdempotencyKey)
+	if err != nil || confirmed.ItemID != result.Receipt.ItemID {
+		t.Fatalf("receipt recovery: %+v %v", confirmed, err)
+	}
+	tab.SessionGeneration++
+	request.IdempotencyKey = "stale-input"
+	stale, err := a.InboxQueueForTarget(target, request)
+	if err != nil || stale.Reason != "session_changed" || len(ctrl.InboxSnapshot().Items) != 1 {
+		t.Fatalf("replacement fence: %+v %v", stale, err)
+	}
+	// Legacy tab-only calls cannot prove session ownership and keep their guard.
+	if _, err := a.EnqueueInboxSteerForTurn("tab", "ended-turn", "unsafe", "unsafe", "unsafe"); err == nil {
+		t.Fatal("legacy request bypassed the session fence")
 	}
 }

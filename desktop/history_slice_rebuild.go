@@ -37,39 +37,6 @@ func (a *App) kickHistoryIndexRebuild(sessionPath string) {
 	})
 }
 
-// kickHistoryReadModelRepair single-flights the stronger cold-session repair:
-// replay the authoritative event log under the save lock, atomically refresh
-// the JSONL random-read model, then publish matching offsets. The cold request
-// already returned from its in-memory recovery source before this work starts.
-func (a *App) kickHistoryReadModelRepair(sessionPath string) {
-	if strings.TrimSpace(sessionPath) == "" {
-		return
-	}
-	key := "read-model:" + agent.CanonicalSessionPath(sessionPath)
-	a.historySliceMu.Lock()
-	if a.historyIndexRebuilds == nil {
-		a.historyIndexRebuilds = map[string]chan struct{}{}
-	}
-	if _, ok := a.historyIndexRebuilds[key]; ok {
-		a.historySliceMu.Unlock()
-		return
-	}
-	done := make(chan struct{})
-	a.historyIndexRebuilds[key] = done
-	a.historySliceMu.Unlock()
-	a.goSafe("historyReadModelRepair", func() {
-		defer func() {
-			a.historySliceMu.Lock()
-			close(done)
-			delete(a.historyIndexRebuilds, key)
-			a.historySliceMu.Unlock()
-		}()
-		if err := agent.RepairSessionDisplayReadModel(sessionPath); err != nil {
-			slog.Debug("desktop: history read-model repair failed", "path", sessionPath, "err", err)
-		}
-	})
-}
-
 // rebuildHistoryIndexForLiveSession republishes the display index for a live
 // session, but only when the in-memory log is exactly the persisted
 // transcript — an append-only tail means the next save will publish a

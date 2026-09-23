@@ -56,13 +56,9 @@ func copyResumableSession(model, resumePath string, cfg *config.Config) (string,
 // resumeWithPersistedSelection records the selection the resumed controller
 // actually accepted, so the next restart restores it instead of re-resolving.
 func resumeWithPersistedSelection(ctrl *control.Controller, session *agent.Session, path string) error {
-	if ctrl.UsesExclusiveSession() {
-		if _, err := ctrl.ContinueLegacySession(context.Background(), path, ""); err != nil {
-			return err
-		}
-		return nil
+	if err := ctrl.ResumeNativeSession(session, path); err != nil {
+		return err
 	}
-	ctrl.Resume(session, path)
 	return persistCLIModelSelection(ctrl)
 }
 
@@ -76,7 +72,7 @@ func commitResumedSession(binding *cliTakeoverBinding, manager *cliTakeoverManag
 		// Final-format sessions have no transcript path to lease or load; the
 		// controller attaches to the identity and the session service's writer
 		// lease decides ownership.
-		if !ctrl.UsesExclusiveSession() {
+		if ctrl.SessionService() == nil {
 			return errors.New("resuming a final-format session requires the session engine")
 		}
 		_, err := ctrl.OpenSession(context.Background(), target.ref)

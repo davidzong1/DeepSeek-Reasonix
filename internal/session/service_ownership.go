@@ -252,7 +252,15 @@ func (s *Service) openRuntime(ctx context.Context, ref SessionRef) (*Runtime, er
 		break
 	}
 
-	session, err := s.persistence.Open(ref.SessionID, ReadWrite)
+	var session *Session
+	var err error
+	if contextual, ok := s.persistence.(interface {
+		OpenContext(context.Context, string, AccessMode) (*Session, error)
+	}); ok {
+		session, err = contextual.OpenContext(ctx, ref.SessionID, ReadWrite)
+	} else {
+		session, err = s.persistence.Open(ref.SessionID, ReadWrite)
+	}
 	if err != nil {
 		s.finishPrepare(ref)
 		return nil, err
@@ -414,15 +422,20 @@ func (s *Service) scheduleIdleRetirement(runtime *Runtime) {
 	ttl := s.idleTTL
 	s.idleClock++
 	s.idleOrder[runtime] = s.idleClock
+	idleEpoch := s.idleClock
 	s.idleWeight[runtime] = weight
 	s.idleUsed += weight
 	if ttl > 0 {
 		s.idleTimers[runtime] = time.AfterFunc(ttl, func() {
-			_ = s.retireIfUnbound(context.Background(), runtime)
+			_ = s.retireIfUnboundAt(context.Background(), runtime, idleEpoch)
 		})
 	}
 	var victims []*Runtime
-	for s.idleBudget >= 0 && s.idleUsed > s.idleBudget && len(s.idleOrder) > 0 {
+	var sharedVictims []idlePoolEntry
+	if s.idlePool != nil {
+		sharedVictims = s.idlePool.add(s, runtime, weight)
+	}
+	for s.idlePool == nil && s.idleBudget >= 0 && s.idleUsed > s.idleBudget && len(s.idleOrder) > 0 {
 		var oldest *Runtime
 		var order uint64
 		for candidate, candidateOrder := range s.idleOrder {
@@ -440,12 +453,16 @@ func (s *Service) scheduleIdleRetirement(runtime *Runtime) {
 	for _, victim := range victims {
 		_ = s.retireIfUnbound(context.Background(), victim)
 	}
+	for _, victim := range sharedVictims {
+		_ = victim.service.retireIfUnboundAt(context.Background(), victim.runtime, victim.epoch)
+	}
 	if ttl <= 0 && len(victims) == 0 {
 		_ = s.retireIfUnbound(context.Background(), runtime)
 	}
 }
 
 func (s *Service) removeIdleCacheLocked(runtime *Runtime, stop bool) {
+	s.idlePool.remove(runtime)
 	if timer := s.idleTimers[runtime]; timer != nil && stop {
 		timer.Stop()
 	}
@@ -459,7 +476,15 @@ func (s *Service) removeIdleCacheLocked(runtime *Runtime, stop bool) {
 }
 
 func (s *Service) retireIfUnbound(ctx context.Context, runtime *Runtime) error {
+	return s.retireIfUnboundAt(ctx, runtime, 0)
+}
+
+func (s *Service) retireIfUnboundAt(ctx context.Context, runtime *Runtime, epoch uint64) error {
 	s.mu.Lock()
+	if epoch != 0 && s.idleOrder[runtime] != epoch {
+		s.mu.Unlock()
+		return nil
+	}
 	s.removeIdleCacheLocked(runtime, false)
 	if s.active[runtime.ref] != runtime || s.bindings[runtime] != 0 || !s.retireIdle[runtime] || runtime.executionBusy() {
 		s.mu.Unlock()

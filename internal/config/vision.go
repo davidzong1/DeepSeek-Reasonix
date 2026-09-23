@@ -9,8 +9,10 @@ import (
 )
 
 var mimoVisionModels = map[string]bool{
-	"mimo-v2.5":    true,
-	"mimo-v2-omni": true,
+	"mimo-v2.6-pro":   true,
+	"mimo-v2.6-flash": true,
+	"mimo-v2.5":       true,
+	"mimo-v2-omni":    true,
 }
 
 // VisionCapability is the model-level image-input fact used by settings and
@@ -193,7 +195,7 @@ func isOfficialMimoVisionEntry(e *ProviderEntry) bool {
 		return false
 	}
 	switch officialMimoHost(e.BaseURL) {
-	case "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com":
+	case "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com", "token-plan-sgp.xiaomimimo.com", "token-plan-ams.xiaomimimo.com":
 		return true
 	default:
 		return false

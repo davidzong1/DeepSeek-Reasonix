@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/historywork"
 	"reasonix/internal/provider"
 )
 
@@ -15,28 +16,32 @@ import (
 // an attached runtime when one exists and otherwise opens only a read handle;
 // querying cold history never constructs an Agent or acquires writer ownership.
 type Query struct {
-	hostID           string
-	persistence      SessionPersistence
-	service          *Service
-	rebuildMu        sync.Mutex
-	rebuilding       map[string]struct{}
-	metadataQueue    []metadataRebuildTask
-	metadataWorkers  int
-	metadataFailures map[string]error
-	generation       map[string]uint64
-	rebuildCtx       context.Context
-	rebuildStop      context.CancelFunc
-	rebuildWG        sync.WaitGroup
-	closed           bool
-	slots            *rebuildSlots
-	indexMu          sync.Mutex
-	indexLocks       map[string]*sync.Mutex
-	contentMu        sync.Mutex
-	contentGrants    map[string]time.Time
-	searchMu         sync.Mutex
-	searchBuilds     map[string]*searchPreparation
-	historyMu        sync.Mutex
-	historyBuilds    map[string]*historyPreparation
+	maintenance          *historywork.Coordinator
+	readMu               sync.Mutex
+	readScopes           map[string]*queryReadScope
+	metadataOnlyListings bool
+	hostID               string
+	persistence          SessionPersistence
+	service              *Service
+	rebuildMu            sync.Mutex
+	rebuilding           map[string]struct{}
+	metadataQueue        []metadataRebuildTask
+	metadataWorkers      int
+	metadataFailures     map[string]error
+	generation           map[string]uint64
+	rebuildCtx           context.Context
+	rebuildStop          context.CancelFunc
+	rebuildWG            sync.WaitGroup
+	closed               bool
+	slots                *rebuildSlots
+	indexMu              sync.Mutex
+	indexLocks           map[string]*sync.Mutex
+	contentMu            sync.Mutex
+	contentGrants        map[string]time.Time
+	searchMu             sync.Mutex
+	searchBuilds         map[string]*searchPreparation
+	historyMu            sync.Mutex
+	historyBuilds        map[string]*historyPreparation
 }
 
 func (s *Service) Query() *Query {
@@ -266,7 +271,7 @@ func (q *Query) enrichInfo(info *SessionInfo) {
 			return
 		}
 	}
-	if info.Codec == Codec && info.MetadataStatus != MetadataReady {
+	if !q.metadataOnlyListings && info.Codec == Codec && info.MetadataStatus != MetadataReady {
 		q.rebuildMu.Lock()
 		failure := q.metadataFailures[info.SessionID]
 		q.rebuildMu.Unlock()
@@ -361,7 +366,11 @@ func (q *Query) invalidateCatalog(sessionID string) {
 	q.rebuildMu.Unlock()
 }
 
-func (q *Query) rebuildCatalogMetadata(sessionID string, generation uint64) error {
+func (q *Query) rebuildCatalogMetadata(sessionID string, generation uint64, callers ...context.Context) error {
+	ctx := q.rebuildCtx
+	if len(callers) > 0 {
+		ctx = callers[0]
+	}
 	filesystem, ok := q.persistence.(*FilesystemPersistence)
 	if !ok {
 		return nil
@@ -370,24 +379,40 @@ func (q *Query) rebuildCatalogMetadata(sessionID string, generation uint64) erro
 	if err != nil {
 		return err
 	}
-	defer handle.Close(context.WithoutCancel(q.rebuildCtx))
+	defer handle.Close(context.WithoutCancel(ctx))
 	sessionDir := filepath.Join(filesystem.Root, sessionID)
 	cacheDir := filepath.Join(filesystem.Root, ".query-cache", filepath.Base(sessionID))
 	manifest, err := readManifest(filepath.Join(sessionDir, "manifest.json"))
 	if err != nil {
 		return err
 	}
-	metadata, err := reduceCatalogMetadata(q.rebuildCtx, handle, manifest)
+	metadata, err := reduceCatalogMetadata(ctx, handle, manifest)
 	if err != nil {
 		return err
 	}
 	q.rebuildMu.Lock()
 	defer q.rebuildMu.Unlock()
-	if q.rebuildCtx.Err() != nil || q.generation[sessionID] != generation {
+	if ctx.Err() != nil || q.rebuildCtx.Err() != nil || q.generation[sessionID] != generation {
 		return nil
 	}
 	// Hold the generation boundary through publication. Deletion invalidates
 	// before it moves the directory, so it either wins first or waits until this
 	// exact-incarnation cache is completely written and then removes it.
 	return writeCatalogMetadataForSession(cacheDir, sessionDir, metadata)
+}
+
+// RefreshMetadata is an explicit management-operation fence. Passive list
+// reads never call it; imports and archive candidates need an exact committed
+// sequence before they can freeze their optimistic mutation preconditions.
+func (q *Query) RefreshMetadata(ctx context.Context, ref SessionRef) (SessionInfo, error) {
+	if err := ref.validate(q.hostID); err != nil {
+		return SessionInfo{}, err
+	}
+	q.rebuildMu.Lock()
+	generation := q.generation[ref.SessionID]
+	q.rebuildMu.Unlock()
+	if err := q.rebuildCatalogMetadata(ref.SessionID, generation, ctx); err != nil {
+		return SessionInfo{}, err
+	}
+	return q.Stat(ctx, ref)
 }

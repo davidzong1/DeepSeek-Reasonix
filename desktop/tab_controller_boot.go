@@ -3,19 +3,55 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
 	"reasonix/internal/session"
 )
 
+// Historical directories share one owner per root, just like canonical
+// sessions. Repeated opens and rebuilds must not manufacture competing writers.
+func (a *App) historicalSessionService(root string) (*session.Service, error) {
+	root = filepath.Clean(root)
+	a.sessionServicesMu.Lock()
+	defer a.sessionServicesMu.Unlock()
+	if existing := a.historicalSessionServices[root]; existing != nil {
+		return existing, nil
+	}
+	service, err := session.NewService(localDesktopHostID, session.NewFilesystemPersistence(root))
+	if err != nil {
+		return nil, err
+	}
+	if a.historicalSessionServices == nil {
+		a.historicalSessionServices = map[string]*session.Service{}
+	}
+	a.historicalSessionServices[root] = service
+	service.UseIdlePool(&a.historyIdlePool)
+	service.ConfigureHistoryMaintenance(&a.historyMaintenance)
+	return service, nil
+}
+
 var errTabControllerExtensionsChanged = errors.New("desktop: controller extensions changed during build")
 
 // buildTabControllerBoot is a thin wrapper around boot.Build so the large
 // controller assembly path can stay under function-size / complexity budgets.
 func (a *App) buildTabControllerBoot(ctx context.Context, opts boot.Options) (control.SessionAPI, error) {
+	if opts.NativeLegacySession && opts.SessionService == nil {
+		// A path-backed source may have a newer paired event store in its
+		// historical root. Keep that authority discoverable without importing
+		// either source into the current Desktop root.
+		var err error
+		opts.SessionService, err = a.historicalSessionService(desktopSessionRoot(opts.SessionDir))
+		if err != nil {
+			return nil, err
+		}
+	}
 	if opts.SessionService == nil {
 		opts.SessionService = a.desktopSessionService(opts.SessionDir)
+	}
+	if opts.SessionCreateService == nil {
+		opts.SessionCreateService = a.desktopSessionService(opts.SessionDir)
 	}
 	if opts.OnSessionRotation == nil {
 		opts.OnSessionRotation = a.prepareDesktopSessionRotation
@@ -61,6 +97,8 @@ func (a *App) desktopSessionService(sessionDir string) *session.Service {
 		return nil
 	}
 	a.sessionServices[root] = service
+	service.UseIdlePool(&a.historyIdlePool)
+	service.ConfigureHistoryMaintenance(&a.historyMaintenance)
 	return service
 }
 

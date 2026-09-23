@@ -10,7 +10,7 @@ func sessionUIError(err error, target, operation string) error {
 		return nil
 	}
 	if errors.Is(err, sessionui.ErrConflict) {
-		return &SessionOperationError{Code: "input_conflict", Message: "The input changed. Both versions are preserved; review before continuing.", TargetKey: target, OperationID: operation}
+		return &SessionOperationError{Code: "input_conflict", Message: "The input changed while saving. Please retry.", TargetKey: target, OperationID: operation}
 	}
 	if errors.Is(err, sessionui.ErrFutureVersion) {
 		return &SessionOperationError{Code: "unsupported_ui_schema", Message: "This input database requires a newer application. Its data has not been changed.", TargetKey: target, OperationID: operation}

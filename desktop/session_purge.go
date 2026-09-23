@@ -10,9 +10,8 @@ import (
 	"reasonix/internal/session"
 )
 
-// PurgeCanonicalSession permanently removes only archived sessions. Legacy
-// migration originals are retained as upgrade evidence, with mappings acting
-// as tombstones so background discovery cannot import them again.
+// PurgeCanonicalSession permanently removes only archived sessions. Adoption
+// receipts survive deletion, including when an exclusive original is removed.
 func (a *App) PurgeCanonicalSession(ref session.SessionRef) error {
 	if err := validateLocalSessionRef(ref); err != nil {
 		return err
@@ -128,7 +127,7 @@ func (a *App) executeCanonicalPurge(ctx context.Context, ref session.SessionRef,
 		if observed != nil {
 			return store.ResumePurgeForRequest(ctx, ref.SessionID, expected, *observed)
 		}
-		return store.BeginPurge(ctx, ref.SessionID, expected)
+		return store.BeginPurgeWithSources(ctx, ref.SessionID, expected)
 	}
 	switch workspacestate.ClassifyPurge(state, ref.SessionID) {
 	case workspacestate.PurgeCommitted:
@@ -166,6 +165,10 @@ func (a *App) executeCanonicalPurge(ctx context.Context, ref session.SessionRef,
 		return fmt.Errorf("purge cleanup pending: %w", err)
 	}
 	a.lifecycleCheckpoint("after-file-cleanup")
+	if err := a.purgeMigratedSources(ctx, ref.SessionID); err != nil {
+		return fmt.Errorf("source cleanup pending: %w", err)
+	}
+	a.lifecycleCheckpoint("after-source-cleanup")
 	if err := a.sessionUIStore().PurgeComposer(ctx, composerRecordKey(ref)); err != nil {
 		return err
 	}

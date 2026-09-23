@@ -102,6 +102,7 @@ var errNoSessionPath = errors.New("session has content but no session path; conv
 // methods; observe through the Sink passed in Options.
 type Controller struct {
 	lifecycleDiagnostics lifecycleDiagnosticBuffer
+	providerDiagnostics  providerDiagnosticBuffer
 	runtimeState         controllerRuntimeState
 	controllerPromptRouting
 	authentication authenticationGate
@@ -417,11 +418,13 @@ type controllerSessionBinding struct {
 	// sessionRuntime is the final identity-bound v3 owner. When exclusiveSession is
 	// set, SessionPath is a legacy import/display locator only and no production
 	// transcript or business sidecar may be written through it.
-	sessionService   *session.Service
-	sessionRuntime   *session.Runtime
-	sessionBinding   *session.ClientBinding
-	exclusiveSession bool
-	v3BindingMu      sync.RWMutex
+	sessionService       *session.Service
+	sessionCreateService *session.Service
+	sessionRuntime       *session.Runtime
+	sessionBinding       *session.ClientBinding
+	exclusiveSession     bool
+	nativeLegacySession  bool
+	v3BindingMu          sync.RWMutex
 }
 
 type controllerPromptRouting struct {
@@ -603,10 +606,12 @@ type Options struct {
 	// immutable v3 session identity. SessionService owns exact-instance close,
 	// fork, query and cancellation. ExclusiveSession disables legacy
 	// transcript and business-sidecar writes.
-	SessionService   *session.Service
-	SessionRuntime   *session.Runtime
-	ExclusiveSession bool
-	Host             *plugin.Host
+	SessionService       *session.Service
+	SessionCreateService *session.Service
+	SessionRuntime       *session.Runtime
+	ExclusiveSession     bool
+	NativeLegacySession  bool
+	Host                 *plugin.Host
 	// MCPHostProfile is the surface lazily created hosts declare; injected
 	// hosts keep their own profile.
 	MCPHostProfile plugin.HostProfile
@@ -817,7 +822,7 @@ func New(opts Options) *Controller {
 		sessionContextStatic:              opts.SessionContextStatic,
 		sessionDir:                        opts.SessionDir,
 		sessionPath:                       opts.SessionPath,
-		controllerSessionBinding:          controllerSessionBinding{sessionService: opts.SessionService, sessionRuntime: sessionRuntime, sessionBinding: sessionBinding, exclusiveSession: opts.ExclusiveSession},
+		controllerSessionBinding:          controllerSessionBinding{sessionService: opts.SessionService, sessionCreateService: opts.SessionCreateService, sessionRuntime: sessionRuntime, sessionBinding: sessionBinding, exclusiveSession: opts.ExclusiveSession, nativeLegacySession: opts.NativeLegacySession},
 		commands:                          atomic.Pointer[[]command.Command]{},
 		skills:                            newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
 		disableImplicitSkillInvocation:    opts.DisableImplicitSkillInvocation,
@@ -2959,6 +2964,31 @@ func (c *Controller) NewSession() error {
 		return err
 	}
 	defer c.endRotation()
+	if c.NativeLegacySession() && c.SessionService() != nil {
+		oldPath := c.SessionPath()
+		c.flushRecoveryPersistence(oldPath)
+		if err := c.Snapshot(); err != nil {
+			return err
+		}
+		if err := c.extensionSessionPhase(context.Background(), extension.PointSessionRotate, dispatch.PhaseRotate, oldPath); err != nil {
+			return err
+		}
+		c.hooks.SessionEnd(context.Background(), "new")
+		c.extensionSessionEvent(extension.PointSessionEnd, dispatch.PhaseEnd, oldPath)
+		plan := SessionRotationPlan{}
+		if c.onSessionRotation != nil {
+			var err error
+			plan, err = c.onSessionRotation(context.Background(), SessionRotationRequest{SourcePath: c.SessionPath(), Reason: "new"})
+			if err != nil {
+				return err
+			}
+		}
+		ref, err := c.bindFreshSessionWithCommit(context.Background(), plan.CreateOptions, plan.Commit)
+		if err == nil {
+			c.startExclusiveSession(ref, "new")
+		}
+		return err
+	}
 	if c.sessionEngineEnabled() {
 		return c.rotateExclusiveSession(false)
 	}
@@ -3183,6 +3213,21 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 // see the previous session's temporary files. Same-path Resume (hot rebuild
 // migration via AdoptHistory) keeps the generation.
 func (c *Controller) Resume(s *agent.Session, path string) {
+	if c.NativeLegacySession() && strings.TrimSpace(path) != "" {
+		if service := c.SessionService(); service != nil {
+			ref, found, err := service.ExistingCanonicalForLegacy(path, s)
+			if err != nil {
+				c.failTurnEventLedger(err)
+				return
+			}
+			if found {
+				if _, err := c.OpenSession(context.Background(), ref); err != nil {
+					c.failTurnEventLedger(err)
+				}
+				return
+			}
+		}
+	}
 	if c.sessionEngineEnabled() {
 		if _, runtime, _ := c.v3Binding(); runtime != nil && strings.TrimSpace(path) == "" {
 			c.restoreExecutorFromSessionEvents()
@@ -3208,8 +3253,8 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 			}
 			return
 		}
-		if _, err := c.ContinueLegacySession(context.Background(), path, ""); err != nil {
-			slog.Warn("controller: migrate legacy resume into v3", "path", path, "err", err)
+		if err := c.ResumeNativeSession(s, path); err != nil {
+			slog.Warn("controller: resume native legacy session", "path", path, "err", err)
 			c.failTurnEventLedger(err)
 		}
 		return
@@ -4976,6 +5021,12 @@ func (c *Controller) finalizeControllerClose() {
 			default:
 				c.jobs.Close() // cancel any still-running background jobs
 			}
+		}
+		c.turnEvents.mu.RLock()
+		projection := c.turnEvents.projection
+		c.turnEvents.mu.RUnlock()
+		if projection != nil {
+			projection.CloseFollowers()
 		}
 		if ledger := c.turnEventLedger(); ledger != nil {
 			if err := ledger.Close(); err != nil {

@@ -413,12 +413,13 @@ console.log("\ntranscript store");
   eq(store.isResident("tab-1", "/s/1.jsonl"), false, "fourth session evicts the least-recently-used one");
   eq(store.isResident("tab-4", "/s/4.jsonl"), true, "new session stays resident");
 
-  store.setPinned("tab-2", true); // live/running tab: pinned out of the LRU count
+  store.setPinned("tab-2", true); // live/running owner cannot be evicted
   await store.loadLatest("tab-5", "/s/5.jsonl");
-  eq(store.isResident("tab-3", "/s/3.jsonl"), true, "pinned sessions do not count toward the resident cap");
+  eq(store.isResident("tab-3", "/s/3.jsonl"), false, "pinned windows consume capacity without being eviction candidates");
+  eq(store.residentSessionCount(), 3, "resident cap includes the pinned window");
   await store.loadLatest("tab-6", "/s/6.jsonl");
   eq(store.isResident("tab-2", "/s/2.jsonl"), true, "pinned live session survives eviction");
-  eq(store.isResident("tab-3", "/s/3.jsonl"), false, "oldest unpinned session evicts instead");
+  eq(store.isResident("tab-4", "/s/4.jsonl"), false, "oldest unpinned session evicts instead");
   store.setPinned("tab-2", false);
 
   const callsBeforeReopen = backend.sliceCalls.length;
@@ -426,6 +427,7 @@ console.log("\ntranscript store");
   ok(backend.sliceCalls.length > callsBeforeReopen, "evicted session re-opens via a fresh slice fetch");
   eq(reopened?.items.length, 2, "re-opened session restores its full projection");
 }
+
 
 {
   const big = "x".repeat(600);

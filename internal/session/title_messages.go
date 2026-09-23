@@ -31,7 +31,7 @@ func (q *Query) TitleMessages(ctx context.Context, ref SessionRef, limit int) ([
 	if !ok {
 		return nil, fmt.Errorf("session: title history requires filesystem persistence")
 	}
-	preparation := q.prepareHistoryLocator(filesystem, ref.SessionID, historyIndexPath(filesystem.Root, ref.SessionID))
+	preparation := q.prepareHistoryLocator(filesystem, ref.SessionID, historyIndexPath(filesystem.Root, ref.SessionID), ctx)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

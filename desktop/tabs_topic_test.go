@@ -14,7 +14,6 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/sessioncatalog"
 )
 
 type runtimeStatusSessionController struct {
@@ -54,22 +53,6 @@ func waitForTabReady(t *testing.T, app *App, tabID string) *WorkspaceTab {
 	}
 	t.Fatalf("tab %q was not ready before timeout", tabID)
 	return nil
-}
-
-func waitForTopicDirMarker(t *testing.T, dir, marker string) {
-	t.Helper()
-	markerPath := filepath.Join(dir, marker)
-	deadline := time.Now().Add(5 * time.Second)
-	var last error
-	for {
-		if _, last = os.Stat(markerPath); last == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("expected %s after migration: %v", marker, last)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 func writeTopicSession(t *testing.T, dir, name, topicID, topicTitle, workspaceRoot string) string {
@@ -692,12 +675,8 @@ func TestLegacySessionsMigrateIntoGlobalTopics(t *testing.T) {
 		t.Fatalf("older topic second = %q, want %q", got, want)
 	}
 
-	meta, ok, err := agent.LoadBranchMeta(newer)
-	if err != nil || !ok {
-		t.Fatalf("load migrated meta: ok=%v err=%v", ok, err)
-	}
-	if meta.Scope != "global" || meta.WorkspaceRoot != "" || meta.TopicID != legacySessionTopicID(newer) {
-		t.Fatalf("migrated meta = %+v", meta)
+	if meta, ok, err := agent.LoadBranchMeta(newer); err != nil || ok && meta.TopicID != "" {
+		t.Fatalf("metadata discovery rewrote legacy organization: %+v %v", meta, err)
 	}
 
 	nodes = mustListProjectTree(t, app)
@@ -722,27 +701,27 @@ func TestAmbiguousLegacyRecoverySessionsMigrateIntoTopics(t *testing.T) {
 	}
 
 	app := NewApp()
-	// Filename recovery folds into the root ordinary row; History keeps the
-	// physical recovery file reachable as another saved version.
+	// Discovery cannot prove lineage from a filename. Both sources remain
+	// visible until an explicit content read proves their relationship.
 	app.startSessionCatalog()
 	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
-	nodes := waitForCatalogTreeCondition(t, app, "filename recovery folded into one ordinary row", func(nodes []ProjectNode) bool {
+	nodes := waitForCatalogTreeCondition(t, app, "both unproved sources visible", func(nodes []ProjectNode) bool {
 		for _, folder := range nodes {
 			if folder.Kind != "global_folder" {
 				continue
 			}
-			if len(folder.Children) != 1 {
+			if len(folder.Children) != 2 {
 				return false
 			}
-			return folder.Children[0].TopicID == legacySessionTopicID(normal)
+			return folder.Children[0].TopicID == legacySessionTopicID(recovery) && folder.Children[1].TopicID == legacySessionTopicID(normal)
 		}
 		return false
 	})
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" {
 		t.Fatalf("project tree = %#v, want global folder", nodes)
 	}
-	if got := len(nodes[0].Children); got != 1 {
-		t.Fatalf("global ordinary topics = %d, want 1 folded conversation: %#v", got, nodes[0].Children)
+	if got := len(nodes[0].Children); got != 2 {
+		t.Fatalf("global ordinary topics = %d, want both unproved sources: %#v", got, nodes[0].Children)
 	}
 	if _, err := os.Stat(recovery); err != nil {
 		t.Fatalf("physical recovery file must remain on disk: %v", err)
@@ -766,8 +745,8 @@ func TestUnmodifiedRecoveryCopyDoesNotMigrateIntoTopics(t *testing.T) {
 
 	app := NewApp()
 	nodes := waitForCatalogTopic(t, app, "global", "", legacySessionTopicID(parent))
-	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
-		t.Fatalf("project tree = %#v, want only the covering parent topic", nodes)
+	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
+		t.Fatalf("project tree = %#v, want both sources before content proof", nodes)
 	}
 	if meta, ok, err := agent.LoadBranchMeta(recovery); err != nil || !ok {
 		t.Fatalf("load recovery meta: ok=%v err=%v", ok, err)
@@ -788,8 +767,12 @@ func TestCoveredRecoveryCopyBecomesVisibleAfterMigratedParentDeletion(t *testing
 	app := NewApp()
 
 	waitForCatalogTopic(t, app, "global", "", legacySessionTopicID(parent))
-	waitForTopicDirMarker(t, dir, topicMigrationMarker)
-	waitForTopicDirMarker(t, dir, topicIndexRepairMarker)
+	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); !os.IsNotExist(err) {
+		t.Fatalf("discovery wrote a migration marker: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, topicIndexRepairMarker)); !os.IsNotExist(err) {
+		t.Fatalf("discovery wrote a repair marker: %v", err)
+	}
 	if meta, ok, err := agent.LoadBranchMeta(recovery); err != nil || !ok {
 		t.Fatalf("load skipped recovery meta: ok=%v err=%v", ok, err)
 	} else if strings.TrimSpace(meta.TopicID) != "" {
@@ -808,12 +791,12 @@ func TestCoveredRecoveryCopyBecomesVisibleAfterMigratedParentDeletion(t *testing
 	if err != nil || !ok {
 		t.Fatalf("load recovery meta after parent deletion: ok=%v err=%v", ok, err)
 	}
-	if meta.TopicID != legacySessionTopicID(recovery) {
-		t.Fatalf("recovery topic after parent deletion = %q, want %q", meta.TopicID, legacySessionTopicID(recovery))
+	if meta.TopicID != "" {
+		t.Fatalf("discovery rewrote recovery topic: %q", meta.TopicID)
 	}
 	for _, root := range nodes {
 		for _, node := range root.Children {
-			if node.TopicID == meta.TopicID {
+			if node.TopicID == legacySessionTopicID(recovery) {
 				return
 			}
 		}
@@ -904,13 +887,13 @@ func TestProjectTreeKeepsAmbiguousMigratedRecoveryTopicVisible(t *testing.T) {
 
 	app := NewApp()
 	_ = waitForCatalogTopic(t, app, "global", "", topicID)
-	nodes := waitForCatalogTreeCondition(t, app, "a repaired ambiguous recovery topic", func(nodes []ProjectNode) bool {
+	nodes := waitForCatalogTreeCondition(t, app, "visible recovery with unknown counts", func(nodes []ProjectNode) bool {
 		if len(nodes) == 0 {
 			return false
 		}
 		for _, node := range nodes[0].Children {
 			if node.TopicID == topicID {
-				return node.TurnsState == "valid" && node.Turns == 1
+				return node.TurnsState == "unknown"
 			}
 		}
 		return false
@@ -920,8 +903,8 @@ func TestProjectTreeKeepsAmbiguousMigratedRecoveryTopicVisible(t *testing.T) {
 	}
 	for _, node := range nodes[0].Children {
 		if node.TopicID == topicID {
-			if node.Turns != 1 {
-				t.Fatalf("recovery topic turns = %d, want 1", node.Turns)
+			if node.TurnsState != "unknown" {
+				t.Fatalf("unproved recovery count state = %s", node.TurnsState)
 			}
 			return
 		}
@@ -937,32 +920,23 @@ func TestTopicMigrationMarkerRescansWhenSessionFileChanges(t *testing.T) {
 	}
 	writeLegacySession(t, dir, "first.jsonl", "first legacy prompt", time.Now().Add(-time.Hour))
 
-	// Background catalog reconciliation migrates the legacy session and, with
-	// nothing deferred, stamps the one-shot marker. Tree reads never do this I/O.
+	// Background discovery publishes metadata without writing migration markers.
 	app := NewApp()
 	firstTopicID := legacySessionTopicID(filepath.Join(dir, "first.jsonl"))
 	waitForCatalogTopic(t, app, "global", "", firstTopicID)
-	// Catalog publication and the migration marker are written on the same
-	// background path but not under one fsync barrier. Wait for the marker
-	// explicitly so Windows CI does not observe the topic before the stamp.
 	markerPath := filepath.Join(dir, topicMigrationMarker)
-	waitFor(t, "the migration marker after a complete pass", func() bool {
-		_, err := os.Stat(markerPath)
-		return err == nil
-	})
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("discovery wrote migration marker: %v", err)
+	}
 
 	// A CLI-created session added after the marker invalidates the lightweight
 	// gate and gets a fresh migration pass.
-	time.Sleep(10 * time.Millisecond)
 	second := writeLegacySession(t, dir, "second.jsonl", "second legacy prompt", time.Now())
 	app.requestSessionCatalogReconcile(dir)
 	waitForCatalogTopic(t, app, "global", "", legacySessionTopicID(second))
-	// Publication does not fence the sidecar write, and Windows refuses to open
-	// a .meta the migration still holds. Await the asserted postcondition.
-	waitFor(t, "second.jsonl.meta to carry the migrated topic", func() bool {
-		meta, ok, err := agent.LoadBranchMeta(second)
-		return err == nil && ok && strings.TrimSpace(meta.TopicID) == legacySessionTopicID(second)
-	})
+	if meta, _, err := agent.LoadBranchMeta(second); err != nil || meta.TopicID != "" {
+		t.Fatalf("discovery rewrote source metadata: %+v, %v", meta, err)
+	}
 }
 
 func TestProjectTreeRepairsIndexedGlobalTopicsAfterMigrationMarker(t *testing.T) {
@@ -1666,8 +1640,8 @@ api_key_env = "REASONIX_TEST_KEY"
 	if tab.Ctrl != nil || tab.Ready {
 		t.Fatalf("unsafe session runtime = hasCtrl:%v ready:%v, want failed startup", tab.Ctrl != nil, tab.Ready)
 	}
-	if !strings.Contains(tab.StartupErr, errSessionHistoryUnreadable.Error()) || strings.Contains(tab.StartupErr, path) {
-		t.Fatalf("startup error = %q, want path-free damaged-history error", tab.StartupErr)
+	if !strings.Contains(tab.StartupErr, agent.ErrSessionReplayLimitExceeded.Error()) || strings.Contains(tab.StartupErr, path) {
+		t.Fatalf("startup error = %q, want path-free replay-limit error", tab.StartupErr)
 	}
 	if filepath.Clean(tab.SessionPath) != filepath.Clean(path) {
 		t.Fatalf("session path = %q, want original %q", tab.SessionPath, path)
@@ -3309,36 +3283,22 @@ func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 	firstTopicID := legacySessionTopicID(first)
 
 	app := NewApp()
-	app.startSessionCatalog()
-	_ = waitForSessionCatalogForTest(t, app, nil)
-	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
-	reconcileDone := make(chan struct{}, 1)
-	app.catalogReconcileDoneHook = func(target sessioncatalog.DirectoryTarget) {
-		if sameDesktopPath(target.Path, dir) {
-			reconcileDone <- struct{}{}
-		}
-	}
+	waitForInitialCatalogReconcile(t, app)
 	// Exercise the same explicit reconcile path used after a watcher event. The
-	// catalog starts asynchronously, so wait for its publication before asking
-	// it to scan the project directory.
-	if !app.requestSessionCatalogReconcile(dir) {
-		t.Fatal("request initial project session catalog reconcile")
-	}
-	<-reconcileDone
+	// catalog starts asynchronously; the admission barrier above completes
+	// before this functional discovery check (not a startup-latency check).
+	waitForCatalogReconcileJobs(t, app)
 	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != firstTopicID {
 		t.Fatalf("first project CLI session should appear in project tree, got %#v; want topic %q", nodes, firstTopicID)
 	}
-	waitForTopicDirMarker(t, dir, topicMigrationMarker)
-
-	time.Sleep(10 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); !os.IsNotExist(err) {
+		t.Fatalf("discovery wrote migration marker: %v", err)
+	}
 	second := writeLegacySession(t, dir, "second-cli-project.jsonl", "second cli project prompt", time.Now())
 	secondTopicID := legacySessionTopicID(second)
 
-	if !app.requestSessionCatalogReconcile(dir) {
-		t.Fatal("request updated project session catalog reconcile")
-	}
-	<-reconcileDone
+	waitForCatalogReconcileJobs(t, app)
 	nodes = mustListProjectTree(t, app)
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 2 {
 		t.Fatalf("second project CLI session should trigger re-scan, got %#v", nodes)

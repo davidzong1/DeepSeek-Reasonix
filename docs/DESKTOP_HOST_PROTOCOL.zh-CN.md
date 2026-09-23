@@ -43,7 +43,7 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
   "contractDigest": "sha256:…",
   "service": {"version":"v1.30.0","channel":"stable","commit":"abc123","pid":4242},
   "runtimeGeneration": "g-01J…",       // 每个服务进程唯一
-  "instance": {"identityVersion":2,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
+  "instance": {"identityVersion":3,"identityDigest":"sha256:…","legacyId":"com.reasonix.desktop.…"},
   "runId": "…", "incidentId": "…", "diagnosticsEnabled": true,
   "resources": {"origin":"http://127.0.0.1:51234","token":"…"},
   "window": {"width":1280,"height":820,"minWidth":760,"minHeight":480,"frameless":false,"zoomFactor":1}

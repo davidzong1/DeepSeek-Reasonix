@@ -48,7 +48,11 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 		return err
 	}
 	key := source.mappingKey(path)
-	if mapping, exists := state.SourceMappings[key]; exists && source.operationID == "" {
+	mapping, exists, err := state.ResolveSource(key)
+	if err != nil {
+		return err
+	}
+	if exists && source.operationID == "" {
 		if mapping.SessionID != id {
 			return workspacestate.ErrMutationConflict
 		}
@@ -111,7 +115,9 @@ func (a *App) quarantineChangedMigration(ctx context.Context, source desktopMigr
 		if err != nil {
 			return true, err
 		}
-		if _, exists := state.SourceMappings[desktopSourceKey(path, source.headID)]; !exists {
+		if _, exists, err := state.ResolveSource(desktopSourceKey(path, source.headID)); err != nil {
+			return true, err
+		} else if !exists {
 			return false, nil
 		}
 	}
@@ -140,7 +146,10 @@ func (a *App) checkAdoptedMigrationSource(ctx context.Context, source desktopMig
 	if state.SessionStates[cp.record.TargetSessionID].Lifecycle == workspacestate.Deleted {
 		return true, nil
 	}
-	mapping, exists := state.SourceMappings[source.mappingKey(path)]
+	mapping, exists, err := state.ResolveSource(source.mappingKey(path))
+	if err != nil {
+		return true, err
+	}
 	if !exists {
 		return false, nil
 	}

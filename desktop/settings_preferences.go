@@ -100,7 +100,10 @@ func (a *App) SetTrayLocale(locale string) error {
 		trayLocale = "zh"
 	}
 	a.updateTrayLocale(trayLocale)
-	a.emitProjectTreeChanged()
+	// The renderer calls this on every mount. Localized labels invalidate the
+	// presentation only; scheduling all source roots here restarts discovery
+	// that may already be running after startup admission.
+	a.emitProjectTreeChangedEvent()
 	return nil
 }
 

@@ -148,6 +148,37 @@ try {
     await f.close();
   }
   {
+    const operation = { operationId: "failed-runtime", draftId: "a", phase: "runtime_failed", revision: 7, submissionId: "original-submit", canResume: true, canEdit: false, canCancel: true, canDiscard: false, updatedAt: 1 };
+    const calls: unknown[] = [];
+    const retry = deferred<typeof operation>();
+    const f = await fixture({
+      GetDraftContext: async () => ({ draft: { id: "a", workspaceId: "ws-a", scope: "project", workspaceRoot: "/tmp/a", revision: 1, contentJson: JSON.stringify(content("keep my draft")), settings, status: "active", updatedAt: 1 }, operation, commands: [], servers: [] }),
+      ResumeDraftSubmission: async (...args: unknown[]) => {
+        calls.push(args);
+        if (calls.length === 1) throw new Error("create session runtime: path unavailable");
+        return retry.promise;
+      },
+      BeginDraftSubmission: async () => { throw new Error("retry must reuse the original operation"); },
+    });
+    await act(async () => { await f.owner.resumeSubmission(); });
+    assert.equal(f.owner.surface!.saveState, "saved", "runtime failure is not a persistence failure");
+    assert.equal(f.owner.surface!.error, undefined);
+    assert.equal(f.owner.surface!.submissionError, "create session runtime: path unavailable");
+    assert.equal(f.owner.surface!.content.text, "keep my draft");
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = f.owner.resumeSubmission();
+      await f.owner.resumeSubmission();
+    });
+    assert.equal(f.owner.surface!.resumingSubmission, true);
+    assert.deepEqual(calls, [["failed-runtime", 7], ["failed-runtime", 7]], "overlapping retries share one in-flight resume");
+    await act(async () => { retry.resolve({ ...operation, phase: "runtime_failed", revision: 8 }); await pending; });
+    assert.equal(f.owner.surface!.submissionError, undefined, "successful resume RPC clears its previous error");
+    assert.equal(f.owner.surface!.resumingSubmission, false);
+    assert.equal(f.owner.surface!.content.text, "keep my draft");
+    await f.close();
+  }
+  {
     const timers: (() => void)[] = [];
     const originalTimer = window.setTimeout;
     window.setTimeout = ((callback: () => void, delay?: number) => delay && delay >= 250 ? (timers.push(callback), timers.length) : originalTimer(callback, delay)) as typeof window.setTimeout;

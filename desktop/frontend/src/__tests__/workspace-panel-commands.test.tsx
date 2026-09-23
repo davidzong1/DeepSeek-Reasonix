@@ -23,7 +23,6 @@ let restoredWidth = 0;
 const globalRoot = "/fixture/global-workspace";
 let navigation!: ReturnType<typeof useSessionNavigationCommands>;
 let navigationRequest: unknown;
-let draftRequest: unknown;
 let creationTarget:unknown;
 let intent=0;
 installDesktopHostStub(makeSessionUIMock(async (scope,workspaceRoot)=>{creationTarget={scope,workspaceRoot};}));
@@ -36,7 +35,6 @@ function Probe({ workspace, visible, sessionId }: { workspace: string; visible: 
     closeTransientOverlays: closeOverlays, clearImDetail: () => {}, prepareBlankWorkspace: commands.prepareBlankWorkspace,
     enterConversation: () => {},
     noteNavigationIntent:()=>++intent, isNavigationIntentCurrent:(seq:number)=>seq===intent, markProjectChanged:()=>{}, showToast:(error:string)=>{throw Error(error);},
-    draft: { open: async (scope, workspaceRoot) => { draftRequest = { scope, workspaceRoot }; }, dismiss: () => {} },
     navigation: { enqueueNavigationWithIntent: async request => { navigationRequest = request; } },
   } as SessionNavigationCommandsInput);
   return null;
@@ -145,7 +143,6 @@ try {
   saveWorkspacePanelOpen(true, globalRoot);
   await act(async () => navigation.openBlankSession("global", globalRoot));
   assert.deepEqual(creationTarget, { scope: "global", workspaceRoot: "" }, "global formal creation uses the empty root contract");
-  assert.equal(draftRequest,undefined);
   assert.ok(navigationRequest, "local new-session navigates to its formal identity");
   assert.equal(loadWorkspacePanelOpen(""), true, "global creation does not overwrite the legacy fallback for other projects");
   await paint(globalRoot);

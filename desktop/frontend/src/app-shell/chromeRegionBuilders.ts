@@ -38,8 +38,6 @@ export function buildSidebarRegionProps(input: {
     showShortcutBadges: boolean;
     shortcutPlatform: SidebarRegionProps["projectTree"]["shortcutPlatform"];
     onVisibleTopicsChange: SidebarRegionProps["projectTree"]["onVisibleTopicsChange"];
-    draftSummaries: SidebarRegionProps["projectTree"]["draftSummaries"];
-    onOpenDraft: SidebarRegionProps["projectTree"]["onOpenDraft"];
   };
   topics: ProjectTopicCommands;
   commands: {
@@ -81,8 +79,6 @@ export function buildSidebarRegionProps(input: {
       searchExpanded: input.projectTree.searchExpanded, searchFocusSignal: input.projectTree.searchFocusSignal,
       showShortcutBadges: input.projectTree.showShortcutBadges, shortcutPlatform: input.projectTree.shortcutPlatform,
       onVisibleTopicsChange: input.projectTree.onVisibleTopicsChange,
-      draftSummaries: input.projectTree.draftSummaries,
-      onOpenDraft: input.projectTree.onOpenDraft,
     },
   };
 }

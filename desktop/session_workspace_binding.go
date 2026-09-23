@@ -52,8 +52,8 @@ func (a *App) bindTabCanonicalSessionTopic(
 		return canonicalTabBinding{}, err
 	}
 	bound := canonicalTabBinding{ref: ref, workspaceID: workspaceID}
-	if state, loadErr := a.workspaceRegistry().Load(ctx); loadErr == nil {
-		bound.title, bound.titleSource = a.canonicalTabTitle(ctx, state, ref)
+	if snapshot, loadErr := a.workspaceRegistry().VerifySnapshot(ctx); loadErr == nil {
+		bound.title, bound.titleSource = a.canonicalTabTitleWithPresentation(ctx, snapshot.Session(ref.SessionID).Presentation, ref)
 	}
 	return bound, nil
 }
@@ -87,26 +87,16 @@ func (a *App) canonicalSessionWorkspace(ctx context.Context, ref session.Session
 	if err != nil {
 		return workspacestate.Workspace{}, err
 	}
-	state, err := a.workspaceRegistry().Load(ctx)
+	snapshot, err := a.workspaceRegistry().VerifySnapshot(ctx)
 	if err != nil {
 		return workspacestate.Workspace{}, err
 	}
-	if state.SessionStates[ref.SessionID].Lifecycle == workspacestate.Deleted {
+	metadata := snapshot.Session(ref.SessionID)
+	if metadata.State.Lifecycle == workspacestate.Deleted {
 		return workspacestate.Workspace{}, session.ErrSessionNotFound
 	}
-	var owner workspacestate.Workspace
-	for _, workspace := range state.Workspaces {
-		for _, id := range workspace.SessionIDs {
-			if id != ref.SessionID {
-				continue
-			}
-			if owner.ID != "" {
-				return owner, errSessionWorkspaceConflict
-			}
-			owner = workspace
-		}
-	}
-	if owner.ID == "" || info.Origin == "" || strings.TrimSpace(info.CWD) == "" {
+	owner := metadata.Workspace
+	if metadata.OwnershipConflict || owner.ID == "" || info.Origin == "" || strings.TrimSpace(info.CWD) == "" {
 		return owner, errSessionWorkspaceConflict
 	}
 	same, identityErr := sameDesktopPathStrict(info.CWD, owner.Root)
@@ -152,14 +142,18 @@ func canonicalSessionTopicIdentity(state workspacestate.State, sessionID string)
 }
 
 func (a *App) commitCanonicalSessionBinding(tab *WorkspaceTab, ctrl control.SessionAPI, ref session.SessionRef, workspace workspacestate.Workspace, navigation uint64) error {
-	state, err := a.workspaceRegistry().Load(a.bootContext())
+	snapshot, err := a.workspaceRegistry().VerifySnapshot(a.bootContext())
 	if err != nil {
 		return err
 	}
-	topicID, _ := canonicalSessionTopicIdentity(state, ref.SessionID)
+	presentation := snapshot.Session(ref.SessionID).Presentation
+	topicID := strings.TrimSpace(presentation.TopicID)
+	if topicID == "" {
+		topicID = "canonical-" + ref.SessionID
+	}
 	// The tab name is re-derived from the session log on every bind so the
 	// topicbar can never trail a rename committed while the tab was away.
-	topicTitle, topicSource := a.canonicalTabTitle(a.bootContext(), state, ref)
+	topicTitle, topicSource := a.canonicalTabTitleWithPresentation(a.bootContext(), presentation, ref)
 	workspaceChanged := canonicalWorkspaceChanged(a.tabRuntimeSnapshot(tab), workspace)
 	a.mu.Lock()
 	defer a.mu.Unlock()

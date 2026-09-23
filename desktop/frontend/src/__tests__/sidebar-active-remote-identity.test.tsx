@@ -67,7 +67,6 @@ try {
       activeTab: remoteTab, activeRemote: first,
       imTopicSources: {}, refreshSignal: 0, searchExpanded: false, searchFocusSignal: 0,
       showShortcutBadges: false, shortcutPlatform: undefined, onVisibleTopicsChange: () => {},
-      draftSummaries: [], onOpenDraft: undefined,
     },
   });
   assert.equal(props.projectTree.activeRemote, first, "the sidebar assembly forwards the owned reference by identity");

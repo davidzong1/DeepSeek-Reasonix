@@ -25,9 +25,11 @@ try {
  assert.equal(saved.attachments[0].path,".reasonix/attachments/kept.png");
  assert.equal(saved.attachments[0].draftId,undefined);
  assert.equal(saved.attachments[0].previewUrl,undefined);
- await act(async()=>editor.useSaved());
+ await backend.SaveSessionComposerState({ref:{hostId:"local",sessionId:"wiring-restored"},expectedRevision:"0",contentJson:JSON.stringify(saved),contentVersion:1});
+ await paint("wiring-restored");
  assert.equal(editor.target!.initial.attachments[0].previewUrl,"data:image/png;base64,aW1hZ2U=");
  assert.ok(previews.includes(".reasonix/attachments/kept.png"));
+ await paint("wiring");
 
  for (const code of ["inbox_capacity_items","inbox_capacity_bytes","inbox_item_too_large","channel_read_only","workspace_starting","workspace_start_failed","image_attachment_unreadable"]) {
   await act(async()=>{await assert.rejects(sendPersistedComposer("wiring","retained","retained",code,async()=>{throw Error(`reasonix_error:${code}`);}));});

@@ -11,11 +11,18 @@ export interface HistorySliceRequest {
   bytes?: number;
   /** Page toward newer history from `cursor` instead of older (window only). */
   newer?: boolean;
+  /** Direct anchors require history-native-navigation-v1 on a bound reader. */
+  anchor?: HistoryWindowRequestView["anchor"];
+  turn?: number;
+  messageId?: string;
+  generation?: string;
+  snapshotSequence?: number;
 }
 
 // HistoryContentRef marks a string field replaced inline by a ≤4KiB preview;
 // the full value is fetchable in chunks via HistoryContentForTab.
 export interface HistoryContentRef {
+	readHandleId?: string;
   transcriptRef?: import("./transcriptProtocol").TranscriptContentRef;
   entryId: string;
   field: string; // content|reasoning|submitText|detail|code|summary|archive|toolResultError|toolArguments|toolSubject|toolSummary|toolDiff

@@ -26,6 +26,7 @@ try {
     const { app, onRemoteTabOpened, onRemoteTabUpdated } = await import("/src/lib/bridge.ts");
     const { runtimeStateStore } = await import("/src/lib/runtimeStateStore.ts");
     const { acceptRuntimeState } = await import("/src/lib/runtimeStateReducer.ts");
+    const { sessionIdentityRoute } = await import("/src/lib/sessionIdentity.ts");
     const { installDesktopHostStub } = await import("/src/__tests__/desktopHostStub.ts");
     const { DESKTOP_COMMANDS } = await import("/src/generated/desktopContract.generated.ts");
     const fallback = Object.fromEntries(DESKTOP_COMMANDS.map(key => [key, app[key]]));
@@ -39,7 +40,8 @@ try {
       // Periodic/focus reads must observe the same producer as pushed frames.
       if (key === "SyncRuntimeState" || key === "GetRuntimeStateSnapshot") return async () => runtimeStateStore.getSnapshot();
       if (key === "CaptureInboxTarget") return async (tabId, sessionPath) => {
-        if (!sessionPath || sessionPath !== window.__runtimeFixture.tab.sessionPath) throw new Error("Composer did not bind its selected session path: " + JSON.stringify({ tabId, sessionPath, expected: window.__runtimeFixture.tab.sessionPath }));
+        const expected = sessionIdentityRoute(window.__runtimeFixture.tab);
+        if (!sessionPath || sessionPath !== expected) throw new Error("Composer did not bind its selected session identity: " + JSON.stringify({ tabId, sessionPath, expected }));
         const remote = window.__runtimeFixture.tab.remote;
         return { tabId, sessionPath, generation: 1, selection: 0, remote: Boolean(remote), hostId: remote?.hostId, workspace: remote?.workspace };
       };
@@ -67,7 +69,7 @@ try {
       turnEventSeq: 1, pendingPrompt: false, cancelRequested: false, cancellable: phase === "executing", backgroundJobs: 0, activity: phase === "executing" ? "thinking" : "", ...extra };
     return f.accept({ epoch: "fixture-app", revision: f.revision, topics: f.topics, sessions: [{
       tabId: tab.id, scope: tab.scope ?? "project", workspaceRoot: tab.workspaceRoot, topicId: tab.topicId ?? "",
-      sessionPath: tab.sessionPath ?? "", sessionGeneration: 1, open: true, remote,
+      sessionId: tab.session?.sessionId, sessionPath: tab.sessionPath ?? "", sessionGeneration: tab.sessionGeneration ?? 1, open: true, remote,
       hostId: tab.remote?.hostId, freshness: extra.freshness ?? "synced", state,
     }] }, true);
   }, { phase, extra, remote });
@@ -142,5 +144,6 @@ try {
   check(errors.length === 0, "runtime scenarios produce no browser errors: " + errors.join("; "));
 } catch (error) {
   console.error("Runtime fixture toasts:", await page.locator(".toast__text").allTextContents());
+  console.error("Runtime fixture state:", await page.evaluate(async () => ({ tab: window.__runtimeFixture?.tab, tabs: await (await import("/src/lib/bridge.ts")).app.ListTabs(), runtime: (await import("/src/lib/runtimeStateStore.ts")).runtimeStateStore.getSnapshot() })));
   throw error;
 } finally { await browser.close(); await server.close(); }

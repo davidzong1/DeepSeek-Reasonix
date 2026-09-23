@@ -14,18 +14,22 @@ func (a *App) withRemovablePlaceholderTopics(req ProjectTopicPageRequest, state 
 	if err != nil {
 		return nodes
 	}
-	dirs := a.knownSessionDirs()
 	for _, node := range a.metadataProjectTopics(req.Scope, req.WorkspaceRoot) {
 		if seen[node.TopicID] || adopted[node.TopicID] || node.RuntimeOnly {
+			continue
+		}
+		if catalog := a.sessionCatalog.Load(); catalog != nil && catalog.TopicFolded(a.bootContext(), req.Scope, req.WorkspaceRoot, node.TopicID) {
 			continue
 		}
 		item, err := topicRemovalCandidate(state, file, TopicRemovalTarget{TopicID: node.TopicID})
 		if err != nil || item.Topic.Scope != req.Scope || (req.Scope == "project" && !sameDesktopPath(item.Topic.WorkspaceRoot, req.WorkspaceRoot)) {
 			continue
 		}
-		if classification, _ := classifyLegacyCleanupTopicSources(item, dirs); classification != "empty" {
-			continue
-		}
+		// Partial discovery cannot prove emptiness. Listing must not scan sources
+		// or transcripts for removability; InspectTopicRemoval owns that proof
+		// when the user explicitly requests the management action.
+		node.TurnsState = "unknown"
+		node.Health = "metadata_pending"
 		nodes = append(nodes, node)
 		seen[node.TopicID] = true
 	}

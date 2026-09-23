@@ -32,6 +32,36 @@ func TestEncodeLegacyHistoryEscapesJSONContent(t *testing.T) {
 	}
 }
 
+func TestVerifyLegacyHistoryChecksContentAfterByteRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.jsonl")
+	body, err := encodeLegacyHistory(
+		legacyMessage{Role: "user", Content: fixtureQuestion},
+		legacyMessage{Role: "assistant", Content: fixtureText},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A normal shutdown may rewrite the active legacy checkpoint. Byte changes
+	// are acceptable only while the authored conversation stays intact.
+	rewritten := strings.ReplaceAll(string(body), "\n", " \n")
+	if rewritten == string(body) {
+		t.Fatal("fixture did not change legacy bytes")
+	}
+	if err := os.WriteFile(path, []byte(rewritten), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyLegacyHistory(path, fixtureQuestion, fixtureText); err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(rewritten, fixtureText, "different answer", 1)
+	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyLegacyHistory(path, fixtureQuestion, fixtureText); err == nil {
+		t.Fatal("changed authored content passed verification")
+	}
+}
+
 func TestRunRestoresEnvironmentOnSuccessAndFailure(t *testing.T) {
 	for _, key := range []string{"REASONIX_HOME", "REASONIX_STATE_HOME", "REASONIX_CACHE_HOME"} {
 		t.Setenv(key, "untouched-"+key)
@@ -44,7 +74,7 @@ func TestRunRestoresEnvironmentOnSuccessAndFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		if mode != "create" && err == nil {
-			t.Fatalf("%s must fail before migration", mode)
+			t.Fatalf("%s must fail before app startup", mode)
 		}
 		for _, key := range []string{"REASONIX_HOME", "REASONIX_STATE_HOME", "REASONIX_CACHE_HOME"} {
 			if got := os.Getenv(key); got != "untouched-"+key {

@@ -444,9 +444,9 @@ func TestUpgradeMatrixV4RebuildKeepsSingleLogicalRowAndAuthority(t *testing.T) {
 			t.Fatalf("authority file mutated during catalog rebuild: %s", path)
 		}
 	}
-	// v7 isolates the persistent v11 repair scheduler from older writers.
-	if !strings.HasSuffix(filepath.ToSlash(DefaultPath()), "session-catalog/v9.sqlite") && DefaultPath() != "" {
-		t.Fatalf("DefaultPath = %q, want v9.sqlite", DefaultPath())
+	// The progressive discovery journal is isolated from older cache writers.
+	if !strings.HasSuffix(filepath.ToSlash(DefaultPath()), "session-catalog/v10.sqlite") && DefaultPath() != "" {
+		t.Fatalf("DefaultPath = %q, want v10.sqlite", DefaultPath())
 	}
 }
 

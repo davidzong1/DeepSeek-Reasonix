@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 )
 
 // alignReusableBlankTabModel makes a reused empty session obey the same
@@ -34,7 +35,7 @@ func (a *App) alignReusableBlankTabModel(tab *WorkspaceTab, model string) error 
 				return err
 			}
 		}
-		return nil
+		return a.ensureReusableBlankIdentity(tab)
 	}
 	if currentModel == model && buildDone != nil {
 		// Reusing an in-flight blank must reuse its pending create, too. Cancelling
@@ -44,6 +45,9 @@ func (a *App) alignReusableBlankTabModel(tab *WorkspaceTab, model string) error 
 		case <-buildDone:
 		case <-a.bootContext().Done():
 			return a.bootContext().Err()
+		}
+		if err := a.ensureReusableBlankIdentity(tab); err != nil {
+			return err
 		}
 		a.mu.RLock()
 		ready := !tab.removed && a.tabs[tab.ID] == tab && tab.Ctrl != nil && tab.SessionID != ""
@@ -76,6 +80,9 @@ func (a *App) alignReusableBlankTabModel(tab *WorkspaceTab, model string) error 
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	a.buildTabController(tab)
+	if err := a.ensureReusableBlankIdentity(tab); err != nil {
+		return err
+	}
 	a.mu.RLock()
 	ready := tab.Ctrl != nil && tab.SessionID != ""
 	startupErr := tab.StartupErr
@@ -83,5 +90,33 @@ func (a *App) alignReusableBlankTabModel(tab *WorkspaceTab, model string) error 
 	if !ready {
 		return fmt.Errorf("create session runtime: %s", startupErr)
 	}
+	return nil
+}
+
+// Reusing an empty historical shell is still a New operation. It must bind a
+// current-store identity rather than making the next user turn a legacy write.
+func (a *App) ensureReusableBlankIdentity(tab *WorkspaceTab) error {
+	release := a.lockRuntimeMutation("create reusable blank session")
+	defer release()
+	tab.turnStartMu.Lock()
+	defer tab.turnStartMu.Unlock()
+	ctrl := a.controllerForTab(tab)
+	if ctrl == nil {
+		return nil // The caller reports the recorded startup failure.
+	}
+	identity, ok := ctrl.(control.IdentityLifecycle)
+	if !ok || identity.SessionService() == nil {
+		return nil
+	}
+	if _, bound := identity.SessionRef(); bound && identity.UsesExclusiveSession() && identity.SessionService() == a.desktopSessionService("") {
+		return nil
+	}
+	if controllerHasActiveRuntimeWork(ctrl) || messagesHaveConversationContent(ctrl.History()) {
+		return fmt.Errorf("blank session changed before creation; retry")
+	}
+	if err := ctrl.NewSession(); err != nil {
+		return err
+	}
+	a.syncTabSessionIdentity(tab, ctrl)
 	return nil
 }

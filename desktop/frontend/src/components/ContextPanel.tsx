@@ -1,8 +1,8 @@
 // ContextPanel shows the active tab's context gauge and token usage.
 // All visible text is routed through the i18n dictionary.
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import { asArray } from "../lib/array";
-import { app } from "../lib/bridge";
+import { useContextPanelSnapshot } from "../lib/useContextPanelSnapshot";
 import { contextWindowPercentages } from "../lib/contextWindow";
 import { useI18n, type Locale, type Translator } from "../lib/i18n";
 import { formatMoneyLocalized } from "../lib/money";
@@ -384,64 +384,18 @@ export function ContextPanel({
   usageSeq,
 }: ContextPanelProps) {
   const { locale, t } = useI18n();
-  const [info, setInfo] = useState<ContextPanelInfo | null>(null);
+  const info = useContextPanelSnapshot(tabId, sessionGen, refreshKey, contextUsageRefreshKey(usage), usageSeq);
   const [analysisView, setAnalysisView] = useState<UsageAnalysisView>("source");
-  const refreshSeq = useRef(0);
-  const lastRefreshTime = useRef(0);
-  const usageRefreshKey = contextUsageRefreshKey(usage);
-
-  const refresh = useCallback(async () => {
-    if (!tabId) return;
-    const seq = ++refreshSeq.current;
-    try {
-      const next = await app.ContextPanel(tabId);
-      if (refreshSeq.current === seq) {
-        setInfo(next);
-      }
-    } catch {
-      /* bridge unavailable */
-    }
-  }, [tabId]);
-
-  useEffect(() => {
-    refreshSeq.current += 1;
-    setInfo(null);
-    void refresh();
-  }, [refresh, sessionGen]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh, refreshKey]);
-
-  // Refresh the panel snapshot while usage events stream — from any source:
-  // usageSeq covers sub-agent/title requests the executor-gated usage prop
-  // never reflects, and usageRefreshKey keeps ticking for providers whose
-  // events lack a seq. Throttled to once per second.
-  useEffect(() => {
-    if (!usageRefreshKey && !usageSeq) return;
-    const now = Date.now();
-    if (now - lastRefreshTime.current >= 1000) {
-      lastRefreshTime.current = now;
-      void refresh();
-    }
-  }, [usageRefreshKey, usageSeq, refresh]);
-
-  const usedTokens = context?.used && context.used > 0 ? context.used : info?.usedTokens ?? 0;
-  const windowTokens = context?.window && context.window > 0 ? context.window : info?.windowTokens ?? 0;
+  const usedTokens = context?.used ?? info?.usedTokens ?? 0;
+  const windowTokens = context?.window ?? info?.windowTokens ?? 0;
   // Prefer live usage props (updated in real-time by the reducer during streaming)
-  // over the async-fetched info snapshot (only refreshed on turn_done). Multi-
+  // over the throttled async-fetched info snapshot. Multi-
   // attempt stream recovery reports billable aggregates on prompt/completion
   // and latest-attempt shape on Context* — use the latter for turn breakdown.
   const turnBreakdown = liveTurnUsageBreakdown(usage, info);
   const promptTokens = turnBreakdown.promptTokens;
   const completionTokens = turnBreakdown.completionTokens;
-  const totalTokens = info?.totalTokens && info.totalTokens > 0
-    ? info.totalTokens
-    : sessionTokens && sessionTokens > 0
-      ? sessionTokens
-      : usage?.totalTokens && usage.totalTokens > 0
-        ? usage.totalTokens
-        : promptTokens + completionTokens;
+  const totalTokens = sessionTokens ?? context?.sessionTokens ?? info?.totalTokens ?? usage?.totalTokens ?? (promptTokens + completionTokens);
   const reasoningTokens = turnBreakdown.reasoningTokens;
   // Session-cumulative cache tokens for the top summary: all-sources telemetry
   // first (matching the session cost and per-source rows in this panel — the

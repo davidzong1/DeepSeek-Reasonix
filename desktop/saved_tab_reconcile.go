@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"reasonix/desktop/internal/draftstate"
-	"reasonix/desktop/internal/legacycleanup"
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/session"
@@ -21,7 +19,6 @@ type savedTabReconcileOutcome string
 const (
 	restoreTab            savedTabReconcileOutcome = "restore"
 	dropStalePresentation savedTabReconcileOutcome = "drop_stale_presentation"
-	archiveEmptyThenDrop  savedTabReconcileOutcome = "archive_empty_then_drop"
 	preserveRecovery      savedTabReconcileOutcome = "preserve_recovery"
 	preserveError         savedTabReconcileOutcome = "preserve_error"
 )
@@ -39,9 +36,6 @@ type savedTabReconcileDecision struct {
 type savedTabReconcileEvidence struct {
 	registry    workspacestate.State
 	registryErr error
-	draftOps    []draftstate.Operation
-	draftErr    error
-	cleanup     legacycleanup.State
 }
 
 func (a *App) reconcileTabsBeforeRestore(ctx context.Context, file desktopTabsFile, version uint64) (desktopTabsFile, uint64, bool) {
@@ -60,15 +54,49 @@ func (a *App) reconcileTabsBeforeRestore(ctx context.Context, file desktopTabsFi
 		}
 		if err != nil {
 			slog.Warn("desktop_saved_tab_reconcile_persist_failed", "reason", "write_failed")
-			return blockSavedTabUnsafeRestore(original, "identity_repair_write_failed"), version, a.tabsSnapshotCurrent(version)
+			fallback := retiredDraftRestoreFallback(original, reconciled)
+			return blockSavedTabUnsafeRestore(fallback, "identity_repair_write_failed"), version, a.tabsSnapshotCurrent(version)
 		}
 	}
 	return reconciled, version, a.tabsSnapshotCurrent(version)
 }
 
+// Draft retirement is independent of saving tab preferences. Falling back to
+// an old operation marker could recreate an abandoned session or reopen the
+// retired database. Keep reconciliation's retirement decisions even on a
+// write failure, but never start a runtime for an unpersisted identity repair.
+func retiredDraftRestoreFallback(original, reconciled desktopTabsFile) desktopTabsFile {
+	byID := make(map[string]desktopTabEntry, len(reconciled.Tabs))
+	for _, entry := range reconciled.Tabs {
+		byID[entry.ID] = entry
+	}
+	kept := make([]desktopTabEntry, 0, len(original.Tabs))
+	removed := map[string]bool{}
+	for _, entry := range original.Tabs {
+		if strings.HasPrefix(entry.CreateOperationID, "draft-op-") {
+			next, exists := byID[entry.ID]
+			if !exists {
+				removed[entry.ID] = true
+				continue
+			}
+			if entry.SessionID != next.SessionID || entry.SessionPath != next.SessionPath {
+				next.restoreBlocked = true
+				next.restoreBlockReason = "identity_repair_write_failed"
+			}
+			entry = next
+		}
+		kept = append(kept, entry)
+	}
+	original.Tabs = kept
+	if len(removed) > 0 {
+		repairReconciledTabSelection(&original, removed)
+	}
+	return original
+}
+
 // reconcileSavedTabs filters only presentation entries whose durable identity
 // is conclusively gone. It runs before restored tabs are published, so a stale
-// entry can neither block legacy cleanup nor acquire a controller or lease.
+// entry cannot acquire a controller or lease. It never archives formal sessions.
 func (a *App) reconcileSavedTabs(ctx context.Context, file desktopTabsFile) (desktopTabsFile, bool) {
 	file.Tabs = append([]desktopTabEntry(nil), file.Tabs...)
 	if len(file.Tabs) == 0 {
@@ -76,12 +104,21 @@ func (a *App) reconcileSavedTabs(ctx context.Context, file desktopTabsFile) (des
 		return file, false
 	}
 
-	fast := a.loadSavedTabReconcileEvidence(ctx, false)
+	fast := a.loadSavedTabReconcileEvidence(ctx)
 	decisions := make([]savedTabReconcileDecision, len(file.Tabs))
 	needsMigration := make([]bool, len(file.Tabs))
 	anyNeedsMigration := false
 	repairedIdentity := false
 	for index := range file.Tabs {
+		// Retire submission ownership while retaining any formal session identity.
+		// Never restore an old draft operation or consult its historical database.
+		if strings.HasPrefix(file.Tabs[index].CreateOperationID, "draft-op-") {
+			if sessionID, found, conflict := savedTabPendingSessionIdentity(file.Tabs[index], fast); found && !conflict {
+				file.Tabs[index].SessionID = sessionID
+			}
+			file.Tabs[index].CreateOperationID = ""
+			repairedIdentity = true
+		}
 		if candidate := savedTabRouteCandidateForPath(file.Tabs[index].SessionPath); candidate.kind != "" {
 			decisions[index].identityKind = candidate.kind
 			needsMigration[index] = true
@@ -101,7 +138,7 @@ func (a *App) reconcileSavedTabs(ctx context.Context, file desktopTabsFile) (des
 
 	if anyNeedsMigration {
 		migrationFinished := a.waitForDesktopMigration(ctx)
-		afterMigration := a.loadSavedTabReconcileEvidence(ctx, true)
+		afterMigration := a.loadSavedTabReconcileEvidence(ctx)
 		for index := range file.Tabs {
 			if !needsMigration[index] {
 				continue
@@ -157,7 +194,7 @@ func filterReconciledSavedTabs(tabs []desktopTabEntry, decisions []savedTabRecon
 	removed := map[string]bool{}
 	for index, entry := range tabs {
 		decision := decisions[index]
-		if decision.outcome == dropStalePresentation || decision.outcome == archiveEmptyThenDrop {
+		if decision.outcome == dropStalePresentation {
 			removed[entry.ID] = true
 		} else {
 			if (entry.SessionPath != "" || entry.SessionID != "") && (decision.outcome == preserveError || decision.outcome == preserveRecovery) {
@@ -200,19 +237,15 @@ func (a *App) waitForDesktopMigration(ctx context.Context) bool {
 	}
 }
 
-func (a *App) loadSavedTabReconcileEvidence(ctx context.Context, includeCleanup bool) savedTabReconcileEvidence {
+func (a *App) loadSavedTabReconcileEvidence(ctx context.Context) savedTabReconcileEvidence {
 	evidence := savedTabReconcileEvidence{}
 	evidence.registry, evidence.registryErr = a.workspaceRegistry().Load(ctx)
-	evidence.draftOps, evidence.draftErr = a.draftStore().PendingOperations(ctx)
-	if includeCleanup && a.legacyCleanup != nil {
-		evidence.cleanup, _ = a.legacyCleanup.Load(ctx)
-	}
 	return evidence
 }
 
 func (a *App) classifySavedTab(entry desktopTabEntry, evidence savedTabReconcileEvidence, afterMigration bool) (savedTabReconcileDecision, bool) {
 	if !afterMigration {
-		if evidence.registryErr != nil || evidence.draftErr != nil {
+		if evidence.registryErr != nil {
 			return savedTabReconcileDecision{}, false
 		}
 		if savedTabHasMatchingPendingCreate(entry, evidence) {
@@ -238,14 +271,14 @@ func (a *App) classifySavedTab(entry desktopTabEntry, evidence savedTabReconcile
 	if strings.TrimSpace(entry.CreateOperationID) != "" {
 		return savedTabReconcileDecision{outcome: preserveError, reason: "pending_identity_unresolved", hadPending: true}, true
 	}
-	if afterMigration && (evidence.registryErr != nil || evidence.draftErr != nil) {
+	if afterMigration && evidence.registryErr != nil {
 		return savedTabReconcileDecision{outcome: preserveError, reason: "persistence_state_unavailable"}, true
 	}
 	return savedTabReconcileDecision{outcome: dropStalePresentation, reason: "identity_absent"}, true
 }
 
 func (a *App) classifyCanonicalSavedTab(entry desktopTabEntry, sessionID string, evidence savedTabReconcileEvidence, afterMigration bool) (savedTabReconcileDecision, bool) {
-	if evidence.registryErr != nil || evidence.draftErr != nil {
+	if evidence.registryErr != nil {
 		if afterMigration {
 			return savedTabReconcileDecision{outcome: preserveError, reason: "persistence_state_unavailable"}, true
 		}
@@ -283,9 +316,6 @@ func (a *App) classifyCanonicalSavedTab(entry desktopTabEntry, sessionID string,
 			if recoveryOwner {
 				return savedTabReconcileDecision{outcome: preserveRecovery, reason: "recovery_owner_present", hadRecoveryOwner: true}, true
 			}
-			if a.archiveSavedTabEmptyCandidate(entry, evidence.cleanup) {
-				return savedTabReconcileDecision{outcome: archiveEmptyThenDrop, reason: "empty_workspace_conflict"}, true
-			}
 			return savedTabReconcileDecision{outcome: preserveError, reason: "canonical_workspace_conflict", hadRecoveryOwner: recoveryOwner}, true
 		}
 		if !savedTabMatchesWorkspace(entry, workspace) {
@@ -311,7 +341,7 @@ func (a *App) classifyCanonicalSavedTab(entry desktopTabEntry, sessionID string,
 }
 
 func (a *App) classifyLegacySavedTab(entry desktopTabEntry, evidence savedTabReconcileEvidence) savedTabReconcileDecision {
-	if evidence.registryErr != nil || evidence.draftErr != nil {
+	if evidence.registryErr != nil {
 		return savedTabReconcileDecision{outcome: preserveError, reason: "persistence_state_unavailable"}
 	}
 	path := strings.TrimSpace(entry.SessionPath)
@@ -417,11 +447,6 @@ func savedTabHasMatchingPendingCreate(entry desktopTabEntry, evidence savedTabRe
 	if pending, ok := evidence.registry.PendingCreates[sessionID]; ok && pending.OperationID == operationID {
 		return true
 	}
-	for _, operation := range evidence.draftOps {
-		if operation.ID == operationID && operation.SessionID == sessionID {
-			return true
-		}
-	}
 	return false
 }
 
@@ -430,7 +455,7 @@ func savedTabPendingSessionIdentity(entry desktopTabEntry, evidence savedTabReco
 		return "", false, false
 	}
 	operationID := strings.TrimSpace(entry.CreateOperationID)
-	if operationID == "" || evidence.registryErr != nil || evidence.draftErr != nil {
+	if operationID == "" || evidence.registryErr != nil {
 		return "", false, false
 	}
 	resolved := ""
@@ -447,11 +472,6 @@ func savedTabPendingSessionIdentity(entry desktopTabEntry, evidence savedTabReco
 	}
 	for sessionID, pending := range evidence.registry.PendingCreates {
 		if pending.OperationID == operationID && !accept(sessionID) {
-			return "", false, true
-		}
-	}
-	for _, operation := range evidence.draftOps {
-		if operation.ID == operationID && !accept(operation.SessionID) {
 			return "", false, true
 		}
 	}
@@ -474,13 +494,8 @@ func savedTabPendingSessionIdentity(entry desktopTabEntry, evidence savedTabReco
 func savedTabHasRecoveryOwner(entry desktopTabEntry, evidence savedTabReconcileEvidence) bool {
 	sessionID := strings.TrimSpace(entry.SessionID)
 	pathKey := sessionRuntimeKey(entry.SessionPath)
-	if pending, ok := evidence.registry.PendingCreates[sessionID]; sessionID != "" && ok && pending.SessionID == sessionID {
+	if pending, ok := evidence.registry.PendingCreates[sessionID]; sessionID != "" && ok && pending.SessionID == sessionID && !strings.HasPrefix(pending.OperationID, "draft-op-") {
 		return true
-	}
-	for _, operation := range evidence.draftOps {
-		if sessionID != "" && operation.SessionID == sessionID {
-			return true
-		}
 	}
 	for _, operation := range evidence.registry.PendingOperations {
 		if sessionID != "" && slices.Contains(operation.SessionIDs, sessionID) {
@@ -522,49 +537,6 @@ func savedTabCanonicalWorkspace(state workspacestate.State, info session.Session
 
 func savedTabMatchesWorkspace(entry desktopTabEntry, workspace workspacestate.Workspace) bool {
 	return restoredWorkspaceID(entry) == workspace.ID && sameDesktopPath(desktopWorkspaceRoot(entry.Scope, entry.WorkspaceRoot), workspace.Root)
-}
-
-func (a *App) archiveSavedTabEmptyCandidate(entry desktopTabEntry, cleanup legacycleanup.State) bool {
-	var candidate legacycleanup.Candidate
-	for _, item := range cleanup.Items {
-		if entry.SessionID != "" && item.SessionID == entry.SessionID {
-			candidate = item
-			break
-		}
-	}
-	if candidate.ID == "" && entry.SessionID == "" {
-		for _, item := range cleanup.Items {
-			if entry.SessionPath != "" && sameDesktopPath(item.SourcePath, entry.SessionPath) {
-				candidate = item
-				break
-			}
-		}
-	}
-	if candidate.ID == "" {
-		return false
-	}
-	if candidate.Restored || candidate.Phase == "archived" || candidate.Phase == "has_content" || candidate.Phase == "protected" {
-		return false
-	}
-	switch candidate.Kind {
-	case "session":
-		a.processLegacyCleanupSession(candidate)
-	case "legacy":
-		a.processLegacyCleanupSource(candidate)
-	default:
-		return false
-	}
-	state, err := a.workspaceRegistry().Load(a.bootContext())
-	if err != nil {
-		return false
-	}
-	sessionID := strings.TrimSpace(entry.SessionID)
-	if sessionID == "" {
-		if refreshed, loadErr := a.legacyCleanup.Load(a.bootContext()); loadErr == nil {
-			sessionID = refreshed.Items[candidate.ID].SessionID
-		}
-	}
-	return sessionID != "" && state.SessionStates[sessionID].Lifecycle == workspacestate.Archived
 }
 
 func repairReconciledTabSelection(file *desktopTabsFile, removed map[string]bool) {

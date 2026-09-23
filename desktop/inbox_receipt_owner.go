@@ -51,13 +51,13 @@ func (a *App) localReceiptTarget(path string) (localReceiptOwner, error) {
 	defer a.mu.RUnlock()
 	var owner localReceiptOwner
 	for _, tab := range a.runtimeTabsLocked() {
-		if tab.Ctrl == nil || tab.ReadOnly || sessionRuntimeKey(tab.SessionPath) != key {
+		if tab.Ctrl == nil || tab.ReadOnly || sessionRuntimeKey(inboxTabIdentity(tab)) != key {
 			continue
 		}
 		if owner.ctrl != nil && owner.ctrl != tab.Ctrl {
 			return localReceiptOwner{}, fmt.Errorf("inbox receipt owner is ambiguous")
 		}
-		owner = localReceiptOwner{tab: tab, ctrl: tab.Ctrl, path: tab.SessionPath, generation: tab.SessionGeneration}
+		owner = localReceiptOwner{tab: tab, ctrl: tab.Ctrl, path: inboxTabIdentity(tab), generation: tab.SessionGeneration}
 	}
 	if owner.ctrl == nil {
 		return owner, fmt.Errorf("inbox receipt session unavailable")
@@ -81,7 +81,7 @@ func (a *App) localReceiptOwnerCurrent(owner localReceiptOwner) bool {
 	defer a.mu.RUnlock()
 	for _, tab := range a.runtimeTabsLocked() {
 		if tab == owner.tab && tab.Ctrl == owner.ctrl && !tab.ReadOnly && tab.SessionGeneration == owner.generation &&
-			sessionRuntimeKey(tab.SessionPath) == sessionRuntimeKey(owner.path) {
+			sessionRuntimeKey(inboxTabIdentity(tab)) == sessionRuntimeKey(owner.path) {
 			return true
 		}
 	}

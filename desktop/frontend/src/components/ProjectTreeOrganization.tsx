@@ -6,7 +6,7 @@ import type { Translator } from "../lib/i18n";
 import { isTopicNode, projectTreeTopicArchiveBlocked } from "../lib/projectTreeTopic";
 import type { ProjectTreeRefresh } from "../lib/projectTreeArchive";
 import type { ProjectNode, ProjectTreeOrganizationBindings, SessionGroup } from "../lib/types";
-import { forgetProjectTreeWindowLimit, projectTreeListKey, projectTreeWindowProjection, type ProjectTreeListPageState } from "../lib/projectTreeWindow";
+import { forgetProjectTreeWindowLimit, projectTreeListKey, projectTreeListShowsLoading, projectTreeWindowProjection, type ProjectTreeListPageState } from "../lib/projectTreeWindow";
 import { projectSessionIdentity } from "../lib/projectSessionIdentity";
 import { mutateSessionOrganization, projectNodeSelector } from "../lib/sessionOrganization";
 import type { SessionOrganizationMutation } from "../generated/desktopContract.generated";
@@ -454,14 +454,15 @@ export function ProjectTreeGroupRows({
   const renderWindowControls = (groupID: string, label: string, loadedCount: number, hasHiddenLoadedRows: boolean) => {
     if (queryActive) return null;
     const state = listState(groupID);
+    const showLoading = projectTreeListShowsLoading(state);
     const canExpand = hasHiddenLoadedRows || Boolean(state?.nextCursor);
-    if (!state?.loading && !state?.error && !canExpand) return null;
+    if (!showLoading && !state?.error && !canExpand) return null;
     return <div className="project-tree__topic-window-actions" style={{ paddingLeft: 14 + depth * 16 }}>
       {state?.error ? <button type="button" className="project-tree__topic-window-toggle" aria-label={t("projectTree.retryGroup", { name: label })} onClick={() => onRetryList(groupID)}>
         {t("projectTree.loadFailedRetry")}
       </button> : null}
-      {state?.loading ? <span className="project-tree__topic-window-status">{t("projectTree.loadingMore")}</span> : null}
-      {!state?.loading && !state?.error && canExpand ? <button type="button" className="project-tree__topic-window-toggle" aria-label={t("projectTree.expandGroup", { name: label })} onClick={() => onExpandList(groupID, loadedCount)}>
+      {showLoading ? <span className="project-tree__topic-window-status">{t("projectTree.loadingMore")}</span> : null}
+      {!showLoading && !state?.error && canExpand ? <button type="button" className="project-tree__topic-window-toggle" disabled={state?.loading} aria-label={t("projectTree.expandGroup", { name: label })} onClick={() => onExpandList(groupID, loadedCount)}>
         {t("projectTree.expandDisplay")}
       </button> : null}
     </div>;

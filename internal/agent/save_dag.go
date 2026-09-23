@@ -47,13 +47,22 @@ func probeLogForSave(path string) (sessionEventLogProbe, error) {
 	return probe, nil
 }
 
-// dagSaveRoute decides whether a save runs on the schema-2 path. An existing
-// schema-1 log is only upgraded by the lease holder; a session with no log
-// yet (new, or a bare checkpoint) starts schema 2 unless another runtime
-// holds it. Foreign files and overlong names stay on the schema-1 path.
+// Loaded bare checkpoints remain checkpoint-only on continuation.
+func (s *Session) probeNativeLogForSave(path string) (sessionEventLogProbe, error) {
+	probe, err := probeLogForSave(path)
+	if s.persistFormat == sessionPersistLegacy && probe.size == 0 {
+		probe.native = false
+	}
+	return probe, err
+}
+
+// Loaded sessions retain their schema; fresh sessions use normal DAG admission.
 func (s *Session) dagSaveRoute(path string, probe sessionEventLogProbe) dagRoute {
 	if probe.dag {
 		return dagRouteNative
+	}
+	if s != nil && s.persistFormat == sessionPersistLegacy {
+		return dagRouteSchemaOne
 	}
 	if !dagWriterEnabled() || !probe.native {
 		return dagRouteSchemaOne

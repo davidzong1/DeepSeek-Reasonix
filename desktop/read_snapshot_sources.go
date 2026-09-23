@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"reflect"
 
 	"reasonix/desktop/internal/workspacestate"
 )
@@ -15,29 +14,28 @@ type readSourceFence struct {
 	app          *App
 	files        map[string]os.FileInfo
 	bindings     map[string]string
-	initial      workspacestate.State
+	versions     *workspacestate.ReadVersions
 	store        *readSnapshotStore
 	snapshot     *readSnapshot
 	metadataOnly bool
 	indexed      map[string]string
 }
 
+func projectionReadVersions(state workspacestate.State, supplied []*workspacestate.ReadVersions) *workspacestate.ReadVersions {
+	if len(supplied) > 0 && supplied[0] != nil {
+		return supplied[0]
+	}
+	// Callers constructing their own projection cannot borrow a different
+	// registry publication solely because its numeric generation matches.
+	return workspacestate.NewReadVersions(state)
+}
+
 func (a *App) newReadSourceFence(store *readSnapshotStore, snapshot *readSnapshot) (*readSourceFence, error) {
-	state, err := a.workspaceRegistry().LoadProjection(a.bootContext())
+	state, err := a.workspaceRegistry().VerifySnapshot(a.bootContext())
 	if err != nil {
 		return nil, err
 	}
-	return &readSourceFence{app: a, files: map[string]os.FileInfo{}, bindings: map[string]string{}, initial: state, store: store, snapshot: snapshot}, nil
-}
-
-func sourceLifecycleBinding(state workspacestate.State, path string) string {
-	matched := map[string]any{}
-	for key, mapping := range state.SourceMappings {
-		if sessionRuntimeKey(mapping.Path) == sessionRuntimeKey(path) {
-			matched[key] = []any{mapping, state.SessionStates[mapping.SessionID]}
-		}
-	}
-	return snapshotBinding("source-lifecycle", matched)
+	return &readSourceFence{app: a, files: map[string]os.FileInfo{}, bindings: map[string]string{}, versions: state.ReadVersions(), store: store, snapshot: snapshot}, nil
 }
 
 func (f *readSourceFence) add(ctx context.Context, path string) error {
@@ -69,90 +67,83 @@ func (f *readSourceFence) add(ctx context.Context, path string) error {
 	if err := f.store.reserve(f.snapshot, int64(512+len(path)*2)); err != nil {
 		return err
 	}
+	binding, err := f.versions.Source(path)
+	if err != nil {
+		return err
+	}
 	f.files[path] = info
-	f.bindings[path] = sourceLifecycleBinding(f.initial, path)
+	f.bindings[path] = binding
 	return nil
 }
 
 func (f *readSourceFence) freeze() func() error {
-	f.initial = workspacestate.State{}
-	return func() error {
-		current, err := f.app.workspaceRegistry().LoadProjection(f.app.bootContext())
-		if err != nil {
-			return err
-		}
-		for path, original := range f.files {
-			if !f.metadataOnly {
-				info, err := os.Stat(path)
-				if os.IsNotExist(err) {
-					return snapshotStale("lifecycle_changed")
-				}
-				if err != nil {
-					return err
-				}
-				if !os.SameFile(original, info) {
-					return snapshotStale("lifecycle_changed")
-				}
-			} else if expected, ok := f.indexed[path]; ok {
-				catalog := f.app.sessionCatalog.Load()
-				if catalog == nil {
-					return snapshotStale("lifecycle_changed")
-				}
-				record, found, err := catalog.GetSession(f.app.bootContext(), path)
-				if err != nil {
-					return err
-				}
-				if !found || record.MissingSince != 0 || record.Health == "missing" || snapshotBinding("catalog-source", []any{record.Scope, record.WorkspaceRoot, record.TopicID}) != expected {
-					return snapshotStale("lifecycle_changed")
-				}
+	return f.validateCurrent
+}
+
+func (f *readSourceFence) validateCurrent() error {
+	current, err := f.app.workspaceRegistry().VerifySnapshot(f.app.bootContext())
+	if err != nil {
+		return err
+	}
+	return f.validateWithCurrent(current)
+}
+
+func (f *readSourceFence) validateWithCurrent(current *workspacestate.ReadSnapshot) error {
+	for path, original := range f.files {
+		if !f.metadataOnly {
+			info, err := os.Stat(path)
+			if os.IsNotExist(err) {
+				return snapshotStale("lifecycle_changed")
 			}
-			if sourceLifecycleBinding(current, path) != f.bindings[path] {
+			if err != nil {
+				return err
+			}
+			if !os.SameFile(original, info) {
+				return snapshotStale("lifecycle_changed")
+			}
+		} else if expected, ok := f.indexed[path]; ok {
+			catalog := f.app.sessionCatalog.Load()
+			if catalog == nil {
+				return snapshotStale("lifecycle_changed")
+			}
+			record, found, err := catalog.GetSession(f.app.bootContext(), path)
+			if err != nil {
+				return err
+			}
+			if !found || record.MissingSince != 0 || record.Health == "missing" || snapshotBinding("catalog-source", []any{record.Scope, record.WorkspaceRoot, record.TopicID}) != expected {
 				return snapshotStale("lifecycle_changed")
 			}
 		}
-		return nil
-	}
-}
-
-func (a *App) workspaceReadFence(state workspacestate.State, workspace workspacestate.Workspace, nodes []ProjectNode) func() error {
-	states := map[string]workspacestate.SessionState{}
-	for _, node := range nodes {
-		if node.Session != nil {
-			states[node.Session.SessionID] = state.SessionStates[node.Session.SessionID]
-		}
-	}
-	mappings := func(s workspacestate.State) map[string]workspacestate.SourceMapping {
-		out := map[string]workspacestate.SourceMapping{}
-		for key, m := range s.SourceMappings {
-			if _, ok := states[m.SessionID]; ok && m.WorkspaceID == workspace.ID {
-				out[key] = m
-			}
-		}
-		return out
-	}
-	expected := snapshotBinding("mappings", mappings(state))
-	workspace.Organization = nil
-	workspace.SessionIDs = nil
-	return func() error {
-		current, err := a.workspaceRegistry().LoadProjection(a.bootContext())
+		binding, err := current.ReadVersions().Source(path)
 		if err != nil {
 			return err
 		}
-		owner, ok := current.Workspaces[workspace.ID]
+		if binding != f.bindings[path] {
+			return snapshotStale("lifecycle_changed")
+		}
+	}
+	return nil
+}
+
+func (a *App) workspaceReadFence(versions *workspacestate.ReadVersions, workspace workspacestate.Workspace, nodes []ProjectNode) func(*workspacestate.ReadSnapshot) error {
+	states := map[string]string{}
+	for _, node := range nodes {
+		if node.Session != nil {
+			states[node.Session.SessionID] = versions.Session(node.Session.SessionID)
+		}
+	}
+	workspace.Organization = nil
+	workspace.SessionIDs = nil
+	return func(current *workspacestate.ReadSnapshot) error {
+		owner, ok := current.WorkspaceMetadata(workspace.ID)
 		if !ok || owner.Root != workspace.Root || owner.Visible != workspace.Visible {
 			return snapshotStale("lifecycle_changed")
 		}
-		members := map[string]bool{}
-		for _, id := range owner.SessionIDs {
-			members[id] = true
-		}
 		for id, expected := range states {
-			if !members[id] || !reflect.DeepEqual(current.SessionStates[id], expected) {
+			member := current.Session(id)
+			if member.Workspace.ID != workspace.ID || member.OwnershipConflict || current.ReadVersions().Session(id) != expected {
 				return snapshotStale("lifecycle_changed")
 			}
-		}
-		if snapshotBinding("mappings", mappings(current)) != expected {
-			return snapshotStale("lifecycle_changed")
 		}
 		return nil
 	}

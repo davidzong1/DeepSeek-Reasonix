@@ -8,6 +8,19 @@ import (
 	"reasonix/internal/agent"
 )
 
+// TopicFolded consults only an already-proved catalog relationship. It cannot
+// create a new relationship by reading a source or matching its filename.
+func (c *Catalog) TopicFolded(ctx context.Context, scope, root, topicID string) bool {
+	scope, root = normalizeScope(scope, root)
+	key := c.workspaceRootKey(scope, root)
+	var folded bool
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_folded_topics
+		WHERE scope=? AND workspace_root_key=? AND topic_id=?) AND NOT EXISTS(
+		SELECT 1 FROM catalog_sessions WHERE scope=? AND workspace_root_key=? AND topic_id=?
+		AND ordinary_visible=1 AND missing_since=0 LIMIT 1)`, scope, key, topicID, scope, key, topicID).Scan(&folded)
+	return err == nil && folded
+}
+
 // PreferredOrdinarySessionPaths returns the session paths that may appear in
 // the ordinary project tree for one workspace. Covered recovery copies and
 // non-preferred conflict forks are omitted so the sidebar matches the 1.23
@@ -26,6 +39,12 @@ func (c *Catalog) PreferredOrdinarySessionPaths(ctx context.Context, scope, work
 	out := map[string]struct{}{}
 	if c == nil || c.db == nil {
 		return out, nil
+	}
+	if c.opts.MetadataOnly {
+		// Metadata discovery cannot infer branch coverage. The persisted
+		// per-row visibility already records any previously proved relation;
+		// do not rescan the workspace or fold sources from their filenames.
+		return nil, nil
 	}
 	scope, workspaceRoot = normalizeScope(scope, workspaceRoot)
 	rows, err := c.readDB(ctx).QueryContext(ctx, `
@@ -79,6 +98,10 @@ func PreferredOrdinarySessionPaths(sessions []SessionRecord) map[string]struct{}
 			continue
 		}
 		if session.RecoveryCopy || session.RecoveryRole == RecoveryRoleCoveredCopy {
+			continue
+		}
+		if session.OrdinaryVisible && session.Recovered {
+			preferred[path] = struct{}{}
 			continue
 		}
 		if !session.Recovered {

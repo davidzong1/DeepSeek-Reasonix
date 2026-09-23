@@ -69,4 +69,19 @@ func TestIndependentLegacyHeadsAdoptOneWithoutHidingSibling(t *testing.T) {
 	if err != nil || string(before) != string(after) {
 		t.Fatal("source transcript changed during adoption")
 	}
+	// Path-only navigation resolves the selected head through the published
+	// source index. A sibling's completed adoption must not capture this head.
+	if err := agent.SelectSessionHead(path, rows[0].Source.HeadID); err != nil {
+		t.Fatal(err)
+	}
+	ref, found, err := app.legacyCanonicalRef(t.Context(), path)
+	if err != nil || !found || ref.SessionID != state.SourceMappings[rows[0].Source.SourceKey].SessionID {
+		t.Fatalf("selected adopted head: ref=%+v found=%v err=%v", ref, found, err)
+	}
+	if err := agent.SelectSessionHead(path, rows[1].Source.HeadID); err != nil {
+		t.Fatal(err)
+	}
+	if ref, found, err := app.legacyCanonicalRef(t.Context(), path); err != nil || found {
+		t.Fatalf("unadopted sibling was redirected: ref=%+v found=%v err=%v", ref, found, err)
+	}
 }

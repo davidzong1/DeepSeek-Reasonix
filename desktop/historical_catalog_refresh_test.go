@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -8,7 +11,52 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/historywork"
 )
+
+func TestHistoricalCatalogPublishesBoundedDiscoveryBeforeCompletion(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := newHistoricalLifecycleApp(t)
+	root := config.SessionStoreDir()
+	for i := range historywork.BatchEntries + 1 {
+		path := filepath.Join(root, fmt.Sprintf("progress-%04d", i))
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		// Discovery only needs an identifiable artifact. Its deliberately
+		// unreadable JSON is never parsed before the first bounded batch.
+		if err := os.WriteFile(filepath.Join(path, "manifest.json"), []byte("{unread"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	notifications := 0
+	app.projectTreeChangedHook = func() {
+		notifications++
+		app.historicalImports.mu.Lock()
+		count := len(app.historicalImports.catalog)
+		app.historicalImports.mu.Unlock()
+		if count != historywork.BatchEntries {
+			t.Errorf("first publication count=%d", count)
+		}
+		cancel()
+	}
+	_, err := app.discoverHistoricalSessions(ctx, false)
+	if !errors.Is(err, context.Canceled) || notifications != 1 {
+		t.Fatalf("canceled partial discovery: notifications=%d err=%v", notifications, err)
+	}
+	app.historicalImports.mu.Lock()
+	defer app.historicalImports.mu.Unlock()
+	if len(app.historicalImports.catalog) != historywork.BatchEntries {
+		t.Fatal("cancellation removed previously published entries")
+	}
+	for _, entry := range app.historicalImports.catalog {
+		if entry.node.TurnsState != "unknown" {
+			t.Fatal("unread metadata claimed a known turn count")
+		}
+	}
+}
 
 func refreshHistoricalCatalogForTest(app *App) {
 	c := &app.historicalImports

@@ -109,6 +109,36 @@ func TestDAGSaveDisabledByEnvKeepsSchemaOne(t *testing.T) {
 	}
 }
 
+func TestLoadedLegacyCheckpointStaysOnLegacyWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.jsonl")
+	body := `{"role":"user","content":"old question"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "continued answer"})
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := probeSessionEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.dag || probe.size != 0 {
+		t.Fatalf("legacy save changed format: %+v", probe)
+	}
+	if _, err := os.Stat(store.SessionEventLog(path)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint-only continuation created a duplicate log: %v", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil || len(loaded.Messages) != 2 || loaded.Messages[1].Content != "continued answer" {
+		t.Fatalf("continued legacy session = %+v, err=%v", loaded, err)
+	}
+}
+
 func TestDAGSaveLocalMetadataBecomesPatch(t *testing.T) {
 	path := dagTestSession(t)
 	s := dagSavedSession(t, path, "q1", "a1")
@@ -186,7 +216,7 @@ func TestDAGSaveTruncationRewindsWithoutErasingBytes(t *testing.T) {
 	}
 }
 
-func TestDAGSaveUpgradesSchemaOneLogOnlyUnderLease(t *testing.T) {
+func TestLoadedSchemaOneLogStaysNativeEvenUnderLease(t *testing.T) {
 	t.Setenv(SessionLogSchemaEnv, "v1")
 	path := dagTestSession(t)
 	v1 := dagSavedSession(t, path, "q1", "a1")
@@ -214,23 +244,17 @@ func TestDAGSaveUpgradesSchemaOneLogOnlyUnderLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe, _ := probeSessionEventLog(path)
-	if !probe.dag {
-		t.Fatal("lease holder must upgrade the schema-1 log on save")
+	if probe.dag {
+		t.Fatal("a lease must not implicitly upgrade an existing schema-1 log")
 	}
 	again, err := LoadSession(path)
 	if err != nil || strings.Join(dagContents(again.Messages), ",") != "sys,q1,a1,q2,a2" {
-		t.Fatalf("after upgrade: %v err=%v", dagContents(again.Messages), err)
+		t.Fatalf("after native append: %v err=%v", dagContents(again.Messages), err)
 	}
 	for i := range v1.Messages {
 		if again.Messages[i].ID != loaded.Messages[i].ID {
-			t.Fatalf("message %d id changed across upgrade", i)
+			t.Fatalf("message %d id changed across native append", i)
 		}
-	}
-	if ref, ok := again.Head(); !ok || ref.HeadID != SessionMainHead {
-		t.Fatalf("head after upgrade = %+v ok=%v", ref, ok)
-	}
-	if st := dagReplay(t, path); st.upgradedFrom != sessionEventSchemaVersion {
-		t.Fatalf("upgradedFrom = %d", st.upgradedFrom)
 	}
 }
 

@@ -199,6 +199,9 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     getModelActiveAt(requestedTabId) {
       return requestedTabId === tabId ? transcriptRef.current.turnModelActiveAt : undefined;
     },
+    getRateOutputQuarters(requestedTabId) {
+      return requestedTabId === tabId ? transcriptRef.current.turnRateSample?.outputQuarters : undefined;
+    },
   }), [tabId]);
 
   const applyRemoteStatus = useCallback((status: unknown) => {

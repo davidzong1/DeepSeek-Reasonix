@@ -77,25 +77,6 @@ class InvalidSessionTarget extends Error {
   constructor(readonly key: "history.failedOpenSession" | "history.missingWorkspaceRoot") { super(key); }
 }
 
-const preparationTerminal = new Set(["ready", "blocked", "failed", "cancelled"]);
-async function waitForPreparation(initial: SessionPreparationView, ports: DesktopNavigationPorts, checkpoint: () => void, changed: (view: SessionPreparationView) => void) {
-  let view = initial;
-  changed(view);
-  while (!preparationTerminal.has(view.status)) {
-    await new Promise(resolve => setTimeout(resolve, 250));
-    checkpoint();
-    const next = await ports.getSessionPreparation(view.operationId);
-    checkpoint();
-    if (next.revision >= view.revision) { view = next; changed(view); }
-  }
-  if (view.status !== "ready" || !view.target) {
-    if (view.status === "blocked") throw new Error("Historical session is in use. Close the other instance and retry.");
-    if (view.status === "cancelled") throw new CommandCancelled("superseded");
-    throw new Error(view.errorCode || "Historical session preparation failed.");
-  }
-  return view.target;
-}
-
 /** One executor for topic, blank, IM, worktree and history activation. */
 export async function executeDesktopNavigation(input: DesktopNavigationCapture, authority: SessionOperationAuthority) {
   const { navigationIntentSeq: seq, ports } = input;
@@ -178,15 +159,10 @@ export async function executeDesktopNavigation(input: DesktopNavigationCapture, 
       checkpoint(); await ports.openChannelSession(session.path, tab.id, seq);
     } else if (session.sessionId && (!session.hostId || session.hostId === "local")) {
       tab = await openTopic(scope, session.workspaceRoot || "", session.topicId || `canonical-${session.sessionId}`, `session-id:${session.sessionId}`);
-    } else if (session.source) {
-      const prepared = await ports.prepareSession({ source: session.source, topicId: session.topicId || "" });
-      checkpoint();
-      const target = await waitForPreparation(prepared, ports, checkpoint, view => setHistoricalPreparation({
-        session, operationId: view.operationId, status: view.status, errorCode: view.errorCode, retryable: view.retryable,
-        revision: view.revision, isCurrent: () => { try { checkpoint(); return true; } catch { return false; } },
-      }));
-      setHistoricalPreparation(null);
-      tab = await openTopic(scope, session.workspaceRoot || "", session.topicId || `canonical-${target.sessionId}`, `session-id:${target.sessionId}`);
+	} else if (session.source) {
+		// Historical sources are opened in place. Explicit conversion remains a
+		// separate user action and never blocks normal navigation.
+		tab = await openTopic(scope, session.workspaceRoot || "", session.topicId || "", `session-source:${encodeURIComponent(JSON.stringify(session.source))}`);
     } else if (scope === "project" && session.workspaceRoot && session.topicId) {
       tab = await openTopic("project", session.workspaceRoot, session.topicId, session.path);
     } else if (scope === "global" && session.topicId) {

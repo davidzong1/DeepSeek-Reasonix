@@ -79,7 +79,11 @@ func (a *App) PurgeTrashedSession(path string) error {
 	if err != nil {
 		return err
 	}
-	if mapping, adopted := state.SourceMappings[desktopSourceKey(path, "")]; adopted {
+	mapping, adopted, err := state.ResolveSource(desktopSourceKey(path, ""))
+	if err != nil {
+		return err
+	}
+	if adopted {
 		return a.PurgeCanonicalSession(session.SessionRef{HostID: localDesktopHostID, SessionID: mapping.SessionID})
 	}
 	return errors.New("historical session has no verified canonical identity")

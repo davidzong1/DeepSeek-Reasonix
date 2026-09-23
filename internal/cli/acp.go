@@ -173,6 +173,7 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
 		SessionService:           cliSessionService(sessionDir),
+		NativeLegacySession:      p.NativeLegacySession,
 		SessionHostID:            "local",
 		ExtraPlugins:             p.MCPServers,
 		MCPHostProfile:           plugin.HostProfileForInteractive(p.MCPInteractions),

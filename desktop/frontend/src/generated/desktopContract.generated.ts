@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:5dc7b0f6974eca29f173303b0a4c77d8893a7b5bc6e3eed581e13a24f50f650a";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:2608e43cc9630303af7712b7a8d7d8210f1df7b0d292dc63af997f835f82b157";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -65,6 +65,7 @@ export const DESKTOP_COMMANDS = [
   "BeginManualSessionCreation",
   "BeginSessionComposerSubmission",
   "BeginSessionExportForTarget",
+  "BeginSessionHistoryReadForTab",
   "BotRuntimeStatus",
   "Cancel",
   "CancelDraftSubmission",
@@ -170,6 +171,7 @@ export const DESKTOP_COMMANDS = [
   "EnsureBlankTab",
   "EnsureRemoteProjectSessions",
   "ExportGoalDiagnostics",
+  "ExportManualCreationDiagnostics",
   "ExportScrollDiagnostics",
   "ExportThemePack",
   "ExtensionActions",
@@ -296,6 +298,7 @@ export const DESKTOP_COMMANDS = [
   "ListTrashedSessions",
   "ListWorkspaceSessions",
   "ListWorkspaces",
+  "LocateSessionHistoryMessage",
   "LocateSessionMessageForTab",
   "LocateSessionMessageForTarget",
   "LookupInboxFollowupForTarget",
@@ -395,6 +398,9 @@ export const DESKTOP_COMMANDS = [
   "ReadSessionAttachmentForTab",
   "ReadSessionExportChunk",
   "ReadSessionHistory",
+  "ReadSessionHistoryOutline",
+  "ReadSessionHistorySlice",
+  "ReadSessionHistoryWindow",
   "RebindDraftImageForTarget",
   "RebuildHistoryIndex",
   "RebuildSessionCatalog",
@@ -412,6 +418,7 @@ export const DESKTOP_COMMANDS = [
   "ReleaseDraftImageForTab",
   "ReleaseDraftImageForTarget",
   "ReleaseReadSnapshot",
+  "ReleaseSessionHistoryRead",
   "ReloadCommands",
   "ReloadRuntime",
   "ReloadSettings",
@@ -584,6 +591,7 @@ export const DESKTOP_COMMANDS = [
   "SearchHistoryContentForTarget",
   "SearchSessionHistoryForTab",
   "SearchSessionHistoryForTarget",
+  "SearchSessionHistoryRead",
   "SessionHistoryContentForTab",
   "SessionHistoryContentForTarget",
   "SessionHistoryOutlineForTab",
@@ -1225,6 +1233,7 @@ export interface TranscriptFollowResponse {
   changes: Change[];
   resetRequired: boolean;
   history?: HistoryWindowPage | null;
+  storageBackend?: string;
 }
 
 export interface TranscriptReplay {
@@ -1844,6 +1853,16 @@ export interface historycatalog_Status {
   failed: number;
   lastError?: string;
   quarantinedPath?: string;
+}
+
+export interface historywork_Diagnostics {
+  foregroundActive: number;
+  backgroundActive: number;
+  backgroundSlices: number;
+  instrumentedReadBytes: number;
+  instrumentedReadCalls: number;
+  canceledReadCheckpoints: number;
+  lastBackgroundSliceMs: number;
 }
 
 export interface ActiveWorkView {
@@ -2568,6 +2587,7 @@ export interface HistoryContentChunk {
 }
 
 export interface HistoryContentRef {
+  readHandleId?: string;
   entryId: string;
   field: string;
   size: number;
@@ -2681,6 +2701,8 @@ export interface HistorySlice {
   entries: HistoryEntry[];
   nextCursor: string;
   hasOlder: boolean;
+  hasNewer: boolean;
+  newerCursor?: string;
   totalTurns: number;
   startTurn: number;
   endTurn: number;
@@ -2697,6 +2719,12 @@ export interface HistorySliceRequest {
   turns: number;
   entries: number;
   bytes: number;
+  newer?: boolean;
+  anchor?: string;
+  turn?: number;
+  messageId?: string;
+  generation?: string;
+  snapshotSequence?: number | null;
 }
 
 export interface HistorySwitchPhases {
@@ -2934,6 +2962,16 @@ export interface MCPServerInput {
   toolTimeoutSeconds: Record<string, number>;
 }
 
+export interface ManualCreationProgress {
+  status: string;
+  stage: string;
+  stageStartedAt: number;
+  elapsedMs: number;
+  nextRetryAt?: number;
+  errorCode?: string;
+  slow: boolean;
+}
+
 export interface ManualSessionCreationRequest {
   operationId: string;
   workspaceId: string;
@@ -2951,6 +2989,7 @@ export interface ManualSessionCreationView {
   phase: string;
   error?: string;
   settings: SessionDraftSettings;
+  progress?: ManualCreationProgress | null;
 }
 
 export interface MarkdownImageView {
@@ -3894,7 +3933,7 @@ export interface RuntimeDoctorReport {
   staleDrops: number;
   admissionRejected: number;
   runtimeOwnerFallbacks: number;
-  skillWatch?: Diagnostics | null;
+  skillWatch?: skillwatch_Diagnostics | null;
 }
 
 export interface RuntimeSessionState {
@@ -3990,6 +4029,7 @@ export interface SessionActivityBaseline {
 }
 
 export interface SessionArchitectureDiagnostics {
+  historyMaintenance?: historywork_Diagnostics | null;
   readSnapshots?: ReadSnapshotDiagnostics | null;
   pending_operations: number;
   missing_members: number;
@@ -4193,6 +4233,18 @@ export interface SessionHistoryContentChunk {
   data: string;
   nextOffset: number;
   done: boolean;
+}
+
+export interface SessionHistoryReadHandle {
+  id: string;
+  storageBackend: string;
+  sessionGeneration: number;
+  capabilities: string[];
+}
+
+export interface SessionHistoryReadSlice {
+  status: string;
+  page: HistorySlice;
 }
 
 export interface SessionLifecycleItem {
@@ -5413,7 +5465,7 @@ export interface InboxReceipt {
   idempotent?: boolean;
 }
 
-export interface Diagnostics {
+export interface skillwatch_Diagnostics {
   physicalWatches: number;
   logicalSubscriptions: number;
   scans: number;
@@ -5672,6 +5724,7 @@ export interface OutlineRequest {
 
 export interface PageRequest {
   snapshotId: string;
+  messageId?: string;
   before: number;
   records: number;
   bytes: number;
@@ -5715,6 +5768,7 @@ export interface Snapshot {
   totalRecords: number;
   totalTurns: number;
   stale: boolean;
+  notFound?: boolean;
 }
 
 export interface ToolCall {
@@ -5903,6 +5957,7 @@ export interface GeneratedDesktopCommands {
   BeginManualSessionCreation(arg0: ManualSessionCreationRequest): Promise<ManualSessionCreationView>;
   BeginSessionComposerSubmission(arg0: SessionRef, arg1: string, arg2: string, arg3: string): Promise<SessionComposerState>;
   BeginSessionExportForTarget(arg0: SessionSelector, arg1: string, arg2: string, arg3: string, arg4: string): Promise<SessionExportHandle>;
+  BeginSessionHistoryReadForTab(arg0: string): Promise<SessionHistoryReadHandle>;
   BotRuntimeStatus(): Promise<BotRuntimeStatusView>;
   Cancel(): Promise<void>;
   CancelDraftSubmission(arg0: string): Promise<SessionDraftSubmissionView>;
@@ -6008,6 +6063,7 @@ export interface GeneratedDesktopCommands {
   EnsureBlankTab(arg0: string, arg1: string): Promise<TabMeta>;
   EnsureRemoteProjectSessions(arg0: string, arg1: string): Promise<RemoteSessionView[]>;
   ExportGoalDiagnostics(): Promise<string>;
+  ExportManualCreationDiagnostics(): Promise<string>;
   ExportScrollDiagnostics(arg0: string): Promise<string>;
   ExportThemePack(arg0: string, arg1: string): Promise<string>;
   ExtensionActions(arg0: string): Promise<ExtensionActionView[]>;
@@ -6134,6 +6190,7 @@ export interface GeneratedDesktopCommands {
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ListWorkspaceSessions(arg0: string, arg1: string, arg2: string, arg3: number, arg4: boolean): Promise<WorkspaceSessionPage>;
   ListWorkspaces(): Promise<WorkspaceMeta[]>;
+  LocateSessionHistoryMessage(arg0: string, arg1: string, arg2: number): Promise<MessageLocation>;
   LocateSessionMessageForTab(arg0: string, arg1: string, arg2: number): Promise<MessageLocation>;
   LocateSessionMessageForTarget(arg0: SessionSelector, arg1: string, arg2: number): Promise<MessageLocation>;
   LookupInboxFollowupForTarget(arg0: InboxTargetView, arg1: string): Promise<InboxReceiptView>;
@@ -6233,6 +6290,9 @@ export interface GeneratedDesktopCommands {
   ReadSessionAttachmentForTab(arg0: string, arg1: string, arg2: number): Promise<SessionHistoryContentChunk>;
   ReadSessionExportChunk(arg0: string, arg1: number): Promise<SessionExportChunk>;
   ReadSessionHistory(arg0: SessionRef, arg1: string, arg2: number): Promise<HistoryPage>;
+  ReadSessionHistoryOutline(arg0: string, arg1: HistoryOutlineRequest): Promise<HistoryOutlinePage>;
+  ReadSessionHistorySlice(arg0: string, arg1: HistorySliceRequest): Promise<SessionHistoryReadSlice>;
+  ReadSessionHistoryWindow(arg0: string, arg1: HistoryWindowRequest): Promise<HistoryWindowPage>;
   RebindDraftImageForTarget(arg0: string, arg1: string): Promise<DraftImageView>;
   RebuildHistoryIndex(): Promise<void>;
   RebuildSessionCatalog(): Promise<void>;
@@ -6250,6 +6310,7 @@ export interface GeneratedDesktopCommands {
   ReleaseDraftImageForTab(arg0: string, arg1: string): Promise<void>;
   ReleaseDraftImageForTarget(arg0: string, arg1: string): Promise<void>;
   ReleaseReadSnapshot(arg0: string): Promise<void>;
+  ReleaseSessionHistoryRead(arg0: string): Promise<void>;
   ReloadCommands(): Promise<void>;
   ReloadRuntime(arg0: string): Promise<void>;
   ReloadSettings(): Promise<void>;
@@ -6422,6 +6483,7 @@ export interface GeneratedDesktopCommands {
   SearchHistoryContentForTarget(arg0: SessionSelector, arg1: string, arg2: string, arg3: number): Promise<HistorySearchPage>;
   SearchSessionHistoryForTab(arg0: string, arg1: string, arg2: string, arg3: number): Promise<SearchHistoryPage>;
   SearchSessionHistoryForTarget(arg0: SessionSelector, arg1: string, arg2: string, arg3: number): Promise<SearchHistoryPage>;
+  SearchSessionHistoryRead(arg0: string, arg1: string, arg2: string, arg3: number): Promise<SearchHistoryPage>;
   SessionHistoryContentForTab(arg0: string, arg1: Ref, arg2: number): Promise<SessionHistoryContentChunk>;
   SessionHistoryContentForTarget(arg0: SessionSelector, arg1: Ref, arg2: number): Promise<SessionHistoryContentChunk>;
   SessionHistoryOutlineForTab(arg0: string, arg1: HistoryOutlineRequest): Promise<HistoryOutlinePage>;

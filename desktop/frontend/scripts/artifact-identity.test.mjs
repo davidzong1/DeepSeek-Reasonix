@@ -52,6 +52,10 @@ test("variant, workflow and toolchain identity mismatches fail", t => {
   const options = fixture(t);
   for (const changed of [{ shell: "browser" }, { channel: "canary" }, { runId: "13" }, { attempt: "4" }, { pnpmVersion: "10.1.0" }])
     assert.throws(() => verifyFrontendArtifact({ ...options, ...changed }), /mismatch/);
+  const body = verifyFrontendArtifact(options);
+  body.toolchain.node = process.version + "-different";
+  writeFileSync(options.manifest, JSON.stringify(body));
+  assert.throws(() => verifyFrontendArtifact(options), /node mismatch/);
 });
 
 test("consumer retries verify the producer attempt while rebuilt producers advance it", t => {

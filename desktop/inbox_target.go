@@ -22,6 +22,15 @@ type InboxTargetView struct {
 	Workspace   string `json:"workspace,omitempty"`
 }
 
+// Callers hold App.mu. Canonical tabs deliberately have no legacy file path;
+// read their owned identity without calling back into a controller under the lock.
+func inboxTabIdentity(tab *WorkspaceTab) string {
+	if id := strings.TrimSpace(tab.SessionID); id != "" {
+		return sessionRoute(id)
+	}
+	return tab.SessionPath
+}
+
 func (a *App) CaptureInboxTarget(tabID, expectedPath string) (InboxTargetView, error) {
 	a.runtimeAdmissionMu.RLock()
 	defer a.runtimeAdmissionMu.RUnlock()
@@ -43,7 +52,7 @@ func (a *App) captureInboxTarget(tabID, expectedPath string) (InboxTargetView, e
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	for _, tab := range a.tabs {
-		if tab.ID == tabID && tab.Ctrl != nil && tab.SessionPath != "" && tab.SessionPath == expectedPath {
+		if tab.ID == tabID && tab.Ctrl != nil && expectedPath != "" && inboxTabIdentity(tab) == expectedPath {
 			return InboxTargetView{TabID: tabID, SessionPath: expectedPath, Generation: tab.SessionGeneration}, nil
 		}
 	}

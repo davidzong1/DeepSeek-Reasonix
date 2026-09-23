@@ -306,6 +306,122 @@ function initial(subscription: string): TranscriptFollowResponse {
   };
 }
 
+for (const remote of [false, true]) test(`${remote ? "remote" : "local"} running tab reconnect keeps its user before live reasoning when history and snapshot orders differ`, async () => {
+  const tab = `running-order-${remote}`, path = `/session/${tab}`;
+  const response = initial(tab);
+  response.history!.totalTurns = 2;
+  response.history!.messages = [
+    { messageId: "previous", position: 10, version: 1, role: "assistant", eventSequence: 1, visibleTurn: 1,
+      inline: { role: "assistant", content: "previous answer" } },
+    { messageId: "user", position: 11, version: 1, role: "user", eventSequence: 2, visibleTurn: 2,
+      preview: "make a tiger fly", inline: { role: "user", content: "make a tiger fly" } },
+  ];
+  response.snapshot!.totalRecords = 3;
+  response.snapshot!.totalTurns = 2;
+  response.snapshot!.runtime = { status: "in_progress", turnId: "current", pendingEvents: [], samplingCount: 1, toolCount: 0 };
+  response.snapshot!.activeAttempts = [{ id: "attempt", messageId: "live", turnId: "current", nextIndex: 1 }];
+  response.snapshot!.records = [
+    { id: "m:previous", order: 0, message: { role: "assistant", messageId: "previous", content: "previous answer", historyTurn: 1 }, refs: [] },
+    { id: "m:user", order: 1, message: { role: "user", messageId: "user", content: "make a tiger fly", historyTurn: 2, turnId: "current" }, refs: [] },
+    { id: "m:live", order: 2, message: { role: "assistant", messageId: "live", content: "", reasoning: "thinking", historyTurn: 2, turnId: "current" }, refs: [] },
+  ];
+  const key = remote ? "RemoteTranscriptFollowForTab" : "TranscriptFollowForTab";
+  const pending = deferred<TranscriptFollowResponse>();
+  let polls = 0;
+  commands[key] = (_tab: string, request: FollowRequest) => request.close
+    ? Promise.resolve({ protocolVersion: 2, subscription: tab, changes: [], resetRequired: false })
+    : request.subscription ? polls++ === 0 ? pending.promise : new Promise<TranscriptFollowResponse>(() => {}) : Promise.resolve(response);
+  let state = initialState;
+  const follower = new TranscriptSessionFollower(tab, path, remote, action => { state = reducer(state, action); });
+  const source = new ChatSource(tab);
+  const assertVisibleOrder = () => {
+    source.update({ items: state.items, running: state.running, hydrating: false, hasOlder: false, loadingOlder: false });
+    const order = source.getOrderSnapshot();
+    assert.ok(order.indexOf("m:user") >= 0 && order.indexOf("m:user") < order.indexOf("m:live:reasoning"),
+      "the rendered reasoning stays in the user's turn");
+  };
+  try {
+    await follower.start();
+    assert.deepEqual(state.items.filter(item => item.kind === "user" || item.kind === "assistant").map(item => item.id),
+      ["m:previous", "m:user", "m:live"]);
+    assert.deepEqual(getTranscriptStore().peek(tab, path)?.items.map(item => item.id),
+      ["m:previous", "m:user", "m:live"]);
+    assertVisibleOrder();
+    pending.resolve({ protocolVersion: 2, subscription: tab, resetRequired: false, changes: [{
+      revision: 11, firstSeq: 5, commitSeq: 5, durableSeq: 5, index: 0,
+      records: [{ role: "assistant", messageId: "live", turnId: "current", historyTurn: 2,
+        content: "final answer", reasoning: "thinking" }],
+      runtime: { status: "completed", turnId: "current", finalMessageId: "live", durationMs: 1000,
+        pendingEvents: [], samplingCount: 1, toolCount: 0 },
+    }] });
+    await microtasks();
+    assertVisibleOrder();
+    assert.deepEqual(state.items.filter(item => item.kind === "user" || item.kind === "assistant").map(item => item.id),
+      ["m:previous", "m:user", "m:live"]);
+    assert.equal(state.running, false);
+    assert.ok(state.items.some(item => item.kind === "assistant" && item.id === "m:live" && item.turnFinal));
+  } finally { source.dispose(); follower.stop(); getTranscriptStore().evictTab(tab); }
+});
+
+for (const remote of [false, true]) test(`${remote ? "remote" : "local"} native active prefix keeps its fixed-cut order when older pages fill the gap`, async () => {
+  const tab = `native-prefix-order-${remote}`, path = `/session/${tab}`;
+  const response = initial(tab);
+  response.storageBackend = "legacy";
+  delete response.history;
+  const notice = (order: number) => ({ id: `notice:${order}`, order,
+    message: { role: "notice", content: `step ${order}`, historyTurn: 1, turnId: "current" }, refs: [] });
+  Object.assign(response.snapshot!, {
+    before: 4, hasOlder: true, totalRecords: 5, totalTurns: 1,
+    records: [notice(4)],
+    activeRecords: [
+      { id: "m:user", order: 0, message: { role: "user", messageId: "user", content: "build", historyTurn: 1, turnId: "current" }, refs: [] },
+      { id: "m:live", order: 1, message: { role: "assistant", messageId: "live", content: "", reasoning: "thinking", historyTurn: 1, turnId: "current" }, refs: [] },
+    ],
+    activeAttempts: [{ id: "attempt", messageId: "live", turnId: "current", nextIndex: 1 }],
+    runtime: { status: "in_progress", turnId: "current", pendingEvents: [], samplingCount: 1, toolCount: 0 },
+  });
+  const pending = deferred<TranscriptFollowResponse>();
+  commands[remote ? "RemoteTranscriptFollowForTab" : "TranscriptFollowForTab"] = (_tab: string, request: FollowRequest) => request.close
+    ? Promise.resolve({ protocolVersion: 2, subscription: tab, changes: [], resetRequired: false })
+    : request.subscription ? pending.promise : Promise.resolve(response);
+  commands[remote ? "RemoteTranscriptPageForTab" : "TranscriptPageForTab"] = async () => ({
+    ...response.snapshot!, records: [notice(2), notice(3)], activeRecords: [], before: 2, hasOlder: true,
+  });
+  let state = initialState;
+  const follower = new TranscriptSessionFollower(tab, path, remote, action => { state = reducer(state, action); });
+  try {
+    await follower.start();
+    const older = await getTranscriptStore().loadOlder(tab, path);
+    assert.deepEqual(older?.items.map(item => item.id), ["m:user", "m:live", "he:notice:2", "he:notice:3", "he:notice:4"],
+      "paging into the gap cannot move earlier output above the active user");
+    assert.equal(state.historyTotalTurns, 1, "installing an existing active user does not invent a new turn");
+  } finally { follower.stop(); getTranscriptStore().evictTab(tab); }
+});
+
+for (const remote of [false, true]) test(`${remote ? "remote" : "local"} snapshot aliases retain the authoritative active message body`, async () => {
+  const tab = `active-alias-${remote}`, path = `/session/${tab}`;
+  const response = initial(tab);
+  response.history!.messages = [];
+  response.snapshot!.runtime.status = "in_progress";
+  response.snapshot!.activeAttempts = [{ id: "attempt", messageId: "answer", turnId: "current", nextIndex: 1 }];
+  response.snapshot!.records = [{ id: "view:answer", order: 0,
+    message: { role: "assistant", messageId: "answer", content: "old preview" }, refs: [] }];
+  response.snapshot!.activeRecords = [{ id: "m:answer", order: 0,
+    message: { role: "assistant", messageId: "answer", content: "current active body" }, refs: [] }];
+  const pending = deferred<TranscriptFollowResponse>();
+  commands[remote ? "RemoteTranscriptFollowForTab" : "TranscriptFollowForTab"] = (_tab: string, request: FollowRequest) => request.close
+    ? Promise.resolve({ protocolVersion: 2, subscription: tab, changes: [], resetRequired: false })
+    : request.subscription ? pending.promise : Promise.resolve(response);
+  let state = initialState;
+  const follower = new TranscriptSessionFollower(tab, path, remote, action => { state = reducer(state, action); });
+  try {
+    await follower.start();
+    assert.equal(state.items.length, 1, "aliases share one stable message node");
+    assert.equal(state.items[0].kind === "assistant" && state.items[0].text, "current active body");
+    assert.equal(state.live?.text, "current active body", "later deltas append to the authoritative active prefix");
+  } finally { follower.stop(); getTranscriptStore().evictTab(tab); }
+});
+
 for (const remote of [false, true]) for (const during of ["baseline", "baseline rejection", "delta", "retry", "load"] as const) {
   test(`${remote ? "remote" : "local"} stopping during ${during} fences current and future followers`, async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });

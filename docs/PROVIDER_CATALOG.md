@@ -1,7 +1,7 @@
 # Provider catalog
 
-The desktop preset picker has one entry per provider brand. Account platform,
-access plan and API format select a concrete existing preset. Only combinations
+The desktop preset picker has one entry per provider brand. Access plan,
+account platform and API format select a concrete existing preset, in that order. Only combinations
 registered by the host are offered. OpenCode Go and Zen remain separate plans;
 model-scoped routes remain selectable inside their plan.
 
@@ -59,11 +59,38 @@ go run scripts/generate-provider-catalog.go
 
 | Contract | Behavior |
 | --- | --- |
-| Saved provider TOML and credentials | Unchanged; no migration or automatic rewrite |
+| Saved provider TOML and credentials | Browsing makes no writes; the one-time MiMo model upgrade below preserves credentials and selections |
 | Existing preset IDs | Preserved |
 | Desktop `ProviderPresetView.catalog` | Additive display metadata; old clients ignore it |
 | New frontend with older host | Generated known-ID fallback; unknown presets remain individually accessible |
 | Provider request prefix | No catalog metadata is added to model requests |
+
+## MiMo API and Token Plan
+
+Choose **Pay-as-you-go API** or **Token Plan** first. The API uses
+`MIMO_API_KEY` and does not show a region selector. Token Plan uses
+`MIMO_TOKEN_PLAN_API_KEY` and then offers China, Singapore and Europe service
+clusters. Changing clusters preserves a selected protocol when that preset is
+available. Token Plan is restricted to supported AI coding tools; its key and
+quota are independent of the ordinary API.
+
+New connections default to `mimo-v2.6-pro`, with `mimo-v2.6-flash` also included.
+V2.5 IDs remain available for existing selections. Schema version 12 appends
+the V2.6 models once to eligible saved official V2.5 connections. It preserves
+the current default, model order, custom rates, credential references and unknown
+fields. Explicit custom request URLs and third-party endpoints are excluded.
+The model additions and version marker are written atomically under the config
+edit lock; subsequent starts do not restore models the user removes.
+
+| Field or format | Old-data behavior | New reader | Previous schema-v11 reader | Conclusion |
+| --- | --- | --- | --- | --- |
+| `models`, `default`, model references | Existing V2.5 selections remain first/default | Appends V2.6 once; keeps selections | Reads and saves model IDs without switching defaults | Compatible |
+| `config_version = 12` | Earlier versions are eligible for startup migration | Prevents repeated additions after deletion | Retains the marker when saving | Compatible |
+| `prices`, `vision_models`, unknown fields | Preserves user rates and explicit vision choices | Extends known curated vision lists and missing V2.6 prices; preserves unknown data during migration | Reads the existing fields and canonical nested price tables | No new persisted field types |
+
+Official references: [Token Plan](https://mimo.mi.com/docs/zh-CN/tokenplan/Token%20Plan/subscription),
+[API pricing](https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go),
+[API rate limits](https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit).
 
 ## Connection display names
 

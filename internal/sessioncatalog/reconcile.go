@@ -31,6 +31,9 @@ func (c *Catalog) reconcileDirectory(ctx context.Context, target DirectoryTarget
 	if c == nil || c.db == nil {
 		return nil
 	}
+	if c.opts.MetadataOnly {
+		return c.reconcileMetadata(ctx, target, sequence)
+	}
 	target.Path = cleanCatalogAccessPath(target.Path)
 	if target.Path == "" {
 		return nil
@@ -148,6 +151,9 @@ func (c *Catalog) IndexSessionPath(ctx context.Context, target DirectoryTarget, 
 }
 
 func (c *Catalog) indexSessionPath(ctx context.Context, target DirectoryTarget, path string, sequence uint64) error {
+	if c.opts.MetadataOnly {
+		return c.indexMetadataPath(ctx, target, path, sequence)
+	}
 	path = cleanCatalogAccessPath(path)
 	if path == "" {
 		return nil

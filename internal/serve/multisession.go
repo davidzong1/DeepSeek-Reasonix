@@ -222,8 +222,16 @@ func (s *Server) setControllerPath(ctrl *control.Controller, path string) {
 // two-argument test builder remains supported; tests that need to assert the
 // complete boot contract can inject buildControllerWithOptions.
 func (s *Server) buildTagged(ctx context.Context, ref string, inheritTemp bool) (*control.Controller, *sessionTagSink, error) {
+	return s.buildTaggedMode(ctx, ref, inheritTemp, false)
+}
+
+func (s *Server) buildTaggedMode(ctx context.Context, ref string, inheritTemp, nativeLegacy bool) (*control.Controller, *sessionTagSink, error) {
 	tag := newSessionTagSink(s.bc)
 	opts := s.buildOptions
+	opts.NativeLegacySession = nativeLegacy
+	if nativeLegacy {
+		opts.SessionRuntime = nil
+	}
 	if s.managedModels != nil {
 		opts.ModelSettings = s.managedModels
 	}
@@ -457,7 +465,7 @@ func (s *Server) busyDetach(ctx context.Context, cur *control.Controller, target
 	if s.tagFor(cur) == nil {
 		return errSessionTagUnavailable
 	}
-	newCtrl, tag, err := s.buildTagged(ctx, currentModelRef(cur), false)
+	newCtrl, tag, err := s.buildTaggedMode(ctx, currentModelRef(cur), false, strings.TrimSpace(targetPath) != "")
 	if err != nil {
 		return err
 	}

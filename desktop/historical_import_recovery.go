@@ -33,7 +33,14 @@ func validateDesktopOperationSources(state workspacestate.State, op workspacesta
 func pendingHistoricalOperation(state workspacestate.State, id string) *workspacestate.Operation {
 	var resume *workspacestate.Operation
 	for _, candidate := range state.PendingOperations {
-		if candidate.Phase == "committed" || candidate.Mapping == nil || !historicalSourceKeyMatches(candidate.Mapping.SourceKey, id) {
+		if candidate.Phase == "committed" || candidate.Mapping == nil {
+			continue
+		}
+		matches := false
+		for _, key := range state.SourceKeys(candidate.Mapping.SourceKey) {
+			matches = matches || historicalSourceKeyMatches(key, id)
+		}
+		if !matches {
 			continue
 		}
 		if candidate.Kind != "import" && candidate.Kind != "restore" {
@@ -51,9 +58,12 @@ func pendingHistoricalOperation(state workspacestate.State, id string) *workspac
 // Committed mappings and published content are independent of retained sources.
 // Check them before touching a source lock, path, fingerprint, or version.
 func (a *App) resumeReadyHistoricalImport(ctx context.Context, state workspacestate.State, id string, source historicalSource) (SessionRestoreResult, bool, error) {
-	mapping, mapped := historicalMappingForSource(state, id)
+	mapping, mapped, err := historicalMappingForSource(state, id)
 	if source.version != "" {
-		mapping, mapped = state.SourceMappings[id]
+		mapping, mapped, err = state.ResolveSource(id)
+	}
+	if err != nil {
+		return SessionRestoreResult{}, true, err
 	}
 	if mapped {
 		if state.SessionStates[mapping.SessionID].Lifecycle != workspacestate.Active {

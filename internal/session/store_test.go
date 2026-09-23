@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
@@ -19,8 +20,8 @@ import (
 
 func TestStoredManifestRequiresExactFormatBoundary(t *testing.T) {
 	t.Parallel()
-	if supportedStoredManifest(Manifest{SchemaVersion: SchemaVersion, Codec: Codec}) {
-		t.Fatal("unpublished v4 draft without storageRevision was accepted as final v4")
+	if !supportedStoredManifest(Manifest{SchemaVersion: SchemaVersion, Codec: Codec}) {
+		t.Fatal("in-place v4 session was rejected")
 	}
 	if !supportedStoredManifest(Manifest{SchemaVersion: SchemaVersion, Codec: Codec, StorageRevision: StorageRevision}) {
 		t.Fatal("final v4 manifest was rejected")
@@ -30,6 +31,131 @@ func TestStoredManifestRequiresExactFormatBoundary(t *testing.T) {
 	}
 	if supportedStoredManifest(Manifest{SchemaVersion: SchemaVersion, Codec: FinalV31Codec}) {
 		t.Fatal("schema-4 data mislabeled as v3.1 was accepted")
+	}
+}
+
+func TestLegacyLinearStoreOpensAndAppendsWithoutCodecUpgrade(t *testing.T) {
+	for _, codec := range []string{LegacyLinearCodec, FinalV31Codec, PrototypeCodec} {
+		t.Run(codec, func(t *testing.T) { testNativeLinearStore(t, codec) })
+	}
+}
+
+func testNativeLinearStore(t *testing.T, codec string) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "legacy-linear")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := Manifest{SchemaVersion: 3, Codec: codec, SessionID: "legacy-linear", CreatedAt: time.Now().UTC(), WriterGeneration: 1}
+	if err := writeManifestFile(filepath.Join(dir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, legacyLogName), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenWithOptions(dir, "legacy-linear", OpenOptions{ExternalHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	_, err = s.Append(t.Context(), Batch{OperationID: "continue-old", Events: []Event{{Kind: "turn/start"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStoredManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil || got.Codec != codec || got.SchemaVersion != 3 {
+		t.Fatalf("manifest = %+v, err=%v", got, err)
+	}
+	commits, err := Replay(dir, nil)
+	if err != nil || len(commits) != 1 || commits[0].Codec != codec {
+		t.Fatalf("commits = %+v, err=%v", commits, err)
+	}
+	// Preserve the byte boundary of records produced by a different JSON
+	// encoder. Re-marshalling a record to derive its end would truncate this.
+	logPath := filepath.Join(dir, legacyLogName)
+	original, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original = append([]byte("  "), original...)
+	if err := os.WriteFile(logPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenWithOptions(dir, "legacy-linear", OpenOptions{ExternalHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(logPath); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("opening changed original log bytes: %v", err)
+	}
+	if _, err := s.Append(t.Context(), Batch{OperationID: "finish-old", Events: []Event{{Kind: "turn/end", Payload: json.RawMessage(`{"status":"completed"}`)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	commits, err = Replay(dir, nil)
+	if err != nil || len(commits) != 2 || commits[1].FirstSequence != 2 {
+		t.Fatalf("reopened commits = %+v, err=%v", commits, err)
+	}
+	complete, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, append(append([]byte(nil), complete...), []byte(`{"partial":`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenWithOptions(dir, "legacy-linear", OpenOptions{ExternalHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(logPath); err != nil || !bytes.Equal(got, complete) {
+		t.Fatalf("torn repair changed complete prefix: %v", err)
+	}
+	backups, err := filepath.Glob(filepath.Join(dir, "events.torn-*.tail"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("torn evidence missing: %v %v", backups, err)
+	}
+	if got, err := os.ReadFile(backups[0]); err != nil || string(got) != `{"partial":` {
+		t.Fatalf("torn evidence changed: %q %v", got, err)
+	}
+}
+
+func TestNativePrototypeHistoryRewriteRoundTrip(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "prototype")
+	payload, _ := json.Marshal(map[string]any{"messages": []provider.Message{{ID: "old", Role: provider.RoleUser, Content: "old"}}})
+	writePrototypeStore(t, dir, []Event{{Kind: "context/replace", Payload: payload}}, "")
+	s, err := Open(dir, "prototype")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	if got := s.Snapshot().Projection.ModelMessages; len(got) != 1 || got[0].Content != "old" {
+		t.Fatalf("old projection: %+v", got)
+	}
+	payload, _ = json.Marshal(map[string]any{"messages": []provider.Message{{ID: "new", Role: provider.RoleUser, Content: "new"}}})
+	if _, err := s.Append(t.Context(), Batch{OperationID: "rewrite", Events: []Event{{Kind: "history/replace", Payload: payload}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, legacyLogName))
+	if err != nil || bytes.Contains(raw, []byte(`"kind":"history/replace"`)) {
+		t.Fatalf("prototype codec changed: %s %v", raw, err)
+	}
+	s, err = Open(dir, "prototype")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Snapshot().Projection.ModelMessages; len(got) != 1 || got[0].Content != "new" {
+		t.Fatalf("reopened projection: %+v", got)
 	}
 }
 

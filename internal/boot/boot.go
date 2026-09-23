@@ -177,9 +177,14 @@ type Options struct {
 	// the previous service/runtime so model changes keep the immutable session
 	// identity and writer owned by the same SessionRuntime.
 	SessionService       *session.Service
+	SessionCreateService *session.Service
 	SessionRuntime       *session.Runtime
 	SessionHostID        string
 	SessionCreateOptions session.CreateOptions
+	// NativeLegacySession keeps a controller on the path-addressed session
+	// backend. Hosts set it only when opening an existing legacy transcript;
+	// fresh and already-canonical sessions continue to use SessionService.
+	NativeLegacySession bool
 	// SharedHost is an optional plugin.Host shared across controllers for the
 	// same workspace root. When set, boot.Build reuses its running clients
 	// instead of creating new subprocesses, and the caller manages the host's
@@ -585,8 +590,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// here would create competing registries over the same writer files during
 	// model switches or multi-tab startup.
 	sessionService := opts.SessionService
-	if opts.SessionRuntime != nil && sessionService == nil {
-		return nil, errors.New("v3 session runtime requires a session service")
+	if err := opts.validateSessionBinding(); err != nil {
+		return nil, err
 	}
 	reconcileCleanupPending := opts.CleanupPendingReconciler
 	if reconcileCleanupPending == nil {
@@ -1879,8 +1884,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		PinnedContextLoader:            opts.PinnedContextLoader,
 		SessionDir:                     sessionDir,
 		SessionService:                 sessionService,
+		SessionCreateService:           opts.SessionCreateService,
 		SessionRuntime:                 opts.SessionRuntime,
-		ExclusiveSession:               sessionService != nil,
+		ExclusiveSession:               sessionService != nil && !opts.NativeLegacySession,
+		NativeLegacySession:            opts.NativeLegacySession,
 		Host:                           pluginHost,
 		Commands:                       cmds,
 		Skills:                         skills,

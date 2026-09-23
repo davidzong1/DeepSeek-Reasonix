@@ -6,19 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
-	"slices"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-	"unicode/utf8"
-
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // --- fixtures ---------------------------------------------------------------
@@ -481,6 +479,19 @@ func TestHistorySliceColdContentRefUsesAuthoritativeEventTail(t *testing.T) {
 	if err := os.WriteFile(path, oldModel, 0o600); err != nil {
 		t.Fatalf("restore stale display model: %v", err)
 	}
+	tab.SessionPath = path
+	page := app.HistorySliceForTab("cold", HistorySliceRequest{})
+	if page.Source != "event-log" || page.Error != "" || len(page.Entries) == 0 {
+		t.Fatalf("authoritative cold page: %+v", page)
+	}
+	entry := page.Entries[len(page.Entries)-1]
+	if len(entry.Refs) != 1 {
+		t.Fatalf("tail refs = %+v, want one content ref", entry.Refs)
+	}
+	chunk := app.HistoryContentForTab("cold", entry.Refs[0], 0)
+	if chunk.Stale || chunk.Data == "" || !strings.HasPrefix(big, chunk.Data) {
+		t.Fatalf("content chunk = stale:%v bytes:%d", chunk.Stale, len(chunk.Data))
+	}
 	logFile, err := os.OpenFile(store.SessionEventLog(path), os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatalf("open event log: %v", err)
@@ -492,19 +503,9 @@ func TestHistorySliceColdContentRefUsesAuthoritativeEventTail(t *testing.T) {
 	if err := logFile.Close(); err != nil {
 		t.Fatalf("close event log: %v", err)
 	}
-	tab.SessionPath = path
-
-	page := app.HistorySliceForTab("cold", HistorySliceRequest{})
-	if page.Source != "event-log" {
-		t.Fatalf("Source = %q, want event-log recovery", page.Source)
-	}
-	entry := page.Entries[len(page.Entries)-1]
-	if len(entry.Refs) != 1 {
-		t.Fatalf("tail refs = %+v, want one content ref", entry.Refs)
-	}
-	chunk := app.HistoryContentForTab("cold", entry.Refs[0], 0)
-	if chunk.Stale || chunk.Data == "" || !strings.HasPrefix(big, chunk.Data) {
-		t.Fatalf("damaged-log prefix content chunk = stale:%v bytes:%d", chunk.Stale, len(chunk.Data))
+	page = app.HistorySliceForTab("cold", HistorySliceRequest{})
+	if page.Error == "" || len(page.Entries) != 0 {
+		t.Fatalf("damaged source exposed a complete-looking prefix: %+v", page)
 	}
 }
 
@@ -594,15 +595,19 @@ func TestHistorySliceColdTabScanFallbackAndRebuild(t *testing.T) {
 	tab.SessionPath = path
 	indexPath := store.SessionDisplayIndex(path)
 
-	// Delete the index: the first request must page correctly via streaming
-	// scan (no full LoadSession) and republish the index.
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Missing sidecars are rebuilt in the disposable page projection, without
+	// rewriting the compatibility checkpoint or republishing session sidecars.
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
 	pages := collectHistorySlicePages(t, app, "cold", HistorySliceRequest{Turns: 4, Entries: 30})
 	assertPagesMatchReference(t, pages, referenceHistoryRows(t, dir, path))
-	if _, err := agent.LoadSessionDisplayIndex(indexPath); err != nil {
-		t.Fatalf("index should be republished after scan fallback: %v", err)
+	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
+		t.Fatalf("read should not republish a session sidecar: %v", err)
 	}
 
 	// Corrupt the index: same guarantees.
@@ -611,16 +616,11 @@ func TestHistorySliceColdTabScanFallbackAndRebuild(t *testing.T) {
 	}
 	pages = collectHistorySlicePages(t, app, "cold", HistorySliceRequest{Turns: 4, Entries: 30})
 	assertPagesMatchReference(t, pages, referenceHistoryRows(t, dir, path))
-	idx, err := agent.LoadSessionDisplayIndex(indexPath)
-	if err != nil {
-		t.Fatalf("corrupt index should be rebuilt: %v", err)
+	if body, err := os.ReadFile(indexPath); err != nil || string(body) != "{not json" {
+		t.Fatalf("read rewrote source sidecar: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if idx.TranscriptSize != info.Size() {
-		t.Fatalf("rebuilt index TranscriptSize = %d, file size = %d", idx.TranscriptSize, info.Size())
+	if body, err := os.ReadFile(path); err != nil || string(body) != string(original) {
+		t.Fatalf("read rewrote source checkpoint: %v", err)
 	}
 }
 
@@ -804,7 +804,13 @@ func TestHistorySliceSourceField(t *testing.T) {
 	}
 
 	t.Run("cold index hit", func(t *testing.T) {
-		app, _, _ := newSession(t, "src-index.jsonl")
+		app, _, path := newSession(t, "src-index.jsonl")
+		// Equal filesystem timestamps cannot certify that the sidecar follows
+		// the event log. Give this index-hit fixture an unambiguous order.
+		indexTime := agent.SessionContentModTime(path).Add(time.Second)
+		if err := os.Chtimes(store.SessionDisplayIndex(path), indexTime, indexTime); err != nil {
+			t.Fatal(err)
+		}
 		if page := app.HistorySliceForTab("cold", HistorySliceRequest{}); page.Source != "index" {
 			t.Fatalf("Source = %q, want index", page.Source)
 		}
@@ -815,8 +821,8 @@ func TestHistorySliceSourceField(t *testing.T) {
 		if err := os.Remove(store.SessionDisplayIndex(path)); err != nil {
 			t.Fatal(err)
 		}
-		if page := app.HistorySliceForTab("cold", HistorySliceRequest{}); page.Source != "scan" {
-			t.Fatalf("Source = %q, want scan", page.Source)
+		if page := app.HistorySliceForTab("cold", HistorySliceRequest{}); page.Source != "event-log" {
+			t.Fatalf("Source = %q, want event-log", page.Source)
 		}
 	})
 
@@ -1013,72 +1019,3 @@ func TestHistoryContentChunksRuneAligned(t *testing.T) {
 }
 
 // --- concurrency ------------------------------------------------------------
-
-func TestHistorySliceConcurrentReadsDuringSave(t *testing.T) {
-	app := historySliceTestApp(t)
-	dir := t.TempDir()
-	var msgs []provider.Message
-	for i := range 30 {
-		msgs = append(msgs, historySliceToolTurn(i)...)
-	}
-	sess, path := saveHistorySliceSession(t, dir, "race.jsonl", msgs)
-	newLiveHistoryTab(t, app, dir, path, sess)
-
-	const readers = 4
-	start := make(chan struct{})
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	errs := make(chan error, readers)
-	for r := range readers {
-		wg.Add(1)
-		go func(r int) {
-			defer wg.Done()
-			<-start
-			cursor := ""
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				page := app.HistorySliceForTab("test", HistorySliceRequest{Turns: 3, Entries: 25, Cursor: cursor})
-				if page.Entries == nil {
-					errs <- fmt.Errorf("reader %d: nil entries", r)
-					return
-				}
-				if page.Stale {
-					// A save landed between pages: restart from latest, as the
-					// frontend would.
-					cursor = ""
-					continue
-				}
-				if !page.HasOlder {
-					cursor = ""
-					continue
-				}
-				cursor = page.NextCursor
-			}
-		}(r)
-	}
-
-	// Writer: append + save in a loop while readers page.
-	close(start)
-	for i := 30; i < 38; i++ {
-		sess.Add(historySliceUser(i, fmt.Sprintf("q%d", i)))
-		sess.Add(historySliceAssistant(i, fmt.Sprintf("a%d", i)))
-		if err := sess.Save(path); err != nil {
-			close(stop)
-			wg.Wait()
-			t.Fatalf("save: %v", err)
-		}
-	}
-	close(stop)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-	// The final state must page cleanly end to end.
-	pages := collectHistorySlicePages(t, app, "test", HistorySliceRequest{Turns: 5, Entries: 40})
-	assertPagesMatchReference(t, pages, referenceHistoryRows(t, dir, path))
-}

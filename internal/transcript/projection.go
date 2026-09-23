@@ -81,7 +81,8 @@ type Projection struct {
 	// outline is the complete turn index of a frozen cut. It is built by
 	// freezeLocked and read only from frozen cuts, so it always describes the
 	// same revision as the records paged beside it.
-	outline []OutlineEntry
+	outline         []OutlineEntry
+	recordPositions map[string]int
 }
 
 // ensureRecordIdentity owns the last-resort identity for display-only rows.

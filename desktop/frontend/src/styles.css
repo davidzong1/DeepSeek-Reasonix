@@ -38061,32 +38061,6 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
 .session-draft-surface__error {
   color: var(--danger);
 }
-.project-tree__draft-badge {
-  flex: none;
-  margin-left: 6px;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border-soft));
-  border-radius: 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  cursor: pointer;
-}
-.project-tree__draft-badge:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.project-tree__draft-badge--dirty,
-.project-tree__draft-badge--saving {
-  border-color: color-mix(in srgb, var(--warning, #d69a32) 48%, var(--border-soft));
-  color: var(--warning, #d69a32);
-}
-.project-tree__draft-badge--error,
-.project-tree__draft-badge--conflict {
-  border-color: color-mix(in srgb, var(--danger) 48%, var(--border-soft));
-  color: var(--danger);
-}
 .session-draft-surface__conflict {
   display: flex;
   align-items: center;

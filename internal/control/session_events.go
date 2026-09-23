@@ -99,6 +99,11 @@ func releaseSessionEventStore(dir string, entry *sharedSessionEventStore) func(c
 }
 
 func (c *Controller) openSessionEventStore(sessionPath string) (*session.Session, func(context.Context) error, error) {
+	if c.NativeLegacySession() {
+		// The original transcript remains the only message authority. Runtime
+		// envelopes use the legacy ledger; opening must not seed a v4 copy.
+		return nil, nil, nil
+	}
 	if service, runtime, exclusive := c.v3Binding(); runtime != nil {
 		return runtime.Session(), nil, nil
 	} else if exclusive && service != nil {

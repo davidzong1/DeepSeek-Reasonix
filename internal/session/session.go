@@ -193,27 +193,29 @@ func (s *Session) PrepareBatchContext(ctx context.Context, operationID string, b
 			events[i].ID = randomID()
 		}
 	}
-	storedEvents := cloneEvents(events)
-	content := s.contentStore()
-	for i := range storedEvents {
-		if len(storedEvents[i].Payload) <= v4InlinePayloadBytes {
-			continue
-		}
-		if content == nil {
-			return PreparedBatch{}, errors.New("session: content store unavailable for large event payload")
-		}
-		ref, err := content.Put(ctx, bytes.NewReader(storedEvents[i].Payload), sessioncontent.Metadata{MediaType: "application/json"})
-		if err != nil {
-			return PreparedBatch{}, fmt.Errorf("prepare event %s content: %w", storedEvents[i].ID, err)
-		}
-		storedEvents[i].Payload = nil
-		storedEvents[i].PayloadRef = &ref
-	}
 	s.mu.Lock()
-	sessionID, writerGeneration, binding := s.id, s.manifest.WriterGeneration, s.binding
+	sessionID, writerGeneration, binding, manifestCodec := s.id, s.manifest.WriterGeneration, s.binding, s.manifest.Codec
 	s.mu.Unlock()
 	if binding == nil {
 		return PreparedBatch{}, ErrReadOnly
+	}
+	storedEvents := cloneEvents(events)
+	if manifestCodec == Codec {
+		content := s.contentStore()
+		for i := range storedEvents {
+			if len(storedEvents[i].Payload) <= v4InlinePayloadBytes {
+				continue
+			}
+			if content == nil {
+				return PreparedBatch{}, errors.New("session: content store unavailable for large event payload")
+			}
+			ref, err := content.Put(ctx, bytes.NewReader(storedEvents[i].Payload), sessioncontent.Metadata{MediaType: "application/json"})
+			if err != nil {
+				return PreparedBatch{}, fmt.Errorf("prepare event %s content: %w", storedEvents[i].ID, err)
+			}
+			storedEvents[i].Payload = nil
+			storedEvents[i].PayloadRef = &ref
+		}
 	}
 	reservation, err := binding.reserve(ctx, commitHotBytes(Commit{Events: storedEvents}))
 	if err != nil {
@@ -322,8 +324,12 @@ func (s *Session) commitPrepared(prepared PreparedBatch, expectedTitleSequence *
 		s.mu.Unlock()
 		return commit, nil
 	}
+	commitSchema, commitCodec := SchemaVersion, Codec
+	if s.manifest.Codec != Codec {
+		commitSchema, commitCodec = 3, s.manifest.Codec
+	}
 	commit := Commit{
-		SchemaVersion: SchemaVersion, Codec: Codec, RecordType: "commit", ID: randomID(),
+		SchemaVersion: commitSchema, Codec: commitCodec, RecordType: "commit", ID: randomID(),
 		OperationID: prepared.operationID, OperationHash: prepared.hash, FirstSequence: s.next,
 		EventCount: len(prepared.events), TurnID: prepared.turnID,
 		WriterGeneration: s.manifest.WriterGeneration, CreatedAt: time.Now().UTC(),

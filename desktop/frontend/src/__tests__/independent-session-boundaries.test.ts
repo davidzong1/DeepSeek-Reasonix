@@ -80,7 +80,6 @@ test("full App chrome passes a canonical tab without sessionPath as an exact sid
       activeRemote: undefined,
       imTopicSources: {}, refreshSignal: 0, searchExpanded: false, searchFocusSignal: 0,
       showShortcutBadges: false, shortcutPlatform: undefined, onVisibleTopicsChange: () => {},
-      draftSummaries: [], onOpenDraft: undefined,
     },
   });
   const active = props.projectTree;
