@@ -101,7 +101,7 @@
     },
     {
       "name": "bash",
-      "description": "Execute a command in the shell and return combined stdout/stderr. To write outside the workspace, pass additional_write_dirs with the smallest concrete directories (no globs; absolute, workspace-relative, ~, or ${HOME}) and a justification. The host will not infer write paths from the command text. Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands.",
+      "description": "Execute a command in the shell and return combined stdout/stderr. To write outside the workspace, pass additional_write_dirs with the smallest concrete directories (no globs; absolute, workspace-relative, ~, or ${HOME}) and a justification. The host will not infer write paths from the command text. Use for builds, tests, git, package managers, etc. To search, read, or change files, use atomic_read / atomic_write rather than cat, sed, or \u003e\u003e.",
       "parameters": {
         "properties": {
           "additional_write_dirs": {

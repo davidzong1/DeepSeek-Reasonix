@@ -57,7 +57,7 @@ data: {"type":"response.output_item.done","item":{"id":"s2","type":"web_search_c
 			reg := tool.NewRegistry()
 			var usageEvents []event.Event
 			addWebSearch(reg, cfg, &entry, netclient.ProxySpec{Mode: netclient.ModeOff}, event.FuncSink(func(e event.Event) { usageEvents = append(usageEvents, e) }))
-			applyUnifiedProviderToolSurface(reg, nil, nil)
+			applyUnifiedProviderToolSurface(reg, nil, nil, "")
 			if schemas := reg.Schemas(); len(schemas) != 1 || schemas[0].Name != "web_search" {
 				t.Fatalf("search not exposed: %+v", schemas)
 			}

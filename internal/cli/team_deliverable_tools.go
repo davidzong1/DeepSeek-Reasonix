@@ -195,7 +195,7 @@ func newMemberDeliverableTools(teamName, memberID string, warn io.Writer) []tool
 	return []tool.Tool{
 		&deliverableTool{
 			name:     publishDeliverableName,
-			desc:     "Publish a deliverable document for this team and return its stable id. Repeated publishes of the same body are a no-op; new content gets a new id and the earlier document stays readable. Member-only, bound to your own identity.",
+			desc:     "Publish a deliverable document for this team and return its stable id. Republishing the same body is a no-op. Member-only, bound to your own identity.",
 			schema:   json.RawMessage(`{"type":"object","properties":{"slug":{"type":"string"},"body":{"type":"string"}},"required":["slug","body"],"additionalProperties":false}`),
 			teamName: teamName, memberID: memberID, publish: true, warn: warn,
 		},
@@ -216,7 +216,7 @@ func newLeaderDeliverableTools(teamName, memberID string, warn io.Writer) []tool
 func readDeliverable(teamName, memberID string, warn io.Writer) tool.Tool {
 	return &deliverableTool{
 		name:     readDeliverableName,
-		desc:     "Read one deliverable document of this team. Returns an outline (headings, size, opening excerpt) by default; pass mode=\"full\" for the body, optionally paged with offset/limit. Read-only.",
+		desc:     "Read one deliverable document of this team. Returns an outline (headings, size, opening excerpt) by default; mode=\"full\" returns the body, optionally paged with offset/limit. Read-only.",
 		schema:   json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"mode":{"type":"string","enum":["outline","full"]},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}`),
 		teamName: teamName, memberID: memberID, warn: warn,
 	}

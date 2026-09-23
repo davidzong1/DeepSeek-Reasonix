@@ -125,15 +125,18 @@ func (b bash) Description() string {
 			"  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0)." +
 			bashToolSteer
 	}
+	// The opening sentence stays byte-identical: internal/agent wraps this
+	// description for subagents by replacing that exact phrase, so rewording it
+	// here would silently drop "foreground" from their advertised shell.
 	return "Execute a command in the shell and return combined stdout/stderr. " +
 		"To write outside the workspace, pass additional_write_dirs with the smallest concrete directories (no globs; absolute, workspace-relative, ~, or ${HOME}) and a justification. " +
 		"The host will not infer write paths from the command text." + bashToolSteer
 }
 
 // bashToolSteer points the model at the cross-platform built-in tools instead of
-// shell utilities, so it doesn't reach for grep/cat/ls/find (absent or different
-// on native Windows) when a native tool already does the job everywhere.
-const bashToolSteer = " Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands."
+// shell utilities, so it doesn't reach for cat/sed/>> (absent or different on
+// native Windows) when a native tool already does the job everywhere.
+const bashToolSteer = " Use for builds, tests, git, package managers, etc. To search, read, or change files, use atomic_read / atomic_write rather than cat, sed, or >>."
 
 // resolved returns the bound shell, resolving lazily for the zero-value instance
 // (e.g. a registry that never went through ConfineBash).
