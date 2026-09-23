@@ -201,6 +201,20 @@ func (w atomicWrite) prepareOp(ctx context.Context, op atomicOp) (atomicPrepared
 		_ = anchor
 		return atomicPreparedOp{path: path, mode: op.Mode, receipt: atomicReceiptLine("delete", path, 0, 0)}, nil
 	case "replace", "patch":
+		// A symbol locator carries its own anchor: like the single-file path, this
+		// entry reads the source itself and needs no earlier observation, while
+		// still staging before anything is published.
+		if op.Mode == "patch" && strings.TrimSpace(op.Symbol) != "" {
+			src, content, err := w.symbolPatchSource(ctx, path, op.Since)
+			if err != nil {
+				return atomicPreparedOp{}, err
+			}
+			updated, receipt, err := atomicPatchContent(path, content, op)
+			if err != nil {
+				return atomicPreparedOp{}, err
+			}
+			return stageAtomicPreparedOp(path, op.Mode, updated, []byte(content), src, receipt)
+		}
 	default:
 		return atomicPreparedOp{}, fmt.Errorf("ops: unknown mode %q for %s", op.Mode, path)
 	}
@@ -222,12 +236,18 @@ func (w atomicWrite) prepareOp(ctx context.Context, op atomicOp) (atomicPrepared
 			return atomicPreparedOp{}, err
 		}
 	}
-	// The overlay is the authority for a buffered target: it cannot be staged as
-	// a temp file and renamed, so commit writes it back through the host. Prepare
-	// still proves the splice and the anchor, so a failure here is still free.
+	return stageAtomicPreparedOp(path, op.Mode, updated, current, src, receipt)
+}
+
+// stageAtomicPreparedOp stages one target's new bytes next to the destination
+// and returns it ready to commit. The overlay is the authority for a buffered
+// target: it cannot be staged as a temp file and renamed, so it is carried in
+// the plan and written back through the host at commit. Prepare still proves the
+// splice and the anchor, so a failure here is free either way.
+func stageAtomicPreparedOp(path, mode, updated string, current []byte, src editSource, receipt string) (atomicPreparedOp, error) {
 	if src.overlay {
 		return atomicPreparedOp{
-			path: path, mode: op.Mode, newBytes: []byte(updated), oldBytes: current, receipt: receipt,
+			path: path, mode: mode, newBytes: []byte(updated), oldBytes: current, receipt: receipt,
 		}, nil
 	}
 	tmp, err := fileutil.StageAtomicWrite(path, fileenc.Encode(updated, src.enc), 0o644)
@@ -235,11 +255,27 @@ func (w atomicWrite) prepareOp(ctx context.Context, op atomicOp) (atomicPrepared
 		return atomicPreparedOp{}, fmt.Errorf("stage %s: %w", path, err)
 	}
 	return atomicPreparedOp{
-		path: path, mode: op.Mode, newBytes: []byte(updated), oldBytes: current, tmp: tmp, receipt: receipt,
+		path: path, mode: mode, newBytes: []byte(updated), oldBytes: current, tmp: tmp, receipt: receipt,
 	}, nil
 }
 
 func atomicPatchContent(path, content string, op atomicOp) (string, string, error) {
+	symbol, err := atomicPatchLocator(op.atomicWriteParams)
+	if err != nil {
+		return "", "", fmt.Errorf("patch %s: %w", path, err)
+	}
+	if symbol != "" {
+		start, end, label, err := atomicResolveSymbolSpan(content, path, symbol)
+		if err != nil {
+			return "", "", err
+		}
+		updated, err := atomicSpliceRange(content, atomicWriteRange{Start: start, End: end}, op.Content)
+		if err != nil {
+			return "", "", err
+		}
+		return updated, atomicReceiptLine("patch", path, len(updated), atomicLineCount([]byte(updated)),
+			atomicSymbolSpanLabel(label, start, end)), nil
+	}
 	if op.Range != nil {
 		updated, err := atomicSpliceRange(content, *op.Range, op.Content)
 		if err != nil {

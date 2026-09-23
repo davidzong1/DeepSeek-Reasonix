@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/boot"
+	"reasonix/internal/sessioninbox"
 	"reasonix/internal/team"
 	"reasonix/internal/team/tui"
 )
@@ -254,6 +255,54 @@ func (p *teamPicker) firstLeader() string {
 		}
 	}
 	return ""
+}
+
+// focusedLeader reports whether the composer is bound to the team's leader.
+func (m *chatTUI) focusedLeader() bool {
+	if m == nil || m.teamPick == nil || !m.teamPick.session.active {
+		return false
+	}
+	p := m.teamPick
+	return p.session.current != "" && p.session.current == p.firstLeader()
+}
+
+// queueLeaderInputWhileRunning handles a line typed at the leader while its
+// turn is already running.
+//
+// Inside leader_wait the line is a mid-turn steer: the wait is read-only and
+// holds no write lease, so waking it and applying the text at the next step
+// boundary does not race a mutation. The prefix on that message is the same
+// one Ctrl+Enter uses. Outside the wait the line is held until the next
+// leader_wait, which admits it the same way and returns immediately. It is
+// not dispatched as a new turn when the current one goes idle.
+func (m *chatTUI) queueLeaderInputWhileRunning(display, submit string) (handled bool, err error) {
+	if !m.focusedLeader() {
+		return false, nil
+	}
+	bus := m.teamBackends.signals()
+	if bus == nil {
+		return false, nil
+	}
+	team, id := m.teamPick.sessionTeamName(), m.teamPick.firstLeader()
+	if bus.leaderWaiting(team, id) {
+		rec, err := m.enqueueSteer(display, submit)
+		if err != nil {
+			m.notice("steer: " + err.Error())
+			return true, err
+		}
+		switch rec.Disposition {
+		case sessioninbox.DispositionSteerAccepted:
+			m.notice(fmt.Sprintf("steer accepted #%s", shortID(rec.ItemID)))
+		case sessioninbox.DispositionQueuedFollowup:
+			m.notice(fmt.Sprintf("steer rejected — durable follow-up #%s", shortID(rec.ItemID)))
+		default:
+			m.notice(fmt.Sprintf("queued #%s", shortID(rec.ItemID)))
+		}
+		return true, nil
+	}
+	bus.holdInput(team, id, submit)
+	m.notice("queued until the leader waits")
+	return true, nil
 }
 
 // signalTeamInput reports input the composer could not deliver: the bound

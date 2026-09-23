@@ -173,7 +173,20 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 		// survives tab switches and history replay. The model sees it as
 		// guidance (with a prefix), not a new task. One cache miss per
 		// steer is unavoidable — the model must see the new instruction.
-		if text, itemID, ok := a.consumeSteer(); ok {
+		// Every steer already queued is written before this step's model call,
+		// so a burst held for leader_wait arrives as one batch of guidance
+		// rather than one line per later step.
+		for {
+			text, itemID, ok := a.consumeSteer()
+			if !ok && itemID == "" {
+				break
+			}
+			if !ok {
+				// Loader failed after dequeue: durable entry stays for inspection
+				// (unapplied path marks uncertain + pause via the notice sink).
+				a.RecordUnappliedSteer("(body load failed)", itemID)
+				continue
+			}
 			steerMessage := provider.Message{
 				Role: provider.RoleUser, Origin: provider.MessageOriginUser,
 				Content: a.withTurnPreferences(midTurnSteerMessage(text)), RawContent: text,
@@ -182,10 +195,6 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 				return err
 			}
 			a.svc.sink.Emit(event.Event{Kind: event.Steer, Text: text, ItemID: itemID})
-		} else if itemID != "" {
-			// Loader failed after dequeue: durable entry stays for inspection
-			// (unapplied path marks uncertain + pause via the notice sink).
-			a.RecordUnappliedSteer("(body load failed)", itemID)
 		}
 		schemas := a.providerToolSchemas()
 		prefixShape := a.capturePrefixShape(schemas)

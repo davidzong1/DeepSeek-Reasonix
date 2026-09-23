@@ -281,6 +281,78 @@ func TestLeaderWaitToolBlocksUntilTheBusSignals(t *testing.T) {
 	}
 }
 
+// TestLeaderWaitDeliversHeldInputBeforeBlocking pins the composer queue: lines
+// sent while the leader was not waiting are admitted when the next wait
+// starts, and the wait returns immediately so the next step can write them.
+func TestLeaderWaitDeliversHeldInputBeforeBlocking(t *testing.T) {
+	service, bus := leaderWaitFixture(t)
+	var steered []string
+	bus.setAdmit("alpha", "lead", func(text string) bool {
+		steered = append(steered, text)
+		return true
+	})
+	bus.holdInput("alpha", "lead", "update the changelog")
+	bus.holdInput("alpha", "lead", "leave the public API")
+	wait := leaderWaitToolFrom(t, service)
+	started := time.Now()
+	out, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":1200}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatal("held input must return the wait instead of blocking")
+	}
+	if strings.Contains(out, "update the changelog") || strings.Contains(out, "leave the public API") {
+		t.Fatalf("the tool result echoed the guidance:\n%s", out)
+	}
+	if !strings.Contains(out, "next step") {
+		t.Fatalf("tool result = %q, want the next-step notice", out)
+	}
+	if strings.Join(steered, "\n") != "update the changelog\nleave the public API" {
+		t.Fatalf("admitted = %v", steered)
+	}
+	if bus.leaderWaiting("alpha", "lead") {
+		t.Fatal("a wait that delivered held input must not stay marked waiting")
+	}
+}
+
+// TestLeaderWaitMarksItselfWaitingWhileBlocked pins the presence flag the
+// composer reads. It is set only for the blocking call.
+func TestLeaderWaitMarksItselfWaitingWhileBlocked(t *testing.T) {
+	service, bus := leaderWaitFixture(t)
+	wait := leaderWaitToolFrom(t, service)
+	entered := make(chan struct{})
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if bus.leaderWaiting("alpha", "lead") {
+				close(entered)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	done := make(chan struct{})
+	go func() {
+		_, _ = wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":1200}`))
+		close(done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader_wait did not mark itself waiting")
+	}
+	bus.Signal(leaderReportEvent("alpha-7"))
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the wait did not return after the signal")
+	}
+	if bus.leaderWaiting("alpha", "lead") {
+		t.Fatal("leader_wait stayed marked waiting after it returned")
+	}
+}
+
 // TestLeaderWaitToolReportsTimeoutAndValidatesItsBound pins the argument
 // contract: unset takes the default, an out-of-range value is refused by the
 // host as well as by the schema, and a wait that sees nothing says so instead of

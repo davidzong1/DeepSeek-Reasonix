@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,8 +17,9 @@ const (
 	// waitKindEscalation labels a member's write-access request that needs the
 	// leader's decision; its id is the request id the decision names.
 	waitKindEscalation = "escalation"
-	// waitKindInput labels input the composer handed to a busy leader's context
-	// window, which is the leader's cue to finish its turn and take it.
+	// waitKindInput labels input the composer handed to a leader that is inside
+	// leader_wait. The wait returns so the next step can apply the text as
+	// guidance; the full text is the steer message, not this summary.
 	waitKindInput = "input"
 )
 
@@ -93,6 +95,15 @@ type waitBus struct {
 	// them. Every subscription for their team is served from it when it is
 	// created, so a second consumer cannot take a wakeup away from the first.
 	pending []WaitEvent
+	// waiting counts in-flight leader_wait calls per leader. The composer
+	// reads it to decide whether a new line can be steered now.
+	waiting map[string]int
+	// held is composer text that arrived while that leader was not waiting.
+	// The next leader_wait takes it and admits it as guidance.
+	held map[string][]string
+	// admits steers one leader's held lines into the running turn. Nil until
+	// that leader's backend is bound.
+	admits map[string]func(string) bool
 }
 
 // waitSub is one waiter's slot: the team it wants events for ("" for every
@@ -311,3 +322,113 @@ func (b *waitBus) seenLocked(key string) bool {
 // board's durable row describe the same occurrence with different kinds but the
 // same reason text, and that text carries the task id the occurrence is about.
 func waitEventKey(ev WaitEvent) string { return ev.Team + "\x00" + ev.Summary }
+
+func waitLeaderKey(team, memberID string) string { return team + "\x00" + memberID }
+
+// enterWait marks one leader as blocked inside leader_wait. The matching
+// leaveWait runs when that call returns. A composer line sent in between is
+// steered into the running turn; a line sent outside it is held.
+func (b *waitBus) enterWait(team, memberID string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.waiting == nil {
+		b.waiting = map[string]int{}
+	}
+	b.waiting[waitLeaderKey(team, memberID)]++
+}
+
+// leaveWait clears one enterWait. Extra leaves do not make the count negative.
+func (b *waitBus) leaveWait(team, memberID string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := waitLeaderKey(team, memberID)
+	n := b.waiting[key]
+	if n <= 1 {
+		delete(b.waiting, key)
+		return
+	}
+	b.waiting[key] = n - 1
+}
+
+// leaderWaiting reports whether that leader is inside leader_wait.
+func (b *waitBus) leaderWaiting(team, memberID string) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.waiting[waitLeaderKey(team, memberID)] > 0
+}
+
+// holdInput keeps one composer line until the next leader_wait. Order is the
+// order the lines were sent.
+func (b *waitBus) holdInput(team, memberID, text string) {
+	if b == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.held == nil {
+		b.held = map[string][]string{}
+	}
+	key := waitLeaderKey(team, memberID)
+	b.held[key] = append(b.held[key], text)
+}
+
+// takeHeld removes and returns the lines held for one leader.
+func (b *waitBus) takeHeld(team, memberID string) []string {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := waitLeaderKey(team, memberID)
+	lines := b.held[key]
+	delete(b.held, key)
+	return lines
+}
+
+// heldCount is the number of lines still held for one leader.
+func (b *waitBus) heldCount(team, memberID string) int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.held[waitLeaderKey(team, memberID)])
+}
+
+// setAdmit installs the function that queues held lines onto that leader's
+// running turn. The function runs without the bus lock.
+func (b *waitBus) setAdmit(team, memberID string, admit func(string) bool) {
+	if b == nil || admit == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.admits == nil {
+		b.admits = map[string]func(string) bool{}
+	}
+	b.admits[waitLeaderKey(team, memberID)] = admit
+}
+
+// admit queues one line onto the leader's running turn. False means no
+// backend is bound or the turn did not accept it.
+func (b *waitBus) admit(team, memberID, text string) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	fn := b.admits[waitLeaderKey(team, memberID)]
+	b.mu.Unlock()
+	if fn == nil {
+		return false
+	}
+	return fn(text)
+}
