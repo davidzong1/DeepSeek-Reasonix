@@ -540,15 +540,17 @@ patch 参数 = 全文件重写参数的 **0.06%**；结果侧 `write_file` 把�
 中位=p90=最大；**真正的长尾在 `patch`**（回执含 `post_write_receipt.go` 的匹配/替换 span，2048B 封顶），
 用例对每种模式都断言「回执不含文件内容」。
 
-**前缀账单（实测，与 §5.3 的估算一致）**
+**前缀账单（实测；§5.3 是落地前的估算）**
 
 | 面 | 实测字节 | §5.3 估算 |
 | --- | --- | --- |
 | 旧三件（`read_file`+`write_file`+`edit_file`） | **1845B** | 1845B |
-| 新对（`atomic_read`+`atomic_write`） | **1568B** | 1566B |
-| 净差 | **−277B** | −279B |
+| 新对（`atomic_read`+`atomic_write`） | **1671B** | 1566B |
+| 净差 | **−174B** | −279B |
 
-`atomic_write` 单件 = **926B**（schema 492B + 描述 434B），与 §2.3 冻结值逐字节一致，用例把它钉成预算。
+`atomic_write` 单件最初 = **926B**（schema 492B + 描述 434B），与 §2.3 冻结值逐字节一致，用例把它钉成预算。
+`patch` 增 `symbol` 定位后（见 `ATOMIC_SYMBOL_PATCH_ROUTE.md`）单件重测 = **1029B**（多一个 `symbol` 字符串属性、一句描述），
+用例里的冻结预算同步改为 1029B；收窄的前提「新对 < 旧三件」仍成立（1671B < 1845B，−174B/成员/轮）。
 `atomic_read` 实测 642B（A 侧测得 640B），两者相加的 2B 差来自 `atomic_read` 描述的实际字节数 —— 表里记实测值。
 
 **`ops` 部分提交的诚实口径**：`TestAtomicOpsPartialCommitIsReportedExactly` 在 commit 阶段移除第二个目标

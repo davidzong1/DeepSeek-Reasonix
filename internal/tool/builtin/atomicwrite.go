@@ -43,12 +43,12 @@ type atomicWrite struct {
 func (atomicWrite) Name() string { return "atomic_write" }
 
 func (atomicWrite) Description() string {
-	return "Write a file atomically and cheaply. mode=create (fails if the file exists), replace (whole content), append (add at EOF; use instead of echo >>), patch (edits:[{old,new}] or range:{start,end}+content; use instead of sed -i), delete. Refuses with the changed hunks when the file differs from what you read; no forced overwrite. ops:[{path,mode,...}] applies several files as one transaction. Returns a bounded receipt, never the file."
+	return "Write a file atomically and cheaply. mode=create (fails if the file exists), replace (whole content), append (add at EOF; use instead of echo >>), patch (edits:[{old,new}] or range:{start,end}+content; use instead of sed -i), delete. symbol names one outline symbol and replaces its whole span; no prior read. Refuses with the changed hunks when the file differs from what you read; no forced overwrite. ops:[{path,mode,...}] applies several files as one transaction. Returns a bounded receipt, never the file."
 }
 
 // atomicWriteSchema is the frozen provider schema. It is a named constant so the
 // provider surface stays byte-identical to the route's §2.3 text.
-const atomicWriteSchema = `{"type":"object","properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","replace","append","patch","delete"]},"content":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old":{"type":"string"},"new":{"type":"string"}},"required":["old","new"]}},"range":{"type":"object","properties":{"start":{"type":"integer"},"end":{"type":"integer"}},"required":["start","end"]},"ops":{"type":"array","items":{"type":"object"}}},"required":["path"]}`
+const atomicWriteSchema = `{"type":"object","properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","replace","append","patch","delete"]},"content":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old":{"type":"string"},"new":{"type":"string"}},"required":["old","new"]}},"range":{"type":"object","properties":{"start":{"type":"integer"},"end":{"type":"integer"}},"required":["start","end"]},"symbol":{"type":"string"},"ops":{"type":"array","items":{"type":"object"}}},"required":["path"]}`
 
 func (atomicWrite) Schema() json.RawMessage {
 	return json.RawMessage(atomicWriteSchema)
@@ -124,6 +124,7 @@ type atomicWriteParams struct {
 	Content string            `json:"content"`
 	Edits   []atomicEditStep  `json:"edits"`
 	Range   *atomicWriteRange `json:"range"`
+	Symbol  string            `json:"symbol"`
 	Ops     []json.RawMessage `json:"ops"`
 	Since   string            `json:"since"`
 	raw     json.RawMessage   `json:"-"`
@@ -344,15 +345,44 @@ func (w atomicWrite) applyAppendThroughOverlay(ctx context.Context, path, conten
 	return atomicReceiptLine("append", path, len(content), atomicLineCount([]byte(content)), "through the host buffer"), nil
 }
 
-// applyPatch changes part of a file: either by exact-text edits or by a line
-// range. It reads, splices and publishes, so every byte outside the patch is
-// carried over unchanged — the property sed -i does not have.
-func (w atomicWrite) applyPatch(ctx context.Context, path string, p atomicWriteParams) (string, error) {
-	if len(p.Edits) == 0 && p.Range == nil {
-		return "", fmt.Errorf("patch needs edits:[{old,new}] or range:{start,end} with content")
+// atomicPatchLocator enforces patch's one-of-three locator rule: exact-text
+// edits, a line range, or an outline symbol. Combining them would leave which
+// bytes get replaced ambiguous, and an empty `content` cannot express deletion —
+// that is what range and edits are for.
+func atomicPatchLocator(p atomicWriteParams) (string, error) {
+	symbol := strings.TrimSpace(p.Symbol)
+	locators := 0
+	if len(p.Edits) > 0 {
+		locators++
 	}
-	if len(p.Edits) > 0 && p.Range != nil {
-		return "", fmt.Errorf("patch takes edits or range, not both")
+	if p.Range != nil {
+		locators++
+	}
+	if symbol != "" {
+		locators++
+	}
+	switch {
+	case locators == 0:
+		return "", fmt.Errorf("patch needs edits:[{old,new}], range:{start,end} with content, or symbol with content")
+	case locators > 1:
+		return "", fmt.Errorf("patch takes edits, range, or symbol, not a combination")
+	}
+	if symbol != "" && strings.TrimSpace(p.Content) == "" {
+		return "", fmt.Errorf("patch symbol needs content; delete a symbol with range or edits")
+	}
+	return symbol, nil
+}
+
+// applyPatch changes part of a file: by exact-text edits, by a line range, or by
+// one outline symbol. It reads, splices and publishes, so every byte outside the
+// patch is carried over unchanged — the property sed -i does not have.
+func (w atomicWrite) applyPatch(ctx context.Context, path string, p atomicWriteParams) (string, error) {
+	symbol, err := atomicPatchLocator(p)
+	if err != nil {
+		return "", err
+	}
+	if symbol != "" {
+		return w.applySymbolPatch(ctx, path, p, symbol)
 	}
 	anchor, err := w.anchorFor(ctx, path, p.Since)
 	if err != nil {
@@ -387,6 +417,66 @@ func (w atomicWrite) applyPatch(ctx context.Context, path string, p atomicWriteP
 	newLines := atomicLineCount([]byte(updated))
 	summary := atomicReceiptLine("patch", path, len(updated), newLines, fmt.Sprintf("%d→%d lines", oldLines, newLines))
 	return withActualPostWriteReceipts(summary, receipts), nil
+}
+
+// applySymbolPatch replaces one outline symbol's whole span. It is the only
+// patch locator that needs no earlier read: the caller already named the symbol,
+// so this call's own read IS the observation, the span is resolved on exactly
+// those bytes, and the publish still goes through the ordinary CAS.
+func (w atomicWrite) applySymbolPatch(ctx context.Context, path string, p atomicWriteParams, symbol string) (string, error) {
+	src, content, err := w.symbolPatchSource(ctx, path, p.Since)
+	if err != nil {
+		return "", err
+	}
+	start, end, label, err := atomicResolveSymbolSpan(content, path, symbol)
+	if err != nil {
+		return "", err
+	}
+	span := atomicSymbolSpanLabel(label, start, end)
+	updated, err := atomicSpliceRange(content, atomicWriteRange{Start: start, End: end}, p.Content)
+	if err != nil {
+		return "", err
+	}
+	if updated == content {
+		return atomicReceiptLine("patch", path, 0, 0, "unchanged: the patch matches the current content", span), nil
+	}
+	oldBytes := []byte(content)
+	if err := src.write(ctx, w.overlay, path, updated); err != nil {
+		return "", fmt.Errorf("patch %s: %w", path, err)
+	}
+	w.noteReceipt(path, true, oldBytes)
+	oldLines := atomicLineCount(oldBytes)
+	newLines := atomicLineCount([]byte(updated))
+	return atomicReceiptLine("patch", path, len(updated), newLines,
+		fmt.Sprintf("%d→%d lines", oldLines, newLines), span), nil
+}
+
+// symbolPatchSource resolves the bytes a symbol patch splices and the route its
+// write must take back. Without `since` it reads the source itself — that read
+// is this call's observation, which is what makes a symbol patch legal without a
+// prior atomic_read. With `since` it is the ordinary anchored route, and the
+// symbol is then resolved against the rechecked bytes so a stale outline cannot
+// cut a span that no longer means what it did.
+func (w atomicWrite) symbolPatchSource(ctx context.Context, path, since string) (editSource, string, error) {
+	if strings.TrimSpace(since) != "" {
+		anchor, err := w.anchorFor(ctx, path, since)
+		if err != nil {
+			return editSource{}, "", err
+		}
+		src, current, err := atomicRecheckSource(ctx, w.overlay, path, anchor)
+		if err != nil {
+			return editSource{}, "", err
+		}
+		return src, string(current), nil
+	}
+	src, err := readEditSource(ctx, w.overlay, path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return editSource{}, "", fmt.Errorf("patch %s: the file does not exist", path)
+		}
+		return editSource{}, "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return src, src.content, nil
 }
 
 // applyAtomicEdits applies edits:[{old,new}] against the source, reusing
@@ -590,11 +680,19 @@ func previewAtomicContent(path string, p atomicWriteParams, old string, missing 
 		if missing {
 			return "", fmt.Errorf("patch %s: the file does not exist", path)
 		}
+		symbol, err := atomicPatchLocator(p)
+		if err != nil {
+			return "", err
+		}
+		if symbol != "" {
+			start, end, _, err := atomicResolveSymbolSpan(old, path, symbol)
+			if err != nil {
+				return "", err
+			}
+			return atomicSpliceRange(old, atomicWriteRange{Start: start, End: end}, p.Content)
+		}
 		if p.Range != nil {
 			return atomicSpliceRange(old, *p.Range, p.Content)
-		}
-		if len(p.Edits) == 0 {
-			return "", fmt.Errorf("patch needs edits:[{old,new}] or range:{start,end} with content")
 		}
 		updated, _, err := applyAtomicEdits(path, old, p.Edits)
 		return updated, err
