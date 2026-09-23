@@ -92,6 +92,17 @@ func (m *chatTUI) prepareControllerTurn(intent controllerTurnIntent, settingsChe
 	// dispatched queued follow-up (TurnStarted not yet ingested): queue rather
 	// than race the admission guard's silent drop (#9575).
 	if controllerRunning(m.ctrl) {
+		if handled, err := m.queueLeaderInputWhileRunning(displayed, queued); handled {
+			if err != nil {
+				if m.input.Value() == "" {
+					m.input.SetValue(restore)
+					m.growInputToFit()
+				}
+				return nil
+			}
+			m.clearQueuedPastes(restore)
+			return nil
+		}
 		receipt, err := m.enqueueFollowup(displayed, queued)
 		if err != nil {
 			m.notice("queue: " + err.Error())

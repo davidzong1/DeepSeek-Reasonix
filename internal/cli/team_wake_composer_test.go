@@ -70,25 +70,54 @@ func composerRig(t *testing.T) (chatTUI, *composerStub) {
 	return m, stub
 }
 
-// TestEnterOnABusyLeaderWakesItsWait pins the mid-turn composer path: the window
-// shows the leader running, Enter queues the line durably, and the same call
-// reports it to the wait bus. Without that signal the leader's leader_wait
-// sleeps until its own timeout while the input sits in the queue.
-func TestEnterOnABusyLeaderWakesItsWait(t *testing.T) {
+// TestEnterOnABusyLeaderHoldsUntilTheWait pins the mid-turn composer path when
+// the leader is working rather than waiting: Enter must not steer into the
+// current step and must not wake a wait that is not running. The line stays
+// held until the next leader_wait.
+func TestEnterOnABusyLeaderHoldsUntilTheWait(t *testing.T) {
 	m, stub := composerRig(t)
 	m.state = tuiRunning
 	m.input.SetValue("please also update the changelog")
 
-	// Subscribe before the keystroke: an event produced with no waiter around is
-	// retained, but the assertion is about delivery, not retention.
 	waiter := m.teamBackends.signals().Subscribe("alpha")
 	defer waiter.Close()
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(chatTUI)
 
-	if len(stub.queued) != 1 {
-		t.Fatalf("Enter must queue the line durably, queued = %v", stub.queued)
+	if len(stub.queued) != 0 || len(stub.steers) != 0 {
+		t.Fatalf("Enter outside leader_wait must not dispatch, queued=%v steers=%v", stub.queued, stub.steers)
+	}
+	if got := m.teamBackends.signals().heldCount("alpha", "lead"); got != 1 {
+		t.Fatalf("held lines = %d, want the composer line kept for the next wait", got)
+	}
+	select {
+	case ev := <-waiter.C():
+		t.Fatalf("a line sent outside leader_wait woke the bus: %+v", ev)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestEnterWhileTheLeaderWaitsSteers pins the other half: a line sent while
+// leader_wait is blocked is a mid-turn steer and wakes that wait, the same
+// admission Ctrl+Enter uses.
+func TestEnterWhileTheLeaderWaitsSteers(t *testing.T) {
+	m, stub := composerRig(t)
+	m.state = tuiRunning
+	m.input.SetValue("please also update the changelog")
+	m.teamBackends.signals().enterWait("alpha", "lead")
+
+	waiter := m.teamBackends.signals().Subscribe("alpha")
+	defer waiter.Close()
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(chatTUI)
+
+	if len(stub.steers) != 1 || len(stub.queued) != 0 {
+		t.Fatalf("Enter during leader_wait must steer, steers=%v queued=%v", stub.steers, stub.queued)
+	}
+	if m.teamBackends.signals().heldCount("alpha", "lead") != 0 {
+		t.Fatal("a line sent during leader_wait must not be held")
 	}
 	select {
 	case ev := <-waiter.C():
@@ -99,15 +128,16 @@ func TestEnterOnABusyLeaderWakesItsWait(t *testing.T) {
 			t.Fatalf("summary = %q, want the queued line", ev.Summary)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("the queued line never reached the leader's wait")
+		t.Fatal("the line never reached the leader's wait")
 	}
 }
 
-// TestEnterOnAnIdleWindowWithABusyLeaderWakesItsWait pins the split the defect
-// turned on: a member's turn survives a switch, and bindBackend idles the
-// window's own flag while the backend keeps running. Enter therefore takes
-// prepareControllerTurn's already-running branch, which must signal too.
-func TestEnterOnAnIdleWindowWithABusyLeaderWakesItsWait(t *testing.T) {
+// TestEnterOnAnIdleWindowWithABusyLeaderHoldsUntilTheWait pins the split the
+// defect turned on: a member's turn survives a switch, and bindBackend idles
+// the window's own flag while the backend keeps running. Enter therefore takes
+// prepareControllerTurn's already-running branch. Outside leader_wait that
+// branch holds the line; it does not start a follow-up turn.
+func TestEnterOnAnIdleWindowWithABusyLeaderHoldsUntilTheWait(t *testing.T) {
 	m, stub := composerRig(t)
 	if m.state != tuiIdle {
 		t.Fatalf("precondition: a fresh member bind idles the window's own flag, state = %v", m.state)
@@ -123,16 +153,16 @@ func TestEnterOnAnIdleWindowWithABusyLeaderWakesItsWait(t *testing.T) {
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(chatTUI)
 
-	if len(stub.queued) != 1 {
-		t.Fatalf("the already-running branch must queue the line durably, queued = %v", stub.queued)
+	if len(stub.queued) != 0 || len(stub.steers) != 0 {
+		t.Fatalf("the already-running branch must hold the line, queued=%v steers=%v", stub.queued, stub.steers)
+	}
+	if got := m.teamBackends.signals().heldCount("alpha", "lead"); got != 1 {
+		t.Fatalf("held lines = %d, want the composer line", got)
 	}
 	select {
 	case ev := <-waiter.C():
-		if ev.Kind != waitKindInput || ev.ID != "lead" {
-			t.Fatalf("event = %+v, want the leader's own input", ev)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the already-running branch queued the line without waking the leader's wait")
+		t.Fatalf("the already-running branch woke the bus outside leader_wait: %+v", ev)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 
@@ -227,6 +257,7 @@ func TestQueuedInputOnAFailedWriteStaysOffTheBus(t *testing.T) {
 	m, _ := composerRig(t)
 	m.ctrl = failingEnqueueBackend{SessionAPI: m.ctrl}
 	m.state = tuiRunning
+	m.teamBackends.signals().enterWait("alpha", "lead")
 	m.input.SetValue("this write will fail")
 
 	waiter := m.teamBackends.signals().Subscribe("alpha")

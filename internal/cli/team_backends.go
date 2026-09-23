@@ -242,6 +242,7 @@ func (r *teamBackends) bind(b team.MemberBinding) (control.SessionAPI, error) {
 	if ok && fpErr == nil && r.fps[key] == fp {
 		r.touch(key)
 		r.mu.Unlock()
+		r.noteLeaderAdmit(b, live)
 		return live, nil
 	}
 	// A changed identity must not be reused, but retiring it first kills a
@@ -319,7 +320,25 @@ func (r *teamBackends) bind(b team.MemberBinding) (control.SessionAPI, error) {
 	call.backend, call.err = backend, nil
 	close(call.done)
 	r.mu.Unlock()
+	r.noteLeaderAdmit(b, backend)
 	return backend, nil
+}
+
+// noteLeaderAdmit lets leader_wait move held composer lines onto this leader's
+// running turn. The turn accepts them with TrySteer, which queues the same
+// mid-turn guidance Ctrl+Enter writes at the next step boundary. A rejected
+// steer is left held; it is not turned into a new task.
+func (r *teamBackends) noteLeaderAdmit(b team.MemberBinding, api control.SessionAPI) {
+	if r == nil || r.bus == nil || api == nil || !b.Leader {
+		return
+	}
+	steerer, ok := api.(interface{ TrySteer(string) bool })
+	if !ok {
+		return
+	}
+	r.bus.setAdmit(b.Team, b.MemberID, func(text string) bool {
+		return steerer.TrySteer(text)
+	})
 }
 
 // currentFingerprint evaluates the installed fingerprint for a binding. With

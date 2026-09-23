@@ -188,9 +188,24 @@ func (t *leaderWaitTool) Execute(ctx context.Context, args json.RawMessage) (str
 	if t.signal != nil {
 		sig = t.signal()
 	}
-	team := ""
+	team, leaderID := "", ""
 	if t.teamTaskTool != nil {
-		team = t.teamName
+		team, leaderID = t.teamName, t.memberID
+	}
+	// Lines typed while the leader was working are delivered here, before the
+	// wait blocks. Accepting them is safe: this call holds no write lease, and
+	// the text is queued as guidance for the next step rather than applied
+	// inside the wait. A line that arrives after the presence flag is set is
+	// steered by the composer and wakes this call instead.
+	if out, done := t.deliverHeldInput(sig, team, leaderID); done {
+		return out, nil
+	}
+	if bus, ok := sig.(*waitBus); ok {
+		bus.enterWait(team, leaderID)
+		defer bus.leaveWait(team, leaderID)
+		if out, done := t.deliverHeldInput(sig, team, leaderID); done {
+			return out, nil
+		}
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -201,6 +216,41 @@ func (t *leaderWaitTool) Execute(ctx context.Context, args json.RawMessage) (str
 	}
 	t.observe(events)
 	return formatLeaderWaitResult(events, time.Since(started)), nil
+}
+
+// deliverHeldInput admits lines the composer held for this leader. The tool
+// result only says that guidance is queued; the lines themselves are written
+// as user messages at the next step boundary. When the running turn cannot
+// accept them, the lines are put back and this wait blocks as usual.
+func (t *leaderWaitTool) deliverHeldInput(sig WaitSignal, team, leaderID string) (string, bool) {
+	bus, ok := sig.(*waitBus)
+	if !ok {
+		return "", false
+	}
+	held := bus.takeHeld(team, leaderID)
+	if len(held) == 0 {
+		return "", false
+	}
+	var missed []string
+	for _, text := range held {
+		if !bus.admit(team, leaderID, text) {
+			missed = append(missed, text)
+		}
+	}
+	if len(missed) == len(held) {
+		for _, text := range missed {
+			bus.holdInput(team, leaderID, text)
+		}
+		return "", false
+	}
+	for _, text := range missed {
+		bus.holdInput(team, leaderID, text)
+	}
+	return formatLeaderWaitResult([]WaitEvent{{
+		Kind:    waitKindInput,
+		ID:      leaderID,
+		Summary: "user guidance is queued and will be applied at the next step",
+	}}, 0), true
 }
 
 // observe advances the high-water mark past everything just reported, so the
