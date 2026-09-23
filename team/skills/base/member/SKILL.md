@@ -85,8 +85,10 @@ current round; natural-language chat text is not treated as a submission.
 - Before reporting, verify the implementation, tests, formatting, and remaining
   risks. Put large logs or patches in an artifact and reference its path.
 - The first action after completing the subtask is
-  `member_report_result` with a concise summary of changes, verification, and
-  blockers. A chat message or monitor status is not a substitute.
+  `member_report_result`. The stored report is the first line (title) and a
+  short summary of changes, verification, and blockers. Publish a longer
+  document with `member_publish_deliverable` and quote its id in that summary.
+  A chat message or monitor status is not a substitute.
 - After the report is accepted, remain available for a targeted follow-up; do
   not silently broaden the original scope.
 

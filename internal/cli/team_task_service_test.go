@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"reasonix/internal/control"
 	"reasonix/internal/team"
@@ -272,5 +273,75 @@ func TestTeamTaskServiceReportWakesLeaderByNameDiffers(t *testing.T) {
 	}
 	if again := wire.consumeWakeups("boss"); len(again) != 0 {
 		t.Fatalf("wakeup must surface once, got %v", again)
+	}
+}
+
+func TestReportStoresTitleAndSummaryOnTheBoard(t *testing.T) {
+	root := t.TempDir()
+	teamStore, err := team.NewTeamStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := teamStore.Save(team.TeamDoc{Document: team.Document{SchemaVersion: team.SchemaVersion}, Teams: []team.Team{{
+		Name: "alpha", Template: []team.MemberSlot{
+			{MemberID: "lead", Leader: true, Status: team.MemberStatusActive},
+			{MemberID: "coder", Role: team.RoleCoder, Status: team.MemberStatusActive},
+		},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	board, err := team.NewSQLiteStore(context.Background(), filepath.Join(root, "board.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer board.Close()
+	service := newTeamTaskService(teamStore, board, "", func(team.MemberBinding) (control.SessionAPI, error) {
+		return &taskBackendStub{}, nil
+	}).forTeam("alpha")
+	if _, err := service.assignSubtask(context.Background(), "coder", "implement the change", "context"); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := service.report("coder", "", "标题\n"+strings.Repeat("x", reportSummaryMaxRunes+50)+" TAIL-MARKER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(receipt, "stored title and summary") || !strings.Contains(receipt, "member_publish_deliverable") {
+		t.Fatalf("receipt = %q", receipt)
+	}
+	page, err := board.ReadAfter(context.Background(), team.BoardShared, 0, team.Filter{Stamped: team.Identity{MemberID: "lead"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summaries []string
+	for _, ev := range page.Events {
+		summaries = append(summaries, ev.Summary)
+		if strings.Contains(ev.Summary, "TAIL-MARKER") {
+			t.Fatalf("board kept the full report: %q", ev.Summary)
+		}
+	}
+	if !strings.Contains(strings.Join(summaries, "\n"), "标题") {
+		t.Fatalf("board summaries = %q", summaries)
+	}
+}
+
+func TestReportTitleAndSummaryKeepsAShortReport(t *testing.T) {
+	got, clipped := reportTitleAndSummary("  # route landed\n\nverified the tests.  ")
+	if clipped || got != "route landed\nverified the tests." {
+		t.Fatalf("got %q clipped=%v", got, clipped)
+	}
+}
+
+func TestReportTitleAndSummaryDropsTheLongBody(t *testing.T) {
+	body := strings.Repeat("正文", 300)
+	got, clipped := reportTitleAndSummary("标题\n" + body + "\nTAIL-MARKER")
+	if !clipped {
+		t.Fatal("a body past the summary cap must be clipped")
+	}
+	if strings.Contains(got, "TAIL-MARKER") {
+		t.Fatalf("stored report kept the tail: %q", got)
+	}
+	title, summary, ok := strings.Cut(got, "\n")
+	if !ok || title != "标题" || utf8.RuneCountInString(summary) != reportSummaryMaxRunes {
+		t.Fatalf("stored %q", got)
 	}
 }

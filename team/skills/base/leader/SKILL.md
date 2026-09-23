@@ -81,7 +81,9 @@ not chat text and not the deprecated discussion tools.
   refused, an escalation is queued, or input arrives, and returns those reasons
   in its result. A `timeout` result means nothing happened — read status once,
   then wait again.
-- A member report is the handoff boundary. Verify its files, tests, and stated
+- A member report is the handoff boundary, and the stored text is a title plus
+  a short summary. Open a quoted deliverable with `member_read_deliverable`
+  and no mode, which returns the outline. Verify its files, tests, and stated
   risks, then reconcile conflicting changes before closing the parent task.
 - If a member is busy, preserve the running turn and assign elsewhere or wait;
   do not mutate its role or backend merely to force progress.
