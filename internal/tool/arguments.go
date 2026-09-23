@@ -24,6 +24,28 @@ type ArgumentValidator interface {
 	ValidateArguments(json.RawMessage) []ArgumentViolation
 }
 
+// ArgumentContractProvider lets a tool expose a host-side schema variant for
+// argument validation while its provider-visible schema stays frozen. It exists
+// for a schema that cannot state its own rule: atomic_write's "path, or ops with
+// at least one entry" is not expressible in JSON Schema, so the provider schema
+// keeps `required:["path"]` (byte-stable, what the model is told) and this
+// variant drops it, leaving the tool's ArgumentValidator to enforce the rule.
+// Only ValidateArguments consults it; Schemas and contract entries never do.
+type ArgumentContractProvider interface {
+	ArgumentContractSchema() json.RawMessage
+}
+
+// contractSchema returns the schema argument validation must compile: the
+// tool's contract variant when it publishes one, otherwise its provider schema.
+func contractSchema(target Tool) json.RawMessage {
+	if provider, ok := target.(ArgumentContractProvider); ok {
+		if variant := provider.ArgumentContractSchema(); len(variant) > 0 {
+			return variant
+		}
+	}
+	return target.Schema()
+}
+
 // CapabilityArgumentContract is the effective inner contract exposed when a
 // stable proxy injects target-specific fields such as a skill name.
 type CapabilityArgumentContract struct {
@@ -79,7 +101,7 @@ func ValidateArguments(target Tool, raw json.RawMessage) ArgumentValidationResul
 	if target == nil {
 		return ArgumentValidationResult{CompileErr: fmt.Errorf("argument validation target is nil")}
 	}
-	result := ValidateJSONSchemaValue(target.Schema(), NormalizeArguments(raw))
+	result := ValidateJSONSchemaValue(contractSchema(target), NormalizeArguments(raw))
 	if result.CompileErr != nil {
 		if _, thirdParty := target.(MCPMetadata); thirdParty {
 			result.Skipped = true

@@ -155,6 +155,7 @@ var pathBoundWriterNames = map[string]bool{
 	"notebook_edit": true,
 	"delete_range":  true,
 	"delete_symbol": true,
+	"atomic_write":  true,
 }
 
 // BindWritePaths returns a copy of reg where built-in writers are re-bound to
@@ -292,6 +293,8 @@ func extractWritePathsFromArgs(toolName, workDir string, args json.RawMessage) (
 			resolveMaybeRelative(workDir, p.SourcePath),
 			resolveMaybeRelative(workDir, p.DestinationPath),
 		}, nil
+	case "atomic_write":
+		return extractAtomicWritePaths(workDir, args)
 	default:
 		var p struct {
 			Path string `json:"path"`
@@ -304,6 +307,44 @@ func extractWritePathsFromArgs(toolName, workDir string, args json.RawMessage) (
 		}
 		return []string{resolveMaybeRelative(workDir, p.Path)}, nil
 	}
+}
+
+// extractAtomicWritePaths reports every file one atomic_write call can touch: the
+// top-level path plus each ops[] entry's own path. A transaction that names any
+// unreadable or empty target is rejected here rather than at the write, so the
+// write lease and a sub-agent's write_paths claim both cover the whole call —
+// never a subset that would leave one target unguarded.
+func extractAtomicWritePaths(workDir string, args json.RawMessage) ([]string, error) {
+	var p struct {
+		Path string `json:"path"`
+		Ops  []struct {
+			Path string `json:"path"`
+		} `json:"ops"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	var out []string
+	add := func(path string) error {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return fmt.Errorf("path is required")
+		}
+		out = append(out, resolveMaybeRelative(workDir, path))
+		return nil
+	}
+	if len(p.Ops) > 0 {
+		for _, op := range p.Ops {
+			if err := add(op.Path); err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
+	}
+	if err := add(p.Path); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func resolveMaybeRelative(workDir, path string) string {

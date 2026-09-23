@@ -60,10 +60,27 @@ func readEditSource(ctx context.Context, overlay FileOverlay, path string) (sour
 // lockMutationPath serializes all structured mutations of one real target in
 // this process. Existing hard-link aliases share the native file identity.
 func lockMutationPath(path string) func() {
-	info, _ := os.Stat(path)
-	target := fileops.DiskTarget(path, info)
-	target.Route = "mutation"
-	return fileops.Lock(target)
+	return lockMutationPaths([]string{path})
+}
+
+// lockMutationPaths serializes a multi-target mutation as one in-process hold.
+// The targets are de-duplicated and sorted by the same stable order
+// fileops.LockMany uses, so two overlapping transactions take their stripes in
+// the same sequence and cannot deadlock against each other.
+func lockMutationPaths(paths []string) func() {
+	targets := make([]fileops.Target, 0, len(paths))
+	seen := make(map[fileops.Target]bool, len(paths))
+	for _, path := range paths {
+		info, _ := os.Stat(path)
+		target := fileops.DiskTarget(path, info)
+		target.Route = "mutation"
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
+		targets = append(targets, target)
+	}
+	return fileops.LockMany(targets...)
 }
 
 func (s editSource) observation(overlay FileOverlay, path string) (fileops.Target, fileops.Version, error) {

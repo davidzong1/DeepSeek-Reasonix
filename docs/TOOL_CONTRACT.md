@@ -16,6 +16,7 @@ for old session replay but are omitted from new provider schemas.
 | --- | --- | --- |
 | `bash` | false | Execute a command in the shell and return combined stdout/stderr. Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item - they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands. |
 | `atomic_read` | true | Read a file cheaply. mode=auto|window (numbered lines, offset/limit; auto adds an outline first when the file is large), outline (section/symbol map only), delta (only hunks changed since a read_id you already have — use after you or a teammate edited), tail (last lines). Every read records the snapshot the write tool builds on; results are bounded and mark what was not delivered. |
+| `atomic_write` | false | Write a file atomically and cheaply. mode=create (fails if the file exists), replace (whole content), append (add at EOF; use instead of echo >>), patch (edits:[{old,new}] or range:{start,end}+content; use instead of sed -i), delete. Refuses with the changed hunks when the file differs from what you read; no forced overwrite. ops:[{path,mode,...}] applies several files as one transaction. Returns a bounded receipt, never the file. |
 | `pwsh` | false | Windows-only provider shell. Execute one PowerShell command in an isolated process. `description` is required for new calls; `timeout_ms` applies only to foreground work; `run_in_background=true` returns a `pwsh-*` job id. Use PowerShell 5.1-compatible `;` and `if ($?) {}` syntax. |
 | `bash_output` | true | Hidden compatibility alias for old sessions. New calls use `job_output`. |
 | `code_index` | true | Lightweight built-in code symbol index. Prefer lsp_* for language semantics and installed code graph MCP tools for call graph, impact, and architecture relationships; use this as the local fallback for file outlines and symbol definition candidates, then verify with read_file or grep. |
@@ -161,6 +162,13 @@ coding tools, background-shell lifecycle tools, and the stable capability proxy:
 `bash` on POSIX or `pwsh` on Windows, `job_output`, `job_kill`, `edit_file`,
 `read_file`, `view_image`, `write_file`, `compress` (when registered), and
 `use_capability`.
+
+Team-session builds carry the atomic file pair: with the default
+`[tools] atomic_fs = "team"`, a team build's provider surface swaps
+`read_file`/`write_file`/`edit_file` for `atomic_read`/`atomic_write`. Set it
+to `"all"` to do the same on every build, or `"off"` to keep the legacy trio
+everywhere. The legacy trio stays registered for `use_capability` and replay,
+so the swap is a provider-surface narrowing and never a removal.
 
 Optional tools (`glob`, `grep`, `ls`, `web_fetch`, MCP, skills, subagents, docs,
 session history, memory mutation, workflow, and so on) remain in the host

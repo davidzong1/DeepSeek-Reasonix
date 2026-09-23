@@ -91,6 +91,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 		"read_file":     readFile{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots, overlay: w.FileOverlay},
 		"atomic_read":   atomicRead{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots, overlay: w.FileOverlay},
 		"write_file":    writeFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay, receipt: w.FileWriteReceipt},
+		"atomic_write":  atomicWrite{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay, receipt: w.FileWriteReceipt},
 		"edit_file":     editFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay},
 		"multi_edit":    multiEdit{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay},
 		"move_file":     moveFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig},
