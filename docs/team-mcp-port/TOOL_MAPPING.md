@@ -67,7 +67,7 @@ TASK §6 初版声称 72 个工具,实际注册源**只有 71 个**;TASK.md v1.1
 | leader_ack_checkpoint | mult_agent_mcp.py:7589 def leader_ack_checkpoint | checkpoint | internal/team/schema.go BlackboardDoc rev-N 读取 | 核心 | schema_test.go BlackboardRevFile 测试 |
 | leader_get_recovery_context | mult_agent_mcp.py:7641 def leader_get_recovery_context | leader-lifecycle | — | 废弃 | tmux leader 生命周期产物;新域无对应状态 |
 | leader_activate | mult_agent_mcp.py:7655 def leader_activate | leader-lifecycle | — | 废弃 | tmux leader 生命周期产物;新域无对应状态 |
-| leader_sleep | mult_agent_mcp.py:7999 def leader_sleep | leader-lifecycle | — | 废弃 | tmux leader 生命周期产物;新域无对应状态 |
+| leader_sleep | mult_agent_mcp.py:7999 def leader_sleep | leader-lifecycle | — | 等价能力由 leader_wait 补回 | tmux leader 生命周期产物;新域无对应状态 |
 | leader_mark_task_complete | mult_agent_mcp.py:8067 def leader_mark_task_complete | task-dispatch | internal/team/types.go TaskStatusArchived/Reported | 核心 | types_test.go Task 状态机 |
 | leader_configure_wakeup | mult_agent_mcp.py:8182 def leader_configure_wakeup | runtime-config | 插件 Capability runtime-config.ctl | 插件 | architecture P5 plugin Host 测试 |
 | leader_configure_recovery | mult_agent_mcp.py:8254 def leader_configure_recovery | runtime-config | 插件 Capability runtime-config.ctl | 插件 | architecture P5 plugin Host 测试 |

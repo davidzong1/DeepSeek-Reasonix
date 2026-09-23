@@ -16,8 +16,11 @@ func TestIngestEventPrintsWebSearchFootnotesAfterAnswer(t *testing.T) {
 		t.Fatalf("search result should stay silent until the answer, committed=%v", *m.pendingCommit)
 	}
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "answer only"})
+	// The first chunk already opens the live answer block, so the assertion is on
+	// the transcript the answer lands in, not on the append buffer.
+	got := strings.Join(m.transcript, "\n")
 	m.ingestEvent(event.Event{Kind: event.Message, Text: "answer only"})
-	got := strings.Join(*m.pendingCommit, "\n")
+	got = strings.Join(m.transcript, "\n")
 	if !strings.Contains(got, "answer only") || !strings.Contains(got, "Change Log") || !strings.Contains(got, "https://api-docs.deepseek.com/updates/") {
 		t.Fatalf("committed=%q, want answer then title/url footnotes", got)
 	}

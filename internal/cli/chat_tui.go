@@ -212,11 +212,12 @@ type chatTUI struct {
 	reasoningNative bool
 	thinkStart      time.Time
 	// answerIdx is the transcript index of the streaming answer block (rewritten in
-	// place as completed paragraphs arrive); -1 when none is open. answerFlushed is
-	// how many bytes of pending have already been rendered into it, so a Text packet
-	// that doesn't close a new paragraph re-renders nothing.
-	answerIdx     int
-	answerFlushed int
+	// place as text arrives); -1 when none is open. answerFlushed/answerPainted are
+	// the pending and painted byte counts, answerPaintedAt when it last repainted.
+	answerIdx       int
+	answerFlushed   int
+	answerPainted   int
+	answerPaintedAt time.Time
 	// toolStreamIdx is the transcript index of a running tool's live-output block
 	// (streamed via ToolProgress under the tool card); -1 when none. toolStreamID
 	// is the call ID it belongs to. Only a bounded tail is kept — the last few

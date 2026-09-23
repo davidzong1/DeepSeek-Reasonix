@@ -12,11 +12,13 @@ import (
 	"reasonix/internal/tool"
 )
 
-// The waiting primitive's bounds. The default keeps one wait from occupying a
-// turn indefinitely; the ceiling keeps the retired tmux flow's contract
-// (leader_sleep(max_seconds=600)) reachable when a caller asks for it.
+// The waiting primitive's bounds, both in the schema and enforced by the host.
+// A wait is event-driven, so it is meant to be long: the floor is also what an
+// unset argument takes, and the ceiling keeps the retired tmux flow's contract
+// (leader_sleep(max_seconds=3600)) reachable when a caller asks for it.
 const (
-	leaderWaitDefaultTimeout = 600 * time.Second
+	leaderWaitMinTimeout     = 1200 * time.Second
+	leaderWaitDefaultTimeout = leaderWaitMinTimeout
 	leaderWaitMaxTimeout     = 3600 * time.Second
 )
 
@@ -216,15 +218,16 @@ func (t *leaderWaitTool) observe(events []WaitEvent) {
 }
 
 // leaderWaitTimeout validates the caller's request against the bounds. Zero
-// means "unset" and takes the default; a negative or over-ceiling value is
+// means "unset" and takes the default; below the minimum or over the ceiling is
 // refused here as well as in the schema, because a host must not depend on the
 // provider having validated the arguments for it.
 func leaderWaitTimeout(seconds int) (time.Duration, error) {
 	if seconds == 0 {
 		return leaderWaitDefaultTimeout, nil
 	}
-	if seconds < 0 || time.Duration(seconds)*time.Second > leaderWaitMaxTimeout {
-		return 0, fmt.Errorf("leader_wait: timeout_seconds must be between 1 and %d", int(leaderWaitMaxTimeout.Seconds()))
+	if seconds < int(leaderWaitMinTimeout.Seconds()) || time.Duration(seconds)*time.Second > leaderWaitMaxTimeout {
+		return 0, fmt.Errorf("leader_wait: timeout_seconds must be between %d and %d",
+			int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds()))
 	}
 	return time.Duration(seconds) * time.Second, nil
 }

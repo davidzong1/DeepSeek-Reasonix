@@ -231,7 +231,7 @@ func TestLeaderWaitNeverTakesAWorkspaceWriteLease(t *testing.T) {
 	if !wait.ReadOnly() {
 		t.Fatal("leader_wait must be read-only: a writer classification takes the workspace write lease")
 	}
-	effects := evidence.ClassifyToolCall("leader_wait", json.RawMessage(`{"timeout_seconds":1}`), wait.ReadOnly())
+	effects := evidence.ClassifyToolCall("leader_wait", json.RawMessage(`{"timeout_seconds":1200}`), wait.ReadOnly())
 	if !effects.Known || effects.WorkspaceMutation {
 		t.Fatalf("leader_wait effects = %+v, want a known call with no workspace mutation", effects)
 	}
@@ -248,7 +248,7 @@ func TestLeaderWaitIsNeverBatchedInParallel(t *testing.T) {
 	if !ok {
 		t.Fatal("leader_wait must implement BatchClassifier or the partitioner falls back to ReadOnly")
 	}
-	class := classifier.ClassifyCall(json.RawMessage(`{"timeout_seconds":1}`))
+	class := classifier.ClassifyCall(json.RawMessage(`{"timeout_seconds":1200}`))
 	if !class.Known || !class.ReadOnly || class.ParallelSafe {
 		t.Fatalf("leader_wait class = %+v, want known+read-only+not-parallel-safe", class)
 	}
@@ -263,7 +263,7 @@ func TestLeaderWaitToolBlocksUntilTheBusSignals(t *testing.T) {
 	wait := leaderWaitToolFrom(t, service)
 	done := make(chan string, 1)
 	go func() {
-		out, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":60}`))
+		out, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":1200}`))
 		if err != nil {
 			out = "error: " + err.Error()
 		}
@@ -292,10 +292,11 @@ func TestLeaderWaitToolReportsTimeoutAndValidatesItsBound(t *testing.T) {
 		wantErr bool
 	}{
 		{0, leaderWaitDefaultTimeout, false},
-		{1, time.Second, false},
-		{600, leaderWaitMaxTimeout, false},
+		{int(leaderWaitMinTimeout.Seconds()), leaderWaitMinTimeout, false},
+		{int(leaderWaitMaxTimeout.Seconds()), leaderWaitMaxTimeout, false},
+		{int(leaderWaitMinTimeout.Seconds()) - 1, 0, true},
+		{int(leaderWaitMaxTimeout.Seconds()) + 1, 0, true},
 		{-1, 0, true},
-		{601, 0, true},
 	} {
 		got, err := leaderWaitTimeout(tc.seconds)
 		if tc.wantErr {
@@ -319,15 +320,18 @@ func TestLeaderWaitToolReportsTimeoutAndValidatesItsBound(t *testing.T) {
 	if err := json.Unmarshal(wait.Schema(), &dec); err != nil {
 		t.Fatal(err)
 	}
+	// The schema is the provider-visible half of the same bound, so it is read
+	// back rather than trusted to have been written from the constants.
 	bound, ok := dec.Properties["timeout_seconds"]
-	if !ok || bound.Minimum != 1 || bound.Maximum != int(leaderWaitMaxTimeout.Seconds()) {
-		t.Fatalf("schema bound = %+v, want 1..%d", bound, int(leaderWaitMaxTimeout.Seconds()))
+	if !ok || bound.Minimum != int(leaderWaitMinTimeout.Seconds()) || bound.Maximum != int(leaderWaitMaxTimeout.Seconds()) {
+		t.Fatalf("schema bound = %+v, want %d..%d", bound,
+			int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds()))
 	}
-	// The parent deadline is what fires here, so the tool's own 60s bound never
-	// costs this test a minute of wall clock.
+	// The parent deadline is what fires here, so the tool's own floor never costs
+	// this test twenty minutes of wall clock.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	out, err := wait.Execute(ctx, json.RawMessage(`{"timeout_seconds":60}`))
+	out, err := wait.Execute(ctx, json.RawMessage(`{"timeout_seconds":1200}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +399,7 @@ func TestLeaderWaitToolDoesNotRepeatAnEventItAlreadyReported(t *testing.T) {
 	wait := leaderWaitToolFrom(t, service)
 	bus.Signal(leaderReportEvent("alpha-1"))
 
-	first, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":60}`))
+	first, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":1200}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +410,7 @@ func TestLeaderWaitToolDoesNotRepeatAnEventItAlreadyReported(t *testing.T) {
 	// the replay would say so instead of timing out.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	second, err := wait.Execute(ctx, json.RawMessage(`{"timeout_seconds":60}`))
+	second, err := wait.Execute(ctx, json.RawMessage(`{"timeout_seconds":1200}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +422,7 @@ func TestLeaderWaitToolDoesNotRepeatAnEventItAlreadyReported(t *testing.T) {
 	}
 	// A genuinely new occurrence still wakes it.
 	bus.Signal(leaderReportEvent("alpha-2"))
-	third, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":60}`))
+	third, err := wait.Execute(context.Background(), json.RawMessage(`{"timeout_seconds":1200}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +451,7 @@ func TestLeaderWaitBypassesThePlanBoundary(t *testing.T) {
 		Name:     "leader_wait",
 		ReadOnly: wait.ReadOnly(),
 		Safety:   safety,
-		Args:     json.RawMessage(`{"timeout_seconds":1}`),
+		Args:     json.RawMessage(`{"timeout_seconds":1200}`),
 	})
 	if decision.Blocked {
 		t.Fatalf("the wait must stay reachable while planning: %s", decision.Message)

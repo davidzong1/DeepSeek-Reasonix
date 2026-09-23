@@ -102,7 +102,8 @@ func newLeaderWaitTool(service *teamTaskService, teamName string) tool.Tool {
 	const desc = "Block until the team reports something worth acting on (a member result, a cancellation, a refused dispatch, a queued escalation, or new user input), then return the reasons. " +
 		"Use this instead of sleeping in bash or re-reading leader_check_member_status: the reason arrives in this result, so waking costs no extra request. " +
 		"Returns timeout when nothing arrived before timeout_seconds."
-	const schema = `{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":1,"maximum":600,"description":"Seconds to wait before returning timeout. Defaults to 120."}},"additionalProperties":false}`
+	schema := fmt.Sprintf(`{"type":"object","properties":{"timeout_seconds":{"type":"integer","minimum":%d,"maximum":%d,"description":"Seconds to wait before returning timeout. Defaults to %d."}},"additionalProperties":false}`,
+		int(leaderWaitMinTimeout.Seconds()), int(leaderWaitMaxTimeout.Seconds()), int(leaderWaitDefaultTimeout.Seconds()))
 	return &leaderWaitTool{
 		teamTaskTool: &teamTaskTool{name: "leader_wait", desc: desc, schema: json.RawMessage(schema), service: service, teamName: teamName, leader: true},
 		signal:       leaderWaitSignalSource(service),

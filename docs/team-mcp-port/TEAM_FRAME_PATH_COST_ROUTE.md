@@ -1,8 +1,9 @@
 # 优化路线 —— 帧路径成本（team session 全成员思考时的卡顿）
 
 > 状态：**分析已完成（实测见 §2）；四条改动已拍板（2026-09-22）；F0 与 Part A（F-A1/F-A2）、
-> Part B（F-B1/F-B2）均已完成并过门禁**（2026-09-22，两段合并后的树上实跑）。节点状态见 §7，
-> 证据只写已实跑过的。**未提交**：工作区是共享的，提交/合并由用户决定。
+> Part B（F-B1/F-B2）均已完成并过门禁**（2026-09-22，两段合并后的树上实跑）。追加节点 **F-C1**
+> （段落内实时预览 + 重绘节流，2026-09-23 用户报「输出停顿后一次跳一大段，只有被选中成员这样」）
+> 已完成。节点状态见 §7，证据只写已实跑过的。**未提交**：工作区是共享的，提交/合并由用户决定。
 > 本文档只描述现象、实测、改造方向与 A/B 拆分，**不把任何未实施的东西描述为已实现**；节点状态只在 §7 更新。
 > 权威优先级：用户拍板 > `docs/team-mcp-port/TASK.md` > 本文档 > 实现代码注释。
 > 关联：`TEAM_MEMBER_PARALLELISM_ROUTE.md`（同一帧线程的前一轮改造，本文档复用其 A/B 拆分纪律与门禁口径）、
@@ -48,6 +49,14 @@
 饱和条件：`成员数 × 每人 chunk 速率 ≥ 4,000/s`。单条成本与 transcript 长度无关（实测 1/201/1001/3001 块均为 44–45 µs），
 所以占用率**随成员数线性叠加**——这就是「全员思考」才是触发条件的原因。
 
+> **已绑定成员的 delta 不再是常数（2026-09-23 修订）**：上表这一行测的是「一个 chunk 到达」
+> 的成本，而当时的 `streamAnswer` 只在段落闭合时才重绘，多数 chunk 几乎不做事。段落内实时
+> 预览（`internal/cli/answer_stream.go`）让该行随回答长度增长，因此加了 `answerPaintInterval`
+> （50ms）节流；本机同一 fixture 重测：`View()` 138 µs、后台 delta 50 µs、
+> **绑定 delta 132 µs（节流后，未被节流的 chunk 走早退路径）**、输入按键 90 µs、鼠标移动 47 µs。
+> 读这一行时注意它量的是**节流窗口内的均值**：命中重绘的那一条是 O(回答长度)（实测 3000 chunk
+> 的段落流：首条 0.77ms、81KB 时 4.3ms），未命中的一条是 ~50 µs。
+>
 > 上表由 `internal/cli/frame_cost_fixture_test.go` 的 `TestFrameCostBaseline` 复现（同一台机器上的
 > 多次运行落在 ±10% 内：`View()` 202–242 µs、后台 delta 45–47 µs、绑定 delta 51–54 µs、
 > 输入按键 81–85 µs、鼠标移动 45–47 µs）。换机器/换终端尺寸会整体平移，**用同一台机器上的前后对照读结论**。
@@ -456,6 +465,7 @@ go run ./tools/repolint                                            # 6 条既有
 | F-A2 | 不可见事件不产生消息（保留区迁到 pump） | Part A | **已完成** | `waitForMemberEvent(pump, bound)` 的可见过滤 + `team_member_event_batch.go` 的 `hold`/`heldTurn`/`dropHeld`/`dropAllHeld`；`session.live` 字段已删除。用例：`TestBackgroundDeltaDoesNotBecomeAMessage`（负向断言：只有不可见事件时等待必须继续阻塞）、`TestRetainedTurnReplaysInOrderAndClears`、`TestRetainedTurnEndsWithThePump`、`TestHoldAppliesTheQueuePolicies`。变异 4 处（去掉可见过滤 / cap 丢最新 / TurnDone 不清 hold / 重放不清 hold）全部去掉即红（已验） |
 | F-B1 | `renderTranscript` 去 `JoinHorizontal`（字节等价门禁） | Part B | **已完成** | `internal/cli/transcript.go` 的 `renderTranscript` 改为逐行 `line + scrollbarCell(...)`；`renderTranscriptRow` 作为等价性参照保留。用例 3 条（`frame_render_cost_test.go`：7 形状表驱动字节比对、宽字符/emoji 行、带样式行）+ 1 条不变量（`TestWrapPadsEveryLineToTheContentWidth`）；变异验证：行尾去掉 `cw` 补齐即 4 形状转红。基准（F0 的 `TestFrameCostBaseline`，同一模型前后对照）：`View()` **237,341 → 132,716 ns/op**（本机），低于文档预期的 −150 µs 量级，原因见 §5.3 的落地结果 |
 | F-B2 | 包装缓存增量维护（消冷档位） | Part B | **已完成** | `internal/cli/wrap_cache.go` 的 `wrapBlockOffsets`/`wrapDirty`/`markWrapDirty`/`rewrapDirtyBlocks`/`setWrappedBlock`；`transcript.go` 的 `setTranscriptBlock` 改记 dirty 区间；`team_replay.go` 改走 `setWrappedBlock`；`chat_tui.go` 加两个字段并用等量删除抵消（净增 0 行，repolint 的 `chat_tui.go` 权重不变）。用例 5 条（`frame_wrap_cache_test.go`）；变异验证：`markWrapDirty` 换回 `invalidateWrapFrom` 即探针报「re-wrapped 304 blocks, want 1」而等价性用例仍绿。基准：wrap 部分 1,966,960 → 5,537 ns/op（≈355×），帧路径含 `feedViewportContent` 地板 516,984 → 见 §5.4 的表 |
+| F-C1 | **段落内实时预览 + 重绘节流**（2026-09-23，用户报「输出停顿后一次跳一大段，只有被选中成员这样」） | 追加 | **已完成** | `internal/cli/answer_stream.go`（新文件：`answerPaintInterval`/`streamAnswer`/`commitPending`/`resetAnswerStream`/`flushableMarkdownPrefix`/`streamedMarkdownPreview`/`openMathAt`，自 `chat_tui_stream.go` 抽出并改写）；`chat_tui.go` 的 `answerPainted`/`answerPaintedAt`；`chat_tui_stream.go` 的 `clearTranscriptDisplay` 调 `resetAnswerStream`。**根因实测**：`flushableMarkdownPrefix` 只到最后一个空行，一段没有空行的回答（段落/列表/长围栏）此前**一个字节都不显示**，直到空行到达才一次性画出来（探针：5200 字节累积、painted=0、`answerIdx=-1`）。用例 5 条（`answer_stream_preview_test.go`）：预览函数表（含 `$`/`$$` 未闭合、开围栏、行尾）、首 chunk 即开块、节流窗口内不重绘而窗口外重绘、闭合块立即重绘、`clearTranscriptDisplay` 关闭答案块。**节流依据**：单次重绘 O(回答长度)（3000 chunk 段落流：首条 0.77ms、81KB 时 4.32ms），逐 chunk 重绘是 O(n²) 且会经 pump 的 delta 合流再次变成「跳一大段」。**实测**：200 chunk 段落流，painted 从 0 变为随流增长（200ms/1040B 累积 vs 843B 已绘），3000 chunk 节流后均值 248 µs/chunk。**附带修复**：`clearTranscriptDisplay` 原先不复位 `answerIdx`/`answerFlushed`，`handleReplayReadReady` 走该路径且无 `finalizeStreamed`，会让下一个 chunk 把回答写进重放块（既有缺陷，预览使其更易触发） |
 
 状态取值：`未开始` / `进行中` / `待验收` / `已完成` / `阻塞`。**阻塞必须写真实原因，不得改写为通过。**
 
@@ -470,6 +480,7 @@ go run ./tools/repolint                                            # 6 条既有
 | **新增 `chat_tui.go` 的 Update 分支** | 该文件的复杂度/体量已在 ratchet 基线上（§5.5）；F-A1/F-A2 都不需要新分支。 |
 | **换自定义 renderer / 关掉 bubbletea 的逐消息 `View()`** | 那是重写渲染层，超出本轮范围；F-B1 把 `View()` 本身降到足够便宜是更小的改动。 |
 | **`bottomRows` 记忆化 / 渲染路径的其他微优化** | `TEAM_MEMBER_PARALLELISM_ROUTE.md` §4.2 A5 已实测 7–15 µs/帧（<0.1% 单帧预算）并决定不做；本轮不推翻。 |
+| **把未完成尾部单独渲染成纯文本**（F-C1 的备选） | 会让 `buildCopyTranscript` 复现不出可见块，从而静默关掉整段 transcript 的选区复制（`transcript_copy.go:197` 的逐行等值门禁），并把一份 markdown 文档劈成两段渲染（有序列表重新计数、表格/引用分块）。改走「整份 `raw` 一起渲染、只截断未闭合的数学跨度」后，`transcriptSource` 无需新字段，复制与 resize 路径一行不改。 |
 | **动成员的 provider/agent 侧做 delta 限流** | 那会改变模型可见的行为且落在冻结目录；本文档只在宿主侧消费处治理。 |
 | **`feedViewportContent` 的 O(transcript) 整份拷贝**（帧路径剩余的 ~0.5 ms 地板） | 它是 F-B2 修完之后帧路径上剩下的大头（`wrap_cache.go:80-88` 每次把整张扁平行表 clone 给 viewport）。本次不做：改它要动 bubbles viewport 的持有语义（`SetContentLines` 的所有权），风险与收益不匹配。**后果必须写明**：每条成员消息的成本从 ~2.5 ms 降到 ~0.5 ms，**不是降到 0**；团队越长、历史越厚，这条地板越高。 |
 

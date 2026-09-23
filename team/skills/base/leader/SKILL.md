@@ -76,6 +76,11 @@ not chat text and not the deprecated discussion tools.
 
 - Use `leader_check_member_status` to read durable task state and reports. Do
   not poll member terminals or treat monitor output as completion evidence.
+- After dispatching, wait with `leader_wait` rather than re-reading status in a
+  loop: it blocks until a member reports, a task is cancelled, a dispatch is
+  refused, an escalation is queued, or input arrives, and returns those reasons
+  in its result. A `timeout` result means nothing happened — read status once,
+  then wait again.
 - A member report is the handoff boundary. Verify its files, tests, and stated
   risks, then reconcile conflicting changes before closing the parent task.
 - If a member is busy, preserve the running turn and assign elsewhere or wait;
@@ -112,11 +117,14 @@ not chat text and not the deprecated discussion tools.
 - If a command batch is blocked by a dependency or permission decision, split
   the batch and retry only the necessary command. Do not blindly repeat the
   whole batch.
-- While waiting for external events (such as member reports, window dialogues, etc.), 
-  use `leader_sleep` to enter sleep mode. The initial call sets the minimum sleep 
-  duration to 600 seconds. If there is no trigger during the entire sleep process, 
-  increase the sleep duration by 300 seconds; otherwise, reset it to 600 seconds. 
-  The maximum sleep duration should not exceed 3600 seconds
+- While waiting for member reports, window dialogue, or an escalation, block on
+  `leader_wait` instead of polling: it returns the moment something worth acting
+  on happens, with the reasons already in the tool result, so a wakeup costs no
+  extra request. `timeout_seconds` defaults to 1200 and must be within
+  1200–3600; when it returns `timeout`, read the state again with
+  `leader_check_member_status` and wait once more. Never sleep in bash and never
+  poll in a loop — a foreground `sleep` holds the whole step, so nothing can
+  reach you while it runs.
 
 ## Completion Gate
 
