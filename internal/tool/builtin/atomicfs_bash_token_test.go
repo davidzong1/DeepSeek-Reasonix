@@ -135,10 +135,9 @@ func TestAtomicVsBashTokenComparison(t *testing.T) {
 		}
 	}
 
-	// The symbol locator's own row (§6.2): same job, but the model already knows
-	// which symbol to change, so no numbered window has to come back first. It is
-	// the SAME file and the SAME function as the pair row above — the only
-	// difference is that this shape does not pay for the window.
+	// The symbol locator's row (§6.2): same file and function as the pair above,
+	// but the model already knows which symbol to change, so no numbered window
+	// has to come back first — that window is the only saving measured here.
 	symbolArgs := atomicMeasureJSONSize(t, map[string]any{
 		"path": "big.go", "mode": "patch", "symbol": "Target",
 		"content": "func Target() int {\n\treturn 2\n}\n",

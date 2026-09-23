@@ -192,11 +192,9 @@ func (t *leaderWaitTool) Execute(ctx context.Context, args json.RawMessage) (str
 	if t.teamTaskTool != nil {
 		team, leaderID = t.teamName, t.memberID
 	}
-	// Lines typed while the leader was working are delivered here, before the
-	// wait blocks. Accepting them is safe: this call holds no write lease, and
-	// the text is queued as guidance for the next step rather than applied
-	// inside the wait. A line that arrives after the presence flag is set is
-	// steered by the composer and wakes this call instead.
+	// Lines typed while the leader was working are handed over before the wait
+	// blocks: no write lease is held, so accepting them is safe. A line arriving
+	// later is steered by the composer and wakes this call instead.
 	if out, done := t.deliverHeldInput(sig, team, leaderID); done {
 		return out, nil
 	}

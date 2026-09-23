@@ -266,6 +266,22 @@ func (m *chatTUI) focusedLeader() bool {
 	return p.session.current != "" && p.session.current == p.firstLeader()
 }
 
+// consumeLeaderLineWhileRunning is that routing as the Enter handler needs it: it
+// reports whether the line was consumed, and clears the composer only when the
+// hand-off succeeded, so a refused steer leaves the draft to retry.
+func (m *chatTUI) consumeLeaderLineWhileRunning(body string) bool {
+	handled, err := m.queueLeaderInputWhileRunning(body, body)
+	if !handled {
+		return false
+	}
+	if err == nil {
+		m.resetComposerInput()
+		m.pastedBlocks = nil
+		m.resetQueueNavigation()
+	}
+	return true
+}
+
 // queueLeaderInputWhileRunning handles a line typed at the leader while its
 // turn is already running.
 //

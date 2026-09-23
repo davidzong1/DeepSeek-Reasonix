@@ -1279,13 +1279,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, finalize(m, cmds)
 				}
 				body := m.expandPastedBlocks(line)
-				if handled, err := m.queueLeaderInputWhileRunning(body, body); handled {
-					if err != nil {
-						return m, finalize(m, cmds)
-					}
-					m.resetComposerInput()
-					m.pastedBlocks = nil
-					m.resetQueueNavigation()
+				if m.consumeLeaderLineWhileRunning(body) {
 					return m, finalize(m, cmds)
 				}
 				items := m.inboxPreviews()
