@@ -12,7 +12,7 @@ schema 不再暴露这些旧名。
 
 | 工具 | Read-only | 说明 |
 | --- | --- | --- |
-| `bash` | false | 执行 shell 命令并返回 stdout/stderr。构建、测试、git、包管理器等使用它；读写查找文件优先使用专用工具。 |
+| `bash` | false | 执行 shell 命令并返回 stdout/stderr。构建、测试、git、包管理器等使用它；搜索、读取或修改文件请用 atomic_read / atomic_write，而不是 cat、sed 或 >>。 |
 | `pwsh` | false | Windows 专用 provider shell；每次调用启动一个隔离 PowerShell 进程。新调用必须带 `description`；`timeout_ms` 只约束前台命令；`run_in_background=true` 立即返回 `pwsh-*` job id。命令使用兼容 PowerShell 5.1 的 `;` 和 `if ($?) {}`。 |
 | `bash_output` | true | 仅供旧会话使用的隐藏兼容别名；新调用使用 `job_output`。 |
 | `code_index` | true | 轻量内置代码符号索引；优先使用 `lsp_*` 或代码图 MCP，缺失时用它兜底。 |
@@ -22,7 +22,7 @@ schema 不再暴露这些旧名。
 | `delete_symbol` | false | 用 Go AST 删除 Go 源文件中的命名符号。 |
 | `edit_file` | false | 将文件中的唯一精确字符串替换为另一个字符串。 |
 | `atomic_read` | true | 低成本读取文件。mode=auto|window（带行号，offset/limit；auto 在文件较大时先给大纲）、outline（仅符号/章节地图）、delta（仅回自某个 read_id 以来变化的 hunk，用于自己或队友刚改过之后）、tail（末尾若干行）。每次读取都会记录写工具所依赖的快照；结果有界并标注未交付的部分。 |
-| `atomic_write` | false | 原子且低成本地写文件。mode=create（文件已存在则失败）、replace（整体内容）、append（追加到 EOF，替代 echo >>）、patch（edits:[{old,new}] 或 range:{start,end}+content，替代 sed -i）、delete。`symbol` 按大纲里的一个符号替换其整个区间，不必先读。当磁盘内容与所读不一致时拒绝并附变更 hunk；不提供强制覆盖。ops:[{path,mode,...}] 把多个文件作为一个事务提交。只回有界回执，绝不回文件内容。 |
+| `atomic_write` | false | 原子地写文件。mode=create（文件已存在则失败）、replace、append、patch、delete。patch 用 edits:[{old,new}]、range:{start,end}+content 或 symbol（大纲里的一个符号，不必先读）定位。当磁盘内容与所读不一致时拒绝并附变更 hunk；不提供强制覆盖。ops:[{path,mode,...}] 把多个文件作为一个事务提交。只回有界回执，绝不回文件内容。 |
 | `glob` | true | 查找匹配 glob pattern 的文件。无依赖的 glob 应同轮下发。 |
 | `get_goal` | true | 读取当前目标及其进程内 activation 和停跑原因；会话没有目标时返回 `goal: null`。 |
 | `grep` | true | 在文件或目录下按正则搜索文本。无依赖的搜索应同轮下发。 |

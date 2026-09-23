@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -24,9 +25,59 @@ var atomicFSSubstitutions = map[string]string{
 	"edit_file":  AtomicWriteToolName,
 }
 
+// memberDeferredTools are tools a team member still has registered and can
+// still reach through use_capability, but that never enter its provider-visible
+// schema. A member's tool schemas are re-paid as cache-miss bytes on every
+// thinking step, so only the names a member reaches for directly stay on the
+// surface. This set is the complement of that surface, not a registry change:
+// every name here is executed exactly as before once it is called by name.
+//
+// Keep it sorted and keep it out of CoreProviderToolNames: the leader and every
+// non-team build keep today's surface byte-for-byte.
+var memberDeferredTools = []string{
+	"ask",
+	"compress",
+	"create_goal",
+	"get_goal",
+	"job_kill",
+	"job_output",
+	"member_list_deliverables",
+	"member_set_approval_mode",
+	"team_knowledge_recall",
+	"todo_write",
+	"update_goal",
+	"view_image",
+	"web_search",
+}
+
+// dropMemberDeferredTools removes the deferred member tools from an allowlist
+// that applyUnifiedProviderToolSurface already computed. Only the member role
+// narrows; any other role — empty, "leader", or a value a future builder
+// introduces — returns the list unchanged. An unknown name is ignored rather
+// than reported: a build that never registered web_search simply has nothing to
+// drop there.
+func dropMemberDeferredTools(teamRole string, allow []string) []string {
+	if strings.TrimSpace(teamRole) != skill.TeamRoleMember {
+		return allow
+	}
+	deferred := make(map[string]bool, len(memberDeferredTools))
+	for _, name := range memberDeferredTools {
+		deferred[name] = true
+	}
+	kept := allow[:0]
+	for _, name := range allow {
+		if deferred[strings.TrimSpace(name)] {
+			continue
+		}
+		kept = append(kept, name)
+	}
+	return kept
+}
+
 // applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
 // shared core, host-control tools, provider-visible host additions, and the
-// host's own allowlist.
+// host's own allowlist. A member build narrows once more, dropping the deferred
+// names in memberDeferredTools.
 //
 // visible, when non-nil, narrows the unified part of the surface to the names
 // it lists; tools passed in extra are host-contributed and stay, because the
@@ -38,7 +89,7 @@ var atomicFSSubstitutions = map[string]string{
 // therefore already reachable through use_capability and replay. The host
 // changes which schemas the provider sees, never what this runtime executes.
 // Nil keeps today's behavior byte-for-byte.
-func applyUnifiedProviderToolSurface(reg *tool.Registry, extra []tool.Tool, visible []string) {
+func applyUnifiedProviderToolSurface(reg *tool.Registry, extra []tool.Tool, visible []string, teamRole string) {
 	if reg == nil {
 		return
 	}
@@ -58,7 +109,11 @@ func applyUnifiedProviderToolSurface(reg *tool.Registry, extra []tool.Tool, visi
 			allow = append(allow, candidate.Name())
 		}
 	}
+	// The substitution runs first so the member pass below is applied to the
+	// surface the member actually gets, with the atomic pair already standing in
+	// for the legacy trio.
 	allow = dropSubstitutedLegacy(allow)
+	allow = dropMemberDeferredTools(teamRole, allow)
 	if len(allow) == 0 {
 		if _, ok := reg.Get("use_capability"); ok {
 			allow = []string{"use_capability"}

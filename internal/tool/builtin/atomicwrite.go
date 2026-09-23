@@ -43,7 +43,7 @@ type atomicWrite struct {
 func (atomicWrite) Name() string { return "atomic_write" }
 
 func (atomicWrite) Description() string {
-	return "Write a file atomically and cheaply. mode=create (fails if the file exists), replace (whole content), append (add at EOF; use instead of echo >>), patch (edits:[{old,new}] or range:{start,end}+content; use instead of sed -i), delete. symbol names one outline symbol and replaces its whole span; no prior read. Refuses with the changed hunks when the file differs from what you read; no forced overwrite. ops:[{path,mode,...}] applies several files as one transaction. Returns a bounded receipt, never the file."
+	return "Write a file atomically. mode=create (fails if it exists), replace, append, patch, delete. patch locates by edits:[{old,new}], range:{start,end}+content, or symbol (one outline symbol, no prior read). Refuses with the changed hunks when the file differs from what you read; no forced overwrite. ops:[{path,mode,...}] applies several files as one transaction. Returns a bounded receipt, never the file."
 }
 
 // atomicWriteSchema is the frozen provider schema. It is a named constant so the

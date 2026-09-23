@@ -2015,9 +2015,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
 	ctrl.SetCapabilityProxyRouting(true)
 
-	// Provider-visible tool surface is identical for every role setting before
-	// the extension snapshot freezes registry schemas for cache diagnostics.
-	applyUnifiedProviderToolSurface(reg, opts.ExtraTools, providerVisibleTools(opts, cfg))
+	// Provider-visible tool surface is identical for every role setting except a
+	// member's deferred names; the snapshot below freezes these schemas.
+	applyUnifiedProviderToolSurface(reg, opts.ExtraTools, providerVisibleTools(opts, cfg), opts.TeamRole)
 
 	// Freeze the extension kernel's snapshot of exactly what this build wired.
 	// The snapshot is assembled from the in-hand objects above — discovery

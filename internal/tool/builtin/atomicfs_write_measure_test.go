@@ -203,10 +203,11 @@ func TestAtomicWriteMeasurePrefixBudget(t *testing.T) {
 	}
 	// The write half alone must also fit the byte budget the route froze it at,
 	// so a description that quietly grows is caught here.
-	// Re-measured when `patch` gained its `symbol` locator: one extra string
-	// property plus one description sentence. The gate still is "the pair costs
-	// less than the trio", so a description that keeps growing still fails.
-	const frozenAtomicWriteBytes = 1029
+	// Re-measured when the description was shortened for the member tool tail:
+	// the mode list and locators stay, the "use instead of echo >>/sed -i"
+	// asides moved to bash's own steer. The gate still is "the pair costs less
+	// than the trio", so a description that keeps growing still fails.
+	const frozenAtomicWriteBytes = 920
 	got := atomicMeasurePrefix(t, "atomic_write")
 	if got > frozenAtomicWriteBytes+16 {
 		t.Errorf("atomic_write schema+description = %dB, over the frozen %dB budget", got, frozenAtomicWriteBytes)

@@ -57,7 +57,7 @@ func TestAtomicPairSubstitutesTheLegacyTrio(t *testing.T) {
 	withPair := newReg(AtomicReadToolName, AtomicWriteToolName)
 	applyUnifiedProviderToolSurface(withPair, []tool.Tool{
 		&effectExtraTool{name: AtomicReadToolName}, &effectExtraTool{name: AtomicWriteToolName},
-	}, surface)
+	}, surface, "")
 	got := toolSchemaNames(withPair.Schemas())
 	for _, name := range []string{AtomicReadToolName, AtomicWriteToolName} {
 		if !slices.Contains(got, name) {
@@ -72,7 +72,7 @@ func TestAtomicPairSubstitutesTheLegacyTrio(t *testing.T) {
 
 	// Pair not mounted: the trio stays, so the surface never loses file access.
 	withoutPair := newReg()
-	applyUnifiedProviderToolSurface(withoutPair, nil, surface)
+	applyUnifiedProviderToolSurface(withoutPair, nil, surface, "")
 	got = toolSchemaNames(withoutPair.Schemas())
 	for _, name := range []string{"read_file", "write_file", "edit_file"} {
 		if !slices.Contains(got, name) {
@@ -141,7 +141,7 @@ func TestProviderVisibleSurfaceNarrowsWithoutRevealing(t *testing.T) {
 	}
 	reg.Add(&effectExtraTool{name: "mcp__server__write"})
 
-	applyUnifiedProviderToolSurface(reg, nil, []string{"bash", "multi_edit", "mcp__server__write", "no_such_tool"})
+	applyUnifiedProviderToolSurface(reg, nil, []string{"bash", "multi_edit", "mcp__server__write", "no_such_tool"}, "")
 
 	var names []string
 	for _, s := range reg.Schemas() {
