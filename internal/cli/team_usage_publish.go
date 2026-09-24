@@ -376,6 +376,7 @@ func memberCacheRequest(e event.Event, key team.OwnerKey, route string, obs memb
 		ModelRef:            modelRef,
 		RouteBucket:         strings.TrimSpace(route),
 		TurnID:              e.TurnID,
+		SessionID:           e.SessionID,
 		SessionSequence:     e.Sequence,
 		SessionRequestSeq:   obs.seq,
 		PromptTokens:        usage.PromptTokens,

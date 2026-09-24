@@ -132,10 +132,9 @@ func (c *Controller) ReloadHistoryIfChanged(ctx context.Context, stamp string) (
 		return false, err
 	}
 	c.setLastHistoryStamp(stamp)
-	// The writer's own durable log round-trips to the same provider view.
-	// Replacing the live transcript with that copy drops the in-memory fold
-	// (the gauge then sizes the whole canonical log) without changing what
-	// the next request should send. Keep the live session in that case.
+	// The writer's own durable log round-trips to the same provider view, so
+	// replacing the live transcript with that copy would only drop the in-memory
+	// fold (the gauge then sizes the whole canonical log). Keep the live session.
 	if agent.SameProviderView(c.executor.Session().Snapshot(), messages) {
 		return false, nil
 	}

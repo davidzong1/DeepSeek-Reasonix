@@ -335,3 +335,97 @@ func TestRecorderStampsConfoundsAndModelRef(t *testing.T) {
 		t.Fatalf("sample must be encodable: %v", err)
 	}
 }
+
+// gatewaySplitWithOracleSSE is the usage shape the live gateway sent on
+// 2026-09-24, with the model's own text replaced by a fixed marker: a split-free
+// message_start carrying the whole prompt as an estimate, then a message_delta
+// carrying the served remainder beside the cache read, and the gateway's own
+// OpenAI-dialect account nested under billing_usage. Only counters and the
+// synthetic marker appear.
+func gatewaySplitWithOracleSSE() string {
+	return `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":1312,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"CACHELAB-ACK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":78,"cache_creation_input_tokens":0,"cache_read_input_tokens":1024,"output_tokens":16,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0,"billing_usage":{"source":"oai_chat","semantic":"openai","openai_usage":{"prompt_tokens":1102,"completion_tokens":16,"total_tokens":1118,"prompt_tokens_details":{"cached_tokens":1024,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"input_tokens":0,"output_tokens":0,"input_tokens_details":null}}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+}
+
+// TestRecorderReadsTheGatewayShapeWithItsNestedOracle covers the response shape
+// the live gateway actually sends, which the parser previously could not read at
+// all: its billing block repeats the Anthropic key names with zero values beside
+// its own OpenAI-dialect numbers, so a parser that harvested recognised names at
+// any depth saw two vocabularies in one response and reported no split. The
+// recorder must resolve the split from the protocol events, and record the
+// gateway's own account beside it rather than folding the two together.
+func TestRecorderReadsTheGatewayShapeWithItsNestedOracle(t *testing.T) {
+	up := newUpstream(t, upstreamResponse{status: 200, body: gatewaySplitWithOracleSSE()})
+	rec, err := NewRecorder(up.server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	rec.Begin(TurnContext{Arm: "B1-baseline-repeat", MemberID: "m1", TurnSeq: 2, Expect: "CACHELAB-ACK"})
+	post(t, rec.URL(), []byte(`{"messages":[]}`))
+	s := rec.WaitForSamples(1, time.Second)[0]
+
+	if !s.UsageReported || !s.UsageSplit {
+		t.Fatalf("usage = reported %v split %v problem %q, want a resolved split", s.UsageReported, s.UsageSplit, s.UsageProblem)
+	}
+	if s.UsageShape != UsageShapeAnthropic {
+		t.Fatalf("shape = %q, want %q", s.UsageShape, UsageShapeAnthropic)
+	}
+	// input_tokens is the served remainder, so the prompt is read + input.
+	if s.PromptTokens != 1102 || s.CacheHitTokens != 1024 || s.CacheMissTokens != 78 {
+		t.Fatalf("split = prompt %d hit %d miss %d, want 1102/1024/78", s.PromptTokens, s.CacheHitTokens, s.CacheMissTokens)
+	}
+	if s.CompletionTokens != 16 {
+		t.Fatalf("completion = %d, want 16 (the oracle's zero output_tokens must not win)", s.CompletionTokens)
+	}
+	if !s.UsageOraclePresent || !s.UsageOracleAgrees {
+		t.Fatalf("oracle present/agrees = %v/%v, want the gateway's own account recorded and agreeing",
+			s.UsageOraclePresent, s.UsageOracleAgrees)
+	}
+	if s.UsageOraclePromptTokens != 1102 || s.UsageOracleHitTokens != 1024 || s.UsageOracleMissTokens != 78 {
+		t.Fatalf("oracle = %d/%d/%d, want 1102/1024/78",
+			s.UsageOraclePromptTokens, s.UsageOracleHitTokens, s.UsageOracleMissTokens)
+	}
+	if s.Classify() != ClassWarm {
+		t.Fatalf("class = %s, want %s", s.Classify(), ClassWarm)
+	}
+	if !s.Eligible() {
+		t.Fatal("a resolved, accounted warm sample must enter the baseline")
+	}
+	if s.QualityCheck != QualityPass {
+		t.Fatalf("quality = %s, want the marker found", s.QualityCheck)
+	}
+}
+
+// TestRecorderLeavesTheOracleUndecidedWhenAbsent keeps the oracle a disclosure:
+// a response without the gateway's private block reports no oracle rather than
+// an agreeing one.
+func TestRecorderLeavesTheOracleUndecidedWhenAbsent(t *testing.T) {
+	up := newUpstream(t)
+	rec, err := NewRecorder(up.server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	rec.Begin(TurnContext{Arm: "B1-baseline-repeat", TurnSeq: 2})
+	post(t, rec.URL(), []byte(`{"messages":[]}`))
+	s := rec.WaitForSamples(1, time.Second)[0]
+	if s.UsageOraclePresent || s.UsageOracleAgrees {
+		t.Fatalf("oracle present/agrees = %v/%v, want undecided for a response that carried none",
+			s.UsageOraclePresent, s.UsageOracleAgrees)
+	}
+	if s.UsageOraclePromptTokens != 0 || s.UsageOracleHitTokens != 0 {
+		t.Fatalf("oracle numbers = %d/%d, want unset rather than copied from the protocol reading",
+			s.UsageOraclePromptTokens, s.UsageOracleHitTokens)
+	}
+}

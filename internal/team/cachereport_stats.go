@@ -41,6 +41,11 @@ type CacheReportCoverage struct {
 	// without one is not evidence that its prefix stayed put.
 	DiagnosticsPresent int `json:"diagnostics_present"`
 	DiagnosticsAbsent  int `json:"diagnostics_absent"`
+	// SessionPresent counts samples that named the session they were observed in.
+	// A sample without one was published outside a turn, so it cannot be grouped
+	// into a session: its absence is a coverage gap, never a session of its own.
+	SessionPresent int `json:"session_present"`
+	SessionAbsent  int `json:"session_absent"`
 }
 
 // observe files one scoped sample into the coverage ledger.
@@ -77,6 +82,11 @@ func (c *CacheReportCoverage) observe(rec MemberCacheRequest) {
 		c.DiagnosticsPresent++
 	} else {
 		c.DiagnosticsAbsent++
+	}
+	if strings.TrimSpace(rec.SessionID) == "" {
+		c.SessionAbsent++
+	} else {
+		c.SessionPresent++
 	}
 }
 

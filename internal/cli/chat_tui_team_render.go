@@ -422,9 +422,8 @@ func (p *teamPicker) renderRoster(view *tui.Model, b *strings.Builder, w int) {
 		return
 	}
 	// One index for the whole roster: slotOf scans every team and slot, and the
-	// overlay renders the roster several times per frame (bottomRows), so a
-	// lookup per row per render made the frame O(members²). The map is local, so
-	// it can never serve a slot from a document the picker has reloaded past.
+	// overlay renders the roster several times per frame, so a per-row lookup
+	// made the frame O(members²). Local, so it cannot outlive a reload.
 	slots := p.memberSlotMap()
 	for i, member := range members {
 		status := string(team.MemberStatusActive)

@@ -65,12 +65,21 @@ type Sample struct {
 	UsageEstimated bool   `json:"usage_estimated,omitempty"`
 	// UsageKeys are the raw usage key names the response carried, sorted. They are
 	// the audit trail for how the numbers above were read.
-	UsageKeys        []string `json:"usage_keys,omitempty"`
-	PromptTokens     int      `json:"prompt_tokens,omitempty"`
-	CacheHitTokens   int      `json:"cache_hit_tokens,omitempty"`
-	CacheMissTokens  int      `json:"cache_miss_tokens,omitempty"`
-	CacheWriteTokens int      `json:"cache_write_tokens,omitempty"`
-	CompletionTokens int      `json:"completion_tokens,omitempty"`
+	UsageKeys []string `json:"usage_keys,omitempty"`
+	// UsageOraclePresent records that the response carried the gateway's own
+	// second account of the request. A sample without one is undecided, never
+	// agreeing: the oracle fields stay unset rather than being filled in.
+	UsageOraclePresent      bool     `json:"usage_oracle_present,omitempty"`
+	UsageOracleAgrees       bool     `json:"usage_oracle_agrees,omitempty"`
+	UsageOracleKeys         []string `json:"usage_oracle_keys,omitempty"`
+	UsageOraclePromptTokens int      `json:"usage_oracle_prompt_tokens,omitempty"`
+	UsageOracleHitTokens    int      `json:"usage_oracle_hit_tokens,omitempty"`
+	UsageOracleMissTokens   int      `json:"usage_oracle_miss_tokens,omitempty"`
+	PromptTokens            int      `json:"prompt_tokens,omitempty"`
+	CacheHitTokens          int      `json:"cache_hit_tokens,omitempty"`
+	CacheMissTokens         int      `json:"cache_miss_tokens,omitempty"`
+	CacheWriteTokens        int      `json:"cache_write_tokens,omitempty"`
+	CompletionTokens        int      `json:"completion_tokens,omitempty"`
 	// QualityCheck is one of quality_pass, quality_fail or quality_unchecked:
 	// the frozen task asks for an exact marker, so a missing marker is evidence.
 	QualityCheck string `json:"quality_check"`

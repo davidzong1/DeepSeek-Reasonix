@@ -69,6 +69,10 @@ type MemberCacheRequest struct {
 	// are empty when the event carried none, which is recorded, not invented.
 	TurnID          string `json:"turn_id,omitempty"`
 	SessionSequence uint64 `json:"session_sequence,omitempty"`
+	// SessionID is the only field here that groups requests into a session. Empty
+	// means observed outside a turn: a coverage gap, never a session of its own.
+	// SessionRequestSeq restarts when a member backend is rebuilt: not monotonic within one SessionID.
+	SessionID string `json:"session_id,omitempty"`
 	// SessionRequestSeq counts observed requests within one writer's session.
 	SessionRequestSeq int `json:"session_request_seq,omitempty"`
 	// SecondsSincePrevRequest and HasPrevRequest are per writer session. A first
@@ -82,7 +86,10 @@ type MemberCacheRequest struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	ContextPromptTokens int `json:"context_prompt_tokens,omitempty"`
 	CacheHitTokens      int `json:"cache_hit_tokens"`
-	CacheMissTokens     int `json:"cache_miss_tokens"`
+	// CacheMissTokens is always a reported number: a response carrying no cache
+	// read has no split and leaves the baseline. CacheHitTokens == 0 therefore
+	// reads as "no cache read was reported", never as a cold start.
+	CacheMissTokens int `json:"cache_miss_tokens"`
 	// CacheWriteTokens is a subset of CacheMissTokens, never an addition to it.
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`

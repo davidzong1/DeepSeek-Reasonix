@@ -3,14 +3,12 @@ package cachelab
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,41 +61,6 @@ type TurnContext struct {
 	// Confounds are reasons this arm's samples cannot support a causal claim.
 	Confounds []string
 }
-
-// ReportedUsage is a provider's own usage numbers, read out of the raw response
-// through the vocabulary that response used. Reported with Split false is a real
-// answer too: it means the response carried no cache split, which is not a zero
-// hit rate.
-type ReportedUsage struct {
-	Reported   bool
-	Split      bool
-	Problem    string
-	Shape      string
-	Keys       []string
-	Prompt     int
-	Hit        int
-	Miss       int
-	Write      int
-	Completion int
-}
-
-// Usage-vocabulary names, one per provider family this repository talks to.
-const (
-	UsageShapeAnthropic = "anthropic"
-	UsageShapeOpenAI    = "openai"
-)
-
-// Usage problems, recorded so an excluded sample states why it was excluded.
-const (
-	UsageProblemNoUsage       = "no_usage"
-	UsageProblemNoCacheRead   = "no_cache_read"
-	UsageProblemUnresolved    = "unresolved_vocabulary"
-	UsageProblemNoPrompt      = "no_prompt"
-	UsageProblemNegativeSplit = "negative_split"
-	// UsageProblemBodyReadError marks a 2xx response whose body could not be read
-	// to the end, so the observation is incomplete rather than empty.
-	UsageProblemBodyReadError = "body_read_error"
-)
 
 type pendingSample struct {
 	sample     Sample
@@ -394,6 +357,17 @@ func (r *Recorder) finishSample(idx, status int, body []byte, readErr error) {
 	sample.UsageProblem = usage.Problem
 	sample.UsageShape = usage.Shape
 	sample.UsageKeys = usage.Keys
+	// The gateway's own reading is recorded beside the protocol reading and never
+	// folded into it: it is a private extension some responses omit, so it can
+	// corroborate a sample and can never produce one.
+	sample.UsageOraclePresent = usage.OraclePresent
+	sample.UsageOracleKeys = usage.OracleKeys
+	sample.UsageOracleAgrees = usage.OracleAgrees
+	if usage.OraclePresent {
+		sample.UsageOraclePromptTokens = usage.OraclePrompt
+		sample.UsageOracleHitTokens = usage.OracleHit
+		sample.UsageOracleMissTokens = usage.OracleMiss
+	}
 	if usage.Reported {
 		sample.UsageSource = "response_body"
 		sample.PromptTokens = usage.Prompt
@@ -498,230 +472,4 @@ func collectResponseText(value any, out *strings.Builder) {
 			collectResponseText(child, out)
 		}
 	}
-}
-
-// parseUsage extracts the provider's own usage numbers from a raw response body
-// (plain JSON or an event stream). Numbers are taken last-wins across a stream,
-// because a stream reports input on its first event and output on its last.
-func parseUsage(body []byte) ReportedUsage {
-	var raw rawUsage
-	for _, chunk := range jsonChunks(body) {
-		raw.merge(chunk)
-	}
-	return raw.resolve()
-}
-
-// The usage key names this parser recognises. They are the two provider
-// vocabularies this repository talks to; anything else is an unresolved
-// vocabulary, reported as such instead of guessed at.
-const (
-	keyPromptTokens       = "prompt_tokens"
-	keyCacheHitTokens     = "prompt_cache_hit_tokens"
-	keyCacheMissTokens    = "prompt_cache_miss_tokens"
-	keyCachedTokens       = "cached_tokens"
-	keyCacheReadTokens    = "cache_read_tokens"
-	keyInputTokens        = "input_tokens"
-	keyCacheReadInput     = "cache_read_input_tokens"
-	keyCacheCreationInput = "cache_creation_input_tokens"
-	keyCompletionTokens   = "completion_tokens"
-	keyOutputTokens       = "output_tokens"
-)
-
-// rawUsage collects the usage keys one response carried, last value winning.
-type rawUsage struct {
-	values map[string]int
-}
-
-// merge walks one decoded JSON value and takes every recognised usage key.
-func (r *rawUsage) merge(value any) {
-	switch node := value.(type) {
-	case map[string]any:
-		for key, child := range node {
-			if n, ok := asInt(child); ok && r.take(key, n) {
-				continue
-			}
-			r.merge(child)
-		}
-	case []any:
-		for _, child := range node {
-			r.merge(child)
-		}
-	}
-}
-
-// take records one usage key, reporting whether it was recognised.
-func (r *rawUsage) take(key string, n int) bool {
-	switch key {
-	case keyPromptTokens, keyCacheHitTokens, keyCacheMissTokens, keyCachedTokens, keyCacheReadTokens,
-		keyInputTokens, keyCacheReadInput, keyCacheCreationInput, keyCompletionTokens, keyOutputTokens:
-	default:
-		return false
-	}
-	if r.values == nil {
-		r.values = map[string]int{}
-	}
-	r.values[key] = n
-	return true
-}
-
-// get reads one key's last reported value.
-func (r *rawUsage) get(key string) (int, bool) {
-	n, ok := r.values[key]
-	return n, ok
-}
-
-// firstOf reads the first present key of a family, which is how one logical
-// number appears under different provider spellings.
-func (r *rawUsage) firstOf(keys ...string) (int, bool) {
-	for _, key := range keys {
-		if n, ok := r.get(key); ok {
-			return n, true
-		}
-	}
-	return 0, false
-}
-
-// has reports whether any of the keys was present at all, including a zero.
-func (r *rawUsage) has(keys ...string) bool {
-	_, ok := r.firstOf(keys...)
-	return ok
-}
-
-// resolve reads the collected keys through the vocabulary that carried them. An
-// unrecognised or mixed vocabulary yields no split, and the problem field says
-// which case it was.
-func (r *rawUsage) resolve() ReportedUsage {
-	if len(r.values) == 0 {
-		return ReportedUsage{Problem: UsageProblemNoUsage}
-	}
-	out := ReportedUsage{Reported: true, Keys: usageKeyNames(r.values)}
-	out.Completion, _ = r.firstOf(keyCompletionTokens, keyOutputTokens)
-	anthropic := r.has(keyInputTokens, keyCacheReadInput, keyCacheCreationInput)
-	openai := r.has(keyPromptTokens, keyCacheHitTokens, keyCacheMissTokens, keyCachedTokens)
-	switch {
-	case anthropic && !openai:
-		out.Shape = UsageShapeAnthropic
-		return r.resolveAnthropic(out)
-	case openai && !anthropic:
-		out.Shape = UsageShapeOpenAI
-		return r.resolveOpenAI(out)
-	default:
-		out.Problem = UsageProblemUnresolved
-		return out
-	}
-}
-
-// resolveAnthropic reads the Anthropic vocabulary, where input_tokens counts the
-// prompt that was not cached and cache_creation_input_tokens counts what was
-// written: the miss side is the sum of those two.
-func (r *rawUsage) resolveAnthropic(out ReportedUsage) ReportedUsage {
-	prompt, ok := r.get(keyInputTokens)
-	if !ok {
-		out.Problem = UsageProblemNoPrompt
-		return out
-	}
-	read, ok := r.get(keyCacheReadInput)
-	if !ok {
-		out.Problem = UsageProblemNoCacheRead
-		return out
-	}
-	write, _ := r.firstOf(keyCacheCreationInput)
-	out.Hit, out.Write, out.Miss = read, write, prompt+write
-	out.Prompt = out.Hit + out.Miss
-	out.Split = true
-	return out
-}
-
-// resolveOpenAI reads the OpenAI-compatible vocabulary, where prompt_tokens is
-// the whole prompt and the cache read is a subset of it (the DeepSeek spelling
-// reports the miss explicitly, so that value is preferred when present).
-func (r *rawUsage) resolveOpenAI(out ReportedUsage) ReportedUsage {
-	prompt, ok := r.get(keyPromptTokens)
-	if !ok {
-		out.Problem = UsageProblemNoPrompt
-		return out
-	}
-	hit, ok := r.firstOf(keyCacheHitTokens, keyCachedTokens, keyCacheReadTokens)
-	if !ok {
-		out.Problem = UsageProblemNoCacheRead
-		return out
-	}
-	miss, ok := r.get(keyCacheMissTokens)
-	if !ok {
-		miss = prompt - hit
-	}
-	if miss < 0 {
-		out.Problem = UsageProblemNegativeSplit
-		return out
-	}
-	out.Prompt, out.Hit, out.Miss = prompt, hit, miss
-	out.Split = true
-	return out
-}
-
-// usageKeyNames lists the collected keys in a stable order, so the journal
-// records the same audit trail for the same response.
-func usageKeyNames(values map[string]int) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// asInt accepts a JSON number as an integer token count.
-func asInt(value any) (int, bool) {
-	switch v := value.(type) {
-	case float64:
-		return int(v), true
-	case json.Number:
-		n, err := v.Int64()
-		return int(n), err == nil
-	default:
-		return 0, false
-	}
-}
-
-// jsonChunks yields the JSON values a response body carries: an event stream's
-// data payloads, or the body itself when it is plain JSON documents.
-func jsonChunks(body []byte) []any {
-	if bytes.Contains(body, []byte("data:")) {
-		return sseChunks(body)
-	}
-	var out []any
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	for {
-		var value any
-		if err := dec.Decode(&value); err != nil {
-			return out
-		}
-		out = append(out, value)
-	}
-}
-
-// sseChunks decodes the data payloads of an event stream, skipping the ones that
-// are not JSON objects (comments, keep-alives, terminators).
-func sseChunks(body []byte) []any {
-	var out []any
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		payload, ok := bytes.CutPrefix(trimmed, []byte("data:"))
-		if !ok {
-			continue
-		}
-		payload = bytes.TrimSpace(payload)
-		if len(payload) == 0 || payload[0] != '{' {
-			continue
-		}
-		var value any
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
-		if err := dec.Decode(&value); err != nil {
-			continue
-		}
-		out = append(out, value)
-	}
-	return out
 }

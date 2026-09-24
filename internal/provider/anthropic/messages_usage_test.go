@@ -146,10 +146,12 @@ func TestUsageNativeAnthropicSumpsTheExclusiveCounters(t *testing.T) {
 
 // TestUsageDeepSeekDoesNotDoubleCountCacheReads covers the DeepSeek Anthropic
 // route, whose input_tokens already covers the cache reads: summing them there
-// counted every cached token twice and pinned the displayed rate at 50%.
+// counted every cached token twice and pinned the displayed rate at 50%. The
+// route declares that convention through inclusiveUsage, not through its replay
+// obligation — the two are separate flags (see client.inclusiveUsage).
 func TestUsageDeepSeekDoesNotDoubleCountCacheReads(t *testing.T) {
 	// A 39047-token request with 39040 cached reads arrives as input=39047.
-	c := &client{name: "deepseek-anthropic", deepseek: true}
+	c := &client{name: "deepseek-anthropic", deepseek: true, inclusiveUsage: true}
 	usage := readUsage(t, c, usageSSE(39047, 0, 39040, 4))
 
 	if usage.PromptTokens != 39047 {
@@ -170,7 +172,7 @@ func TestUsageDeepSeekDoesNotDoubleCountCacheReads(t *testing.T) {
 // intact: a write is uncached input, so it stays in the miss under either
 // convention and the invariant hit+miss == prompt still holds.
 func TestUsageDeepSeekKeepsCacheWritesBilled(t *testing.T) {
-	c := &client{name: "deepseek-anthropic", deepseek: true}
+	c := &client{name: "deepseek-anthropic", deepseek: true, inclusiveUsage: true}
 	usage := readUsage(t, c, usageSSE(1000, 200, 700, 5))
 
 	if usage.CacheWriteTokens != 200 {
@@ -195,7 +197,7 @@ func TestUsageDeepSeekKeepsCacheWritesBilled(t *testing.T) {
 // uncached rather than dropped. The guard the old test protected — never a
 // negative miss — is asserted here too.
 func TestUsageReadLargerThanInputIsTheUncachedRemainder(t *testing.T) {
-	c := &client{name: "deepseek-anthropic", deepseek: true}
+	c := &client{name: "deepseek-anthropic", deepseek: true, inclusiveUsage: true}
 	usage := readUsage(t, c, usageSSE(10, 0, 50, 5))
 
 	if usage.CacheHitTokens != 50 {

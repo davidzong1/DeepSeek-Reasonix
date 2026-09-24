@@ -305,9 +305,10 @@ func renderCacheCoverage(report team.CacheReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "coverage over %d scoped samples: request_count measured=%d defaulted=%d unrecorded=%d unrecognized=%d\n",
 		c.Scoped, c.RequestCountObserved, c.RequestCountDefaulted, c.RequestCountUnrecorded, c.RequestCountUnrecognized)
-	fmt.Fprintf(&b, "  route_bucket=%d/%d model_ref=%d/%d usage_source=%d/%d prefix_diagnostics=%d/%d (present/scoped)\n",
+	fmt.Fprintf(&b, "  route_bucket=%d/%d model_ref=%d/%d usage_source=%d/%d prefix_diagnostics=%d/%d session=%d/%d (present/scoped)\n",
 		c.RouteBucketPresent, c.Scoped, c.ModelRefPresent, c.Scoped,
-		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped)
+		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped,
+		c.SessionPresent, c.Scoped)
 	return b.String()
 }
 
