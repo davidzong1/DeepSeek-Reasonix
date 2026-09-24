@@ -285,7 +285,10 @@ func (in cacheGroupObservations) findUnexplainedChange(unexplained []MemberCache
 // Anything that does not fit stays unattributed, because the local hash covers
 // system+tools only and cannot speak for the message tail.
 func (in cacheGroupObservations) findFixedPrefix(fixed []MemberCacheRequest, out *CacheDiagnosis) {
-	if len(fixed) == 0 {
+	// A stratum whose fixed-prefix samples miss nothing has no tail to attribute:
+	// its low rate is the cold start, already reported separately. Claiming an
+	// unattributed tail would name a problem the samples do not contain.
+	if len(fixed) == 0 || missTokens(fixed) == 0 {
 		return
 	}
 	stats := out.Metrics

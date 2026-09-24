@@ -14,6 +14,11 @@ import (
 	"reasonix/internal/team"
 )
 
+// cacheMemberRecordSource labels a report built from the member writers' own
+// retained records. The audit's ledger source is a different dataset and the
+// reports must be tellable apart, so both name themselves.
+const cacheMemberRecordSource = "member records (owner writer)"
+
 // teamCacheReportUsage documents the team cache-report surface.
 const teamCacheReportUsage = `usage: reasonix team cache-report [flags]
 
@@ -100,6 +105,7 @@ func teamCacheReportCommand(args []string, info BuildInfo) int {
 		From: window.from, To: window.to,
 		MinRequestsPerBucket: *minRequests, MinMembersPerBucket: *minMembers,
 		LowHitThreshold: *lowHit,
+		Source:          cacheMemberRecordSource,
 		CodeVersion:     resolved.Version, CodeCommit: resolved.GitCommit,
 	})
 	return writeCacheReport(*out, report, *asJSON)
@@ -293,8 +299,12 @@ func renderCacheReport(report team.CacheReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "window: %s .. %s\n", orDash(report.WindowFrom), orDash(report.WindowTo))
 	fmt.Fprintf(&b, "generated: %s  build: %s/%s\n", report.GeneratedAt, orDash(report.CodeVersion), orDash(report.CodeCommit))
+	fmt.Fprintf(&b, "source: %s\n", orDash(report.Source))
 	fmt.Fprintf(&b, "bucket key: %s  gates: >=%d requests, >=%d members  low-hit threshold: %.0f%%\n",
 		report.BucketKeyField, report.MinRequests, report.MinMembers, report.LowHitThreshold*100)
+	if report.Exclusions.Received == 0 {
+		fmt.Fprintf(&b, "records: none retained yet — a writable member writer publishes them while a Team session runs\n")
+	}
 	fmt.Fprintf(&b, "members: %d (%s)\n", len(report.Members), orDash(strings.Join(report.Members, ", ")))
 	fmt.Fprintf(&b, "models: %s\n", orDash(strings.Join(report.ModelRefs, ", ")))
 	fmt.Fprintf(&b, "routes: %s\n", orDash(strings.Join(report.RouteBuckets, ", ")))

@@ -448,3 +448,26 @@ func TestDiagnosisTreatsAMissingReasonAsUnexplained(t *testing.T) {
 		t.Fatalf("the evidence must say no reason was reported")
 	}
 }
+
+// TestDiagnosisDoesNotClaimATailWithNoMiss is the real-session lesson: when a
+// stratum's only miss is its cold start, the warm samples miss nothing and there
+// is no tail to attribute. Naming an unattributed tail would invent a problem
+// the samples do not contain.
+func TestDiagnosisDoesNotClaimATailWithNoMiss(t *testing.T) {
+	cold := coldPrefix(diagnosisSample("m1", 158_752, 0, 158_752, 1657))
+	warm := fixedPrefix(diagnosisSample("m1", 158_752, 158_752, 0, 1657))
+	stat := diagnoseOne(t, []MemberCacheRequest{cold, warm, warm, warm}, defaultDiagnosisGates())
+	if !stat.Diagnosis.Investigated {
+		t.Fatal("a 75%% stratum is low-hit and must be investigated")
+	}
+	labels := labelsOf(stat)
+	if strings.Contains(labels, string(CacheLabelHighMissUnattributed)) {
+		t.Fatalf("labels = %v, want no tail claim when the warm samples miss nothing", labels)
+	}
+	if strings.Contains(labels, string(CacheLabelSchemaCorrelated)) {
+		t.Fatalf("labels = %v, want no schema claim either", labels)
+	}
+	if stat.Diagnosis.Metrics.ColdSamples != 1 || stat.Diagnosis.Metrics.FixedPrefixSamples != 3 {
+		t.Fatalf("metrics = %+v, want the cold start counted and the warm samples accounted", stat.Diagnosis.Metrics)
+	}
+}

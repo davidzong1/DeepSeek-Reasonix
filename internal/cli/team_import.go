@@ -23,7 +23,7 @@ import (
 // two binaries.
 func teamCommand(args []string, info BuildInfo) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "team: expected a subcommand (import, cache-report)")
+		fmt.Fprintln(os.Stderr, "team: expected a subcommand (import, cache-report, cache-audit)")
 		return 2
 	}
 	switch args[0] {
@@ -31,8 +31,10 @@ func teamCommand(args []string, info BuildInfo) int {
 		return teamImportCommand(args[1:])
 	case "cache-report":
 		return teamCacheReportCommand(args[1:], info)
+	case "cache-audit":
+		return teamCacheAuditCommand(args[1:], info)
 	default:
-		fmt.Fprintf(os.Stderr, "team: unknown subcommand %q (import, cache-report)\n", args[0])
+		fmt.Fprintf(os.Stderr, "team: unknown subcommand %q (import, cache-report, cache-audit)\n", args[0])
 		return 2
 	}
 }

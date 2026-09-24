@@ -225,6 +225,11 @@ type CacheReportExclusions struct {
 	NoCacheSplit       int `json:"no_cache_split"`
 	UnparsableObserved int `json:"unparsable_observed_at"`
 	NonMemberScope     int `json:"non_member_scope"`
+	// AggregateHitTokens/AggregateMissTokens are the tokens the excluded
+	// multi-request aggregates carried, so an all-samples rate adds them back
+	// explicitly instead of finding the totals quietly short.
+	AggregateHitTokens  int `json:"aggregate_hit_tokens"`
+	AggregateMissTokens int `json:"aggregate_miss_tokens"`
 }
 
 // CacheSessionTotals is one member's published session cache ledger: the input
@@ -259,6 +264,9 @@ type CacheReportInput struct {
 	// later comparison cannot silently span two binaries.
 	CodeVersion string
 	CodeCommit  string
+	// Source names the dataset the samples came from; it is echoed into the
+	// report so a ledger audit can never be read as a member-level result.
+	Source string
 	// GeneratedAt stamps the report; zero uses the caller's clock.
 	GeneratedAt time.Time
 }
@@ -271,6 +279,10 @@ type CacheReport struct {
 	// samples, so a later comparison cannot silently span two binaries.
 	CodeVersion string `json:"code_version,omitempty"`
 	CodeCommit  string `json:"code_commit,omitempty"`
+	// Source names the dataset: the member writer's own records, or a historical
+	// route-level ledger. The two must never be read as one, so the report says
+	// which it is rather than leaving it to the caller.
+	Source      string `json:"source,omitempty"`
 	WindowFrom  string `json:"window_from,omitempty"`
 	WindowTo    string `json:"window_to,omitempty"`
 	MinRequests int    `json:"min_requests_per_bucket"`
@@ -328,6 +340,7 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 		GeneratedAt:     generated.UTC().Format(time.RFC3339Nano),
 		CodeVersion:     strings.TrimSpace(in.CodeVersion),
 		CodeCommit:      strings.TrimSpace(in.CodeCommit),
+		Source:          strings.TrimSpace(in.Source),
 		MinRequests:     gates.minRequests,
 		MinMembers:      gates.minMembers,
 		LowHitThreshold: gates.lowHit,
@@ -357,6 +370,10 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 		bucket := in.bucketKeyOf(rec, &report.PromptBasis)
 		if eligible := cacheRequestIsBaselineEligible(rec); !eligible {
 			countCacheExclusions(rec, &report.Exclusions)
+			if rec.RequestCount > 1 {
+				report.Exclusions.AggregateHitTokens += rec.CacheHitTokens
+				report.Exclusions.AggregateMissTokens += rec.CacheMissTokens
+			}
 			groups.buckets[bucket].exclude(rec)
 			continue
 		}

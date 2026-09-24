@@ -143,12 +143,22 @@ func TestCacheReportDisclosesExclusionsWithoutCorrecting(t *testing.T) {
 	want := CacheReportExclusions{
 		Received: 7, Included: 1, UnknownUsage: 1, EstimatedUsage: 1,
 		AggregateRequests: 1, AccountingInvalid: 1, NoCacheSplit: 2, UnparsableObserved: 1,
+		// The aggregate's own tokens are booked, so a reader who wants the
+		// all-samples rate adds them back instead of finding the totals short.
+		AggregateHitTokens: 1_800, AggregateMissTokens: 200,
 	}
 	if report.Exclusions != want {
 		t.Fatalf("exclusions = %+v, want %+v", report.Exclusions, want)
 	}
 	if report.Overall.Totals.Requests != 1 {
 		t.Fatalf("baseline requests = %d, want only the eligible sample", report.Overall.Totals.Requests)
+	}
+	// The reconciliation the ledger audit depends on: baseline + booked
+	// aggregate tokens is the all-samples total, and nothing is dropped between.
+	allSamplesHit := report.Overall.Totals.HitTokens + report.Exclusions.AggregateHitTokens
+	allSamplesMiss := report.Overall.Totals.MissTokens + report.Exclusions.AggregateMissTokens
+	if allSamplesHit != 900+1_800 || allSamplesMiss != 100+200 {
+		t.Fatalf("all-samples = hit %d miss %d, want 2,700/300", allSamplesHit, allSamplesMiss)
 	}
 }
 
