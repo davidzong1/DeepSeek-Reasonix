@@ -543,7 +543,7 @@
       "complexity": 258,
       "essay": 78,
       "file-size": 2042,
-      "function-size": 1719,
+      "function-size": 1720,
       "narrative": 3
     },
     "internal/boot/boot_test.go": {

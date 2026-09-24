@@ -139,7 +139,12 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 	// CreatedAt is durable UI metadata, not model input. Strip it from the
 	// transport copy so wall-clock differences never invalidate the provider's
 	// prompt-cache prefix (and custom providers cannot accidentally send it).
-	prepared, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{Trigger: trigger})
+	prepared, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{
+		Trigger: trigger,
+		// The pre-send admission is where a fold that cannot recover the window
+		// must be caught, before an over-ceiling request reaches a provider.
+		AllowContextRescue: a.contextRescue,
+	})
 	if err != nil {
 		return samplingRequest{}, err
 	}

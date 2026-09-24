@@ -33,6 +33,9 @@ type agentConfig struct {
 	compactRatio         float64
 	visibleWindowTokens  int
 	cacheAwareCompaction bool
-	recentKeep           int
-	archiveDir           string
+	// contextRescue opts the pre-send admission into certifying a continuation
+	// plan instead of a lossy truncation. See Options.EnableContextRescue.
+	contextRescue bool
+	recentKeep    int
+	archiveDir    string
 }

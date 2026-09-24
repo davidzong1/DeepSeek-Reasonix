@@ -1749,6 +1749,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		MaxOutputTokens:              entry.MaxOutputTokens,
 		VisibleWindowTokens:          cfg.Agent.VisibleWindowTokens,
 		CacheAwareCompaction:         cfg.Agent.CacheAwareCompaction,
+		EnableContextRescue:          cfg.Agent.ContextRescue,
 		SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 		ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
 		CompactRatio:                 cfg.Agent.CompactRatio,

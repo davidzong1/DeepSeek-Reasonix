@@ -74,7 +74,7 @@ func (c *Controller) beginMaintenance(parent context.Context, kind string) (*con
 	case c.bodyActiveLocked() || c.finalizingLocked():
 		c.mu.Unlock()
 		return nil, nil, fmt.Errorf("cannot %s while a turn is running", verb)
-	case c.rotating:
+	case c.rotating, c.contextRescuePending():
 		c.mu.Unlock()
 		return nil, nil, errRotationInProgress
 	case c.maintenance != nil:

@@ -15,7 +15,14 @@ const maxInboxDispatchRetryAttempts = 3
 var ErrInboxRuntimeUnpublished = errors.New("inbox runtime is not published")
 
 // NotifyInboxRuntimeReady is called after a host publishes a complete runtime.
-func (c *Controller) NotifyInboxRuntimeReady() { c.maybeDispatchInbox() }
+// It also re-drives a continuation whose resume never began, which is the state
+// a crash between publishing the continuation and admitting its first turn
+// leaves behind: this is the host's own "the runtime is ready" moment, so it is
+// the right place to pick that main line back up.
+func (c *Controller) NotifyInboxRuntimeReady() {
+	c.maybeDispatchInbox()
+	c.RecoverUnstartedContinuation()
+}
 
 func (c *Controller) SetBeforeInboxDispatch(before func(*Controller) (func(), error)) {
 	c.mu.Lock()
@@ -99,7 +106,9 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 	c.mu.Lock()
 	busy := c.bodyActiveLocked() || c.finalizingLocked() || c.maintenance != nil || c.rotating || c.closed
 	c.mu.Unlock()
-	if busy {
+	// A queued rescue is about to replace this session; the rescue's own
+	// terminal boundary republishes the dispatcher.
+	if busy || c.contextRescuePending() {
 		return inboxDispatchIdle
 	}
 	// Controllers without persistence cannot own a durable inbox. Rotation and

@@ -464,36 +464,7 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			return nil, err
 		}
 
-		opts := deps.base()
-		if strings.TrimSpace(deps.workspaceRoot) != "" {
-			opts.WorkspaceRoot = deps.workspaceRoot
-		}
-		// Both the write scope and the posture are fixed here rather than carried
-		// across rebuilds: this builder is the only construction point, so eviction,
-		// model rebind and quota failover all re-derive them for free.
-		opts.AdditionalDirs = append(opts.AdditionalDirs, memberWriteRoots(b.Leader)...)
-		opts.HeadlessApprovalMode = memberApprovalPosture(b.Leader)
-		// Team playbooks are user-global: the member's role tree is read from
-		// the user state root, so it resolves from any launching directory and
-		// a team's recorded workspace cannot steer it.
-		opts.TeamSkillsRoot = teamSkillsBase()
-		opts.TeamRole = string(roleForLeader(b.Leader))
-		opts.WorkspaceLeaseLabel = memberWorkspaceLeaseLabel(b)
-		// The team's in-process write token. It must follow the workspace-root
-		// assignment above: that root is what the token compares scopes against.
-		opts.WriteIntentGate = memberWriteIntentGate(b.Team, opts.WorkspaceRoot, b.MemberID)
-		opts.Model = resolver.Ref()
-		opts.ProviderResolver = resolver
-		// The observation sink must exist before the controller, but the publisher
-		// that drains it starts only on the writable path below — so a backend
-		// that resolves to a follower keeps the wrapper and records nothing.
-		observatory := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, resolver.RouteBucket())
-		opts.Sink = memberObservationSink(observatory, deps.events.sink(b.MemberID), b.Leader)
-		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
-			// Invalid team_role declarations warn through the assembly's own
-			// diagnostic writer (nil keeps the historical silence).
-			teamRoleSkillPrompt(opts.TeamSkillsRoot, b.Leader, opts.Stderr)
-		opts.ExtraTools = append(opts.ExtraTools, memberExtraTools(deps, b, opts.Stderr)...)
+		opts, observatory := memberBackendOptions(deps, b, resolver)
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err
@@ -558,6 +529,10 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// "only the writer publishes usage" a property of the call graph.
 		observatory.Bind(ctrl)
 		observatory.Start()
+		// The member's "runtime is ready" moment: no host calls
+		// NotifyInboxRuntimeReady for a member backend, so nothing else would
+		// ever pick up a continuation whose resumed turn never began.
+		ctrl.RecoverUnstartedContinuation()
 		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: observatory}, nil
 	}
 }

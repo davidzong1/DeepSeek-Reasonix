@@ -300,6 +300,10 @@ type AgentConfig struct {
 	// its default 16% of the context window. Zero keeps the default behavior.
 	VisibleWindowTokens  int  `toml:"visible_window_tokens"`
 	CacheAwareCompaction bool `toml:"cache_aware_compaction"`
+	// ContextRescue lets a fold that cannot recover the window certify a
+	// continuation into a fresh session instead of degrading to a lossy
+	// truncation. Off by default: acting on it rotates the session.
+	ContextRescue bool `toml:"context_rescue"`
 	// ContextEditing is retired; native tool clearing is no longer an auto path.
 	ContextEditing string `toml:"context_editing"`
 	// Keep and RecentKeep are deprecated compatibility fields. They remain
