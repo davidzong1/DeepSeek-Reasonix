@@ -208,9 +208,14 @@ func (m *chatTUI) syncAmbientOwnerUsage(fingerprint team.OwnerFingerprint, ok bo
 	if p.ambientUsage != nil {
 		return
 	}
-	p.ambientUsage = newMemberUsagePublisher(p.owners,
-		team.OwnerKey{TeamID: p.sessionTeamName(), MemberID: p.session.current}, m.ambient)
-	p.ambientUsage.Start()
+	// The ambient window's own chat is the team's leader session, which the
+	// member dataset excludes, so this publisher carries the snapshot only, names
+	// no route, and records no per-request observations.
+	publisher := newMemberUsagePublisher(p.owners,
+		team.OwnerKey{TeamID: p.sessionTeamName(), MemberID: p.session.current}, "")
+	publisher.Bind(m.ambient)
+	publisher.Start()
+	p.ambientUsage = publisher
 	slog.Info("team ambient usage publisher started", "team", p.sessionTeamName(), "member", p.session.current)
 }
 

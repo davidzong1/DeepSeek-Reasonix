@@ -101,7 +101,7 @@ func (a *Agent) pruneToolResultsToProjectionLocked(ctx context.Context, trigger 
 		return false, nil
 	}
 	return a.installMaintenanceProjection(ctx, maintenanceInstall{
-		trigger: trigger, action: "prune", state: stateSnapshot,
+		trigger: trigger, action: maintenanceActionPrune, state: stateSnapshot,
 		canonical: canonical, transcriptVersion: transcriptVersion,
 		visible: visible, projected: projected, affected: affected,
 	})

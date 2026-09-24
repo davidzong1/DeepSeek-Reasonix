@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"reasonix/internal/event"
@@ -44,6 +45,14 @@ func (a *Agent) providerToolSchemas() []provider.ToolSchema {
 	return provider.ApplyNativeToolSearch(schemas, deferredMCPSchemas(a.svc.tools), a.svc.prov)
 }
 
+// deferredMCPSchemas returns the registered MCP tools hidden from the
+// provider-visible surface, in name order.
+//
+// The order matters more than it looks: this tail is appended to the wire tool
+// array, while CaptureShape canonicalizes by sorting before it hashes. An
+// insertion-ordered tail would therefore let a same-content re-registration
+// (RemovePrefix + Add moves a server's whole block) change the provider's tool
+// bytes while ToolsHash stayed put — a cache miss with no local diagnosis.
 func deferredMCPSchemas(reg *tool.Registry) []provider.ToolSchema {
 	if reg == nil {
 		return nil
@@ -69,6 +78,7 @@ func deferredMCPSchemas(reg *tool.Registry) []provider.ToolSchema {
 			Parameters:  target.Schema(),
 		})
 	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i].Name < extra[j].Name })
 	return extra
 }
 

@@ -488,9 +488,9 @@ func TestManualCompactReportsSummarizerFailure(t *testing.T) {
 }
 
 func TestCompactRewriteVersionFeedsCacheDiagnostics(t *testing.T) {
-	// Projection checkpoints do not rewrite the canonical transcript, so they
-	// must not bump LogRewriteVersion or queue compact_* content-rewrite reasons.
-	// The provider-visible change is the projection sidecar (version + summary).
+	// The checkpoint leaves the canonical transcript alone, so it must not bump
+	// LogRewriteVersion — but it does move the provider-visible view, so it must
+	// queue exactly one compact_auto reason through NoteContentRewrite.
 	prov := &fakeProvider{reply: "- summary"}
 	big := strings.Repeat("work detail ", 200)
 	sess := &Session{Messages: []provider.Message{
@@ -519,8 +519,9 @@ func TestCompactRewriteVersionFeedsCacheDiagnostics(t *testing.T) {
 	if got := a.currentProjectionVersion(); got != 1 {
 		t.Fatalf("projection version = %d, want 1", got)
 	}
-	if reasons := sess.DrainContentRewriteReasons(); len(reasons) != 0 {
-		t.Fatalf("projection compact queued canonical rewrite reasons %v; want none", reasons)
+	// Exactly one: a repeated install inside one drain window is the same cause.
+	if reasons := sess.DrainContentRewriteReasons(); !slices.Equal(reasons, []string{"compact_auto"}) {
+		t.Fatalf("projection compact queued %v; want exactly [compact_auto]", reasons)
 	}
 }
 

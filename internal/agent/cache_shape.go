@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -31,6 +32,37 @@ func shortHash(v any) string {
 	b, _ := json.Marshal(v)
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+// projectionRewriteReason maps a maintenance action to the content-rewrite
+// reason vocabulary that CompareShape and the team cache report share. "summary"
+// is the compaction/fold this reason exists for. "truncate" is the lossy rescue:
+// it stays its own value rather than being folded into compact_auto, so a reader
+// counts it as an unrecognized reason instead of mislabelling it as a fold.
+func projectionRewriteReason(action string) string {
+	switch strings.TrimSpace(action) {
+	case maintenanceActionSummary:
+		return "compact_auto"
+	case maintenanceActionPrune:
+		return "prune"
+	case maintenanceActionTruncate:
+		return "truncate"
+	}
+	return ""
+}
+
+// noteProjectionRewrite queues the cache-diagnostics reason for a projection the
+// agent just installed. Only the two install sites call it. The receipt re-emits
+// at context_receipt.go and session_checkpoint.go republish an install that
+// already happened, so queueing there would report a rewrite on a request that
+// never saw one — the misattribution this reason exists to prevent.
+func (a *Agent) noteProjectionRewrite(r *ContextMaintenanceReceipt) {
+	if a == nil || r == nil || a.sess.conversation == nil {
+		return
+	}
+	if reason := projectionRewriteReason(r.Action); reason != "" {
+		a.sess.conversation.NoteContentRewrite(reason)
+	}
 }
 
 // CaptureShape takes a snapshot of the current prefix state.

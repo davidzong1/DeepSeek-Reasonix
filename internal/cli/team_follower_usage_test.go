@@ -324,7 +324,8 @@ func (sampleUsageBackend) Jobs() []jobs.View {
 func TestWriterPublisherPublishesWithoutARosterTick(t *testing.T) {
 	f := newUsageOwnerFixture(t)
 	key := team.OwnerKey{TeamID: f.teamName, MemberID: f.memberID}
-	publisher := newMemberUsagePublisher(f.owners, key, sampleUsageBackend{SessionAPI: f.writer.ctrl})
+	publisher := newMemberUsagePublisher(f.owners, key, "")
+	publisher.Bind(sampleUsageBackend{SessionAPI: f.writer.ctrl})
 	publisher.Start()
 	t.Cleanup(publisher.Close)
 

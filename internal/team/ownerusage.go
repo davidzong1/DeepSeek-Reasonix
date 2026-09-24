@@ -39,6 +39,33 @@ type OwnerUsageLastTurn struct {
 	CacheMissTokens  int  `json:"cache_miss_tokens"`
 	ReasoningTokens  int  `json:"reasoning_tokens"`
 	Unknown          bool `json:"unknown,omitempty"`
+	// Additive request-shape fields. They say what kind of usage the numbers
+	// above describe, so a reader never reads an aggregate or an estimate as one
+	// exact request. Older documents simply lack them.
+	RequestCount        int  `json:"request_count,omitempty"`
+	Estimated           bool `json:"estimated,omitempty"`
+	CacheWriteTokens    int  `json:"cache_write_tokens,omitempty"`
+	ContextPromptTokens int  `json:"context_prompt_tokens,omitempty"`
+	// CacheDiagnostics is the content-free prefix diagnosis of the latest
+	// observed request, for the status band. Absent for a writer that has
+	// published no diagnostics, which is not the same as "nothing changed".
+	CacheDiagnostics *OwnerUsageLastTurnDiagnostics `json:"cache_diagnostics,omitempty"`
+}
+
+// OwnerUsageLastTurnDiagnostics is the prefix identity of the latest observed
+// request: hashes and enumerations only, never prompt or schema content. The
+// hashes cover the cache-stable system + tools prefix, so a reader must not
+// treat them as a provider cache key.
+type OwnerUsageLastTurnDiagnostics struct {
+	Available             bool     `json:"available"`
+	PrefixHash            string   `json:"prefix_hash,omitempty"`
+	StablePrefixHash      string   `json:"stable_prefix_hash,omitempty"`
+	PrefixChanged         bool     `json:"prefix_changed,omitempty"`
+	StablePrefixChanged   bool     `json:"stable_prefix_changed,omitempty"`
+	PrefixChangeReasons   []string `json:"prefix_change_reasons,omitempty"`
+	ToolSchemaTokens      int      `json:"tool_schema_tokens_estimate,omitempty"`
+	SessionContextDigest  string   `json:"session_context_digest,omitempty"`
+	SessionContextReasons []string `json:"session_context_reasons,omitempty"`
 }
 
 // OwnerUsageJob is one background job as the follower renders it: display data

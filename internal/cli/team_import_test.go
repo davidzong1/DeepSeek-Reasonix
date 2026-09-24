@@ -285,7 +285,7 @@ func TestTeamImportErrorPrompts(t *testing.T) {
 	}
 
 	// Unknown subcommand.
-	if code := teamCommand([]string{"nonsense"}); code != 2 {
+	if code := teamCommand([]string{"nonsense"}, BuildInfo{}); code != 2 {
 		t.Fatalf("unknown subcommand: exit code = %d, want 2", code)
 	}
 }

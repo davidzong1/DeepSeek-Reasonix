@@ -132,6 +132,27 @@ func (r *memberProviderResolver) memberEffortVocabulary() []string {
 // Ref is the model ref boot.Options.Model must carry for this member.
 func (r *memberProviderResolver) Ref() string { return r.ref }
 
+// RouteBucket is the stable, non-identifying label for the route this member's
+// requests travel: which wire adapter, which endpoint, and which pool entry
+// dialled it. Two requests share a provider cache only if they share all three,
+// so the label is what a cache baseline stratifies by — and it must distinguish
+// two routes without naming either.
+//
+// Everything identifying is hashed, and the credential is excluded outright: a
+// fingerprint of a password or key is still derived from a secret, so the proxy
+// contributes its mode and type only. The result is stable for one configured
+// route and changes when the route does, which is the whole contract.
+func (r *memberProviderResolver) RouteBucket() string {
+	if r == nil {
+		return ""
+	}
+	material := strings.Join([]string{
+		r.kind, r.endpoint, r.name, strings.TrimSpace(r.proxy.Mode), strings.TrimSpace(r.proxy.Type),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(material))
+	return r.kind + "/" + hex.EncodeToString(sum[:6])
+}
+
 // Catalog reports the one entry this resolver owns. Tools and Reasoning are
 // declared: a member is a full Agent, so the assembled request carries the tool
 // schemas — the capability that a bare completion loop lacked. The [1m] alias
@@ -463,7 +484,11 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		opts.WriteIntentGate = memberWriteIntentGate(b.Team, opts.WorkspaceRoot, b.MemberID)
 		opts.Model = resolver.Ref()
 		opts.ProviderResolver = resolver
-		opts.Sink = deps.events.sink(b.MemberID)
+		// The observation sink must exist before the controller, but the publisher
+		// that drains it starts only on the writable path below — so a backend
+		// that resolves to a follower keeps the wrapper and records nothing.
+		observatory := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, resolver.RouteBucket())
+		opts.Sink = memberObservationSink(observatory, deps.events.sink(b.MemberID), b.Leader)
 		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
 			// Invalid team_role declarations warn through the assembly's own
 			// diagnostic writer (nil keeps the historical silence).
@@ -531,9 +556,9 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// This is the one place a writable member backend is built (every exit
 		// above returned a follower), so starting the publisher here makes
 		// "only the writer publishes usage" a property of the call graph.
-		publisher := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, ctrl)
-		publisher.Start()
-		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: publisher}, nil
+		observatory.Bind(ctrl)
+		observatory.Start()
+		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: observatory}, nil
 	}
 }
 
