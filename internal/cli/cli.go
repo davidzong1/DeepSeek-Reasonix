@@ -169,7 +169,7 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 		return taskCommand(rest)
 	case "team":
 		configureCLIThemeFromConfig()
-		return teamCommand(rest)
+		return teamCommand(rest, info)
 	case "review":
 		configureCLIThemeFromConfig()
 		return reviewCommand(rest)

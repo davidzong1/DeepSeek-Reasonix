@@ -108,16 +108,44 @@ func TestFinalizeSamplingUsageKeepsLatestPromptContext(t *testing.T) {
 func TestMergeSamplingUsageKeepsBillableTokensAcrossRequestOnlyAttempt(t *testing.T) {
 	first := &provider.Usage{
 		PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100,
-		CacheMissTokens: 100, RequestCount: 1,
+		CacheMissTokens: 100, RequestCount: 1, RequestCountObserved: true,
 	}
-	second := &provider.Usage{RequestCount: 1}
+	second := &provider.Usage{RequestCount: 1, RequestCountObserved: true}
 	got := mergeSamplingUsage(first, second)
 	if got.PromptTokens != 100 || got.TotalTokens != 100 || got.RequestCount != 2 {
 		t.Fatalf("merged billable = %+v, want first tokens + 2 requests", got)
 	}
+	if !got.RequestCountObserved {
+		t.Fatal("a sum of two measured attempts is itself measured")
+	}
 	final := finalizeSamplingUsage(got, second)
 	if final == nil || final.PromptTokens != 100 {
 		t.Fatalf("final usage = %+v, want billable prompt 100", final)
+	}
+}
+
+// TestMergeSamplingUsageMarksAnAssumedCount pins the provenance rule: a single
+// defaulted attempt inside the sum makes the merged total a lower bound, so the
+// provenance is the AND of the parts rather than the last part's. A reader that
+// must not treat an unmeasured count as one request reads this flag.
+func TestMergeSamplingUsageMarksAnAssumedCount(t *testing.T) {
+	measured := &provider.Usage{PromptTokens: 100, TotalTokens: 100, RequestCount: 1, RequestCountObserved: true}
+	assumed := &provider.Usage{PromptTokens: 50, TotalTokens: 50}
+	merged := mergeSamplingUsage(measured, assumed)
+	if merged.RequestCount != 2 {
+		t.Fatalf("merged requests = %d, want the compatibility default counted as one", merged.RequestCount)
+	}
+	if merged.RequestCountObserved {
+		t.Fatal("a total containing an unmeasured attempt must not be marked observed")
+	}
+	// A nil accumulator takes the attempt's own provenance, and an attempt with no
+	// count at all becomes the default and stays unverified.
+	single := mergeSamplingUsage(nil, assumed)
+	if single.RequestCount != 1 || single.RequestCountObserved {
+		t.Fatalf("defaulted single attempt = %+v, want count 1 unverified", single)
+	}
+	if observed := mergeSamplingUsage(nil, measured); !observed.RequestCountObserved {
+		t.Fatal("a measured attempt must keep its provenance through the first merge")
 	}
 }
 

@@ -160,7 +160,10 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 	if acc == nil {
 		merged := *attempt
 		if merged.RequestCount <= 0 {
+			// Nothing reported a count, so the compatibility default is not an
+			// observation: the record says one request without having measured one.
 			merged.RequestCount = 1
+			merged.RequestCountObserved = false
 		}
 		hit, miss := billableHitMiss(attempt)
 		merged.CacheHitTokens = hit
@@ -190,6 +193,10 @@ func mergeSamplingUsage(acc, attempt *provider.Usage) *provider.Usage {
 	merged.ReasoningTokens += attempt.ReasoningTokens
 	merged.TotalTokens += usageTotalTokens(attempt)
 	merged.RequestCount = usageRequestCount(acc) + usageRequestCount(attempt)
+	// The merged count is a measurement only while every part of it was one. A
+	// single defaulted attempt inside the sum makes the total a lower bound, so
+	// the provenance is the AND of the parts rather than the last one's.
+	merged.RequestCountObserved = acc.RequestCountObserved && attempt.RequestCountObserved
 	if attempt.Estimated {
 		merged.Estimated = true
 	}

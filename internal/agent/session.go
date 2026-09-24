@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"reasonix/internal/cachereason"
 	"slices"
 	"strings"
 	"sync"
@@ -130,7 +131,7 @@ func (s *Session) AddBatch(messages ...provider.Message) {
 
 // SetLeadingSystemPrompt updates or sets the leading system prompt message.
 func (s *Session) SetLeadingSystemPrompt(prompt string) {
-	s.SetLeadingSystemPromptWithReason(prompt, "system_prompt_refresh")
+	s.SetLeadingSystemPromptWithReason(prompt, cachereason.SystemPromptRefresh)
 }
 
 // SetLeadingSystemPromptWithReason refreshes the authoritative system prompt
@@ -375,12 +376,22 @@ func (s *Session) DrainContentRewriteReasons() []string {
 // mutating Messages. Projection installs and resume-time system migrations use
 // this so cache diagnostics attribute the next request's miss while the
 // canonical transcript and its persistence baseline stay intact.
+//
+// Repeated identical reasons collapse: one drain window describes what changed,
+// not how many installs did it, and a rescue fold installs several projections
+// before the next request drains them. Consumers treat the list as a set of
+// causes (CompareShape appends it to PrefixChangeReasons, and the team cache
+// report matches it against a reason enum), so publishing the same cause twice
+// is only noise.
 func (s *Session) NoteContentRewrite(reason string) {
 	if s == nil || reason == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if slices.Contains(s.pendingContentReasons, reason) {
+		return
+	}
 	s.pendingContentReasons = append(s.pendingContentReasons, reason)
 }
 

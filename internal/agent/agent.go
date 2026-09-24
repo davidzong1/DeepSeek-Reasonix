@@ -1054,9 +1054,14 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			maxSubagentDepth:   maxSubagentDepth,
 			contextWindow:      opts.ContextWindow,
 			compactRatio:       opts.CompactRatio,
-			contextRescue:      opts.EnableContextRescue,
-			recentKeep:         opts.RecentKeep,
-			archiveDir:         opts.ArchiveDir,
+			// Both knobs are config-reachable (agent.visible_window_tokens,
+			// agent.cache_aware_compaction) and both were dropped here, leaving
+			// every build on the defaults regardless of what the host asked for.
+			visibleWindowTokens:  opts.VisibleWindowTokens,
+			cacheAwareCompaction: opts.CacheAwareCompaction,
+			contextRescue:        opts.EnableContextRescue,
+			recentKeep:           opts.RecentKeep,
+			archiveDir:           opts.ArchiveDir,
 		},
 		sess: sessionRuntime{
 			conversation: session,

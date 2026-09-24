@@ -2,9 +2,12 @@ package event
 
 // CacheDiagnostics describes whether and why the cacheable prefix changed.
 type CacheDiagnostics struct {
-	PrefixHash          string
-	PrefixChanged       bool
-	PrefixChangeReasons []string // "system", "tools", "log_rewrite", "session_context"
+	PrefixHash    string
+	PrefixChanged bool
+	// PrefixChangeReasons holds values from internal/cachereason, which owns the
+	// vocabulary and each value's meaning. A value outside it is unrecognized and
+	// must be reported as such, never guessed at.
+	PrefixChangeReasons []string
 	// StablePrefixHash hashes the cache-stable prefix alone. PrefixHash also
 	// folds in the turn tail's session-context digest, so it moves when only the
 	// tail moved; this one is what to compare against real provider reuse.

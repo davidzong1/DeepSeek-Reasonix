@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"reasonix/internal/event"
+)
 
 // VisibleWindowTokens must default to the 16% recent-tail budget at zero, and
 // cap the budget when set below the default. The compact trigger and hard input
@@ -37,5 +41,19 @@ func TestVisibleWindowTokensCapsRecentTailBudget(t *testing.T) {
 	wantHard := 1_000_000 - protocolReserveTokens
 	if hard != wantHard {
 		t.Fatalf("hardInputCeiling = %d, want %d (unchanged by VisibleWindowTokens)", hard, wantHard)
+	}
+}
+
+// TestVisibleWindowTokensReachesTheAgentFromOptions is the consumed boundary the
+// test above cannot see. Setting the private field proves the cap is computed
+// correctly; only this proves the configured value ever arrives, because the
+// host-facing option key is otherwise silently inert.
+func TestVisibleWindowTokensReachesTheAgentFromOptions(t *testing.T) {
+	a := New(nil, nil, NewSession("sys"), Options{
+		ContextWindow:       1_000_000,
+		VisibleWindowTokens: 80_000,
+	}, event.Discard)
+	if got := a.recentTailBudget(); got != 80_000 {
+		t.Fatalf("Options.VisibleWindowTokens did not reach the agent: recentTailBudget = %d, want 80000", got)
 	}
 }

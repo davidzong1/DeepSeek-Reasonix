@@ -37,9 +37,9 @@ type RunMetrics struct {
 	CacheHitTokens   int `json:"cache_hit_tokens"`
 	CacheMissTokens  int `json:"cache_miss_tokens"`
 	// PrefixChangeReasonCounts tallies how many usage events reported each
-	// cache-prefix-change reason (e.g. "compact_auto", "snip", "tools") across
-	// the run, so a regression in cache-reset frequency shows which operation
-	// is responsible instead of just a dropped hit-rate percentage.
+	// cache-prefix-change reason (values from internal/cachereason) across the
+	// run, so a regression in cache-reset frequency shows which operation is
+	// responsible instead of just a dropped hit-rate percentage.
 	PrefixChangeReasonCounts map[string]int `json:"prefix_change_reason_counts,omitempty"`
 	Steps                    int            `json:"steps"` // model calls (one per stream, incl. tool rounds)
 	Cost                     float64        `json:"cost"`

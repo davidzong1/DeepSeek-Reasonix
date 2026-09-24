@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"log/slog"
+	"reasonix/internal/cachereason"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
@@ -30,7 +31,7 @@ func newControllerPromptState(base string, executor *agent.Agent) controllerProm
 	}
 	state := controllerPromptState{base: base}
 	if executor != nil && executor.Session() != nil && state.base != current {
-		executor.Session().SetLeadingSystemPromptWithReason(state.base, "legacy_pinned_system_migration")
+		executor.Session().SetLeadingSystemPromptWithReason(state.base, cachereason.LegacyPinnedSystemMigration)
 	}
 	return state
 }
@@ -64,7 +65,7 @@ func (c *Controller) SetSystemPromptPreservingHistory(prompt string) {
 	c.mu.Lock()
 	c.prompt.base = prompt
 	c.mu.Unlock()
-	if !c.executor.Session().SetLeadingSystemPromptWithReason(prompt, "team_role_prompt_refresh") {
+	if !c.executor.Session().SetLeadingSystemPromptWithReason(prompt, cachereason.TeamRolePromptRefresh) {
 		return
 	}
 	// The v3 event projection is the authoritative transcript, so an in-memory

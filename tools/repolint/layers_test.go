@@ -9,6 +9,9 @@ func TestLayeringContract(t *testing.T) {
 	}{
 		{"utility package stays a leaf", "internal/fileutil", "internal/config", true},
 		{"utility package may use the stdlib only", "internal/textutil", "internal/agent", true},
+		{"the shared cache-reason vocabulary stays a leaf", "internal/cachereason", "internal/agent", true},
+		{"a producer may use the shared cache-reason vocabulary", "internal/agent", "internal/cachereason", false},
+		{"the team report may use the shared cache-reason vocabulary", "internal/team", "internal/cachereason", false},
 		{"kernel may not reach the controller", "internal/agent", "internal/control", true},
 		{"kernel may not reach a frontend", "internal/agent", "internal/cli", true},
 		{"diagnostics may not reach the composition root", "internal/capdiag", "internal/boot", true},

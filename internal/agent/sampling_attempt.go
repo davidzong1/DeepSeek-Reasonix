@@ -23,9 +23,10 @@ func (a *Agent) runSamplingAttempt(ctx context.Context, turn int, sink event.Sin
 	if result.usage != nil {
 		if delta > 0 {
 			result.usage.RequestCount = delta
+			result.usage.RequestCountObserved = true
 		}
 	} else if delta > 0 {
-		result.usage = &provider.Usage{RequestCount: delta, Unknown: true}
+		result.usage = &provider.Usage{RequestCount: delta, RequestCountObserved: true, Unknown: true}
 	}
 	return result
 }

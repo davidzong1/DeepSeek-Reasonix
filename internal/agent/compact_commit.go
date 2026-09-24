@@ -74,6 +74,7 @@ func (a *Agent) commitSummaryProjection(ctx context.Context, commit summaryProje
 	}
 	receipt := state.LastReceipt
 	a.sess.compactionMu.Unlock()
+	a.noteProjectionRewrite(receipt)
 	a.emitContextMaintenance(receipt)
 	return state, nil
 }
@@ -123,7 +124,7 @@ func (a *Agent) summaryProjectionState(commit summaryProjectionCommit) Compactio
 	coveredHash := coveredPrefixHash(commit.canonical, commit.covered)
 	receipt := &ContextMaintenanceReceipt{
 		OperationID: fmt.Sprintf("summary-%d-%s", projectionVersion, commit.outputHash), Status: "applied",
-		Action: "summary", Trigger: commit.trigger, SourceProjection: commit.projectionVersion,
+		Action: maintenanceActionSummary, Trigger: commit.trigger, SourceProjection: commit.projectionVersion,
 		ProjectionVersion: projectionVersion, CoveredCount: commit.covered, CoveredPrefixHash: coveredHash,
 		InputHash: commit.inputHash, OutputHash: commit.outputHash, InputTokens: commit.sourceTokens,
 		ResultTokens: commit.projectionTokens, SavedTokens: max(0, commit.sourceTokens-commit.projectionTokens),

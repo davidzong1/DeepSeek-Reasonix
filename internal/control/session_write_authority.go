@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reasonix/internal/cachereason"
 	"reflect"
 
 	"reasonix/internal/agent"
@@ -56,7 +57,7 @@ func (c *Controller) activateManagedSessionEvents(sess *agent.Session) error {
 		return nil
 	}
 	if prompt := c.basePrompt(); prompt != "" {
-		sess.SetLeadingSystemPromptWithReason(prompt, "managed-runtime-activation")
+		sess.SetLeadingSystemPromptWithReason(prompt, cachereason.ManagedRuntimeActivation)
 	}
 	// Write-authority binding can run before a service-backed Runtime is
 	// published. Its publication path seeds the projection; this preparation

@@ -53,6 +53,82 @@ func readUsage(t *testing.T, c *client, sse string) *provider.Usage {
 	return usage
 }
 
+// servedSplitSSE renders the stream a DeepSeek-compatible gateway sends for a
+// warm request: message_start arrives twice, first with the whole prompt as an
+// estimate and no cache counters, then again with the split it actually served.
+// The cache-hit reading is the second one.
+func servedSplitSSE(promptEstimate, miss, read, outTok int) string {
+	n := strconv.Itoa
+	return `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":` + n(promptEstimate) +
+		`,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}
+
+event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":` + n(miss) +
+		`,"cache_creation_input_tokens":0,"cache_read_input_tokens":` + n(read) +
+		`,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":` + n(miss) +
+		`,"cache_creation_input_tokens":0,"cache_read_input_tokens":` + n(read) +
+		`,"output_tokens":` + n(outTok) + `}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+}
+
+// TestUsageServedSplitBeatsTheWholePromptEstimate pins the defect a real
+// DeepSeek-compatible gateway exposed: it sends message_start twice, and the
+// first one carries the whole prompt as an estimate while the second carries the
+// served split. input_tokens is not monotonic across those events, so keeping
+// the largest reading subtracted the real cache read from the estimate and
+// reported a cache miss no upstream counter ever contained (a 39,149-token
+// estimate against 33,408 cached reads produced a 5,741-token miss instead of
+// the 29 the gateway reported).
+//
+// The reading must come from the event that describes how the request was
+// served, and the invariant prompt == hit + miss must survive it.
+func TestUsageServedSplitBeatsTheWholePromptEstimate(t *testing.T) {
+	c := &client{name: "deepseek-anthropic", deepseek: true}
+	usage := readUsage(t, c, servedSplitSSE(39149, 29, 33408, 2))
+
+	if usage.CacheHitTokens != 33408 {
+		t.Fatalf("cache hit = %d, want the served 33408", usage.CacheHitTokens)
+	}
+	if usage.CacheMissTokens != 29 {
+		t.Fatalf("cache miss = %d, want the served 29, not the prompt estimate minus the cache read", usage.CacheMissTokens)
+	}
+	if usage.PromptTokens != 33437 {
+		t.Fatalf("prompt = %d, want 33437 (the served input plus its cache read)", usage.PromptTokens)
+	}
+	if usage.PromptTokens != usage.CacheHitTokens+usage.CacheMissTokens {
+		t.Fatalf("prompt %d != hit %d + miss %d", usage.PromptTokens, usage.CacheHitTokens, usage.CacheMissTokens)
+	}
+	if usage.CompletionTokens != 2 {
+		t.Fatalf("completion = %d, want 2", usage.CompletionTokens)
+	}
+}
+
+// TestUsageASplitBearingEventIsNotErasedByALaterOne covers the other direction:
+// a stream that reports the split and then repeats the counters without it must
+// keep the split. The counters are not cumulative, so "last value wins" would
+// lose the cache read the provider had already reported.
+func TestUsageASplitBearingEventIsNotErasedByALaterOne(t *testing.T) {
+	c := &client{name: "deepseek-anthropic", deepseek: true}
+	usage := readUsage(t, c, servedSplitSSE(39149, 29, 33408, 5))
+
+	if usage.CacheHitTokens != 33408 || usage.CacheMissTokens != 29 {
+		t.Fatalf("cache = hit %d miss %d, want 33408/29", usage.CacheHitTokens, usage.CacheMissTokens)
+	}
+	if usage.CompletionTokens != 5 {
+		t.Fatalf("completion = %d, want 5 (output is cumulative and keeps the maximum)", usage.CompletionTokens)
+	}
+}
+
 // TestUsageNativeAnthropicSumpsTheExclusiveCounters pins the native contract:
 // input_tokens excludes both cache counters, so the request total is their sum
 // and every uncached token is a miss.
@@ -108,12 +184,40 @@ func TestUsageDeepSeekKeepsCacheWritesBilled(t *testing.T) {
 	}
 }
 
-// TestUsageInclusiveCounterNeverGoesNegative covers the malformed-record guard:
-// a gateway whose cache read exceeds its own input counter must not produce a
-// negative miss.
-func TestUsageInclusiveCounterNeverGoesNegative(t *testing.T) {
+// TestUsageReadLargerThanInputIsTheUncachedRemainder replaces a guard written
+// for a shape no observation has shown. The old test fed input=10 with
+// cache_read=50 and asserted the route's inclusive rule still reported
+// miss=0/prompt=50 — a reading that, for those bytes, says 50 tokens were served
+// while the counters add up to 60.
+//
+// A cache read larger than input_tokens cannot be a subset of it, so the event
+// is not the route's declared convention: the difference must be counted as
+// uncached rather than dropped. The guard the old test protected — never a
+// negative miss — is asserted here too.
+func TestUsageReadLargerThanInputIsTheUncachedRemainder(t *testing.T) {
 	c := &client{name: "deepseek-anthropic", deepseek: true}
 	usage := readUsage(t, c, usageSSE(10, 0, 50, 5))
+
+	if usage.CacheHitTokens != 50 {
+		t.Fatalf("cache hit = %d, want the reported 50", usage.CacheHitTokens)
+	}
+	if usage.CacheMissTokens != 10 {
+		t.Fatalf("miss = %d, want the remainder 10", usage.CacheMissTokens)
+	}
+	if usage.PromptTokens != 60 {
+		t.Fatalf("prompt = %d, want 60 (remainder + cache read)", usage.PromptTokens)
+	}
+	if usage.PromptTokens != usage.CacheHitTokens+usage.CacheMissTokens {
+		t.Fatalf("prompt %d != hit %d + miss %d", usage.PromptTokens, usage.CacheHitTokens, usage.CacheMissTokens)
+	}
+}
+
+// TestUsageInclusiveCounterNeverGoesNegative keeps the negative-miss guard on
+// the case that actually produces one: the route's declared inclusive convention
+// meeting a cache read larger than input_tokens, with no split-bearing event to
+// correct it. The miss floors at zero rather than going negative.
+func TestUsageInclusiveCounterNeverGoesNegative(t *testing.T) {
+	usage := messagesUsage(10, 5, 0, 50, 0, true)
 
 	if usage.CacheMissTokens != 0 {
 		t.Fatalf("miss = %d, want 0", usage.CacheMissTokens)

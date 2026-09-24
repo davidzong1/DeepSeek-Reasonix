@@ -9,6 +9,16 @@ import (
 	"reasonix/internal/provider"
 )
 
+// The maintenance actions a projection install can carry. They are the
+// action vocabulary the receipts publish, and each one that reaches
+// installMaintenanceProjection rewrites provider-visible content, so each has a
+// cache-diagnostics reason behind projectionRewriteReason.
+const (
+	maintenanceActionSummary  = "summary"
+	maintenanceActionPrune    = "prune"
+	maintenanceActionTruncate = "truncate"
+)
+
 // maintenanceInstall is one free projection rewrite (no summarizer call): the
 // visible view it started from and the projected view replacing it.
 type maintenanceInstall struct {
@@ -100,6 +110,7 @@ func (a *Agent) installMaintenanceProjection(ctx context.Context, in maintenance
 	}
 	a.sess.checkpointState = "applied"
 	a.sess.compactionMu.Unlock()
+	a.noteProjectionRewrite(receipt)
 	a.emitContextMaintenance(receipt)
 	return true, nil
 }

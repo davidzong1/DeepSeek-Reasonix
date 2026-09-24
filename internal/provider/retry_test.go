@@ -329,6 +329,34 @@ func TestRequestAttemptCountSurvivesRetriesThenTerminalFailure(t *testing.T) {
 	if usage == nil || usage.TotalTokens != 0 || usage.RequestCount != 3 {
 		t.Fatalf("failed request usage = %+v, want tokens=0 requests=3", usage)
 	}
+	if !usage.RequestCountObserved {
+		t.Fatal("a count taken from the attempt counter must be marked observed")
+	}
+}
+
+// TestRequestCountProvenanceTracksTheCounter pins what the provenance flag is
+// for: a usage that came through the attempt counter carries a measured count,
+// while a context with no counter leaves the compatibility default in place and
+// the provenance unset, so a reader can tell the two apart.
+func TestRequestCountProvenanceTracksTheCounter(t *testing.T) {
+	usage := &Usage{PromptTokens: 10, RequestCount: 1}
+	ApplyRequestAttemptCount(context.Background(), usage)
+	if usage.RequestCountObserved {
+		t.Fatal("a context without a counter must not claim an observed count")
+	}
+	ctx := WithRequestAttemptCounter(context.Background())
+	recordRequestAttempt(ctx)
+	ApplyRequestAttemptCount(ctx, usage)
+	if usage.RequestCount != 1 || !usage.RequestCountObserved {
+		t.Fatalf("usage = %+v, want the counter's own 1 marked observed", usage)
+	}
+	// The zero-attempt case is the other half: nothing was issued, so nothing was
+	// measured, and the default stays unverified.
+	untouched := &Usage{PromptTokens: 10, RequestCount: 1}
+	ApplyRequestAttemptCount(WithRequestAttemptCounter(context.Background()), untouched)
+	if untouched.RequestCountObserved {
+		t.Fatal("a counter that never fired must not claim an observed count")
+	}
 }
 
 func TestIndependentRequestAttemptCounter(t *testing.T) {

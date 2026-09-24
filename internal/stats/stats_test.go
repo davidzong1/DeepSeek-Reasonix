@@ -91,6 +91,7 @@ func TestRecorderCountsMergedProviderRequests(t *testing.T) {
 	r := NewRecorder(&spySink{}, dir, "desktop")
 	e := usageEvent("deepseek/deepseek-v4-pro", 100, 50, 10, 0, 100, 150)
 	e.Usage.RequestCount = 2
+	e.Usage.RequestCountObserved = true
 	r.Emit(e)
 	flushRecorder(t, r)
 
@@ -101,6 +102,47 @@ func TestRecorderCountsMergedProviderRequests(t *testing.T) {
 	}
 	if got.Requests != 2 || len(got.Daily) != 1 || got.Daily[0].Requests != 2 {
 		t.Fatalf("merged requests = total %d daily %+v, want 2", got.Requests, got.Daily)
+	}
+}
+
+// TestRecorderPersistsTheRequestCountProvenance pins the durable half of the
+// provenance rule: the ledger row says whether the count beside it was measured,
+// so an audit of the historical ledger can separate the two instead of reading
+// every row as one request.
+func TestRecorderPersistsTheRequestCountProvenance(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(&spySink{}, dir, "desktop")
+	measured := usageEvent("deepseek/deepseek-v4-pro", 100, 50, 10, 0, 100, 150)
+	measured.Usage.RequestCount = 1
+	measured.Usage.RequestCountObserved = true
+	assumed := usageEvent("deepseek/deepseek-v4-pro", 100, 50, 10, 0, 100, 150)
+	assumed.Usage.RequestCount = 1
+	r.Emit(measured)
+	r.Emit(assumed)
+	flushRecorder(t, r)
+
+	day := dayStart(time.Now())
+	raw, err := os.ReadFile(filepath.Join(dir, day.Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ledger has %d rows, want 2:\n%s", len(lines), raw)
+	}
+	var rows []map[string]any
+	for _, line := range lines {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, row)
+	}
+	if rows[0]["requests_observed"] != true {
+		t.Fatalf("measured row = %v, want requests_observed true", rows[0])
+	}
+	if _, present := rows[1]["requests_observed"]; present {
+		t.Fatalf("assumed row = %v, want the marker omitted rather than written false", rows[1])
 	}
 }
 

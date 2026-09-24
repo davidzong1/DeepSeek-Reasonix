@@ -13,9 +13,8 @@ import (
 // oldest-first, then whole replay units are dropped, until the view fits under
 // the target. It is a projection; canonical storage keeps every byte.
 const (
-	maintenanceActionTruncate = "truncate"
-	elidedToolResultPrefix    = "[tool result elided to fit the context window"
-	truncatedHistoryMarker    = "[earlier conversation truncated to fit the context window: %d messages removed]"
+	elidedToolResultPrefix = "[tool result elided to fit the context window"
+	truncatedHistoryMarker = "[earlier conversation truncated to fit the context window: %d messages removed]"
 	// truncateProtectShare bounds the verbatim tail to this fraction of the
 	// target so a rescue can always reclaim enough.
 	truncateProtectShare = 4

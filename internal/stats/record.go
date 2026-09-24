@@ -48,7 +48,11 @@ type record struct {
 	CacheMiss  int       `json:"cache_miss,omitempty"`
 	Total      int       `json:"total,omitempty"`
 	Requests   int       `json:"requests,omitempty"` // provider requests represented by this row
-	Turn       bool      `json:"turn,omitempty"`     // true for TurnDone marker rows
+	// RequestsObserved says the count above was measured rather than assumed from
+	// the "zero means one" rule. Absent on older rows, which is what keeps an
+	// unverified count from reading as a single request.
+	RequestsObserved bool `json:"requests_observed,omitempty"`
+	Turn             bool `json:"turn,omitempty"` // true for TurnDone marker rows
 	// Cost quote fields (additive; older readers ignore them).
 	UsageSource        string   `json:"usage_source,omitempty"`
 	CostAmount         string   `json:"cost_amount,omitempty"`     // original amount decimal

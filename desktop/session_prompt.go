@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/cachereason"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
@@ -62,7 +63,7 @@ func noteLegacyPinnedSystemMigration(session *agent.Session, persisted, fresh st
 	// The resumed Session already contains the refreshed bytes, so this is only a
 	// diagnostics boundary. Do not increment RewriteVersion: the persistence
 	// baseline must remain compatible with the session loaded from disk.
-	session.NoteContentRewrite("legacy_pinned_system_migration")
+	session.NoteContentRewrite(cachereason.LegacyPinnedSystemMigration)
 }
 
 func sessionWithFreshSystemPrompt(session *agent.Session, system string) *agent.Session {

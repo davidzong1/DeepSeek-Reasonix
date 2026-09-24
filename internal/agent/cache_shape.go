@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
+	"reasonix/internal/cachereason"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -31,6 +33,35 @@ func shortHash(v any) string {
 	b, _ := json.Marshal(v)
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+// projectionRewriteReason maps a maintenance action to the content-rewrite reason
+// it reports. The values come from the shared vocabulary, so the team cache
+// report understands them without keeping a list of its own.
+func projectionRewriteReason(action string) string {
+	switch strings.TrimSpace(action) {
+	case maintenanceActionSummary:
+		return cachereason.CompactAuto
+	case maintenanceActionPrune:
+		return cachereason.Prune
+	case maintenanceActionTruncate:
+		return cachereason.Truncate
+	}
+	return ""
+}
+
+// noteProjectionRewrite queues the cache-diagnostics reason for a projection the
+// agent just installed. Only the two install sites call it. The receipt re-emits
+// at context_receipt.go and session_checkpoint.go republish an install that
+// already happened, so queueing there would report a rewrite on a request that
+// never saw one — the misattribution this reason exists to prevent.
+func (a *Agent) noteProjectionRewrite(r *ContextMaintenanceReceipt) {
+	if a == nil || r == nil || a.sess.conversation == nil {
+		return
+	}
+	if reason := projectionRewriteReason(r.Action); reason != "" {
+		a.sess.conversation.NoteContentRewrite(reason)
+	}
 }
 
 // CaptureShape takes a snapshot of the current prefix state.
@@ -65,23 +96,23 @@ func normalizeToolSchemas(schemas []provider.ToolSchema) []provider.ToolSchema {
 }
 
 // CompareShape returns diagnostics describing what changed between two shapes.
-// contentReasons is the set of provider-visible rewrite reasons (e.g.
-// "compact_auto", "snip", "rewind_truncate") drained from the Session since
-// prev was captured — see Session.DrainContentRewriteReasons. It is the sole
-// source of rewrite-caused reasons: a bare LogRewriteVersion change with no
-// drained reason means only local-only metadata was touched (a decision
-// receipt, tool-call preview/resolution, or an Edited-message replace), which
-// never reaches the provider and so must not be reported as a cache change.
+// contentReasons is the set of provider-visible rewrite reasons (values from
+// internal/cachereason) drained from the Session since prev was captured — see
+// Session.DrainContentRewriteReasons. It is the sole source of rewrite-caused
+// reasons: a bare LogRewriteVersion change with no drained reason means only
+// local-only metadata was touched (a decision receipt, tool-call
+// preview/resolution, or an Edited-message replace), which never reaches the
+// provider and so must not be reported as a cache change.
 func CompareShape(prev, cur PrefixShape, usage *provider.Usage, contentReasons []string) CacheDiagnostics {
 	reasons := []string{}
 	if prev.SystemHash != "" && prev.SystemHash != cur.SystemHash {
-		reasons = append(reasons, "system")
+		reasons = append(reasons, cachereason.System)
 	}
 	if prev.ToolsHash != "" && prev.ToolsHash != cur.ToolsHash {
-		reasons = append(reasons, "tools")
+		reasons = append(reasons, cachereason.Tools)
 	}
 	if prev.SessionContextDigest != cur.SessionContextDigest {
-		reasons = append(reasons, "session_context")
+		reasons = append(reasons, cachereason.SessionContext)
 	}
 	reasons = append(reasons, contentReasons...)
 	var miss, hit int

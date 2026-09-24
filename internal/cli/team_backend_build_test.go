@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/netclient"
 	"reasonix/internal/team"
 )
 
@@ -52,5 +53,69 @@ func TestMemberBuilderMissingKeyFailsBeforeAssembly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "lead") || !strings.Contains(err.Error(), "u1") {
 		t.Errorf("the assembly error must name the member and the entry: %q", err)
+	}
+}
+
+// TestMemberRouteBucketSeparatesRoutesWithoutNamingThem pins the contract the
+// cache baseline stratifies by: one configured route yields one stable label, a
+// different route yields a different one, and the label itself carries neither
+// the endpoint nor the credential.
+func TestMemberRouteBucketSeparatesRoutesWithoutNamingThem(t *testing.T) {
+	const baseURL = "https://gw.internal.example/anthropic"
+	member := team.AgentUser{
+		UserID: "acct-a", Provider: "deepseek", Model: "deepseek-v4-flash[1m]",
+		BaseURL: baseURL, APIKey: "sk-live-secret-value",
+	}
+	build := func(u team.AgentUser) string {
+		t.Helper()
+		r, err := newMemberProviderResolver(u, netclient.ProxySpec{})
+		if err != nil {
+			t.Fatalf("newMemberProviderResolver: %v", err)
+		}
+		return r.RouteBucket()
+	}
+
+	bucket := build(member)
+	if bucket == "" || bucket == "/" {
+		t.Fatalf("bucket = %q, want a label", bucket)
+	}
+	if again := build(member); again != bucket {
+		t.Fatalf("the same route produced %q then %q, want one stable label", bucket, again)
+	}
+	if strings.Contains(bucket, "gw.internal.example") || strings.Contains(bucket, "sk-live") {
+		t.Fatalf("bucket %q names the endpoint or the credential", bucket)
+	}
+
+	rotated := member
+	rotated.APIKey = "sk-a-different-secret"
+	if got := build(rotated); got != bucket {
+		t.Fatalf("rotating the credential changed the bucket (%q vs %q): the credential must not be an input", got, bucket)
+	}
+	for _, tc := range []struct {
+		name string
+		user team.AgentUser
+	}{
+		{"another endpoint", func() team.AgentUser { u := member; u.BaseURL = "https://other.example/v1"; return u }()},
+		{"another pool entry", func() team.AgentUser { u := member; u.UserID = "acct-b"; return u }()},
+	} {
+		if got := build(tc.user); got == bucket {
+			t.Fatalf("%s must yield its own bucket, both are %q", tc.name, got)
+		}
+	}
+
+	proxied, err := newMemberProviderResolver(member, netclient.ProxySpec{
+		Mode: "manual", Type: "http", Username: "proxy-user", Password: "hunter2-proxy-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxiedBucket := proxied.RouteBucket()
+	if proxiedBucket == bucket {
+		t.Fatalf("a proxied route must not share the direct route's bucket (%q)", proxiedBucket)
+	}
+	for _, forbidden := range []string{"hunter2-proxy-secret", "proxy-user"} {
+		if strings.Contains(proxiedBucket, forbidden) {
+			t.Fatalf("bucket %q carries the proxy credential %q", proxiedBucket, forbidden)
+		}
 	}
 }

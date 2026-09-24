@@ -132,6 +132,27 @@ func (r *memberProviderResolver) memberEffortVocabulary() []string {
 // Ref is the model ref boot.Options.Model must carry for this member.
 func (r *memberProviderResolver) Ref() string { return r.ref }
 
+// RouteBucket is the stable, non-identifying label for the route this member's
+// requests travel: which wire adapter, which endpoint, and which pool entry
+// dialled it. Two requests share a provider cache only if they share all three,
+// so the label is what a cache baseline stratifies by — and it must distinguish
+// two routes without naming either.
+//
+// Everything identifying is hashed, and the credential is excluded outright: a
+// fingerprint of a password or key is still derived from a secret, so the proxy
+// contributes its mode and type only. The result is stable for one configured
+// route and changes when the route does, which is the whole contract.
+func (r *memberProviderResolver) RouteBucket() string {
+	if r == nil {
+		return ""
+	}
+	material := strings.Join([]string{
+		r.kind, r.endpoint, r.name, strings.TrimSpace(r.proxy.Mode), strings.TrimSpace(r.proxy.Type),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(material))
+	return r.kind + "/" + hex.EncodeToString(sum[:6])
+}
+
 // Catalog reports the one entry this resolver owns. Tools and Reasoning are
 // declared: a member is a full Agent, so the assembled request carries the tool
 // schemas — the capability that a bare completion loop lacked. The [1m] alias
@@ -447,32 +468,7 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 			return nil, err
 		}
 
-		opts := deps.base()
-		if strings.TrimSpace(deps.workspaceRoot) != "" {
-			opts.WorkspaceRoot = deps.workspaceRoot
-		}
-		// Both the write scope and the posture are fixed here rather than carried
-		// across rebuilds: this builder is the only construction point, so eviction,
-		// model rebind and quota failover all re-derive them for free.
-		opts.AdditionalDirs = append(opts.AdditionalDirs, memberWriteRoots(b.Leader)...)
-		opts.HeadlessApprovalMode = memberApprovalPosture(b.Leader)
-		// Team playbooks are user-global: the member's role tree is read from
-		// the user state root, so it resolves from any launching directory and
-		// a team's recorded workspace cannot steer it.
-		opts.TeamSkillsRoot = teamSkillsBase()
-		opts.TeamRole = string(roleForLeader(b.Leader))
-		opts.WorkspaceLeaseLabel = memberWorkspaceLeaseLabel(b)
-		// The team's in-process write token. It must follow the workspace-root
-		// assignment above: that root is what the token compares scopes against.
-		opts.WriteIntentGate = memberWriteIntentGate(b.Team, opts.WorkspaceRoot, b.MemberID)
-		opts.Model = resolver.Ref()
-		opts.ProviderResolver = resolver
-		opts.Sink = deps.events.sink(b.MemberID)
-		opts.SystemPromptIdentity = memberSystemPromptIdentity(b) +
-			// Invalid team_role declarations warn through the assembly's own
-			// diagnostic writer (nil keeps the historical silence).
-			teamRoleSkillPrompt(opts.TeamSkillsRoot, b.Leader, opts.Stderr)
-		opts.ExtraTools = append(opts.ExtraTools, memberExtraTools(deps, b, opts.Stderr)...)
+		opts, observatory := memberBackendOptions(deps, b, resolver)
 		ctrl, err := boot.Build(deps.ctx, opts)
 		if err != nil {
 			return nil, err
@@ -536,13 +532,13 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// This is the one place a writable member backend is built (every exit
 		// above returned a follower), so starting the publisher here makes
 		// "only the writer publishes usage" a property of the call graph.
-		publisher := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, ctrl)
-		publisher.Start()
-		// Every post-bind step above is done, so this is the member's "runtime
-		// is ready" moment. A member has nobody watching it, so a continuation
-		// whose resumed turn never began would otherwise sit there forever.
+		observatory.Bind(ctrl)
+		observatory.Start()
+		// The member's "runtime is ready" moment: no host calls
+		// NotifyInboxRuntimeReady for a member backend, so nothing else would
+		// ever pick up a continuation whose resumed turn never began.
 		ctrl.RecoverUnstartedContinuation()
-		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: publisher}, nil
+		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: observatory}, nil
 	}
 }
 

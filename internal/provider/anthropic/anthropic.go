@@ -510,24 +510,9 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	searches := newSearchStream()
 	thinking := map[int]*provider.ThinkingBlock{}
 	argBuckets := map[int]int{} // last emitted 2KB progress bucket per block
-	var inTok, outTok, cacheCreate, cacheRead int
 	var stopReason string
-	haveUsage := false
-	mergeUsage := func(usage *wireUsage) {
-		if usage == nil {
-			return
-		}
-		// The native Anthropic stream reports input/cache counters in
-		// message_start and output_tokens in message_delta. Compatible gateways
-		// such as LongCat report all counters in message_delta instead. Counters
-		// are cumulative and non-negative, so retaining the largest value also
-		// tolerates gateways that repeat partial usage in both events.
-		inTok = max(inTok, usage.InputTokens)
-		outTok = max(outTok, usage.OutputTokens)
-		cacheCreate = max(cacheCreate, usage.CacheCreationInputTokens)
-		cacheRead = max(cacheRead, usage.CacheReadInputTokens)
-		haveUsage = true
-	}
+	usage := newStreamUsage()
+	mergeUsage := usage.merge
 
 	scanner := provider.NewStreamScanner(resp.Body, 1024*1024)
 
@@ -646,15 +631,18 @@ finalize:
 	if len(thinking) > 0 {
 		send(provider.Chunk{Type: provider.ChunkReasoning, ReasoningState: provider.ReasoningIncomplete})
 	}
-	if haveUsage {
+	if usage.have {
 		cacheWriteBilledTokens := 0.0
-		if cacheCreate > 0 && c.endpoint.native {
-			cacheWriteBilledTokens = float64(cacheCreate) * cacheWrite5MinuteInputMultiplier
+		if usage.cacheCreate > 0 && c.endpoint.native {
+			cacheWriteBilledTokens = float64(usage.cacheCreate) * cacheWrite5MinuteInputMultiplier
 		}
-		usage := messagesUsage(inTok, outTok, cacheCreate, cacheRead, cacheWriteBilledTokens, c.inclusiveInput())
-		usage.FinishReason = mapStopReason(stopReason)
-		provider.ApplyRequestAttemptCount(ctx, usage)
-		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: usage}) {
+		// The convention is the route's, unless the counters themselves decided
+		// otherwise for this stream. See streamUsage.merge.
+		inclusive := c.inclusiveInput() && !usage.exclusive
+		u := messagesUsage(usage.in, usage.out, usage.cacheCreate, usage.cacheRead, cacheWriteBilledTokens, inclusive)
+		u.FinishReason = mapStopReason(stopReason)
+		provider.ApplyRequestAttemptCount(ctx, u)
+		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: u}) {
 			return
 		}
 	}

@@ -257,17 +257,21 @@ func (r *Recorder) recordProviderUsage(modelRef string, usage *provider.Usage, q
 	// Recording is best-effort: a stats file failure (disk full, permissions)
 	// must never interrupt the event stream, matching telemetry's append idiom.
 	rec := record{
-		Timestamp:   time.Now(),
-		ModelRef:    modelRef,
-		Source:      r.source,
-		Prompt:      usage.PromptTokens,
-		Completion:  usage.CompletionTokens,
-		Reasoning:   usage.ReasoningTokens,
-		CacheHit:    usage.CacheHitTokens,
-		CacheMiss:   usage.CacheMissTokens,
-		Total:       usage.TotalTokens,
-		Requests:    usageRequestCount(usage),
-		UsageSource: strings.TrimSpace(usageSource),
+		Timestamp:  time.Now(),
+		ModelRef:   modelRef,
+		Source:     r.source,
+		Prompt:     usage.PromptTokens,
+		Completion: usage.CompletionTokens,
+		Reasoning:  usage.ReasoningTokens,
+		CacheHit:   usage.CacheHitTokens,
+		CacheMiss:  usage.CacheMissTokens,
+		Total:      usage.TotalTokens,
+		Requests:   usageRequestCount(usage),
+		// The compatibility rule above turns a missing count into 1; this says
+		// whether that is what happened, so a later reader can tell a measured
+		// single request from an assumed one.
+		RequestsObserved: usage.RequestCountObserved,
+		UsageSource:      strings.TrimSpace(usageSource),
 	}
 	if quote != nil {
 		rec.CostAmount = quote.Original.Amount
