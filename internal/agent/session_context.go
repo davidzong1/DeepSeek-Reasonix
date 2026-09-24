@@ -263,6 +263,9 @@ func eventSessionContextDiagnostics(observed turnContextDiagnostics) *event.Sess
 
 func captureTurnContextShape(system string, schemas []provider.ToolSchema, rewriteVersion int, messages []provider.Message) PrefixShape {
 	shape := CaptureShape(system, schemas, rewriteVersion)
+	// ModelMessages first: the shape must describe the array the provider is
+	// handed, or a decision receipt it never saw would read as a divergence.
+	shape.Messages = CaptureMessageShape(provider.ModelMessages(messages))
 	if snapshot, ok := latestTurnContextSnapshot(messages); ok {
 		shape.SessionContextDigest = snapshot.Digest
 		shape.PrefixHash = shortHash(map[string]string{

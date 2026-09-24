@@ -45,6 +45,9 @@ func RenderReport(arms []Arm, samples []Sample, prices Prices) string {
 func renderArm(stats ArmStats) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s, changed: %s)\n", stats.Arm, stats.Stage, stats.Changed)
+	if condition := conditionOf(stats.Arm); condition != "" {
+		fmt.Fprintf(&b, "  condition: %s (a client build; the request bytes are the same as the baseline's)\n", condition)
+	}
 	fmt.Fprintf(&b, "  samples=%d eligible_warm=%d target=%d min=%d gate_met=%s\n",
 		stats.Samples, stats.Eligible, stats.WarmTarget, stats.WarmMin, toBool(stats.GateReached))
 	fmt.Fprintf(&b, "  excluded: first=%d retry=%d error=%d usage_missing=%d no_cache_split=%d usage_estimated=%d invalid_accounting=%d\n",
@@ -72,6 +75,21 @@ func renderComparison(cmp Comparison) string {
 		fmt.Fprintf(&b, "  withheld: %s\n", note)
 	}
 	return b.String()
+}
+
+// conditionOf names the client condition one arm id encodes, or "" when the arm
+// is a request-byte arm that carries no condition. The condition arms are the
+// ones whose id is prefixed with the condition namespace, so a report can state
+// the build behind an arm without the driver passing it in again.
+func conditionOf(armID string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(armID), "C-")
+	if !ok {
+		return ""
+	}
+	if _, err := ConditionByID(rest); err != nil {
+		return ""
+	}
+	return rest
 }
 
 // baselineArm picks the comparison baseline: the first baseline arm that

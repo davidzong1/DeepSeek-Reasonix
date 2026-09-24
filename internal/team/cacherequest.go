@@ -71,6 +71,18 @@ type MemberCacheRequest struct {
 	SessionSequence uint64 `json:"session_sequence,omitempty"`
 	// SessionRequestSeq counts observed requests within one writer's session.
 	SessionRequestSeq int `json:"session_request_seq,omitempty"`
+	// SessionIDHash is a digest of the local session identity the request carried,
+	// never the identity itself. A context rescue rotates to a new session, so this
+	// is the only field that can tell a rescue's cold prefix from the original one.
+	SessionIDHash string `json:"session_id_hash,omitempty"`
+	// SessionOrdinal counts the distinct session identities this writer has seen
+	// up to and including this request, 1-based. It is 0 when the request carried
+	// no identity: an unknown ordinal is not the first one.
+	SessionOrdinal int `json:"session_ordinal,omitempty"`
+	// SessionFirstRequestSeq is the writer sequence at which this record's session
+	// opened, so comparing it with SessionRequestSeq identifies a rotation's first
+	// request — whose prefix is as cold as a session's first.
+	SessionFirstRequestSeq int `json:"session_first_request_seq,omitempty"`
 	// SecondsSincePrevRequest and HasPrevRequest are per writer session. A first
 	// request has no interval; it is reported as a first request, never as a
 	// zero-second gap.
@@ -105,15 +117,35 @@ type MemberCacheRequest struct {
 	// DiagnosticsAvailable distinguishes "the agent produced no diagnostics" from
 	// "the diagnostics were all zero". The prefix fields below are meaningless
 	// when it is false.
-	DiagnosticsAvailable     bool     `json:"diagnostics_available"`
-	PrefixHash               string   `json:"prefix_hash,omitempty"`
-	StablePrefixHash         string   `json:"stable_prefix_hash,omitempty"`
-	PrefixChanged            bool     `json:"prefix_changed,omitempty"`
-	StablePrefixChanged      bool     `json:"stable_prefix_changed,omitempty"`
-	PrefixChangeReasons      []string `json:"prefix_change_reasons,omitempty"`
+	DiagnosticsAvailable bool     `json:"diagnostics_available"`
+	PrefixHash           string   `json:"prefix_hash,omitempty"`
+	StablePrefixHash     string   `json:"stable_prefix_hash,omitempty"`
+	PrefixChanged        bool     `json:"prefix_changed,omitempty"`
+	StablePrefixChanged  bool     `json:"stable_prefix_changed,omitempty"`
+	PrefixChangeReasons  []string `json:"prefix_change_reasons,omitempty"`
+	// SystemHash and ToolsHash are the two halves of the stable prefix, so a reader
+	// can tell which of them moved without the combined hash. They are local
+	// shape comparisons, never provider cache keys.
+	SystemHash               string   `json:"system_hash,omitempty"`
+	ToolsHash                string   `json:"tools_hash,omitempty"`
 	ToolSchemaTokensEstimate int      `json:"tool_schema_tokens_estimate,omitempty"`
 	SessionContextDigest     string   `json:"session_context_digest,omitempty"`
 	SessionContextReasons    []string `json:"session_context_reasons,omitempty"`
+	// MessagePrefixHash fingerprints the provider-visible conversation array —
+	// the messages minus the system prompt, which the two hashes above cover.
+	MessagePrefixHash string `json:"message_prefix_hash,omitempty"`
+	MessageCount      int    `json:"message_count,omitempty"`
+	// MessagesComparable says whether a previous request's message shape existed
+	// to compare against. It is the gate for the three fields below: without it
+	// their zeros mean "not measured", not "nothing was rewritten".
+	MessagesComparable bool `json:"messages_comparable,omitempty"`
+	// FirstDivergenceOffset is the index of the first message that differs from
+	// the previous request's, or -1 when there was nothing comparable.
+	FirstDivergenceOffset int `json:"first_divergence_offset,omitempty"`
+	// MessagesRewritten counts the previous request's messages this one did not
+	// reuse: the direct measure of bytes the provider had already read being
+	// rewritten. Zero with MessagesComparable true is an append-only request.
+	MessagesRewritten int `json:"messages_rewritten,omitempty"`
 }
 
 // Request-count provenance. The vocabulary is closed and additive: a reader

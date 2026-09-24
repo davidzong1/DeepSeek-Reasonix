@@ -192,10 +192,13 @@ func TestRecorderRecordsUsageGaps(t *testing.T) {
 		want      string
 		wantClass Class
 	}{
-		"no usage at all":       {body: `{"type":"message_stop"}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
-		"unknown vocabulary":    {body: `{"usage":{"total_token_count":42}}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
-		"prompt but no cache":   {body: `{"usage":{"input_tokens":42,"output_tokens":2}}`, want: UsageProblemNoCacheRead, wantClass: ClassNoCacheSplit},
-		"mixed vocabularies":    {body: `{"usage":{"input_tokens":42,"prompt_tokens":42}}`, want: UsageProblemUnresolved, wantClass: ClassNoCacheSplit},
+		"no usage at all":     {body: `{"type":"message_stop"}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
+		"unknown vocabulary":  {body: `{"usage":{"total_token_count":42}}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
+		"prompt but no cache": {body: `{"usage":{"input_tokens":42,"output_tokens":2}}`, want: UsageProblemNoCacheRead, wantClass: ClassNoCacheSplit},
+		// Both vocabularies are present and neither can resolve: the reading is
+		// declined, and the more specific reason a vocabulary gave is the one
+		// reported, because it is what a reader deciding to re-sample needs.
+		"mixed vocabularies":    {body: `{"usage":{"input_tokens":42,"prompt_tokens":42}}`, want: UsageProblemNoCacheRead, wantClass: ClassNoCacheSplit},
 		"negative openai split": {body: `{"usage":{"prompt_tokens":10,"cached_tokens":50}}`, want: UsageProblemNegativeSplit, wantClass: ClassNoCacheSplit},
 	}
 	for name, tc := range cases {

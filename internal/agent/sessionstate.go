@@ -93,9 +93,11 @@ func (r *sessionRuntime) reset(s *Session) {
 	r.compactionMu.Unlock()
 	r.compaction.stuck = false
 	r.compaction.stuckInputHash = ""
+	r.compaction.stuckTokens = 0
 	r.compaction.consecutive = 0
 	r.compaction.failedTurn.Store(0)
 	r.compaction.lastTurn.Store(0)
+	r.compaction.spend = maintenanceSpend{}
 	r.todoMu.Lock()
 	r.todoState = nil
 	r.todoWritten = false

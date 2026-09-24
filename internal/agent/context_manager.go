@@ -16,13 +16,19 @@ import (
 type compactionProgress struct {
 	stuck          bool   // a fold landed above the trigger, so the same-view pressure retry is pointless
 	stuckInputHash string // provider-visible view covered by stuck; changed input may retry
-	consecutive    int    // back-to-back folds since one last helped
+	// stuckTokens is the estimate the latched decision started from. A later
+	// view may retry once it outgrows that by the retry ratio, which is what
+	// separates "new foldable region" from "the same view, one message on".
+	stuckTokens int
+	consecutive int // back-to-back folds since one last helped
 	// failedTurn backs off changed-view retries within one active tool loop.
 	// A later user turn may retry, while hard-ceiling recovery bypasses it.
 	failedTurn atomic.Int64
 	// lastTurn stops the post-turn observer and the pre-send preflight from
 	// paying for two summaries during one active tool loop.
 	lastTurn atomic.Int64
+	// spend is the cumulative maintenance cost of this session.
+	spend maintenanceSpend
 }
 
 // ContextManager is the sole owner of provider-visible context maintenance.
@@ -110,9 +116,8 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	}
 	visible := a.modelVisibleMessages()
 	// Threshold uses the stable pre-interceptor request shape (messages + tools
-	// + role projection). Extension interceptors run only on the real sampling
-	// request so side-effecting plugins are not double-invoked; if they expand
-	// the prompt past the hard ceiling, overflow recovery still fires.
+	// + role projection); interceptors run only on the real sampling request so
+	// side-effecting plugins are not double-invoked.
 	est := a.estimatedVisibleRequestTokens(visible)
 	viewEst := est
 	prepared := PreparedContext{
@@ -145,13 +150,7 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	if est < fold {
 		a.resetCompactionProgress()
 	}
-	if a.sess.compaction.stuck && a.sess.compaction.stuckInputHash != inputHash {
-		// The previous projection could not reclaim enough from its exact view,
-		// but newly appended messages create a new fold boundary and may retry.
-		a.sess.compaction.stuck = false
-		a.sess.compaction.stuckInputHash = ""
-		a.sess.compaction.consecutive = 0
-	}
+	a.releaseMaintenanceLatch(inputHash, est)
 	if a.sess.compaction.stuck && policy.Trigger == CompactionTriggerPressure && est < hard {
 		return prepared, nil
 	}
@@ -221,6 +220,10 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	maxSummaries := maxSummariesFor(policy, hard <= 0 || sourceTokens >= hard)
 	ladder := newSummaryLadder(maxSummaries)
 	result := prepared
+	// foldSource is the estimate the current ladder rung folds: it tracks result
+	// across re-plans, while sourceTokens stays the request that triggered the
+	// transaction.
+	foldSource := sourceTokens
 	for ladder.next() {
 		mustFree := policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard
 		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions,
@@ -234,6 +237,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 				// a denser tokenizer. Re-plan against those measurements.
 				fold, hard = a.compactTrigger(), a.hardInputCeiling()
 				result = m.currentPrepared()
+				foldSource = result.InputTokens
 				continue
 			}
 			return m.summaryFailed(ctx, policy, inputHash, sourceTokens, hard, err)
@@ -244,11 +248,15 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 
 		result = m.currentPrepared()
 		if foldLanded(policy, result.InputTokens, fold, hard) {
-			a.resetCompactionProgress()
+			// Landing under the trigger is not the same as buying room: a fold
+			// that lands just below it leaves the next tool result to cross the
+			// boundary again, paying for summary after summary.
+			a.settleMaintenanceFold(policy, foldSource, result.InputTokens, fold, hard)
 			return result, nil
 		}
 		forceFold = false
 		inputHash = a.contextMaintenanceInputHash(result.Messages)
+		foldSource = result.InputTokens
 	}
 
 	reason := fmt.Sprintf("summary result remains above fold trigger after %d attempts (%d >= %d)", maxSummaries, result.InputTokens, fold)
@@ -256,6 +264,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	a.recordContextMaintenanceBlocked(blockedInputHash, policy.Trigger, "summary", reason)
 	a.sess.compaction.stuck = true
 	a.sess.compaction.stuckInputHash = blockedInputHash
+	a.sess.compaction.stuckTokens = 0
 	a.sess.compaction.consecutive += maxSummaries
 	if policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard {
 		return m.rescueOverCeiling(ctx, policy, sourceTokens, result.InputTokens, hard, errors.New(reason))
@@ -353,6 +362,7 @@ func (m ContextManager) rescueByTruncation(ctx context.Context, policy ContextPr
 func (a *Agent) resetCompactionProgress() {
 	a.sess.compaction.stuck = false
 	a.sess.compaction.stuckInputHash = ""
+	a.sess.compaction.stuckTokens = 0
 	a.sess.compaction.consecutive = 0
 	a.sess.compaction.failedTurn.Store(0)
 }

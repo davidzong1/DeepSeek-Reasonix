@@ -71,6 +71,7 @@ func (a *Agent) InvalidateProjection() {
 	a.sess.compactionMu.Unlock()
 	a.sess.compaction.stuck = false
 	a.sess.compaction.stuckInputHash = ""
+	a.sess.compaction.stuckTokens = 0
 	a.sess.compaction.consecutive = 0
 	a.sess.compaction.failedTurn.Store(0)
 	a.sess.compaction.lastTurn.Store(0)
@@ -247,6 +248,7 @@ func (a *Agent) BindSessionPath(path string, loadSidecar bool) {
 	a.sess.compactionMu.Unlock()
 	a.sess.compaction.stuck = false
 	a.sess.compaction.stuckInputHash = ""
+	a.sess.compaction.stuckTokens = 0
 	a.sess.compaction.consecutive = 0
 	a.sess.compaction.failedTurn.Store(0)
 	a.sess.compaction.lastTurn.Store(0)

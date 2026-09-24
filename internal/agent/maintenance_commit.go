@@ -28,6 +28,10 @@ type maintenanceInstall struct {
 	transcriptVersion  uint64
 	visible, projected []provider.Message
 	affected           int
+	// foldTrigger and hardCeiling are the boundaries in force when this rewrite
+	// was taken, so the receipt reports the room it bought against them rather
+	// than against whatever the window looks like after the install.
+	foldTrigger, hardCeiling int
 }
 
 // installMaintenanceProjection CAS-installs a free projection under
@@ -55,11 +59,15 @@ func (a *Agent) installMaintenanceProjection(ctx context.Context, in maintenance
 	projectionVersion := in.state.Projection.ProjectionVersion + 1
 	now := time.Now().UTC()
 	coveredHash := coveredPrefixHash(in.canonical, len(in.canonical))
+	decision := a.maintenanceDecisionFor(sourceTokens, resultTokens, in.foldTrigger, in.hardCeiling)
 	receipt := &ContextMaintenanceReceipt{
 		OperationID: fmt.Sprintf("%s-%d-%s", in.action, projectionVersion, outputHash), Status: "applied", Action: in.action,
 		Trigger: in.trigger, SourceProjection: in.state.Projection.ProjectionVersion, ProjectionVersion: projectionVersion,
 		CoveredCount: len(in.canonical), CoveredPrefixHash: coveredHash, InputHash: inputHash, OutputHash: outputHash,
 		InputTokens: sourceTokens, ResultTokens: resultTokens, SavedTokens: max(0, sourceTokens-resultTokens),
+		HeadroomTokens: decision.Headroom(), FoldTriggerTokens: in.foldTrigger,
+		HardCeilingTokens: in.hardCeiling, ReductionRatio: decision.Reduction(),
+		MaintenanceState:    decision.State(),
 		AffectedToolResults: in.affected, CacheBreak: true, CreatedAt: now,
 	}
 	next := in.state
@@ -110,6 +118,7 @@ func (a *Agent) installMaintenanceProjection(ctx context.Context, in maintenance
 	}
 	a.sess.checkpointState = "applied"
 	a.sess.compactionMu.Unlock()
+	a.noteProjectionInstall()
 	a.noteProjectionRewrite(receipt)
 	a.emitContextMaintenance(receipt)
 	return true, nil

@@ -21,6 +21,9 @@ func reportSample(member string, contextPrompt int, hit, miss int) MemberCacheRe
 		CacheHitTokens:      hit, CacheMissTokens: miss,
 		RequestCount: 1, RequestCountSource: RequestCountObserved, AccountingValid: true,
 		DiagnosticsAvailable: true,
+		// A member writer's own record always carries the session state it observed,
+		// so a fixture without it would be a shape no real writer produces.
+		SessionIDHash: "0123456789abcdef", SessionOrdinal: 1, SessionRequestSeq: 1,
 	}
 }
 
@@ -387,6 +390,22 @@ func TestCacheReportCoverageDescribesTheScopedPopulation(t *testing.T) {
 	}
 	if c.ModelRefPresent != 2 {
 		t.Fatalf("model coverage = %+v, want both scoped samples located", c)
+	}
+	// The session identity is what decides a sample's cold status, so its absence
+	// is disclosed here rather than silently deciding the sample was warm.
+	if c.SessionIdentityPresent != 2 || c.SessionIdentityAbsent != 0 {
+		t.Fatalf("session identity coverage = %+v, want both scoped samples to carry the writer's own state", c)
+	}
+	// The message-array comparability is what gates the rewrite class, so a sample
+	// that cannot be compared is counted apart rather than read as append-only.
+	if c.MessageShapeUncomparable != 2 {
+		t.Fatalf("message shape coverage = %+v, want both scoped samples counted as uncomparable", c)
+	}
+	comparable := reportSample("m5", 1_000, 900, 100)
+	comparable.MessagesComparable = true
+	withShape := BuildCacheReport(CacheReportInput{Requests: []MemberCacheRequest{comparable}, GeneratedAt: time.Now()})
+	if withShape.Coverage.MessageShapeComparable != 1 || withShape.Coverage.MessageShapeUncomparable != 0 {
+		t.Fatalf("message shape coverage = %+v, want the comparable sample counted", withShape.Coverage)
 	}
 	// The excluded sample still counts as scoped: coverage is over the population
 	// the report read, so an exclusion never hides the absence it was excluded for.

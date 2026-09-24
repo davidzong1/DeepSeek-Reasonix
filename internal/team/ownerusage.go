@@ -72,6 +72,20 @@ type OwnerUsageLastTurnDiagnostics struct {
 	SessionContextReasons []string `json:"session_context_reasons,omitempty"`
 }
 
+// OwnerUsageMaintenance is the writer's cumulative maintenance spend for the
+// session it owns: how many summarizer requests, provider-visible projection
+// installs and rescues it paid for, and how many repeats it blocked. A cache
+// rate alone cannot show this cost, so it is published beside the gauges.
+//
+// It is a snapshot of counters the writer owns, so a reader must treat a stale
+// document as unknown rather than as zero — the same rule the gauges follow.
+type OwnerUsageMaintenance struct {
+	SummaryRequests    int `json:"summary_requests"`
+	ProjectionInstalls int `json:"projection_installs"`
+	RescueCount        int `json:"rescue_count"`
+	RepeatBlocks       int `json:"repeat_blocks"`
+}
+
 // OwnerUsageJob is one background job as the follower renders it: display data
 // published verbatim, so a follower never fabricates placeholder rows.
 type OwnerUsageJob struct {
@@ -106,6 +120,9 @@ type OwnerUsage struct {
 	CacheMiss int `json:"session_cache_miss"`
 	// Jobs are the writer's running background jobs.
 	Jobs []OwnerUsageJob `json:"jobs,omitempty"`
+	// Maintenance is the writer's cumulative maintenance spend. Absent on a
+	// document written before it existed, which is unknown rather than zero.
+	Maintenance *OwnerUsageMaintenance `json:"maintenance,omitempty"`
 }
 
 // Published reports the publication instant. ok is false for a document whose

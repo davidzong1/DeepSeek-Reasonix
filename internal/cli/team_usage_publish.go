@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/jobs"
@@ -89,13 +92,25 @@ type memberUsagePublisher struct {
 
 // memberUsageObservation is what the observation sink remembers between
 // requests: the writer's own request counter, the previous request instant for
-// the interval, and the latest gauges and diagnosis the snapshot republishes.
+// the interval, the session identity the request was stamped with, and the
+// latest gauges and diagnosis the snapshot republishes.
 type memberUsageObservation struct {
 	seq           int
 	lastRequest   time.Time
 	contextUsed   int
 	contextWindow int
 	diagnostics   *team.OwnerUsageLastTurnDiagnostics
+	// sessionIDHash and sessionOrdinal track the writer's session identity. A
+	// context rescue rotates the member onto a fresh session, and its first
+	// request is a cold prefix that a per-writer sequence alone cannot name.
+	sessionIDHash  string
+	sessionOrdinal int
+	// sessionFirstSeq is the writer sequence at which the current session opened,
+	// so a reader can identify the request that followed a rotation.
+	sessionFirstSeq int
+	// seenSessions counts distinct identities, so the ordinal is the writer's own
+	// count of rotations rather than anything the event claimed.
+	seenSessions map[string]bool
 }
 
 // newMemberUsagePublisher returns a publisher for one writer member, or nil when
@@ -215,6 +230,7 @@ func (p *memberUsagePublisher) observe(e event.Event) {
 	}
 	now := time.Now().UTC()
 	p.observation.seq++
+	p.observation.observeSession(e.SessionID, p.observation.seq)
 	rec := memberCacheRequest(e, p.key, p.route, p.observation, now)
 	p.observation.lastRequest = now
 	p.observation.diagnostics = lastTurnCacheDiagnostics(e.CacheDiagnostics)
@@ -226,6 +242,41 @@ func (p *memberUsagePublisher) observe(e event.Event) {
 	case queue <- rec:
 	default:
 	}
+}
+
+// observeSession records the session identity one emitted event carries. The
+// ordinal counts distinct identities in arrival order, which is the writer's own
+// observation of a rotation: an event that carries no identity leaves the
+// ordinal at its previous value rather than advancing it, because a missing
+// identity is not a new session.
+func (o *memberUsageObservation) observeSession(sessionID string, seq int) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	digest := shortSessionDigest(sessionID)
+	if o.seenSessions[digest] {
+		o.sessionIDHash = digest
+		return
+	}
+	if o.seenSessions == nil {
+		o.seenSessions = map[string]bool{}
+	}
+	o.seenSessions[digest] = true
+	o.sessionIDHash = digest
+	o.sessionOrdinal = len(o.seenSessions)
+	// The session's first observed request is the one that introduced it. A
+	// rotation whose first request the queue dropped has no recorded opener, and
+	// the ordinal without an opener is not evidence of a cold prefix.
+	o.sessionFirstSeq = seq
+}
+
+// shortSessionDigest hashes a session identity so a record can correlate one
+// writer's requests across a rotation without persisting the identity itself.
+// It is a local digest, never a provider cache key.
+func shortSessionDigest(sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(sum[:8])
 }
 
 // recordRequest writes one observed request to the member's bounded log. A
@@ -301,8 +352,22 @@ func sampleMemberUsage(ctrl control.SessionAPI, now time.Time, diagnostics *team
 		usage.LastTurn.CacheDiagnostics = diagnostics
 	}
 	usage.CacheHit, usage.CacheMiss = ctrl.SessionCache()
+	usage.Maintenance = ownerUsageMaintenance(ctrl.ContextMaintenanceSnapshot().MaintenanceCost)
 	usage.Jobs = ownerUsageJobs(ctrl.Jobs())
 	return usage, nil
+}
+
+// ownerUsageMaintenance projects the writer's maintenance spend onto the
+// published document. It is published rather than folded into the record log
+// because it is a session cumulative: the per-request log answers "what did this
+// request cost", and this answers "what has maintenance cost this session".
+func ownerUsageMaintenance(cost agent.MaintenanceCost) *team.OwnerUsageMaintenance {
+	return &team.OwnerUsageMaintenance{
+		SummaryRequests:    cost.SummaryRequests,
+		ProjectionInstalls: cost.ProjectionInstalls,
+		RescueCount:        cost.RescueCount,
+		RepeatBlocks:       cost.RepeatBlocks,
+	}
 }
 
 // ownerUsageLastTurn maps provider usage onto the published document. The wire
@@ -367,24 +432,27 @@ func memberCacheRequest(e event.Event, key team.OwnerKey, route string, obs memb
 		providerName, _, _ = strings.Cut(strings.TrimSpace(route), "/")
 	}
 	rec := team.MemberCacheRequest{
-		RequestID:           cacheRequestID(e, key, obs.seq),
-		RequestIDSource:     cacheRequestIDSource(e),
-		ObservedAt:          now.UTC().Format(time.RFC3339Nano),
-		TeamID:              key.TeamID,
-		MemberID:            key.MemberID,
-		Provider:            providerName,
-		ModelRef:            modelRef,
-		RouteBucket:         strings.TrimSpace(route),
-		TurnID:              e.TurnID,
-		SessionSequence:     e.Sequence,
-		SessionRequestSeq:   obs.seq,
-		PromptTokens:        usage.PromptTokens,
-		ContextPromptTokens: usage.ContextPromptTokens,
-		CacheHitTokens:      usage.CacheHitTokens,
-		CacheMissTokens:     usage.CacheMissTokens,
-		CacheWriteTokens:    usage.CacheWriteTokens,
-		CompletionTokens:    usage.CompletionTokens,
-		RequestCount:        max(usage.RequestCount, 1),
+		RequestID:              cacheRequestID(e, key, obs.seq),
+		RequestIDSource:        cacheRequestIDSource(e),
+		ObservedAt:             now.UTC().Format(time.RFC3339Nano),
+		TeamID:                 key.TeamID,
+		MemberID:               key.MemberID,
+		Provider:               providerName,
+		ModelRef:               modelRef,
+		RouteBucket:            strings.TrimSpace(route),
+		TurnID:                 e.TurnID,
+		SessionSequence:        e.Sequence,
+		SessionRequestSeq:      obs.seq,
+		SessionIDHash:          obs.sessionIDHash,
+		SessionOrdinal:         obs.sessionOrdinal,
+		SessionFirstRequestSeq: obs.sessionFirstSeq,
+		PromptTokens:           usage.PromptTokens,
+		ContextPromptTokens:    usage.ContextPromptTokens,
+		CacheHitTokens:         usage.CacheHitTokens,
+		CacheMissTokens:        usage.CacheMissTokens,
+		CacheWriteTokens:       usage.CacheWriteTokens,
+		CompletionTokens:       usage.CompletionTokens,
+		RequestCount:           max(usage.RequestCount, 1),
 		// The count's provenance travels with it: a reader of the record must be
 		// able to tell a measured request from the compatibility default, and this
 		// is the last layer that knows which one the provider reported.
@@ -437,7 +505,17 @@ func applyCacheDiagnostics(rec *team.MemberCacheRequest, d *event.CacheDiagnosti
 	rec.PrefixChanged = d.PrefixChanged
 	rec.StablePrefixChanged = d.StablePrefixChanged
 	rec.PrefixChangeReasons = append([]string(nil), d.PrefixChangeReasons...)
+	rec.SystemHash = d.SystemHash
+	rec.ToolsHash = d.ToolsHash
 	rec.ToolSchemaTokensEstimate = d.ToolSchemaTokens
+	// The array fingerprint tells "appended to what the provider already read"
+	// from "rewrote bytes it already read", which the hashes above cannot see.
+	// Its comparability flag travels with it: the offsets are unset, not zero.
+	rec.MessagePrefixHash = d.MessagePrefixHash
+	rec.MessageCount = d.MessageCount
+	rec.MessagesComparable = d.MessagesComparable
+	rec.FirstDivergenceOffset = d.FirstDivergenceOffset
+	rec.MessagesRewritten = d.MessagesRewritten
 	if sc := d.SessionContext; sc != nil {
 		rec.SessionContextDigest = sc.Digest
 		rec.SessionContextReasons = append([]string(nil), sc.Reasons...)

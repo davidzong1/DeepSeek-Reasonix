@@ -10,21 +10,29 @@ import (
 // ContextMaintenanceSnapshot is a read-only view of the current provider-bound
 // context. It separates present composition from cumulative summary-call cost.
 type ContextMaintenanceSnapshot struct {
-	CanonicalTokens   int
-	ProjectedTokens   int
-	SummaryTokens     int
-	LastSavedTokens   int
-	SnipTrigger       int
-	FoldTrigger       int
-	ForceTrigger      int
-	TriggerTokens     int
-	CheckpointState   string
-	HardInputCeiling  int
-	Headroom          int
+	CanonicalTokens  int
+	ProjectedTokens  int
+	SummaryTokens    int
+	LastSavedTokens  int
+	SnipTrigger      int
+	FoldTrigger      int
+	ForceTrigger     int
+	TriggerTokens    int
+	CheckpointState  string
+	HardInputCeiling int
+	Headroom         int
+	// HeadroomGoal is the room a fold must buy to count as recovered;
+	// HeadroomGoalMet reports whether the view has that room right now. A fold
+	// can install a projection and still leave less than this.
+	HeadroomGoal      int
+	HeadroomGoalMet   bool
+	MaintenanceState  string
 	ProjectionVersion uint64
 	Blocked           bool
 	LastReceipt       *ContextMaintenanceReceipt
 	ContextBudget     *ContextBudgetSnapshot
+	// MaintenanceCost is this session's cumulative maintenance spend.
+	MaintenanceCost MaintenanceCost
 }
 
 // ContextBudgetSnapshot is the optional send-time admission view for the
@@ -79,6 +87,10 @@ func (a *Agent) ContextMaintenanceSnapshot() ContextMaintenanceSnapshot {
 		CheckpointState:   uiCheckpoint,
 		HardInputCeiling:  a.hardInputCeiling(),
 		ProjectionVersion: state.Projection.ProjectionVersion,
+		MaintenanceCost:   a.maintenanceCostSnapshot(),
+	}
+	if goal := a.maintenanceHeadroomGoal(); goal > 0 {
+		snapshot.HeadroomGoal = goal
 	}
 	for _, msg := range visible {
 		if isCompactionSummary(msg) {
@@ -86,10 +98,12 @@ func (a *Agent) ContextMaintenanceSnapshot() ContextMaintenanceSnapshot {
 		}
 	}
 	snapshot.Headroom = max(0, snapshot.HardInputCeiling-snapshot.ProjectedTokens)
+	snapshot.HeadroomGoalMet = snapshot.HeadroomGoal > 0 && snapshot.Headroom >= snapshot.HeadroomGoal
 	currentHash := a.contextMaintenanceInputHash(visible)
 	if state.LastReceipt != nil {
 		receipt := *state.LastReceipt
 		snapshot.LastReceipt = &receipt
+		snapshot.MaintenanceState = receipt.MaintenanceState
 		if receipt.Status == "applied" && (receipt.Action == "prune" || receipt.Action == "summary") {
 			snapshot.LastSavedTokens = receipt.SavedTokens
 		}

@@ -2,6 +2,7 @@ package cachelab
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -65,6 +66,73 @@ type Arm struct {
 	Gated bool `json:"gated,omitempty"`
 	// Gate names what an operator must confirm before a gated arm may run.
 	Gate string `json:"gate,omitempty"`
+	// Conditions names the client conditions this arm may run under. The condition
+	// is what the client code does; this arm's Variable is what the request bytes
+	// do. Empty means the arm is not registered for a condition comparison.
+	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// ConditionOfArm reports the condition a run must be configured for before this
+// arm produces comparable samples. A condition arm is the baseline request bytes
+// re-run under a different client build, so it carries the condition in its own
+// registration: a driver reads the condition from the arm, never from an
+// environment variable it could get wrong.
+func ConditionOfArm(arm Arm) (Condition, bool) {
+	if len(arm.Conditions) == 0 {
+		return ConditionBaseline, false
+	}
+	// The baseline arm is registered under every condition; the one a run is
+	// actually in is named by the arm's own id, which the driver selects.
+	return arm.Conditions[0], true
+}
+
+// ConditionArms returns one arm per registered condition, all carrying the
+// baseline variable: the condition matrix is the plan's P3 comparison, and every
+// row of it must move exactly the client build and nothing else.
+func ConditionArms() []Arm {
+	frozenBytes := []string{"member", "provider", "model", "route", "credential scope", "tool surface", "concurrency", "request bytes"}
+	out := make([]Arm, 0, len(RegisteredConditions()))
+	for _, spec := range RegisteredConditions() {
+		out = append(out, Arm{
+			ID:       "C-" + string(spec.Condition),
+			Stage:    StageFormal,
+			Variable: VariableVersion,
+			Changed:  "client condition " + string(spec.Condition),
+			Frozen:   frozenBytes,
+			// A condition arm runs the baseline request bytes, so it needs the same
+			// warm-request gate as the baseline it is compared against.
+			WarmTarget: FormalWarmTarget,
+			WarmMin:    FormalWarmMin,
+			Conditions: []Condition{spec.Condition},
+			// Every condition arm is gated on a run that actually configured it: a
+			// condition claimed without its switches is an unregistered build.
+			Gated: true,
+			Gate:  conditionGate(spec),
+		})
+	}
+	return out
+}
+
+// conditionGate states what an operator must confirm before a condition arm may
+// run, in the condition's own terms.
+func conditionGate(spec ConditionSpec) string {
+	switches := make([]string, 0, len(spec.Switches))
+	for _, key := range sortedSwitchKeys(spec.Switches) {
+		switches = append(switches, key+"="+spec.Switches[key])
+	}
+	return fmt.Sprintf("a build configured with %s, on the same member, route, account and request bytes as the baseline",
+		strings.Join(switches, ", "))
+}
+
+// sortedSwitchKeys lists a switch map's keys in a stable order, so two renders
+// of the same registration are byte-identical.
+func sortedSwitchKeys(switches map[string]string) []string {
+	keys := make([]string, 0, len(switches))
+	for key := range switches {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Registered experiment constants. They are fixed before any formal result is
@@ -102,6 +170,122 @@ const (
 	ConfoundAccountPool = "shared_account_pool"
 )
 
+// Condition names one client build under test. The condition matrix is the
+// plan's P3 experiment: a condition is what the client code does, while an Arm's
+// Variable is what the request bytes do. Keeping them apart is what lets one
+// fixture ladder be re-run under two builds without the registration of either
+// changing.
+type Condition string
+
+const (
+	// ConditionBaseline is the unmodified build: the reference every other
+	// condition is measured against.
+	ConditionBaseline Condition = "baseline"
+	// ConditionAOnly enables the context-maintenance state machine only.
+	ConditionAOnly Condition = "a_only"
+	// ConditionBOnly enables the provider-visible shape stability only.
+	ConditionBOnly Condition = "b_only"
+	// ConditionAB enables both.
+	ConditionAB Condition = "a_plus_b"
+	// ConditionRescue enables context rescue. It validates the extreme-recovery
+	// path and is never a routine optimization arm: acting on a rescue rotates the
+	// session, so its cost includes a cold prefix by construction.
+	ConditionRescue Condition = "rescue_enabled"
+)
+
+// ConditionSpec is one condition's registration: what it turns on, which
+// switches a run must set to reproduce it, and what it must not change. The
+// switches are named rather than applied here, because the switch surface is the
+// configuration's, not this package's.
+type ConditionSpec struct {
+	Condition Condition `json:"condition"`
+	// Enables names the client behaviors this condition turns on.
+	Enables []string `json:"enables"`
+	// Switches are the configuration keys a run sets, with the value it sets them
+	// to. They are the reproduction recipe, so a run cannot claim a condition it
+	// did not configure.
+	Switches map[string]string `json:"switches"`
+	// Unchanged names what this condition must leave alone, so a run that drifted
+	// is detectable rather than pooled.
+	Unchanged []string `json:"unchanged"`
+	// NeverRoutine marks a condition that is not an optimization arm.
+	NeverRoutine bool `json:"never_routine,omitempty"`
+}
+
+// RegisteredConditions is the condition matrix. The three client conditions
+// share one switch set: A and B are independent configuration, so enabling one
+// must not imply the other.
+func RegisteredConditions() []ConditionSpec {
+	unchanged := []string{
+		"provider-visible request bytes", "cache policy", "context pruning policy",
+		"member isolation", "statistics denominator",
+	}
+	return []ConditionSpec{
+		{
+			Condition: ConditionBaseline,
+			Enables:   []string{"none (the reference build)"},
+			Switches:  map[string]string{"agent.cache_aware_compaction": "false", "agent.context_rescue": "false"},
+			Unchanged: unchanged,
+		},
+		{
+			Condition: ConditionAOnly,
+			Enables:   []string{"context maintenance state machine", "post-fold headroom target"},
+			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "false"},
+			Unchanged: unchanged,
+		},
+		{
+			Condition: ConditionBOnly,
+			Enables:   []string{"provider-visible shape stability"},
+			Switches:  map[string]string{"agent.cache_aware_compaction": "false", "agent.context_rescue": "false"},
+			Unchanged: unchanged,
+		},
+		{
+			Condition: ConditionAB,
+			Enables:   []string{"context maintenance state machine", "provider-visible shape stability"},
+			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "false"},
+			Unchanged: unchanged,
+		},
+		{
+			Condition: ConditionRescue,
+			Enables:   []string{"context rescue on an unrecoverable fold"},
+			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "true"},
+			Unchanged: unchanged,
+			// A rescue rotates the session, so its cold prefix is part of its cost.
+			// Running it as a routine arm would report that cost as an optimization.
+			NeverRoutine: true,
+		},
+	}
+}
+
+// ConditionByID resolves one registered condition. An unknown id is refused
+// rather than defaulted, so a typo cannot silently run an unregistered build.
+func ConditionByID(id string) (ConditionSpec, error) {
+	id = strings.TrimSpace(id)
+	for _, spec := range RegisteredConditions() {
+		if string(spec.Condition) == id {
+			return spec, nil
+		}
+	}
+	return ConditionSpec{}, fmt.Errorf("cachelab: %q is not a registered condition", id)
+}
+
+// Validate refuses a condition whose registration is incomplete: a condition
+// that does not name its switches has no reproduction recipe, and a result
+// attributed to it would be unfalsifiable.
+func (c ConditionSpec) Validate() error {
+	switch {
+	case strings.TrimSpace(string(c.Condition)) == "":
+		return fmt.Errorf("cachelab: condition has no id")
+	case len(c.Enables) == 0:
+		return fmt.Errorf("cachelab: condition %s does not name what it enables", c.Condition)
+	case len(c.Switches) == 0:
+		return fmt.Errorf("cachelab: condition %s names no switches, so it has no reproduction recipe", c.Condition)
+	case len(c.Unchanged) == 0:
+		return fmt.Errorf("cachelab: condition %s does not list what it must leave unchanged", c.Condition)
+	}
+	return nil
+}
+
 // RegisteredArms is the pre-registration itself: the arms a run may execute.
 // B0/B1 establish whether the provider reports cache reads under frozen bytes;
 // B2/B3/B4 each move exactly one factor; B5/B6 are gated on an approved
@@ -118,6 +302,18 @@ func RegisteredArms() []Arm {
 		{
 			ID: "B1-baseline-repeat", Stage: StageFormal, Variable: VariableBaseline,
 			Changed: "none (identical frozen bytes, serial, short interval)",
+			Frozen:  frozenBytes, WarmTarget: FormalWarmTarget, WarmMin: FormalWarmMin,
+			IntervalMS: 0,
+			// The baseline arm is the one arm every client condition is measured
+			// against, so it is the only arm registered under all of them.
+			Conditions: []Condition{ConditionBaseline, ConditionAOnly, ConditionBOnly, ConditionAB, ConditionRescue},
+		},
+		{
+			// The K1 regression guard: a warm response's uncached remainder is the
+			// difference of two events, so the expected rate is the provider's own
+			// reading, and `prompt == hit + miss` stays closed either way.
+			ID: "K1-warm-fold", Stage: StageFormal, Variable: VariableBaseline,
+			Changed: "none (the fold regression guard: the warm rate must equal the provider's own reading, not a fold artifact)",
 			Frozen:  frozenBytes, WarmTarget: FormalWarmTarget, WarmMin: FormalWarmMin,
 			IntervalMS: 0,
 		},
@@ -217,6 +413,20 @@ func (a Arm) Validate() error {
 		return fmt.Errorf("cachelab: ladder arm %s registers no size", a.ID)
 	case a.Gated && strings.TrimSpace(a.Gate) == "":
 		return fmt.Errorf("cachelab: gated arm %s names no gate", a.ID)
+	}
+	for _, condition := range a.Conditions {
+		spec, err := ConditionByID(string(condition))
+		if err != nil {
+			return fmt.Errorf("cachelab: arm %s is registered under %s", a.ID, err)
+		}
+		// A condition arm carries the condition as its own variable, so it is the
+		// registered way to run a never-routine condition. Any other arm under such
+		// a condition would be measuring the rotation as if it were an optimization.
+		conditionArm := a.Variable == VariableVersion && len(a.Conditions) == 1
+		if spec.NeverRoutine && a.Variable != VariableBaseline && !conditionArm {
+			return fmt.Errorf("cachelab: arm %s may not run under condition %s: that condition rotates the session, so its cold prefix is part of its cost rather than an optimization",
+				a.ID, condition)
+		}
 	}
 	return nil
 }

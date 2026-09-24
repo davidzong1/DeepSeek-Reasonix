@@ -411,7 +411,6 @@ func (r *Recorder) finishSample(idx, status int, body []byte, readErr error) {
 		// contract excludes from baselines instead of pooling it as warm.
 		r.attempt[pending.attemptKey] = sample.Attempt
 	}
-	r.samples = append(r.samples, sample)
 	journal := r.journal
 	r.mu.Unlock()
 	if journal != nil {
@@ -419,6 +418,11 @@ func (r *Recorder) finishSample(idx, status int, body []byte, readErr error) {
 		// reports the loss instead.
 		_ = journal.Append(sample)
 	}
+	// Publish the sample only after the journal attempt: a reader that waits for
+	// the sample and then reads the journal back would otherwise race its own line.
+	r.mu.Lock()
+	r.samples = append(r.samples, sample)
+	r.mu.Unlock()
 }
 
 // capturingWriter notes the status the proxy wrote before the body starts.
@@ -587,9 +591,16 @@ func (r *rawUsage) has(keys ...string) bool {
 	return ok
 }
 
-// resolve reads the collected keys through the vocabulary that carried them. An
-// unrecognised or mixed vocabulary yields no split, and the problem field says
-// which case it was.
+// resolve reads the collected keys through the vocabulary that carried them.
+//
+// A response may carry both vocabularies at once: a gateway that forwards an
+// OpenAI-style usage object inside an Anthropic event stream produces exactly
+// that, and an earlier version of this parser refused it — which turned a
+// response that did carry a cache read into "no split", losing a real
+// measurement. Both vocabularies are therefore attempted, the Anthropic one
+// first because it is the one the event stream speaks, and the shape that
+// resolved is recorded. Only a response neither vocabulary can read is
+// unresolved.
 func (r *rawUsage) resolve() ReportedUsage {
 	if len(r.values) == 0 {
 		return ReportedUsage{Problem: UsageProblemNoUsage}
@@ -598,65 +609,103 @@ func (r *rawUsage) resolve() ReportedUsage {
 	out.Completion, _ = r.firstOf(keyCompletionTokens, keyOutputTokens)
 	anthropic := r.has(keyInputTokens, keyCacheReadInput, keyCacheCreationInput)
 	openai := r.has(keyPromptTokens, keyCacheHitTokens, keyCacheMissTokens, keyCachedTokens)
-	switch {
-	case anthropic && !openai:
-		out.Shape = UsageShapeAnthropic
-		return r.resolveAnthropic(out)
-	case openai && !anthropic:
-		out.Shape = UsageShapeOpenAI
-		return r.resolveOpenAI(out)
-	default:
-		out.Problem = UsageProblemUnresolved
-		return out
+	problem := ""
+	if anthropic {
+		if resolved, why, ok := r.resolveAnthropic(out); ok {
+			resolved.Shape = UsageShapeAnthropic
+			return resolved
+		} else {
+			problem = moreSpecificProblem(problem, why)
+		}
 	}
+	if openai {
+		if resolved, why, ok := r.resolveOpenAI(out); ok {
+			resolved.Shape = UsageShapeOpenAI
+			return resolved
+		} else {
+			problem = moreSpecificProblem(problem, why)
+		}
+	}
+	// Nothing resolved, so the most specific reason a vocabulary gave is the one
+	// reported: "the response carried no cache read" says more than "unresolved",
+	// and a reader deciding whether to re-sample needs the specific one.
+	if problem == "" {
+		problem = UsageProblemUnresolved
+	}
+	out.Problem = problem
+	return out
+}
+
+// problemRank orders the reasons a vocabulary can decline to resolve, so a
+// response that carries both vocabularies reports the most specific reason
+// rather than whichever was tried first.
+func problemRank(problem string) int {
+	switch problem {
+	case UsageProblemNegativeSplit:
+		return 3
+	case UsageProblemNoCacheRead:
+		return 2
+	case UsageProblemNoPrompt:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// moreSpecificProblem keeps the more informative of two decline reasons.
+func moreSpecificProblem(have, next string) string {
+	if problemRank(next) > problemRank(have) {
+		return next
+	}
+	return have
 }
 
 // resolveAnthropic reads the Anthropic vocabulary, where input_tokens counts the
 // prompt that was not cached and cache_creation_input_tokens counts what was
-// written: the miss side is the sum of those two.
-func (r *rawUsage) resolveAnthropic(out ReportedUsage) ReportedUsage {
+// written: the miss side is the sum of those two. ok is false when the response
+// carries this vocabulary's keys but not the ones this reading needs.
+func (r *rawUsage) resolveAnthropic(out ReportedUsage) (ReportedUsage, string, bool) {
 	prompt, ok := r.get(keyInputTokens)
 	if !ok {
-		out.Problem = UsageProblemNoPrompt
-		return out
+		return out, UsageProblemNoPrompt, false
 	}
 	read, ok := r.get(keyCacheReadInput)
 	if !ok {
-		out.Problem = UsageProblemNoCacheRead
-		return out
+		// A present-but-unreadable reading, not a zero one: the caller reports the
+		// problem when no vocabulary resolves.
+		return out, UsageProblemNoCacheRead, false
 	}
 	write, _ := r.firstOf(keyCacheCreationInput)
 	out.Hit, out.Write, out.Miss = read, write, prompt+write
 	out.Prompt = out.Hit + out.Miss
 	out.Split = true
-	return out
+	return out, "", true
 }
 
 // resolveOpenAI reads the OpenAI-compatible vocabulary, where prompt_tokens is
 // the whole prompt and the cache read is a subset of it (the DeepSeek spelling
-// reports the miss explicitly, so that value is preferred when present).
-func (r *rawUsage) resolveOpenAI(out ReportedUsage) ReportedUsage {
+// reports the miss explicitly, so that value is preferred when present). ok is
+// false when the response carries this vocabulary's keys but not the ones this
+// reading needs, or when the numbers cannot describe a split at all.
+func (r *rawUsage) resolveOpenAI(out ReportedUsage) (ReportedUsage, string, bool) {
 	prompt, ok := r.get(keyPromptTokens)
 	if !ok {
-		out.Problem = UsageProblemNoPrompt
-		return out
+		return out, UsageProblemNoPrompt, false
 	}
 	hit, ok := r.firstOf(keyCacheHitTokens, keyCachedTokens, keyCacheReadTokens)
 	if !ok {
-		out.Problem = UsageProblemNoCacheRead
-		return out
+		return out, UsageProblemNoCacheRead, false
 	}
 	miss, ok := r.get(keyCacheMissTokens)
 	if !ok {
 		miss = prompt - hit
 	}
 	if miss < 0 {
-		out.Problem = UsageProblemNegativeSplit
-		return out
+		return out, UsageProblemNegativeSplit, false
 	}
 	out.Prompt, out.Hit, out.Miss = prompt, hit, miss
 	out.Split = true
-	return out
+	return out, "", true
 }
 
 // usageKeyNames lists the collected keys in a stable order, so the journal

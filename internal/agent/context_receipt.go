@@ -67,6 +67,23 @@ func (a *Agent) maintenanceRetryDue(r *ContextMaintenanceReceipt, est int) bool 
 	return est >= r.InputTokens+int(float64(window)*maintenanceRetryGrowthRatio)
 }
 
+// maintenanceGrowthDue reports whether a view that changed since a latch was set
+// has grown enough to be worth another fold. The latch records the estimate its
+// own decision started from; a view that has not outgrown that by the retry
+// ratio is the same fold boundary with one more message on it, and re-folding it
+// pays a summary for the same headroom the last one failed to buy. A latch with
+// no recorded estimate (a legacy sidecar) fails open.
+func (a *Agent) maintenanceGrowthDue(latchedTokens, est int) bool {
+	if latchedTokens <= 0 {
+		return true
+	}
+	window := a.effectiveContextWindow()
+	if est <= 0 || window <= 0 {
+		return true
+	}
+	return est >= latchedTokens+int(float64(window)*maintenanceRetryGrowthRatio)
+}
+
 func (a *Agent) emitContextMaintenance(r *ContextMaintenanceReceipt) {
 	if a == nil || r == nil || a.svc.sink == nil {
 		return
@@ -107,6 +124,10 @@ func (a *Agent) recordContextMaintenanceOutcome(inputHash, trigger, action, stat
 	}
 	_, transcriptVersion := a.sess.conversation.snapshotMessagesVersion()
 	promptCacheKey := a.currentPromptCacheKey()
+	// The boundaries are read once, before the lock: the receipt records where
+	// the view stood when this outcome was decided, and re-reading them after
+	// the persist would describe a window the decision never saw.
+	fold, hard := a.compactTrigger(), a.hardInputCeiling()
 	a.sess.compactionMu.Lock()
 	state := a.sess.compactionState
 	previous := state
@@ -139,6 +160,14 @@ func (a *Agent) recordContextMaintenanceOutcome(inputHash, trigger, action, stat
 		Trigger: trigger, SourceProjection: state.Projection.ProjectionVersion,
 		ProjectionVersion: state.Projection.ProjectionVersion, InputHash: inputHash,
 		InputTokens: inputTokens, BlockedInputHash: inputHash, Reason: reason, CreatedAt: now,
+		// Both statuses bar the generation — contextMaintenanceBlocked treats
+		// blocked and failed alike — so a refusal classifies as blocked whichever
+		// spelling it used, and the receipt and the classifier agree.
+		MaintenanceState: maintenanceDecision{
+			Estimate: inputTokens, Fold: fold, Hard: hard,
+			Blocked: status != "applied",
+		}.State(),
+		FoldTriggerTokens: fold, HardCeilingTokens: hard,
 	}
 	state.UpdatedAt = now
 	a.sess.compactionState = state
@@ -149,6 +178,10 @@ func (a *Agent) recordContextMaintenanceOutcome(inputHash, trigger, action, stat
 	}
 	a.sess.compaction.failedTurn.Store(a.activeTurnCreatedAt.Load())
 	a.sess.compactionMu.Unlock()
+	// Counted here rather than at the call site: the early return above means a
+	// repeated refusal of the same view publishes no receipt, and a counter that
+	// still incremented would report blocks the session never recorded.
+	a.noteMaintenanceDecision(state.LastReceipt.MaintenanceState)
 	a.emitContextMaintenance(state.LastReceipt)
 }
 
