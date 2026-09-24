@@ -384,6 +384,11 @@ type Agent struct {
 	activeTurnCreatedAt atomic.Int64
 	// Pinned revisions are staged after admission and appended with the user turn.
 	pinned pinnedContextRuntime
+
+	// boardDelta is the pre-sampling shared-board delta. A nil read keeps the
+	// loop byte-identical to a build with no blackboard at all. See
+	// board_delta.go.
+	boardDelta boardDeltaState
 }
 
 // KeepPolicy is a bitmask controlling which messages are preserved beyond the

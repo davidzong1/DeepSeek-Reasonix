@@ -285,6 +285,10 @@ type memberBackendDeps struct {
 	// the historical behavior — session-directory candidates only, no adoption.
 	// A host that has a team data root always supplies one.
 	owners *team.OwnerStore
+	// conclusions is the member-side reader of other members' shared
+	// conclusions. Nil leaves every member's executor without a board hook,
+	// which is what a build with no board at all looks like.
+	conclusions conclusionDeltaReader
 }
 
 // memberPoolLookup reads one pool entry. Narrowed to the one method the builder
@@ -522,6 +526,7 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// then in force, so setting the mode first would leave expansion flagged
 		// non-interactive and deny an out-of-scope write as if headless.
 		ctrl.SetToolApprovalMode(memberApprovalPosture(b.Leader))
+		installMemberConclusionDelta(deps, b, ctrl)
 		// Installed before the first turn reads it. A leader gets none: its scope
 		// is the whole filesystem, so it raises no card to escalate, and a member
 		// must never be able to answer its own.

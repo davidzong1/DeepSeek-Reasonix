@@ -89,6 +89,9 @@ func newLeaderTaskTools(service *teamTaskService, teamName, leaderID string) []t
 		// The one tool that is not a task-service pass-through: waiting blocks
 		// inside the call instead of returning a status the model must re-ask for.
 		newLeaderWaitTool(service, teamName, leaderID),
+		// The shared board's conclusions are never delivered to a leader: this
+		// read is the only path that puts one in its context.
+		newLeaderConclusionTool(service, teamName, leaderID),
 	}
 }
 
@@ -127,6 +130,9 @@ func newMemberTaskTools(service *teamTaskService, teamName, memberID string) []t
 		base("member_report_result", "Read this member's task or report a completed result. operation=read is a read-only query and does not finish the task. operation=report (the default) stores the first line as the title and the following text as a short summary, then persists completion; longer text is not stored, so publish it with member_publish_deliverable and quote the id in the summary. Pass task_id when more than one task is assigned.", `{"type":"object","properties":{"operation":{"type":"string","enum":["read","get","report"]},"result":{"type":"string","description":"First line is the title; the rest is a short summary. Longer text is not stored."},"task_id":{"type":"string"}},"additionalProperties":false}`),
 		base("member_set_approval_mode", "Switch this member's own approval mode: auto (the default) answers ordinary approvals immediately; manual holds each one for the operator at the leader's window. This does not govern out-of-scope write requests — the leader agent decides those either way, through leader_resolve_member_approval. The leader's mode is fixed to auto.", `{"type":"object","properties":{"mode":{"type":"string","enum":["auto","manual"]}},"required":["mode"],"additionalProperties":false}`),
 		base("team_knowledge_recall", "Recall durable knowledge this team accumulated (decisions, conventions, conclusions). Read-only.", `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+		// A conclusion is a finding other members read on their next thinking
+		// step; posting one finishes nothing, so it stays off the report path.
+		newMemberConclusionTool(service, teamName, memberID),
 	}
 }
 

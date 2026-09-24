@@ -199,6 +199,11 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) (runErr err
 		if err := a.applyQueuedSteers(ctx); err != nil {
 			return err
 		}
+		// Other members' new conclusions land here, after the steer batch and
+		// before the schemas are captured, so the request this step samples
+		// carries them. No new conclusion: nothing is written and the shape
+		// below is the one a build without a board would capture.
+		a.applyBoardDelta(ctx)
 		schemas := a.providerToolSchemas()
 		prefixShape := a.capturePrefixShape(schemas)
 		prevPrefixShape := a.sess.lastPrefixShape

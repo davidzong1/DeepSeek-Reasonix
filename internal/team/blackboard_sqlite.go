@@ -523,7 +523,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, boardID string, view ViewSpe
 		return MaterializedView{}, err
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.task_id, c.topic, c.epoch, c.event_seq, c.digest, c.summary
+		`SELECT c.task_id, c.topic, c.epoch, c.event_seq, c.digest, c.summary, e.member_id
 		   FROM board_conclusions c JOIN board_events e ON e.seq = c.event_seq
 		  WHERE c.board_id = ? AND (? = '' OR c.task_id = ?)
 		  ORDER BY c.topic LIMIT ?`,
@@ -535,7 +535,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, boardID string, view ViewSpe
 	for rows.Next() {
 		var c Conclusion
 		var taskID string
-		if err := rows.Scan(&taskID, &c.Topic, &c.Epoch, &c.EventSeq, &c.Digest, &c.Summary); err != nil {
+		if err := rows.Scan(&taskID, &c.Topic, &c.Epoch, &c.EventSeq, &c.Digest, &c.Summary, &c.MemberID); err != nil {
 			return MaterializedView{}, err
 		}
 		c.BoardID = boardID
