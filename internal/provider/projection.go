@@ -20,6 +20,9 @@ func ProjectionMessages(msgs []Message) []Message { return projectMessages(msgs,
 
 func messagesNeedProjection(msgs []Message, keepExecution, keepOrigin bool) bool {
 	for _, m := range msgs {
+		if m.Role == "compaction" || m.Role == "notice" {
+			return true
+		}
 		if m.InterruptedTurn != nil || slices.ContainsFunc(m.ToolCalls, func(c ToolCall) bool { return c.Recovery != nil }) || m.ReadPause != nil || m.ReadCompletion != nil || len(m.ToolDiagnostic) > 0 {
 			return true
 		}
@@ -36,7 +39,7 @@ func projectMessages(msgs []Message, keepExecution, keepOrigin bool) []Message {
 	}
 	out := make([]Message, 0, len(msgs))
 	for _, candidate := range msgs {
-		if candidate.LocalOnly {
+		if candidate.LocalOnly || candidate.Role == "compaction" || candidate.Role == "notice" {
 			continue
 		}
 		if candidate.ProviderContent != "" {
