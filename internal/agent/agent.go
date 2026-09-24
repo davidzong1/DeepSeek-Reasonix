@@ -839,6 +839,10 @@ type Options struct {
 	VisibleWindowTokens int
 	// CacheAwareCompaction defers an automatic fold to hardInputCeiling while warm.
 	CacheAwareCompaction bool
+	// EnableContextRescue opts this build into the cross-session continuation
+	// rescue: an unrecoverable fold certifies a plan instead of falling back to
+	// a lossy truncation. Off by default — acting on the plan rotates.
+	EnableContextRescue bool
 	// Deprecated compatibility inputs. New agents ignore these fields; automatic
 	// maintenance is controlled only by CompactRatio.
 	SoftCompactRatio       float64
@@ -1045,6 +1049,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			maxSubagentDepth:   maxSubagentDepth,
 			contextWindow:      opts.ContextWindow,
 			compactRatio:       opts.CompactRatio,
+			contextRescue:      opts.EnableContextRescue,
 			recentKeep:         opts.RecentKeep,
 			archiveDir:         opts.ArchiveDir,
 		},

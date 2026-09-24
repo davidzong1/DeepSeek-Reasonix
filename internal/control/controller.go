@@ -195,6 +195,13 @@ type Controller struct {
 	onSessionRecovered                func(SessionRecoveryInfo) error
 	onSessionTransition               func(SessionTransitionInfo) error
 	onSessionRotation                 func(context.Context, SessionRotationRequest) (SessionRotationPlan, error)
+	// continuations owns the context-rescue bookkeeping: the in-process dedup
+	// set and the per-lineage attempt counts. Separate from rotating — the gate
+	// protects one swap, this guards a lineage from rescuing twice.
+	continuations continuationLedger
+	// rescue holds the certified rescue plan a failed model turn produced, from
+	// its capture until the controller can apply it. See context_rescue.go.
+	rescue contextRescueState
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a

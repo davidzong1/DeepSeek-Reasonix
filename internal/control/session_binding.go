@@ -159,6 +159,21 @@ func (c *Controller) BindFreshSessionWithOptions(ctx context.Context, options se
 }
 
 func (c *Controller) bindFreshSessionWithCommit(ctx context.Context, options session.CreateOptions, commit func(context.Context, session.SessionRef) error) (session.SessionRef, error) {
+	return c.bindSeededSessionWithCommit(ctx, options, nil, nil, commit)
+}
+
+// bindSeededSessionWithCommit is bindFreshSessionWithCommit with a transcript
+// seed. Ordinary rotations pass no seed and get a session whose only message is
+// the base system prompt. A context-rescue continuation passes exactly the one
+// recovery message it is carrying across, so the new session's provider-visible
+// projection opens with the handover instead of nothing. seedEvents are durable
+// records that must not reach the provider — the rescue lineage travels that
+// way, so a chain keeps one identity across every session it spans.
+//
+// The seed is applied before the runtime is published, which is what makes the
+// rotation atomic: a failure anywhere in this function leaves the source
+// session bound and usable, and the child is discarded unpublished.
+func (c *Controller) bindSeededSessionWithCommit(ctx context.Context, options session.CreateOptions, seed []provider.Message, seedEvents []session.Event, commit func(context.Context, session.SessionRef) error) (session.SessionRef, error) {
 	service := c.SessionCreationService()
 	if c == nil || service == nil || c.executor == nil {
 		return session.SessionRef{}, errors.New("v3 session service is unavailable")
@@ -169,7 +184,10 @@ func (c *Controller) bindFreshSessionWithCommit(ctx context.Context, options ses
 	}
 	candidate := prepared.Runtime()
 	fresh := agent.NewSession(c.basePrompt())
-	if err := seedRuntimeSession(ctx, candidate, "session-create", fresh.Snapshot(), c.ModelRef(), c.ModelSelectionIdentity()); err != nil {
+	if len(seed) > 0 {
+		fresh = fresh.CloneWithMessages(append(fresh.Snapshot(), seed...))
+	}
+	if err := seedRuntimeSession(ctx, candidate, "session-create", fresh.Snapshot(), c.ModelRef(), c.ModelSelectionIdentity(), seedEvents...); err != nil {
 		_ = service.Discard(context.Background(), prepared)
 		return session.SessionRef{}, err
 	}
@@ -355,11 +373,11 @@ func (c *Controller) SetSessionTitle(ctx context.Context, title string) error {
 	return err
 }
 
-func seedRuntimeSession(ctx context.Context, runtime *session.Runtime, operationID string, messages []provider.Message, modelRef, modelIdentity string) error {
+func seedRuntimeSession(ctx context.Context, runtime *session.Runtime, operationID string, messages []provider.Message, modelRef, modelIdentity string, extra ...session.Event) error {
 	if runtime == nil {
 		return nil
 	}
-	events := make([]session.Event, 0, len(messages)+1)
+	events := make([]session.Event, 0, len(messages)+len(extra)+1)
 	for _, message := range messages {
 		if message.ID == "" {
 			return errors.New("initial v3 message has no stable id")
@@ -377,6 +395,7 @@ func seedRuntimeSession(ctx context.Context, runtime *session.Runtime, operation
 		}
 		events = append(events, config)
 	}
+	events = append(events, extra...)
 	if len(events) == 0 {
 		return nil
 	}
@@ -610,6 +629,10 @@ type SessionRotationRequest struct {
 	Source     session.SessionRef
 	SourcePath string
 	Reason     string
+	// Continuation is set only for a context-rescue rotation. A host that
+	// archives or deletes the source on other reasons must keep it intact here:
+	// preserving the source transcript is the whole point of the rotation.
+	Continuation *ContinuationLineage
 }
 
 type SessionRotationPlan struct {

@@ -99,7 +99,9 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 	c.mu.Lock()
 	busy := c.bodyActiveLocked() || c.finalizingLocked() || c.maintenance != nil || c.rotating || c.closed
 	c.mu.Unlock()
-	if busy {
+	// A queued rescue is about to replace this session; the rescue's own
+	// terminal boundary republishes the dispatcher.
+	if busy || c.contextRescuePending() {
 		return inboxDispatchIdle
 	}
 	// Controllers without persistence cannot own a durable inbox. Rotation and

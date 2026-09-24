@@ -365,8 +365,32 @@ func (c *Controller) spawnGuardedTurn(ctx context.Context, cancel context.Cancel
 		if item.goalRound != nil {
 			item.goalRound.setResult(err, errors.Is(ctx.Err(), context.Canceled) && c.CancelRequested())
 		}
+		// Capture before the terminal boundary, while the controller still knows
+		// which session produced the certified rescue.
+		c.noteContextRescue(err)
 		c.finishGuardedTurn(explainError(err), completion)
 	}()
+}
+
+// settleIdleTurnSlot releases a finished turn's slot and republishes the work
+// that was waiting for it. It is called with c.mu held and releases it.
+//
+// A queued context rescue goes first: the session is about to be replaced, so
+// admitting an inbox item or a goal round here would run it against the window
+// the rescue is escaping. The rescue republishes both when it settles.
+func (c *Controller) settleIdleTurnSlot() {
+	c.turns.lastToken = c.turns.token
+	c.turns.phase = session.RuntimeIdle
+	c.turns.turnID = ""
+	c.noteExecutionLocked(session.RuntimeIdle, "")
+	c.turns.finishingBound.endIdle()
+	c.mu.Unlock()
+	if c.contextRescuePending() {
+		c.applyPendingContextRescue()
+	} else {
+		c.maybeDispatchInbox()
+	}
+	c.refreshRuntimeState(event.Event{})
 }
 
 func (c *Controller) cancellationGrace() time.Duration {
@@ -470,14 +494,7 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 		}
 		next, ok := c.popNextPendingLocked()
 		if !ok {
-			c.turns.lastToken = c.turns.token
-			c.turns.phase = session.RuntimeIdle
-			c.turns.turnID = ""
-			c.noteExecutionLocked(session.RuntimeIdle, "")
-			c.turns.finishingBound.endIdle()
-			c.mu.Unlock()
-			c.maybeDispatchInbox()
-			c.refreshRuntimeState(event.Event{})
+			c.settleIdleTurnSlot()
 			return
 		}
 		ctx, cancel, admitted := c.startTurnLocked(context.Background(), next)

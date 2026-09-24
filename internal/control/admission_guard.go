@@ -83,6 +83,22 @@ func (c *Controller) runGuardedGoalRound(reservation *goalRoundReservation, body
 	return c.admitGuardedTurn(body, false, false, nil, reservation, turnAdmission{})
 }
 
+// holdForContextRescueLocked parks or drops work that arrived while a certified
+// rescue is queued. Admitting it would run it against the window the rescue is
+// escaping. Called with c.mu held; it releases it, like the branches around it.
+//
+// A caller that opted into parking is queued; a durable inbox item is left on
+// disk for the rescue's own terminal boundary to republish.
+func (c *Controller) holdForContextRescueLocked(item queuedTurn, parkWhileRunning bool) admissionResult {
+	if parkWhileRunning {
+		c.queueTurnLocked(item)
+		c.mu.Unlock()
+		return turnParked
+	}
+	c.mu.Unlock()
+	return turnDroppedRunning
+}
+
 func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, parkWhileRunning, parkWhileFinishing bool, onStart func(), goalRound *goalRoundReservation, admission turnAdmission) admissionResult {
 	if err := c.authentication.admissionError(); err != nil {
 		var authErr *AuthenticationError
@@ -127,6 +143,14 @@ func (c *Controller) admitGuardedTurn(body func(ctx context.Context) error, park
 		c.mu.Unlock()
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: the session is being switched — please resend"})
 		return turnDroppedRotating
+	}
+	if c.contextRescuePending() {
+		kind := queuedUser
+		if goalRound != nil {
+			kind = queuedGoal
+		}
+		item := queuedTurn{kind: kind, body: body, onStart: onStart, goalRound: goalRound, admissionCtx: admissionCtx}
+		return c.holdForContextRescueLocked(item, parkWhileRunning)
 	}
 	if c.maintenance != nil {
 		kind := queuedUser

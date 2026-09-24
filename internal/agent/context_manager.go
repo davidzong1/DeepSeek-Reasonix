@@ -44,6 +44,10 @@ type ContextPreparePolicy struct {
 	// AllowChunkedFallback enables fragment/tree-reduce recovery after a single
 	// summary fails. Ordinary pressure/overflow leave this false.
 	AllowChunkedFallback bool
+	// AllowContextRescue opts this transaction into the cross-session
+	// continuation rescue: an ineffective fold certifies a ContextRecoveryPlan
+	// instead of a lossy truncation projection.
+	AllowContextRescue bool
 }
 
 // PreparedContext is the frozen result of a successful Prepare transaction.
@@ -51,6 +55,10 @@ type PreparedContext struct {
 	Messages          []provider.Message
 	InputTokens       int
 	ProjectionVersion uint64
+	// Recovery is set only alongside ErrContextRescuePlanned: it is a certified
+	// continuation payload for a view that must not be sent. When non-nil,
+	// Messages describes the rejected view and is diagnostic, not sendable.
+	Recovery *ContextRecoveryPlan
 }
 
 func (a *Agent) contextManager() ContextManager { return ContextManager{agent: a} }
@@ -202,11 +210,15 @@ func maxSummariesFor(policy ContextPreparePolicy, overCeiling bool) int {
 	}
 }
 
-func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContext, policy ContextPreparePolicy, inputHash string, est, fold, hard int, forceFold bool) (PreparedContext, error) {
+// foldContext runs the summary ladder for one maintenance transaction.
+// sourceTokens is the admission estimate of the request that triggered it: the
+// same provider-visible scale the ladder's results are measured on, and the
+// source_tokens a continuation rescue reports its reduction against.
+func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContext, policy ContextPreparePolicy, inputHash string, sourceTokens, fold, hard int, forceFold bool) (PreparedContext, error) {
 	a := m.agent
 	// Reserve the manual rescue budget when an overflow may reveal a window.
 	// With no known ceiling, the first successful fold completes the request.
-	maxSummaries := maxSummariesFor(policy, hard <= 0 || est >= hard)
+	maxSummaries := maxSummariesFor(policy, hard <= 0 || sourceTokens >= hard)
 	ladder := newSummaryLadder(maxSummaries)
 	result := prepared
 	for ladder.next() {
@@ -224,10 +236,10 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 				result = m.currentPrepared()
 				continue
 			}
-			return m.summaryFailed(ctx, policy, inputHash, hard, err)
+			return m.summaryFailed(ctx, policy, inputHash, sourceTokens, hard, err)
 		}
 		if outcome == CompactionNoop {
-			return m.summaryNoop(ctx, policy, inputHash, hard)
+			return m.summaryNoop(ctx, policy, inputHash, sourceTokens, hard)
 		}
 
 		result = m.currentPrepared()
@@ -246,7 +258,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	a.sess.compaction.stuckInputHash = blockedInputHash
 	a.sess.compaction.consecutive += maxSummaries
 	if policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard {
-		return m.rescueByTruncation(ctx, policy, hard, errors.New(reason))
+		return m.rescueOverCeiling(ctx, policy, sourceTokens, result.InputTokens, hard, errors.New(reason))
 	}
 	slog.Info("agent: context maintenance paused below hard ceiling", "reason", reason)
 	return result, nil
@@ -261,7 +273,7 @@ func foldLanded(policy ContextPreparePolicy, tokens, fold, hard int) bool {
 	}
 }
 
-func (m ContextManager) summaryFailed(ctx context.Context, policy ContextPreparePolicy, inputHash string, hard int, err error) (PreparedContext, error) {
+func (m ContextManager) summaryFailed(ctx context.Context, policy ContextPreparePolicy, inputHash string, sourceTokens, hard int, err error) (PreparedContext, error) {
 	a := m.agent
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return PreparedContext{}, ctxErr
@@ -269,17 +281,17 @@ func (m ContextManager) summaryFailed(ctx context.Context, policy ContextPrepare
 	if errors.Is(err, errCompressStaleContext) && policy.Trigger != CompactionTriggerManual {
 		reason := "context changed during summary; automatic retry blocked for this generation"
 		a.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
-		return m.rescueOrFail(ctx, policy, hard, errors.New(reason))
+		return m.rescueOrFail(ctx, policy, sourceTokens, hard, errors.New(reason))
 	}
 	status := "failed"
 	if errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, errCheckpointRejected) {
 		status = "blocked"
 	}
 	a.recordContextMaintenanceOutcome(inputHash, policy.Trigger, "summary", status, fmt.Sprintf("context summary failed: %v", err))
-	return m.rescueOrFail(ctx, policy, hard, err)
+	return m.rescueOrFail(ctx, policy, sourceTokens, hard, err)
 }
 
-func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePolicy, inputHash string, hard int) (PreparedContext, error) {
+func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePolicy, inputHash string, sourceTokens, hard int) (PreparedContext, error) {
 	if err := ctx.Err(); err != nil {
 		return PreparedContext{}, err
 	}
@@ -288,7 +300,7 @@ func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePo
 	switch {
 	case policy.Trigger == CompactionTriggerOverflow || hard > 0 && latest.InputTokens >= hard:
 		m.agent.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
-		return m.rescueByTruncation(ctx, policy, hard, errors.New(reason))
+		return m.rescueOverCeiling(ctx, policy, sourceTokens, latest.InputTokens, hard, errors.New(reason))
 	case policy.Force:
 		// A requested compaction with no eligible history is a successful no-op.
 		// It must not poison the retry ledger or masquerade as a hard-limit failure.
@@ -300,8 +312,8 @@ func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePo
 
 // rescueOrFail decides what a failed summary means: below the ceiling
 // automatic maintenance waits for the next view and a manual compact reports
-// the error; at or above the ceiling only the lossy truncation rescue is left.
-func (m ContextManager) rescueOrFail(ctx context.Context, policy ContextPreparePolicy, hard int, cause error) (PreparedContext, error) {
+// the error; at or above the ceiling the over-ceiling ladder takes over.
+func (m ContextManager) rescueOrFail(ctx context.Context, policy ContextPreparePolicy, sourceTokens, hard int, cause error) (PreparedContext, error) {
 	if err := ctx.Err(); err != nil {
 		return PreparedContext{}, err
 	}
@@ -312,7 +324,7 @@ func (m ContextManager) rescueOrFail(ctx context.Context, policy ContextPrepareP
 		}
 		return latest, nil
 	}
-	return m.rescueByTruncation(ctx, policy, hard, cause)
+	return m.rescueOverCeiling(ctx, policy, sourceTokens, latest.InputTokens, hard, cause)
 }
 
 // rescueByTruncation installs the lossy truncation projection aimed at the
