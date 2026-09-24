@@ -399,19 +399,27 @@ func TestContinuationRotationRefusesDuplicateAcrossControllerInstances(t *testin
 // identity, the way a restarted process would attach to it.
 func newContinuationFixtureOver(t *testing.T, previous *continuationFixture) *continuationFixture {
 	t.Helper()
-	binding, err := previous.service.Open(t.Context(), previous.source)
+	return newContinuationControllerOver(t, previous.service, previous.source)
+}
+
+// newContinuationControllerOver attaches a second controller to ref, the way a
+// restarted process would: same identity, same service, no in-memory state.
+func newContinuationControllerOver(t *testing.T, service *session.Service, ref session.SessionRef) *continuationFixture {
+	t.Helper()
+	binding, err := service.Open(t.Context(), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runtime := binding.Runtime()
 	t.Cleanup(func() { _ = binding.Release(context.Background()) })
 	host := &continuationRotationHost{}
+	runner := &recordingRunner{}
 	exec := agent.New(nil, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
 	ctrl := newOwnedTestController(t, Options{
-		Executor: exec, Sink: event.Discard, SessionService: previous.service, SessionRuntime: runtime,
+		Executor: exec, Runner: runner, Sink: event.Discard, SessionService: service, SessionRuntime: runtime,
 		ExclusiveSession: true, OnSessionRotation: host.hook,
 	})
-	return &continuationFixture{service: previous.service, ctrl: ctrl, source: previous.source, rotation: host}
+	return &continuationFixture{service: service, ctrl: ctrl, source: ref, rotation: host, runner: runner}
 }
 
 func hasMessageContent(messages []provider.Message, text string) bool {

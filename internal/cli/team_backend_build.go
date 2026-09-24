@@ -533,6 +533,10 @@ func newMemberBackendBuilder(deps memberBackendDeps) func(team.MemberBinding) (c
 		// "only the writer publishes usage" a property of the call graph.
 		publisher := newMemberUsagePublisher(deps.owners, team.OwnerKey{TeamID: b.Team, MemberID: b.MemberID}, ctrl)
 		publisher.Start()
+		// Every post-bind step above is done, so this is the member's "runtime
+		// is ready" moment. A member has nobody watching it, so a continuation
+		// whose resumed turn never began would otherwise sit there forever.
+		ctrl.RecoverUnstartedContinuation()
 		return memberLeasedBackend{SessionAPI: ctrl, stop: wl, usage: publisher}, nil
 	}
 }

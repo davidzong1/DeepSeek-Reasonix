@@ -10,6 +10,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 // certifiedRescue builds the error a model turn returns when the agent-side
@@ -232,6 +233,194 @@ func TestContextRescueHoldsAdmissionUntilItSettles(t *testing.T) {
 		t.Fatalf("admission after the rescue = %v", res)
 	}
 	awaitCondition(t, "the held work to run", func() bool { return starts.Load() > 0 })
+}
+
+// publishContinuationAwaitingResume produces exactly the state a crash in the
+// rescue window leaves behind: the continuation is published and durable, its
+// resume was intended, and no turn ever began in it. A resume that fails to
+// land is that window seen from the durable side, which is the only side a
+// restarted process can read.
+func publishContinuationAwaitingResume(t *testing.T, f *continuationFixture) session.SessionRef {
+	t.Helper()
+	plan := f.plan(t, "goal: finish the port")
+	plan.Resume = func(context.Context, ContinuationResume) error {
+		return errors.New("the process died before the resume landed")
+	}
+	result, err := f.ctrl.ContinueSessionFromPlan(t.Context(), plan)
+	if err == nil || result.Resumed {
+		t.Fatalf("the fixture must leave the continuation un-resumed: err=%v resumed=%v", err, result.Resumed)
+	}
+	if !continuationAwaitingResume(t.Context(), mustSession(t, f.service, result.Continuation)) {
+		t.Fatal("the fixture did not produce the crash-window state")
+	}
+	return result.Continuation
+}
+
+// TestContinuationRecoveryLeavesACallerDrivenContinuationAlone pins the other
+// half of the contract: a nil Resume is a caller saying it will drive the
+// session itself, and a restart must not second-guess that.
+func TestContinuationRecoveryLeavesACallerDrivenContinuationAlone(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	f.rotation.reserve = func(SessionRotationRequest) string { return "member-continuation" }
+	// f.plan carries no Resume at all.
+	result, err := f.ctrl.ContinueSessionFromPlan(t.Context(), f.plan(t, "goal: finish the port"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctrl.ReleaseSessionRuntimeBinding(); err != nil {
+		t.Fatalf("release the crashed owner: %v", err)
+	}
+	rebuilt := newContinuationControllerOver(t, f.service, result.Continuation)
+	rebuilt.ctrl.NotifyInboxRuntimeReady()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	time.Sleep(50 * time.Millisecond)
+	if got := rebuilt.runner.seen(); len(got) != 0 {
+		t.Fatalf("recovery drove a continuation the caller owns: %q", got)
+	}
+}
+
+func TestContinuationRecoveryRestartsAnUnresumedMainLine(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	f.rotation.reserve = func(SessionRotationRequest) string { return "member-continuation" }
+	continuation := publishContinuationAwaitingResume(t, f)
+
+	// A restarted process: the old owner is gone, the identity and its durable
+	// state remain, and the new controller has no in-memory ledger at all.
+	if err := f.ctrl.ReleaseSessionRuntimeBinding(); err != nil {
+		t.Fatalf("release the crashed owner: %v", err)
+	}
+	rebuilt := newContinuationControllerOver(t, f.service, continuation)
+	if !continuationAwaitingResume(t.Context(), mustSession(t, f.service, continuation)) {
+		t.Fatal("the published-and-unresumed continuation is not recognized")
+	}
+	rebuilt.ctrl.NotifyInboxRuntimeReady()
+	awaitCondition(t, "the recovered resume turn", func() bool { return len(rebuilt.runner.seen()) == 1 })
+	if got := rebuilt.runner.seen()[0]; !strings.Contains(got, "recovery briefing") {
+		t.Fatalf("recovered resume input = %q", got)
+	}
+
+	// The kick is level-triggered but once per session: a host that announces
+	// readiness twice must not queue a second resume.
+	rebuilt.ctrl.NotifyInboxRuntimeReady()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	awaitCondition(t, "the resumed turn to record itself", func() bool {
+		return !continuationAwaitingResume(t.Context(), mustSession(t, f.service, continuation))
+	})
+	if got := rebuilt.runner.seen(); len(got) != 1 {
+		t.Fatalf("recovery ran %d resumes, want exactly 1", len(got))
+	}
+}
+
+func TestContinuationRecoveryLeavesAResumedContinuationAlone(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	f.rotation.reserve = func(SessionRotationRequest) string { return "member-continuation" }
+	plan := f.plan(t, "goal: finish the port")
+	plan.Resume = f.ctrl.resumeContextContinuation
+	result, err := f.ctrl.ContinueSessionFromPlan(t.Context(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Resumed {
+		t.Fatal("the fixture must resume the continuation")
+	}
+	awaitCondition(t, "the resume to be recorded", func() bool {
+		return !continuationAwaitingResume(t.Context(), mustSession(t, f.service, result.Continuation))
+	})
+
+	// A later restart must not start a second main line on top of a running one.
+	rebuilt := newContinuationControllerOver(t, f.service, result.Continuation)
+	rebuilt.ctrl.NotifyInboxRuntimeReady()
+	time.Sleep(50 * time.Millisecond)
+	if got := rebuilt.runner.seen(); len(got) != 0 {
+		t.Fatalf("recovery resumed an already-resumed continuation: %q", got)
+	}
+}
+
+func TestContinuationRecoveryIgnoresOrdinarySessions(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	f.ctrl.RecoverUnstartedContinuation()
+	f.ctrl.NotifyInboxRuntimeReady()
+	time.Sleep(50 * time.Millisecond)
+	if got := f.runner.seen(); len(got) != 0 {
+		t.Fatalf("recovery drove an ordinary session: %q", got)
+	}
+	if _, ok := f.ctrl.SessionRef(); !ok {
+		t.Fatal("recovery disturbed the session binding")
+	}
+}
+
+func TestContinuationRecoveryRetriesWhenAdmissionRefuses(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	f.rotation.reserve = func(SessionRotationRequest) string { return "member-continuation" }
+	continuation := publishContinuationAwaitingResume(t, f)
+	if err := f.ctrl.ReleaseSessionRuntimeBinding(); err != nil {
+		t.Fatalf("release the crashed owner: %v", err)
+	}
+	rebuilt := newContinuationControllerOver(t, f.service, continuation)
+
+	// Maintenance refuses admission without starting a turn, so the continuation
+	// stays un-resumed and the predicate keeps holding.
+	rebuilt.ctrl.mu.Lock()
+	rebuilt.ctrl.maintenance = &controllerMaintenance{}
+	rebuilt.ctrl.mu.Unlock()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	if got := rebuilt.runner.seen(); len(got) != 0 {
+		t.Fatalf("a refused recovery still resumed: %q", got)
+	}
+	if !continuationAwaitingResume(t.Context(), mustSession(t, f.service, continuation)) {
+		t.Fatal("a refused recovery consumed the continuation instead of retrying it")
+	}
+
+	// The refusal released the claim, so a later kick takes it.
+	rebuilt.ctrl.mu.Lock()
+	rebuilt.ctrl.maintenance = nil
+	rebuilt.ctrl.mu.Unlock()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	awaitCondition(t, "the retried resume", func() bool { return len(rebuilt.runner.seen()) == 1 })
+	if !strings.Contains(rebuilt.runner.seen()[0], "recovery briefing") {
+		t.Fatalf("retried resume input = %q", rebuilt.runner.seen()[0])
+	}
+}
+
+func TestContinuationRecoveryDefersToARotationInFlight(t *testing.T) {
+	f := newContinuationFixture(t)
+	f.advance(t, "main line work")
+	continuation := publishContinuationAwaitingResume(t, f)
+	if err := f.ctrl.ReleaseSessionRuntimeBinding(); err != nil {
+		t.Fatalf("release the crashed owner: %v", err)
+	}
+	rebuilt := newContinuationControllerOver(t, f.service, continuation)
+
+	// A rotation owns the resume it is publishing; the kick must not claim the
+	// session out from under it and consume the one recovery attempt.
+	rebuilt.ctrl.mu.Lock()
+	rebuilt.ctrl.rotating = true
+	rebuilt.ctrl.mu.Unlock()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	if len(rebuilt.runner.seen()) != 0 {
+		t.Fatal("the kick drove a session a rotation was working on")
+	}
+
+	rebuilt.ctrl.mu.Lock()
+	rebuilt.ctrl.rotating = false
+	rebuilt.ctrl.mu.Unlock()
+	rebuilt.ctrl.RecoverUnstartedContinuation()
+	awaitCondition(t, "the deferred resume", func() bool { return len(rebuilt.runner.seen()) == 1 })
+}
+
+func mustSession(t *testing.T, service *session.Service, ref session.SessionRef) *session.Session {
+	t.Helper()
+	binding, err := service.Open(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = binding.Release(context.Background()) })
+	return binding.Runtime().Session()
 }
 
 func TestContextRescueIsInertWithoutACertifiedPlan(t *testing.T) {

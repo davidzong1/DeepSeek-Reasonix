@@ -237,14 +237,22 @@ func (c *Controller) resumeContinuation(ctx context.Context, attempt *continuati
 	plan := attempt.plan
 	attempt.release()
 	if plan.Resume == nil {
+		// A nil Resume is the caller's decision to drive this session itself, so
+		// the restart recovery must not second-guess it.
+		c.settleContinuationRecovery(result.Continuation)
 		c.emitContinuationTelemetry(plan, result.Telemetry.Outcome, result.MessageTokens)
 		return result, nil
 	}
+	// Claim before handing the resume to admission, not after: until the resumed
+	// turn records itself the durable predicate still reads "no turn began", so a
+	// concurrent recovery kick would queue a second main line. Failure releases.
+	c.settleContinuationRecovery(result.Continuation)
 	resume := ContinuationResume{
 		Source: result.Source, Continuation: result.Continuation, Lineage: plan.Lineage,
 		Attempt: plan.Attempt, DedupKey: plan.DedupKey,
 	}
 	if err := plan.Resume(ctx, resume); err != nil {
+		c.releaseContinuationRecovery(result.Continuation)
 		result.Resumed = false
 		result.Telemetry = continuationTelemetry(plan, continuationOutcomeResumeErr, result.MessageTokens)
 		c.continuations.finish(plan, result)
@@ -271,12 +279,15 @@ func (c *Controller) finishContinuationReplay(ctx context.Context, plan Continua
 		return prior, nil
 	}
 	// The rotation committed but its resume did not. Resume once more against
-	// the already-published continuation rather than rotating again.
+	// the already-published continuation rather than rotating again, claiming it
+	// first for the same reason resumeContinuation does.
+	c.settleContinuationRecovery(prior.Continuation)
 	resume := ContinuationResume{
 		Source: prior.Source, Continuation: prior.Continuation, Lineage: prior.Lineage,
 		Attempt: prior.Attempt, DedupKey: prior.DedupKey,
 	}
 	if err := plan.Resume(ctx, resume); err != nil {
+		c.releaseContinuationRecovery(prior.Continuation)
 		prior.Resumed = false
 		prior.Telemetry = continuationTelemetry(plan, continuationOutcomeResumeErr, prior.MessageTokens)
 		c.continuations.finish(plan, prior)

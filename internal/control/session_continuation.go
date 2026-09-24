@@ -117,9 +117,9 @@ type ContinuationPlan struct {
 	// Attempt is the 1-based rescue attempt within Lineage.
 	Attempt int
 
-	// Resume enqueues the member-scoped continuation turn. It runs exactly once
-	// after the transition is committed and the rotation gate released, so the
-	// resumed turn enters the ordinary admission guard. Nil leaves it idle.
+	// Resume enqueues the member-scoped continuation turn once the transition is
+	// committed and the rotation gate released. Nil means the caller drives the
+	// session — recorded durably, so a restart's recovery cannot override it.
 	Resume func(ctx context.Context, resume ContinuationResume) error
 }
 
@@ -476,6 +476,10 @@ type continuationLineageRecord struct {
 	Attempt  int    `json:"attempt"`
 	DedupKey string `json:"dedupKey"`
 	Source   string `json:"sourceSessionId"`
+	// Resume records whether the rotation intended to restart the main line: a
+	// restart cannot tell "the submit never landed" from "the caller chose to
+	// drive it", so the intent must be durable.
+	Resume bool `json:"resume,omitempty"`
 }
 
 // continuationLineageEvents wraps the chain identity as seed events for the
@@ -487,7 +491,7 @@ func continuationLineageEvents(plan ContinuationPlan, source session.SessionRef)
 	}
 	payload, err := json.Marshal(continuationLineageRecord{
 		Type: continuationLineageOperation, Lineage: plan.Lineage, Attempt: plan.Attempt,
-		DedupKey: plan.DedupKey, Source: source.SessionID,
+		DedupKey: plan.DedupKey, Source: source.SessionID, Resume: plan.Resume != nil,
 	})
 	if err != nil {
 		return nil
@@ -498,13 +502,13 @@ func continuationLineageEvents(plan ContinuationPlan, source session.SessionRef)
 // readContinuationLineage reports the chain identity the session inherited, if
 // it is itself a continuation. The record is written with the session's first
 // batch, so the scan is bounded to the opening commits.
-func readContinuationLineage(ctx context.Context, store *session.Session) (string, int, bool) {
+func readContinuationLineage(ctx context.Context, store *session.Session) (continuationLineageRecord, bool) {
 	if store == nil {
-		return "", 0, false
+		return continuationLineageRecord{}, false
 	}
 	page, err := store.AcceptedPage(ctx, 0, continuationLineageScanLimit)
 	if err != nil {
-		return "", 0, false
+		return continuationLineageRecord{}, false
 	}
 	for _, commit := range page.Commits {
 		for _, ev := range commit.Events {
@@ -516,15 +520,37 @@ func readContinuationLineage(ctx context.Context, store *session.Session) (strin
 				continue
 			}
 			if record.Type == continuationLineageOperation && record.Lineage != "" {
-				return record.Lineage, record.Attempt, true
+				return record, true
 			}
 		}
 	}
-	return "", 0, false
+	return continuationLineageRecord{}, false
 }
 
 // continuationLineageScanLimit bounds the lineage scan to a session's opening.
 const continuationLineageScanLimit = 8
+
+// continuationAwaitingResume reports whether store is a continuation whose
+// resume turn never began — the window a crash leaves between publishing the
+// continuation and admitting its first turn.
+//
+// Every half is durable, so this survives the process that wrote it: the
+// lineage record is the controller's own mark (a user-pasted briefing cannot
+// arm it), its Resume flag keeps a caller that deliberately left the session
+// idle from being overridden, and the absent turn proves nothing took over. A
+// turn that started and never ended is NOT this case — the interrupted-turn
+// machinery owns that session, and driving it again would double-run it.
+func continuationAwaitingResume(ctx context.Context, store *session.Session) bool {
+	if store == nil {
+		return false
+	}
+	record, ok := readContinuationLineage(ctx, store)
+	if !ok || !record.Resume {
+		return false
+	}
+	projection := store.ExecutionSnapshot().Projection
+	return len(projection.Turns) == 0 && projection.TurnID == ""
+}
 
 // continuationLedgerKey identifies one rescue attempt within a chain.
 func continuationLedgerKey(plan ContinuationPlan) string {

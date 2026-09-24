@@ -7,6 +7,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/session"
 )
 
 // contextRescueResumeText is the host-framed instruction that restarts the main
@@ -30,6 +31,10 @@ type contextRescueState struct {
 	mu      sync.Mutex
 	pending *ContinuationPlan
 	running bool
+	// settled holds the continuations whose resume decision is already final, so
+	// the recovery kick cannot drive a second main line into one. Losing it on
+	// restart is the point: that is when recovery runs.
+	settled map[string]bool
 }
 
 // noteContextRescue captures a certified rescue plan from a failed model turn.
@@ -88,12 +93,12 @@ func (c *Controller) continuationPlanFromRescue(certified agent.ContextRecoveryP
 		return ContinuationPlan{}, ErrContinuationUnsupported
 	}
 	source := runtime.Ref()
-	lineage, attempt, inherited := readContinuationLineage(context.Background(), runtime.Session())
-	if !inherited {
+	inherited, found := readContinuationLineage(context.Background(), runtime.Session())
+	lineage, attempt := inherited.Lineage, inherited.Attempt
+	if !found {
 		// A chain starts here: every later rescue in it reuses this identity, so
 		// the attempt ceiling counts main-line rescues rather than sessions.
-		lineage = "rescue-chain:" + source.SessionID
-		attempt = 0
+		lineage, attempt = "rescue-chain:"+source.SessionID, 0
 	}
 	return ContinuationPlan{
 		Trigger:         certified.Trigger,
@@ -159,6 +164,91 @@ func (c *Controller) applyPendingContextRescue() {
 				" but could not restart the turn; resume it to continue the main line",
 		})
 	}
+}
+
+// RecoverUnstartedContinuation restarts the main line of a continuation whose
+// resume turn never began: the window a crash leaves between publishing the
+// continuation and admitting its first turn. The predicate is durable, so a
+// restarted process finds it; the settle set makes the kick once per session,
+// so a host that announces readiness repeatedly cannot queue two resumes.
+//
+// It is level-triggered and cheap for every ordinary session — one lineage
+// read that finds nothing — which is why hosts may call it freely.
+//
+// Callers must be genuine readiness points. An idle turn boundary is not one:
+// a completed turn leaves its own records in the session, which falsifies the
+// predicate, so recovery there can never have work to do.
+func (c *Controller) RecoverUnstartedContinuation() {
+	if c == nil {
+		return
+	}
+	// Teardown must not report a resume it was never going to be allowed to
+	// start, and a rotation in flight owns the resume it is publishing; the
+	// session itself is untouched either way.
+	c.mu.Lock()
+	busy := c.closed || c.rotating
+	c.mu.Unlock()
+	if busy {
+		return
+	}
+	_, runtime, exclusive := c.v3Binding()
+	if !exclusive || runtime == nil || runtime.Session() == nil {
+		return
+	}
+	ref := runtime.Ref()
+	if !c.claimContinuationRecovery(ref) {
+		return
+	}
+	if !continuationAwaitingResume(context.Background(), runtime.Session()) {
+		return
+	}
+	if err := c.SubmitUserTurnFramedOrError(contextRescueResumeText, contextRescueResumeText); err != nil {
+		// Admission refused for a reason that is about this moment (busy,
+		// rotating, draining). Release the claim so a later boundary retries
+		// rather than leaving the main line stranded.
+		c.releaseContinuationRecovery(ref)
+		c.sink.Emit(event.Event{
+			Kind: event.Notice, Level: event.LevelWarn,
+			Text: "this session is a continuation whose resumed turn did not start: " + err.Error(),
+		})
+	}
+}
+
+// claimContinuationRecovery reports whether this call owns the one recovery
+// attempt for ref.
+func (c *Controller) claimContinuationRecovery(ref session.SessionRef) bool {
+	c.rescue.mu.Lock()
+	defer c.rescue.mu.Unlock()
+	if c.rescue.settled == nil {
+		c.rescue.settled = map[string]bool{}
+	}
+	if c.rescue.settled[ref.SessionID] {
+		return false
+	}
+	c.rescue.settled[ref.SessionID] = true
+	return true
+}
+
+func (c *Controller) releaseContinuationRecovery(ref session.SessionRef) {
+	c.rescue.mu.Lock()
+	defer c.rescue.mu.Unlock()
+	delete(c.rescue.settled, ref.SessionID)
+}
+
+// settleContinuationRecovery closes this continuation to the recovery kick: either
+// the rotation handed its resume to admission, or it left the session to the
+// caller on purpose. Both are a final decision, and without the mark a
+// concurrent kick could see an unstarted turn and queue a second main line.
+func (c *Controller) settleContinuationRecovery(ref session.SessionRef) {
+	if ref.SessionID == "" {
+		return
+	}
+	c.rescue.mu.Lock()
+	defer c.rescue.mu.Unlock()
+	if c.rescue.settled == nil {
+		c.rescue.settled = map[string]bool{}
+	}
+	c.rescue.settled[ref.SessionID] = true
 }
 
 // takeContextRescue claims the queued plan for exactly one applier. Claiming
