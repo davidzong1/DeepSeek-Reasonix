@@ -2,9 +2,11 @@ package agent
 
 import "context"
 
-// BoardDeltaFunc returns the text to append to the session as one user-role
-// message before the next sampling step. An empty string appends nothing, so
-// the request keeps the byte-identical shape it would have had without a hook.
+// BoardDeltaFunc returns the text to append to the session before the next
+// sampling step, as one host-generated user-role message — host origin, never
+// user (applyBoardDelta carries the reason). An empty string appends nothing,
+// so the request keeps the byte-identical shape it would have had without a
+// hook.
 //
 // It is the member-side half of the shared-conclusion blackboard: another
 // member's new conclusion arrives as a short delta, and only when there is one.
