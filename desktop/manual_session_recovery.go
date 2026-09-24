@@ -5,7 +5,29 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"reasonix/internal/session"
 )
+
+// Selecting a persisted creation's own tab must not build another controller
+// or wait for the background builder. Composer storage is available already;
+// submission stays gated by readiness and completion never changes selection.
+func (a *App) openManualCreationSurface(ref session.SessionRef, navigationSequence uint64) (bool, error) {
+	defer a.lockRuntimeMutation("open manual creation surface")()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.desktopSessions.navigationSeq.Load() != navigationSequence {
+		return false, errSessionNavigationSuperseded
+	}
+	for _, tab := range a.tabs {
+		if !tab.removed && tab.SessionID == ref.SessionID && tab.PendingCreateOperationID != "" {
+			a.activeTabID = tab.ID
+			a.saveTabsLocked()
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 func (a *App) startManualSessionTab(ctx context.Context, tab *WorkspaceTab, report func(string)) error {
 	// Build registration and shutdown admission share the same boundary.

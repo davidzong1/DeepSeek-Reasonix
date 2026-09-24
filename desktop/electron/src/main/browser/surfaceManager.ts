@@ -201,6 +201,13 @@ export class BrowserSurfaceManager {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ready = Promise.race([load, new Promise<void>((resolve) => { timer = setTimeout(resolve, this.deps.openWaitMs ?? OPEN_WAIT_MS); timer.unref?.(); })]);
     try { await (signal ? abortable(ready, signal) : ready); }
+    catch (error) {
+      // Open already registered the view. A cancelled waiter has no tab ID
+      // to return to the caller, so reclaim only pages still owned by the
+      // agent. A user-taken-over page remains theirs.
+      if (signal?.aborted && this.tabs.get(tab.id) === tab && tab.mode === "agent") this.close(tab.id);
+      throw error;
+    }
     finally { clearTimeout(timer); }
     return tab;
   }

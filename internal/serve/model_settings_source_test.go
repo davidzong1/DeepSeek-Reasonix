@@ -60,6 +60,9 @@ func TestModelSettingsSourceFencesOvertakenBuildAndUncertainFinish(t *testing.T)
 			builds := 0
 			s.buildControllerWithOptions = func(_ context.Context, ref string, opts boot.Options) (*control.Controller, error) {
 				builds++
+				if scenario == "overtaken" && builds == 2 && s.ctl() != old {
+					t.Error("overtaken candidate was published before rebuilding latest settings")
+				}
 				if scenario == "failed_build" {
 					return nil, fmt.Errorf("injected build failure")
 				}
@@ -104,8 +107,16 @@ func TestModelSettingsSourceFencesOvertakenBuildAndUncertainFinish(t *testing.T)
 			if last.Mode != "finish" || len(last.OwnedRevisions) != 1 || last.OwnedRevisions[0] != s.managedModels.Revision {
 				t.Fatalf("finish did not report actual ownership: %+v", last)
 			}
-			if scenario == "lost_finish" && requests[2].PreviousOfferID != requests[0].OfferID {
-				t.Fatal("recovery did not release the unacknowledged reservation")
+			if scenario == "lost_finish" {
+				var prepares []config.ModelSettingsSourceRequest
+				for _, request := range requests {
+					if request.Mode == "prepare" {
+						prepares = append(prepares, request)
+					}
+				}
+				if len(prepares) != 2 || prepares[1].PreviousOfferID != prepares[0].OfferID {
+					t.Fatal("recovery did not release the unacknowledged reservation")
+				}
 			}
 		})
 	}

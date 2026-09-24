@@ -524,6 +524,11 @@ func (a *App) replayDesktopSessionOperation(ctx context.Context, state workspace
 		}
 		return nil
 	}
+	releaseSources, err := freezeArchiveDependencies(ctx, state, op)
+	if err != nil {
+		return err
+	}
+	defer releaseSources()
 	if err := validateDesktopOperationSources(state, op); err != nil {
 		return err
 	}
@@ -570,6 +575,9 @@ func (a *App) replayDesktopSessionOperation(ctx context.Context, state workspace
 				return err
 			}
 		}
+	}
+	if err := a.validateRecoveredHistoricalArchive(ctx, state, op); err != nil {
+		return err
 	}
 	if op.Phase == "prepared" {
 		if err := a.workspaceRegistry().PrepareOperationContent(ctx, op.ID, op.SessionIDs, op.Mapping, op.Presentation); err != nil {
@@ -649,6 +657,15 @@ func (a *App) replayPreparedImport(ctx context.Context, state workspacestate.Sta
 		scope = "global"
 	}
 	source := desktopMigrationSource{scope: scope, workspaceRoot: workspace.Root, operationID: op.ID, headID: mapping.HeadID}
+	if strings.HasPrefix(op.ID, "repair-") {
+		source.registeredSourceKey = mapping.SourceKey
+		old, ref, finish, err := openHistoricalReconciliationSource(ctx, historicalSource{path: mapping.Path, format: mapping.Format, head: mapping.HeadID})
+		if err != nil {
+			return err
+		}
+		defer finish()
+		return a.repairMissingHistoricalTarget(ctx, old, ref, source, mapping.Path, mapping.SessionID, mapping.Fingerprint)
+	}
 	if mapping.SourceKey == desktopSourceKey(mapping.Path, mapping.HeadID)+":review:"+mapping.Fingerprint {
 		source.versionFingerprint = mapping.Fingerprint
 	}

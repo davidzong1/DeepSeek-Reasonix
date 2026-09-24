@@ -136,13 +136,24 @@ func (a *App) aiRenameLegacySession(ctx context.Context, target SessionTarget) (
 	if err != nil {
 		return "", err
 	}
-	if a.sessionTargetRuntimeRebound(target) {
-		return "", newSessionOperationError("target_changed", "The session moved or changed state. Try again.")
-	}
+	a.lifecycleCheckpoint("session-title-before-commit")
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
 	a.topicTitleMutationMu.Lock()
 	defer a.topicTitleMutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if a.sessionTargetRuntimeRebound(target) {
+		return "", newSessionOperationError("target_changed", "The session moved or changed state. Try again.")
+	}
+	// A legacy source may have been imported and archived while generation
+	// was in flight. Original files remain on disk after canonical archive.
+	if _, found, err := a.legacyCanonicalRef(ctx, validated); err != nil {
+		return "", err
+	} else if found {
+		return "", newSessionOperationError("target_changed", "The session moved or changed state. Try again.")
+	}
 	if err := a.renameSessionInDirIfTitleUnchanged(sessionDir, validated, expectedRevision, title); err != nil {
 		if errors.Is(err, agent.ErrSessionTitleChanged) {
 			return "", newSessionOperationError(sessionOperationTitleConflict, "The session title changed while AI rename was running. Try again.")
@@ -191,15 +202,19 @@ func (a *App) aiRenameCanonicalSession(ctx context.Context, target SessionTarget
 	if err != nil {
 		return "", err
 	}
-	if a.sessionTargetRuntimeRebound(target) {
-		return "", newSessionOperationError("target_changed", "The session moved or changed state. Try again.")
-	}
+	a.lifecycleCheckpoint("session-title-before-commit")
 	// Serialize against manual writes; the session title sequence is the
 	// authority even if another branch is created during provider generation.
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
 	a.topicTitleMutationMu.Lock()
 	defer a.topicTitleMutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if a.sessionTargetRuntimeRebound(target) {
+		return "", newSessionOperationError("target_changed", "The session moved or changed state. Try again.")
+	}
 	if err := a.workspaceRegistry().WithSessionUnchanged(ctx, ref.SessionID, target.WorkspaceID, target.LifecycleGeneration, func() error {
 		return service.SetTitleIfSequence(ctx, ref, snapshot.Projection.TitleSequence, title)
 	}); err != nil {

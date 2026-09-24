@@ -58,8 +58,9 @@ type Server struct {
 	// buildOptions preserves process-local CLI knobs when multi-session Serve
 	// creates a foreground replacement after detaching a busy controller.
 	buildOptions           boot.Options
-	managedModels          *config.ModelRuntimeSettings  // bindMu; immutable once accepted
-	modelSettingsOfferID   string                        // bindMu; unacknowledged source route reservation
+	managedModels          *config.ModelRuntimeSettings // bindMu; immutable once accepted
+	modelSettingsOfferID   string                       // bindMu; unacknowledged source route reservation
+	modelApplicationRetry  modelApplicationRetry
 	modelSettingsOwnership config.ModelSettingsOwnership // bindMu; all foreground and detached owners
 	// rebuildController rebuilds the same model/runtime generation for an
 	// extension reload. Tests inject it to exercise publication and failure
@@ -120,6 +121,9 @@ func New(ctrl control.SessionAPI, bc *Broadcaster, serveCfg config.ServeConfig) 
 		mirrored:    map[string]mirroredSession{},
 	}
 	bc.SetCurrentSession(agent.CanonicalSessionPath(ctrl.SessionPath()))
+	bc.mu.Lock()
+	bc.modelApplicationChanged = s.kickModelApplication
+	bc.mu.Unlock()
 	if cfg, err := config.Load(); err == nil {
 		bc.SetDisplayCurrency(cfg.ExplicitDisplayCurrency())
 	}
@@ -232,7 +236,7 @@ func (s *Server) switchModelExpected(ctx context.Context, ref, expectedPath stri
 func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 	// Snapshot the current controller under a short read of s.mu only.
 	cur := s.ctl()
-	if controllerHasActiveRuntimeWork(cur) {
+	if control.ModelReplacementBlocked(cur) {
 		return fmt.Errorf("cannot switch model while active work or background jobs are running")
 	}
 
@@ -248,7 +252,7 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 
 	newCtrl, tag, err := s.buildTagged(ctx, ref, true)
 	if err != nil {
-		return fmt.Errorf("switch model: %w", err)
+		return s.modelConstructionFailure(fmt.Errorf("switch model: %w", err))
 	}
 	// Run/RunGraceful only wire the initial controller. Every replacement must
 	// receive the same frontend hooks or the ask tool falls back to headless mode.
@@ -305,6 +309,12 @@ func (s *Server) switchModelLocked(ctx context.Context, ref string) error {
 	// defensive: it keeps a future controller-swapping path (or a test doing so)
 	// from being silently clobbered after the off-lock build. On a mismatch,
 	// discard the fresh controller off-lock instead of leaking it.
+	if checkErr := validateModelCandidate(ctx, newCtrl, s.managedModels); checkErr != nil {
+		oldCtrl, _ := cur.(*control.Controller)
+		_ = s.rebindSessionLeaseFor(cur.SessionPath(), oldCtrl)
+		s.closeTaggedController(newCtrl)
+		return checkErr
+	}
 	if !s.publishControllerSwap(cur, newCtrl, activePath) {
 		oldCtrl, _ := cur.(*control.Controller)
 		if restoreErr := s.rebindSessionLeaseFor(cur.SessionPath(), oldCtrl); restoreErr != nil {
@@ -548,6 +558,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /goal/resume", s.foregroundMutation(s.goalResume))
 	mux.HandleFunc("GET /goal-diagnostics", s.goalDiagnostics)
 	mux.HandleFunc("POST /jobs/cancel", s.foregroundMutation(s.jobsCancel))
+	mux.HandleFunc("POST /model-settings/cancel-blockers", s.foregroundMutation(s.cancelModelApplicationBlockers))
 	mux.HandleFunc("POST /answer", s.foregroundMutation(s.answer))
 	mux.HandleFunc("POST /mcp-interaction", s.foregroundMutation(s.mcpInteraction))
 	mux.HandleFunc("POST /resolve-prompt", s.foregroundMutation(s.resolvePromptExact))

@@ -15,6 +15,28 @@ React renderer ──typed IPC (preload)──▶ Electron main ──stdio JSON
                                           └────── host/* reverse requests ────┘
 ```
 
+## Historical session archive receipts
+
+`ArchiveSessionTarget` accepts a retained historical source without first
+publishing an active session. Canonical selectors keep their existing identity;
+source selectors explicitly address the retained source version. A validated
+unchanged conversion follows its adopted target's lifecycle. A changed source
+is saved in full under an independent identity and committed directly archived.
+The original target's deletion tombstone is never reused or removed.
+
+`SessionMutationResult.outcome` is optional: `archived`, `archived_copy`, or
+`already_removed`. The last result means a proven residual source receipt was
+registered for an already deleted target, not that content was restored. Missing
+or unknown outcomes use the existing generic committed-result behavior. Clients
+apply identity aliases and lifecycle fences only after `committed: true`.
+
+Historical source archives use the existing `archive-import` child and `archive`
+parent journal. Unpublished import reservations may transfer to this archive
+flow under an observed-state check; orphan archive children never publish active
+membership. Source errors `source_unavailable` and `source_ambiguous` retain the
+source and return a sanitized explanation. Content, provider requests and the
+session storage schema are unchanged by this RPC addition.
+
 ## Transport
 
 - Framing: newline-delimited JSON-RPC 2.0 (`rpcwire` strict mode). One frame
@@ -278,6 +300,10 @@ interface ReasonixDesktopHost {
   readonly contract: { protocolVersion: number; digest: string; commands: readonly string[] };
   readonly platform: { os: "darwin" | "windows" | "linux"; arch: string; versions: Record<string, string> };
   invoke(method: string, args: unknown[]): Promise<unknown>;
+  // Optional: preserve structured RPC errors across Electron contextBridge.
+  invokeResult?(method: string, args: unknown[]): Promise<
+    { ok: true; value: unknown } | { ok: false; message: string; code?: number; data?: unknown }
+  >;
   on(name: string, cb: (...args: unknown[]) => void): () => void;
   native: {
     openExternal(url: string): Promise<void>;

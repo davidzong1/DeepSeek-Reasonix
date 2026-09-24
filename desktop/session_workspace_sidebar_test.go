@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"reasonix/desktop/internal/workspacestate"
@@ -46,6 +48,51 @@ func TestRemoveWorkspaceDropsVisibleTabsAndPersistedEntries(t *testing.T) {
 	}
 	if state.Workspaces["preserved-owner"].Visible {
 		t.Fatal("removed physical workspace remained visible in the authoritative registry")
+	}
+}
+
+func TestRemoveWorkspaceKeepsProjectAndTabsWhenProjectFileWriteFails(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	if err := addProject(projectRoot, "Project"); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"project": {ID: "project", Scope: "project", WorkspaceRoot: projectRoot, Ready: true, disabledMCP: map[string]ServerView{}},
+			"global":  {ID: "global", Scope: "global", WorkspaceRoot: globalTabWorkspaceRoot(), Ready: true, disabledMCP: map[string]ServerView{}},
+		},
+		tabOrder: []string{"project", "global"}, activeTabID: "project",
+		detachedSessions: map[string]*WorkspaceTab{},
+	}
+	if err := app.workspaceRegistry().EnsureWorkspace(t.Context(), workspacestate.Workspace{
+		ID: "project-owner", Root: projectRoot, Title: "Project", Visible: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := filepath.Join(desktopConfigDir(), desktopProjectsFile+".tmp")
+	if err := os.Mkdir(tmpPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RemoveWorkspace(projectRoot); err == nil {
+		t.Fatal("RemoveWorkspace succeeded despite project file write failure")
+	}
+	assertTabIDs(t, app.ListTabs(), "project", "global")
+	if got := app.ListWorkspaces(); len(got) != 1 || !sameProjectRoot(got[0].Path, projectRoot) {
+		t.Fatalf("project file changed after failed removal: %+v", got)
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Workspaces["project-owner"].Visible {
+		t.Fatal("project was hidden after removal failed")
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RemoveWorkspace(projectRoot); err != nil {
+		t.Fatalf("retry RemoveWorkspace: %v", err)
 	}
 }
 

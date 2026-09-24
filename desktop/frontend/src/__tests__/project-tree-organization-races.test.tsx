@@ -8,6 +8,7 @@ import { useProjectTreeOrganization } from "../components/ProjectTreeOrganizatio
 import type { ProjectNode, ProjectTreeOrganizationBindings, SessionGroup } from "../lib/types";
 import type { SessionOrganizationSnapshot } from "../generated/desktopContract.generated";
 import { ToastProvider } from "../lib/toast";
+import { LocaleProvider } from "../lib/i18n";
 
 let passed = 0;
 let failed = 0;
@@ -80,7 +81,7 @@ async function mount(bindings: ProjectTreeOrganizationBindings) {
   const render = async (nextRevision = revision) => {
     revision = nextRevision;
     await act(async () => {
-      root.render(<StrictMode><ToastProvider><Harness bindings={bindings} revision={revision} /></ToastProvider></StrictMode>);
+      root.render(<StrictMode><LocaleProvider><ToastProvider><Harness bindings={bindings} revision={revision} /></ToastProvider></LocaleProvider></StrictMode>);
       await flush();
     });
   };

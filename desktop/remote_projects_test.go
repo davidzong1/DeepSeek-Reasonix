@@ -27,7 +27,7 @@ func TestSnapshotIncludesRemoteProjectGroups(t *testing.T) {
 
 	a := &App{}
 	found := false
-	for _, node := range a.GetProjectTreeSnapshot().Projects {
+	for _, node := range mustProjectTreeSnapshot(t, a).Projects {
 		if node.Remote == nil {
 			continue
 		}

@@ -12,21 +12,53 @@ import (
 // StartForSession launches a job owned by parentSession. Session-scoped readers
 // only see jobs whose owner matches the active session.
 func (m *Manager) StartForSession(parentSession, kind, label string, run func(ctx context.Context, out io.Writer) (string, error)) *Job {
+	j, err := m.TryStartForSession(parentSession, kind, label, run)
+	if err != nil {
+		return m.startInvalid(parentSession, kind, label, err)
+	}
+	return j
+}
+
+// TryStartForSession leaves captured resources with the caller on rejection.
+func (m *Manager) TryStartForSession(parentSession, kind, label string, run func(context.Context, io.Writer) (string, error)) (*Job, error) {
+	return m.startForSession(parentSession, kind, label, RuntimeBound, run)
+}
+
+// StartSessionProcess is reserved for shell processes whose resources belong
+// to the logical session rather than the controller which launched them.
+func (m *Manager) StartSessionProcess(parentSession, kind, label string, run func(context.Context, io.Writer) (string, error)) *Job {
+	j, err := m.TryStartSessionProcess(parentSession, kind, label, run)
+	if err != nil {
+		return m.startInvalid(parentSession, kind, label, err)
+	}
+	return j
+}
+
+func (m *Manager) TryStartSessionProcess(parentSession, kind, label string, run func(context.Context, io.Writer) (string, error)) (*Job, error) {
+	return m.startForSession(parentSession, kind, label, SessionProcess, run)
+}
+
+func (m *Manager) startForSession(parentSession, kind, label string, lifetime Lifetime, run func(context.Context, io.Writer) (string, error)) (*Job, error) {
 	parentSession = strings.TrimSpace(parentSession)
 	kind = strings.TrimSpace(kind)
 	if err := validatePathSegment(parentSession, "parentSession"); err != nil {
-		return m.startInvalid(parentSession, kind, label, err)
+		return nil, err
 	}
 	if err := validatePathSegment(kind, "kind"); err != nil {
-		return m.startInvalid(parentSession, kind, label, err)
+		return nil, err
 	}
 	m.mu.Lock()
+	if m.replacing || m.root.Err() != nil {
+		m.mu.Unlock()
+		return nil, ErrRebuildInProgress
+	}
 	m.seq++
 	id := fmt.Sprintf("%s-%d", kind, m.seq)
 	ctx, cancel := context.WithCancel(m.root)
 	startedAt := nowMs()
 	logPath, metaPath, file, artifactErr := m.openArtifactLocked(parentSession, id)
 	j := &Job{
+		lifetime:         lifetime,
 		ID:               id,
 		Kind:             kind,
 		Label:            label,
@@ -46,6 +78,10 @@ func (m *Manager) StartForSession(parentSession, kind, label string, run func(ct
 	key := jobKey(parentSession, id)
 	m.jobs[key] = j
 	m.order = append(m.order, key)
+	m.wg.Add(1)
+	if m.stalledWarning > 0 {
+		m.wg.Add(1)
+	}
 	m.mu.Unlock()
 	j.mu.Lock()
 	if err := m.writeJobMetaLocked(j, Running); err != nil {
@@ -60,17 +96,15 @@ func (m *Manager) StartForSession(parentSession, kind, label string, run func(ct
 	m.emitIfActive(parentSession, event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: startedText(kind, id, label)})
 	m.notifyRuntime(parentSession, id)
 
-	if !nilutil.IsNil(m.taskRecorder) {
-		m.taskRecorder.RecordStart(id, kind, label)
+	if recorder := m.boundRecorder(); !nilutil.IsNil(recorder) {
+		recorder.RecordStart(id, kind, label)
 	}
 
-	m.wg.Add(1)
 	if m.stalledWarning > 0 {
-		m.wg.Add(1)
 		go m.monitorStalled(parentSession, j)
 	}
 	go m.runJob(ctx, j, run)
-	return j
+	return j, nil
 }
 
 func (m *Manager) runJob(ctx context.Context, j *Job, run func(context.Context, io.Writer) (string, error)) {

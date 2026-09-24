@@ -59,7 +59,7 @@ func TestProjectTreeSnapshotReturnsProjectShellWithoutMigratingSessions(t *testi
 		t.Fatal(err)
 	}
 
-	snapshot := NewApp().GetProjectTreeSnapshot()
+	snapshot := mustProjectTreeSnapshot(t, NewApp())
 	if len(snapshot.Projects) != 1 || snapshot.Projects[0].Root != root {
 		t.Fatalf("snapshot = %#v, want project shell %q", snapshot, root)
 	}
@@ -88,7 +88,7 @@ func TestProjectTreeSnapshotIncludesPinnedTopicsForCollapsedFolders(t *testing.T
 		t.Fatal(err)
 	}
 
-	snapshot := app.GetProjectTreeSnapshot()
+	snapshot := mustProjectTreeSnapshot(t, app)
 	if len(snapshot.Projects) != 1 {
 		t.Fatalf("project shells = %#v, want one project", snapshot.Projects)
 	}
@@ -130,7 +130,7 @@ func TestProjectTreeShellSurvivesCatalogRevisionRace(t *testing.T) {
 	}
 	app := NewApp()
 	// Catalog not open yet: revision stays 0 while the shell still returns projects.
-	snapshot := app.GetProjectTreeSnapshot()
+	snapshot := mustProjectTreeSnapshot(t, app)
 	if snapshot.Revision != 0 {
 		t.Fatalf("revision = %d, want 0 while catalog is opening", snapshot.Revision)
 	}
@@ -452,7 +452,7 @@ func TestProjectTreeSnapshotIndexingWaitsForFirstDirectoryScan(t *testing.T) {
 		_ = catalog.Close(ctx)
 	})
 	app.sessionCatalog.Store(catalog)
-	snapshot := app.GetProjectTreeSnapshot()
+	snapshot := mustProjectTreeSnapshot(t, app)
 	if snapshot.IndexingDone {
 		t.Fatal("indexingDone must stay false until the first directory scan finishes")
 	}

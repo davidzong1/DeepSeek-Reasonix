@@ -1,5 +1,6 @@
 @import "./components/ProviderConnections.css";
 @import "./components/ProviderCatalogPicker.css";
+@import "./components/ModelApplicationRecovery.css";
 /*
  * Reasonix desktop — single-column, developer-dense, terminal-flavored chat UI.
  *
@@ -22335,7 +22336,9 @@ body > .mermaid-diagram--fullscreen {
 
 .topicbar__title-row h1 {
   margin: 0;
-  max-width: 100%;
+  min-width: 0;
+  /* Keep session names compact even when the window has room for a full prompt. */
+  max-width: min(100%, 24em);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -25636,7 +25639,6 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .topicbar__title-row h1 {
-  max-width: 100%;
   font-size: 14.5px;
   font-weight: 660;
 }
@@ -26336,7 +26338,6 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme-style] .topicbar__title-row h1 {
-  max-width: 100%;
   font-size: 14.5px;
   font-weight: 660;
 }
@@ -28685,6 +28686,19 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* ── Toast ──────────────────────────────────────────────────────────── */
+.user-error { min-width: 0; overflow-wrap: anywhere; }
+.user-error__toggle {
+  border: 0; background: transparent; color: inherit; font: inherit;
+  padding: 2px 6px; text-decoration: underline; cursor: pointer;
+}
+.user-error__toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.user-error__detail {
+  display: block; white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: text;
+  max-height: 240px; overflow: auto; margin-top: 6px;
+  font-family: monospace; font-size: 12px; text-align: start;
+}
+
 .toast-container {
   position: fixed;
   top: 16px;
@@ -38151,6 +38165,31 @@ html[data-dock-launcher="full"] .app:not(.app--creation) .layout:not(.layout--wo
   color: var(--fg-faint);
   font-size: 12px;
   text-align: center;
+}
+
+.creation-notice {
+  flex: 0 0 auto;
+  align-self: center;
+  width: min(100%, 800px);
+  box-sizing: border-box;
+  padding: 8px 16px;
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+}
+
+.creation-notice__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.creation-notice details {
+  margin-top: 8px;
+}
+
+.creation-notice summary {
+  cursor: pointer;
 }
 
 .session-export-progress { position: fixed; right: 20px; bottom: 32px; z-index: var(--z-popover); max-width: min(480px, 90vw); padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--fg); box-shadow: 0 4px 18px #0002; }

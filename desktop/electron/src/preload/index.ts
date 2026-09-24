@@ -26,7 +26,7 @@ function isResult(value: unknown): value is IpcResult {
 function unwrap(value: unknown): unknown {
   if (!isResult(value)) throw new Error("malformed reply from the desktop shell");
   if (value.ok) return value.value;
-  throw new Error(value.message);
+  throw Object.assign(new Error(value.message),{code:value.code,data:value.data});
 }
 
 async function call(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -194,6 +194,7 @@ contextBridge.exposeInMainWorld("reasonixDesktop", {
     versions: { electron: process.versions.electron ?? "", chrome: process.versions.chrome ?? "", node: process.versions.node ?? "" },
   },
   invoke: (method: string, args: unknown[]) => call(IPC.invoke, method, Array.isArray(args) ? args : []),
+  invokeResult: (method:string,args:unknown[]) => ipcRenderer.invoke(IPC.invoke,method,Array.isArray(args)?args:[]),
   on,
   native: {
     processDiagnostics: () => call(IPC.processDiagnostics),

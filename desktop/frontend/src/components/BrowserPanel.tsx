@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { ArrowLeft, ArrowRight, Bug, Code2, Compass, Download, ExternalLink, Hand, Plus, RotateCw, TriangleAlert, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 
@@ -162,7 +163,7 @@ export function BrowserPanel({ taskId }: { taskId: string | undefined }) {
           <div className="browser-panel__error" role="alert">
             <TriangleAlert size={22} aria-hidden="true" />
             <p className="browser-panel__error-title">{copy.errorTitle}</p>
-            <p className="browser-panel__error-detail">{copy.errorDetail(activeTab.error.code, activeTab.error.description)}</p>
+            <p className="browser-panel__error-detail"><ErrorMessage error={copy.errorDetail(activeTab.error.code, activeTab.error.description)} /></p>
             <code className="browser-panel__error-url">{activeTab.url}</code>
             <button type="button" className="btn btn--small" onClick={() => void store().navigate(activeTab.id, { action: "reload" })}>{copy.retry}</button>
           </div>

@@ -48,7 +48,7 @@ func TestCanonicalPinnedShellUsesRegistryAndArchiveLifecycle(t *testing.T) {
 	}
 	assertPins := func(want int) {
 		t.Helper()
-		snapshot := app.GetProjectTreeSnapshot()
+		snapshot := mustProjectTreeSnapshot(t, app)
 		pins := []ProjectNode{}
 		for _, project := range snapshot.Projects {
 			pins = append(pins, project.Children...)

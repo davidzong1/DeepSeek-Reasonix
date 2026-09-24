@@ -230,6 +230,12 @@ func runMultiProviderCase(t *testing.T, tc multiProviderCase, scenario string, b
 		}
 		return
 	}
+	if scenario == "cut_once" {
+		if err == nil || requests != 1 || mutations != 1 || executions.Load() != 0 || accounted != 1 || len(sink.kinds(event.Retrying)) != 0 {
+			t.Fatalf("cut stream must stop without retry: requests=%d mutations=%d executions=%d accounted=%d err=%v", requests, mutations, executions.Load(), accounted, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("live provider run: %v", err)
 	}
@@ -259,11 +265,6 @@ func runMultiProviderCase(t *testing.T, tc multiProviderCase, scenario string, b
 		}
 		if !rejected {
 			t.Skip("upstream accepted modified replay; no rejection recovery exercised")
-		}
-	}
-	if scenario == "cut_once" {
-		if mutations != 1 || len(bodies) < 2 || !bytes.Equal(bodies[0], bodies[1]) {
-			t.Error("cut fault or frozen retry invariant failed")
 		}
 	}
 	if strings.HasPrefix(scenario, "missing") && mutations == 0 {

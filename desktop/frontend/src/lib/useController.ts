@@ -73,6 +73,7 @@ import { historyReplaceAction, historyRevisionIsOlder } from "./sessionTranscrip
 import { reconcileSessionOperationItems } from "./sessionMaintenanceOperation";
 import { matchingSnapshotItem, transcriptPageState, transcriptSnapshotState } from "./transcriptSnapshotState";
 import type { TranscriptSnapshot } from "./transcriptProtocol";
+import { applySteerEvent } from "./steerEvent";
 import { recordFrontendDiagnostic } from "./frontendDiagnosticBridge";
 import { uiPerfTracker } from "./uiPerf";
 import { getLocale, t } from "./i18n";
@@ -85,7 +86,6 @@ import {
 import { applyReadStatusEvent, type ReadStatusHost } from "./readStatus";
 import { upsertReadPause } from "./readPause";
 import { applyHydrateErrorState, hydratePlaceholderItems as resolveHydratePlaceholders } from "./hydrateErrorState";
-import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { canAdoptUnboundLiveSurface, hasCachedLiveTurn, hasReusableCachedTranscript, sameSessionHydrateIdentity, sameSessionPlaceholderItems, type HydrateSurfacePolicy } from "./hydrateHistoryApply";
 import { useSessionCatalogActions } from "./useSessionCatalogActions";
 import { hydrateIdentityCurrent, sessionIdentityFields, sessionIdentityRoute, sessionIdentityStableKey, type SessionHydrationOptions } from "./sessionIdentity";
@@ -413,10 +413,8 @@ export type ExtensionItem = Extract<Item, { kind: "extension" }>;
 // form replaces the old, matching the backend's one-blocking-prompt model);
 // notifications queue until the App drains them into the toast system.
 
-// Mid-turn steer messages are recorded as info notices carrying this prefix —
-// both live (the "steer" event below) and in replayed history (desktop/app.go
-// prefixes persisted steers the same way). The prefix is the only durable
-// marker, so display code identifies steers by it.
+// Live and replayed steer notices share this presentation prefix. Message
+// identity owns reconciliation; the prefix only classifies their display.
 export const STEER_NOTICE_PREFIX = "↪ ";
 
 function isStalePromptError(error: unknown): boolean {
@@ -433,6 +431,7 @@ export function isSteerNoticeText(text: string): boolean {
   return text.startsWith(STEER_NOTICE_PREFIX);
 }
 export interface State extends ReadStatusHost, ForkTurnState {
+  guidanceConsumed?: { key: string; itemId?: string; text: string };
   /** Active sample overlay while the reader owns an older contiguous window. */
   offscreenItems?: Item[];
   transcriptProtocol?: 1 | 2;
@@ -1645,7 +1644,9 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
     case "read_status":
       return applyReadStatusEvent(s, e);
     case "notice": {
-      const next = appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt);
+      const noticeId = e.code === "unapplied_steer" && e.messageId ? `he:m:${e.messageId}` : undefined;
+      if (noticeId && s.items.some(item => item.id === noticeId)) return s;
+      const next = appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code, e.decisionReceipt, noticeId);
       return e.code?.startsWith("stream_interrupted_") ? { ...next, streamInterruptNoticeShown: true } : next;
     }
     case "context_maintenance": {
@@ -1662,8 +1663,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
     case "compaction_done":
       return reduceCompactionEvent(s, e);
     case "steer":
-      if (isHostRecoveryGuidance(e.text ?? "")) return s;
-      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `s${s.seq}`, level: "info", text: `${STEER_NOTICE_PREFIX}${e.text ?? ""}`, inboxItemId: e.itemId }] };
+      return applySteerEvent(s, e);
     case "approval_request": {
       if (s.cancelRequested) return s;
       const approval = e.approval ? { ...e.approval, turnId: e.turnId ?? e.approval.turnId, runtimeEpoch: e.runtimeEpoch ?? e.approval.runtimeEpoch } : undefined;
@@ -2320,8 +2320,8 @@ function getOrCreateState(states: TabStates, tabId: string): State {
   return states.get(tabId)!;
 }
 
-function appendNoticeToState(s: State, level: "info" | "warn", text: string, detail?: string, code?: string, decisionReceipt?: WireDecisionReceipt): State {
-  const next = appendNoticeItem(s.items, s.seq, `n${s.seq}`, level, text, detail, code, decisionReceipt);
+function appendNoticeToState(s: State, level: "info" | "warn", text: string, detail?: string, code?: string, decisionReceipt?: WireDecisionReceipt, id?: string): State {
+  const next = appendNoticeItem(s.items, s.seq, id ?? `n${s.seq}`, level, text, detail, code, decisionReceipt);
   return { ...s, running: s.turnActive ? s.running : false, seq: next.seq, items: next.items };
 }
 
@@ -3581,7 +3581,7 @@ export function useController() {
       void reconcileRuntimeAfterRejectedMutation(tabId);
       return;
     }
-    dispatchTo(tabId, { type: "turn_submit_rejected", submissionId, error: `Send failed: ${errorMessage(error)}` });
+    dispatchTo(tabId, { type: "turn_submit_rejected", submissionId, error: `${t("error.send")}\n${errorMessage(error)}` });
     void reconcileRuntimeAfterRejectedMutation(tabId);
   }, [dispatchTo, reconcileRuntimeAfterRejectedMutation]);
 
@@ -4012,7 +4012,7 @@ export function useController() {
       if (tabId) {
         dispatchTo(tabId, { type: "hydrate_error", reason: "new-session", error: errorMessage(err) });
         void loadSessionDataForTab(tabId, true, "new-session").then(() => {
-          dispatchTo(tabId, { type: "local_notice", level: "warn", text: `New session failed: ${errorMessage(err)}` });
+          dispatchTo(tabId, { type: "local_notice", level: "warn", text: `${t("error.newSession")}\n${errorMessage(err)}` });
         });
       }
       return; // backend refused (workspace starting / failed) — keep the transcript

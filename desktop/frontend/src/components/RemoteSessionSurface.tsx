@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useEffect, useRef, useState } from "react";
 import { app, openExternal } from "../lib/bridge";
 import { useRemoteNavigationCommand } from "../lib/remoteNavigationCommands";
@@ -222,7 +223,7 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
         />
       ) : null}
       {ready && (capabilityError || actionError || session.promptError || session.error) ? (
-        <div className="remote-surface__detail" role="alert">{capabilityError || actionError || session.promptError || session.error}</div>
+        <div className="remote-surface__detail" role="alert"><ErrorMessage error={capabilityError || actionError || session.promptError || session.error} /></div>
       ) : null}
     </div>
     </main>

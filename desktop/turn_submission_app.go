@@ -4,19 +4,24 @@ import (
 	"errors"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/session"
 	"strings"
 )
 
 func (a *App) knownSubmission(tabID string, req control.SubmissionRequest) (bool, error) {
+	_, found, err := a.knownSubmissionReceipt(tabID, req)
+	return found, err
+}
+
+func (a *App) knownSubmissionReceipt(tabID string, req control.SubmissionRequest) (session.SubmissionReceipt, bool, error) {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
-		return false, readOnlyChannelErr()
+		return session.SubmissionReceipt{}, false, readOnlyChannelErr()
 	}
 	if identified, ok := ctrl.(*control.Controller); ok && req.ID != "" {
-		_, found, err := identified.LookupSubmission(req)
-		return found, err
+		return identified.LookupSubmission(req)
 	}
-	return false, nil
+	return session.SubmissionReceipt{}, false, nil
 }
 
 // A competing retry may have waited behind the first caller's tab admission.
@@ -26,7 +31,7 @@ func (a *App) submissionAdmissionError(tabID string, req control.SubmissionReque
 			return lookupErr
 		}
 	}
-	return errors.Join(control.ErrSubmissionNotAccepted, err)
+	return &submissionNotAcceptedError{cause: err}
 }
 
 func submitIdentified(ctrl control.SessionAPI, req control.SubmissionRequest, submit func()) error {

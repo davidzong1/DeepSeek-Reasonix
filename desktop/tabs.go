@@ -2540,6 +2540,10 @@ func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (
 	navigation := a.desktopSessions.navigationSeq.Add(1)
 	a.singleSurfaceMu.Lock()
 	defer a.singleSurfaceMu.Unlock()
+	return a.activateTopicLocked(scope, workspaceRoot, topicID, sessionPath, navigation)
+}
+
+func (a *App) activateTopicLocked(scope, workspaceRoot, topicID, sessionPath string, navigation uint64) (TabMeta, error) {
 	if a.desktopSessions.navigationSeq.Load() != navigation {
 		return TabMeta{}, errSessionNavigationSuperseded
 	}
@@ -4322,6 +4326,9 @@ func (a *App) scheduleTabSnapshot(tabID string) {
 		return
 	}
 	tab.saving = true
+	if tab.saveCond == nil {
+		tab.saveCond = sync.NewCond(&tab.saveMu)
+	}
 	tab.saveFailures = 0
 	go a.tabSnapshotLoop(tab)
 }
@@ -4338,11 +4345,7 @@ func (a *App) quiesceTabAutosave(tab *WorkspaceTab) {
 	}
 	tab.saveMu.Lock()
 	if tab.saveCond == nil {
-		// saveCond is lazily initialized on first snapshot; if it was never
-		// set there is no loop to wait for.
-		tab.closing = true
-		tab.saveMu.Unlock()
-		return
+		tab.saveCond = sync.NewCond(&tab.saveMu)
 	}
 	tab.closing = true
 	for tab.saving {
@@ -4423,11 +4426,16 @@ func (a *App) maybeAutoTitleTopic(tab *WorkspaceTab) bool {
 	if tab == nil {
 		return false
 	}
+	a.lifecycleCheckpoint("before-autosave-topic-title")
 	a.topicTitleMutationMu.Lock()
 	defer a.topicTitleMutationMu.Unlock()
 	// Runs on the autosave goroutine; TopicID/Scope/WorkspaceRoot/Ctrl are
 	// written under a.mu by session switches and recovery.
 	a.mu.RLock()
+	if tab.removed {
+		a.mu.RUnlock()
+		return false
+	}
 	topicID := strings.TrimSpace(tab.TopicID)
 	titleRoot := tab.WorkspaceRoot
 	if tab.Scope == "global" {

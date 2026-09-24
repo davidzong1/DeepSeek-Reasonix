@@ -97,6 +97,14 @@ assert.equal(buildComposerSurface({ ...surfaceInput, view: { ...surfaceInput.vie
 assert.equal(buildComposerSurface(surfaceInput).props.persistentDraft, undefined, "formal composer never mounts a legacy draft owner");
 const canonicalTab = { session: { hostId: "local", sessionId: "canonical-input" }, sessionPath: "", sessionGeneration: 3 };
 assert.equal(buildComposerSurface({ ...surfaceInput, tab: canonicalTab }).props.inboxSessionPath, "session-id:canonical-input", "canonical follow-ups use the session identity when no legacy path exists");
+const startingInput = { ...surfaceInput, tab: canonicalTab, view: { ...surfaceInput.view,
+  inert: true, targetInputReady: true, controllerReady: false } };
+const startingSurface = buildComposerSurface(startingInput);
+assert.equal(startingSurface.inert, false, "bound new session input is usable before runtime startup finishes");
+assert.equal(startingSurface.props.disabled, false, "new-session typing does not wait for a controller");
+assert.equal(startingSurface.props.submitDisabled, true, "typing readiness never admits a send to a starting controller");
+assert.equal(buildComposerSurface({ ...startingInput, view: { ...startingInput.view, targetInputReady: false } }).inert, true, "old session input stays fenced before the new target binds");
+assert.equal(buildComposerSurface({ ...startingInput, view: { ...startingInput.view, remote: true } }).inert, true, "local startup editing does not bypass remote navigation ownership");
 
 const rootElement = document.getElementById("root");
 assert(rootElement);

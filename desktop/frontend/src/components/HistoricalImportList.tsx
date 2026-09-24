@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app } from "../lib/bridge";
 import { asArray } from "../lib/array";
@@ -91,7 +92,7 @@ export function HistoricalImportList({ active, onOpenSession }: { active: boolea
       </>}
       <button className="btn btn--small" onClick={() => void reload(true)}>{t("common.retry")}</button>
     </div>
-    {error && <p role="alert">{error}</p>}
+    {error && <p role="alert"><ErrorMessage error={error} /></p>}
     {status.items.filter(item => item.title.toLowerCase().includes(query.toLowerCase())).map(item =>
       <div className="archived-sessions__row" key={item.id}>
         <span>{item.title}</span><small>{item.format}</small>

@@ -37,7 +37,7 @@ func (b bash) startBackground(ctx context.Context, p bashParams, sh sandbox.Shel
 	}
 	permissionPreset := string(sandbox.PermissionPresetFrom(ctx))
 	jobSpec := b.specForCall(ctx)
-	job := jm.StartForSession(jobs.SessionFromContext(ctx), b.Name(), jobLabel, func(jobCtx context.Context, out io.Writer) (string, error) {
+	job, err := jm.TryStartSessionProcess(jobs.SessionFromContext(ctx), b.Name(), jobLabel, func(jobCtx context.Context, out io.Writer) (string, error) {
 		if jobLease != nil {
 			defer jobLease.Release()
 		}
@@ -62,6 +62,13 @@ func (b bash) startBackground(ctx context.Context, p bashParams, sh sandbox.Shel
 		jobs.SetExecution(jobCtx, execution)
 		return "", classifiedErr
 	})
+	if err != nil {
+		*releaseLease = true
+		ex.State = tool.ShellStateNotRun
+		ex.FailurePhase = tool.ShellPhaseDependency
+		ex.MutationRisk = tool.ShellMutationNotStarted
+		return tool.DetailedResult{Execution: ex}, err
+	}
 
 	msg := fmt.Sprintf("Started background job %q. It keeps running across turns; read it with job_output(job_id=%q) or stop it with job_kill(job_id=%q).", job.ID, job.ID, job.ID)
 	ex.State = tool.ShellStateBackgroundStarted

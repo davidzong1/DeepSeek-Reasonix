@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/attachment"
 	"reasonix/internal/config"
+	"reasonix/internal/i18n"
 	"reasonix/internal/imageinput"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
@@ -131,18 +132,20 @@ func (c *Controller) captureImageRoutes(cfg *config.Config) {
 	if prefix, _, ok := strings.Cut(cfg.DefaultModel, "/"); ok {
 		c.imageRoutes[""] = c.imageRoutes[prefix]
 	}
+	c.imageRoutesReady = true
 }
 
 func (c *Controller) imageRequestRoute(model string) (ImageRequestRoute, error) {
-	c.imageRoutesOnce.Do(func() {
+	c.imageRoutesMu.Lock()
+	defer c.imageRoutesMu.Unlock()
+	if !c.imageRoutesReady {
 		cfg, err := config.LoadForRootReadOnly(c.workspaceRoot)
-		c.imageRoutesErr = err
-		if err == nil {
-			c.captureImageRoutes(cfg)
+		if err != nil {
+			// Failed reads are not a usable snapshot. A corrected configuration
+			// must take effect on the next attempt without rebuilding the task.
+			return ImageRequestRoute{}, err
 		}
-	})
-	if c.imageRoutesErr != nil {
-		return ImageRequestRoute{}, c.imageRoutesErr
+		c.captureImageRoutes(cfg)
 	}
 	prefix, _, _ := strings.Cut(model, "/")
 	route := c.imageRoutes[prefix]
@@ -159,9 +162,25 @@ func (c *Controller) ResolveRequestImagesForModel(ctx context.Context, msgs []pr
 		return nil, err
 	}
 	out := append([]provider.Message(nil), msgs...)
+	currentTurn := lastImageRequestTurn(msgs)
 	for i := range out {
+		if out[i].LocalOnly {
+			continue
+		}
 		if err := out[i].ValidateImageFields(); err != nil {
-			return nil, err
+			if i >= currentTurn {
+				return nil, fmt.Errorf("%s: %w", i18n.M.ImageRequestRecovery, err)
+			}
+			if len(out[i].Images) > 0 && len(out[i].ImageInputs) > 0 {
+				positions := make([]int, len(out[i].Images)+len(out[i].ImageInputs))
+				for j := range positions {
+					positions[j] = j + 1
+				}
+				noteUnavailableImages(&out[i], positions)
+				out[i].Images, out[i].ImageInputs = nil, nil
+				continue
+			}
+			// Per-input validation below preserves healthy historical siblings.
 		}
 		if len(out[i].ImageInputs) == 0 {
 			continue
@@ -174,29 +193,35 @@ func (c *Controller) ResolveRequestImagesForModel(ctx context.Context, msgs []pr
 				}
 				target, err := svc.SelectModel(model, nil)
 				if err != nil {
-					return nil, err
+					return nil, imageRequestFailure(ctx, err)
 				}
 				visionRoute, err := c.imageRequestRoute(target)
 				if err != nil {
-					return nil, err
+					return nil, imageRequestFailure(ctx, err)
 				}
-				images, err := c.resolveImageInputsForRoute(ctx, out[i].ImageInputs, visionRoute)
+				images, missing, err := c.resolveReplayImages(ctx, out[i].ImageInputs, visionRoute, i < currentTurn)
 				if err != nil {
-					return nil, err
+					return nil, imageRequestFailure(ctx, err)
+				}
+				noteUnavailableImages(&out[i], missing)
+				if len(images) == 0 {
+					out[i].ImageInputs = nil
+					continue
 				}
 				summary, err := svc.UnderstandSelected(ctx, target, images, nil, c.sink)
 				if err != nil {
-					return nil, err
+					return nil, imageRequestFailure(ctx, err)
 				}
 				out[i].Content = imageinput.AppendSummary(out[i].Content, summary)
 			}
 			out[i].ImageInputs = nil
 			continue
 		}
-		resolved, err := c.resolveImageInputsForRoute(ctx, out[i].ImageInputs, route)
+		resolved, missing, err := c.resolveReplayImages(ctx, out[i].ImageInputs, route, i < currentTurn)
 		if err != nil {
-			return nil, err
+			return nil, imageRequestFailure(ctx, err)
 		}
+		noteUnavailableImages(&out[i], missing)
 		out[i].Images = resolved
 		out[i].ImageInputs = nil
 	}
@@ -223,6 +248,10 @@ func (c *Controller) resolveImageInputsForRoute(ctx context.Context, inputs []at
 				var item attachment.Error
 				if errors.As(err, &item) {
 					item.Index = i + 1
+					var readErr imageReadError
+					if errors.As(err, &readErr) {
+						return nil, imageReadError{item}
+					}
 					return nil, item
 				}
 				return nil, err
@@ -237,7 +266,7 @@ func (c *Controller) wireImageFromRefForRoute(ctx context.Context, ref attachmen
 	svc := c.attachmentService()
 	variant, err := svc.PrepareVariant(ctx, ref, attachment.VariantPolicyV1)
 	if err != nil {
-		return "", err
+		return "", imageReadError{err}
 	}
 	if len(variant.Bytes) <= inlineImageLimit {
 		return attachment.DataURL(variant.MIME, variant.Bytes), nil

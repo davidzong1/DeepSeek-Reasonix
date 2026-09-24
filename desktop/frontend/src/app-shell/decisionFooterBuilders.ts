@@ -243,6 +243,7 @@ export type ComposerSurfaceInput = {
   view: {
     hidden: boolean;
     inert: boolean;
+    targetInputReady?: boolean;
     hero: boolean;
     headline: string;
     remote: boolean;
@@ -289,7 +290,9 @@ export function buildComposerSurface(input: ComposerSurfaceInput): DecisionFoote
   const surface: DecisionFooterRegionProps["composer"] = {
     empty: !input.tabId ? input.empty : undefined,
     hidden: view.hidden,
-    inert: view.inert,
+    // A bound local session owns its saved input even while its runtime starts.
+    // The old surface remains inert until navigation binds the new identity.
+    inert: view.inert && (view.remote || !view.targetInputReady),
     hero: view.hero,
     headline: view.headline,
     props: {

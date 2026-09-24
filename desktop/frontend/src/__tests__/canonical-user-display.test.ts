@@ -36,6 +36,16 @@ const steerPrefix = "[Mid-turn steer queued by the user. Do not treat this as a 
 assert.equal(visible({ role: "user", content: `${steerPrefix}\n补充说明` }).content, "↪ 补充说明");
 assert.equal(visible({ role: "user", content: `${steerPrefix}\n补充说明` }).role, "notice");
 assert.equal(items({ role: "user", content: `${steerPrefix}\nA tool failed. Use read-only diagnosis as needed` }).length, 0);
+const unapplied = (content: string) => canonicalMessage({ ...persistent, messageId: "unapplied", role: "tool" },
+  { id: "unapplied", role: "tool", local_only: true, content });
+const unappliedWithSpaces = unapplied(`${steerPrefix}\n  保留空格  `);
+assert.deepEqual({ role: unappliedWithSpaces.role, content: unappliedWithSpaces.content },
+  { role: "notice", content: "\n  保留空格  " });
+const unappliedItem = historyMessagesToItems([unappliedWithSpaces], "test").items[0];
+if (unappliedItem?.kind !== "notice") throw new Error("unapplied guidance must render as a notice");
+assert.ok(unappliedItem.text.endsWith("  保留空格  "));
+assert.equal(unapplied(`<response-language>zh</response-language>\n${steerPrefix}\n继续`).content, "\n继续");
+assert.equal(unapplied(`${steerPrefix}\nA tool failed. Use read-only diagnosis as needed`).role, "hidden");
 const compiler = `<memory-compiler-execution>${JSON.stringify({ planner_ir: { source_event: wrapped } })}</memory-compiler-execution>`;
 assert.equal(visible({ role: "user", content: compiler }).content, "你是谁");
 for (const suffix of ["<execution-policy>policy</execution-policy>", "<memory-recall>memory</memory-recall>"]) {

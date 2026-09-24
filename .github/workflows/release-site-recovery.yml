@@ -32,10 +32,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Validate executable contracts and public access before approval
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           bash scripts/validate-release-control-plane.sh
-          bash scripts/check-release-public-access.sh
+          bash scripts/check-release-public-access.sh "$VERSION"
       - name: Bind existing public tags to protected history
         id: identity
         env:
@@ -81,6 +87,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Recover only the website and verify public state again
         env:
           GH_TOKEN: ${{ github.token }}

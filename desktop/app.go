@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"reasonix/desktop/internal/browserops"
 	"reasonix/desktop/internal/instanceidentity"
-	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
@@ -435,12 +434,8 @@ type App struct {
 	browserExecMu    sync.Mutex
 	browserExecutors map[string]*hostBrowserExecutor
 	browserOps       *browserops.Ledger
-	// fileBrowserPreviews serializes file-to-browser publication and remembers
-	// the task-owned tab for each session-scoped resource. It is deliberately
-	// separate from App.mu: host RPC may wait on Electron and must never hold the
-	// chat runtime lock while doing so.
-	fileBrowserPreviewMu sync.Mutex
-	fileBrowserPreviews  map[string]fileBrowserPreviewBinding
+	// Browser operations and lifecycle invalidation have separate lock domains.
+	filePreviews fileBrowserPreviewRegistry
 	// browserControl is the shell-pushed switch that decides whether new
 	// sessions may drive the built-in browser at all.
 	browserControl browserControl
@@ -485,7 +480,6 @@ func NewApp() *App {
 		detachedSessions:        map[string]*WorkspaceTab{},
 		mediaTokens:             newMediaTokenStore(),
 		presentPreview:          newWorkspacePreviewOrigin(),
-		fileBrowserPreviews:     map[string]fileBrowserPreviewBinding{},
 		botInstalls:             map[string]*botInstallSession{},
 		botRuntime:              newDesktopBotRuntime(),
 		remoteWindows:           newRemoteWindowRegistry(),
@@ -4739,6 +4733,13 @@ func (a *App) RemoveWorkspace(dir string) error {
 		return fmt.Errorf("workspace path is required")
 	}
 	dir = normalizeProjectRoot(dir)
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
+	releaseRemoval, err := a.reserveWorkspaceRemoval(dir)
+	if err != nil {
+		return err
+	}
+	defer releaseRemoval()
 
 	var fallback *WorkspaceTab
 	// sessionRemovalMu covers every step that can still touch this workspace's
@@ -4746,112 +4747,22 @@ func (a *App) RemoveWorkspace(dir string) error {
 	// closing the unlinked runtimes (quiescing autosave). Once a runtime is
 	// unlinked from a.tabs/detachedSessions it is invisible to
 	// DeleteSession/TrashTopic/RestoreSession, so it must stop writing before
-	// the lock is released. Project bookkeeping, the fallback controller build,
-	// and notifications run after release.
+	// the lock is released. Durable project bookkeeping precedes unlinking;
+	// the fallback controller build and notifications run after release.
 	if err := func() error {
 		defer a.lockRuntimeMutation("remove-workspace")()
 		a.sessionRemovalMu.Lock()
 		defer a.sessionRemovalMu.Unlock()
 
-		type workspaceTabCandidate struct {
-			id  string
-			tab *WorkspaceTab
-		}
-
-		var closeTabs []*WorkspaceTab
-		var closeDetached []*WorkspaceTab
-		a.mu.Lock()
-		for _, tab := range a.tabs {
-			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-				a.mu.Unlock()
-				return fmt.Errorf("workspace has running sessions; stop them before removing")
-			}
-		}
-		for _, tab := range a.detachedSessions {
-			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-				a.mu.Unlock()
-				return fmt.Errorf("workspace has running sessions; stop them before removing")
-			}
-		}
-		candidates := make([]workspaceTabCandidate, 0)
-		for id, tab := range a.tabs {
-			if !tabInWorkspace(tab, dir) {
-				continue
-			}
-			candidates = append(candidates, workspaceTabCandidate{id: id, tab: tab})
-		}
-		a.mu.Unlock()
-
-		snapshotted := make(map[string]*WorkspaceTab, len(candidates))
-		for _, candidate := range candidates {
-			id, tab := candidate.id, candidate.tab
-			snapshotted[id] = tab
-			if err := a.snapshotTab(tab); err != nil {
-				slog.Warn("desktop: snapshot before removing workspace failed", "tab", id, "workspace", dir, "err", err)
-				return fmt.Errorf("save current session before removing workspace: %w", err)
-			}
-		}
-		workspaceID, err := a.resolveDesktopWorkspaceID(a.bootContext(), "project", dir)
+		candidates, err := a.snapshotWorkspaceTabsForRemoval(dir)
 		if err != nil {
 			return err
 		}
-		if err := a.workspaceRegistry().SetWorkspaceVisible(a.bootContext(), workspaceID, false); err != nil && !errors.Is(err, workspacestate.ErrWorkspaceNotFound) {
+		if err := a.hideWorkspaceForRemoval(dir); err != nil {
 			return err
 		}
-
-		a.mu.Lock()
-		for _, tab := range a.tabs {
-			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-				a.mu.Unlock()
-				return fmt.Errorf("workspace has running sessions; stop them before removing")
-			}
-		}
-		for _, tab := range a.detachedSessions {
-			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-				a.mu.Unlock()
-				return fmt.Errorf("workspace has running sessions; stop them before removing")
-			}
-		}
-		for id, tab := range a.tabs {
-			if tabInWorkspace(tab, dir) && snapshotted[id] != tab {
-				a.mu.Unlock()
-				return fmt.Errorf("workspace tabs changed while removing; retry")
-			}
-		}
-		for _, candidate := range candidates {
-			id, tab := candidate.id, candidate.tab
-			if tab == nil || a.tabs[id] != tab || !tabInWorkspace(tab, dir) {
-				continue
-			}
-			a.markTabRemovedLocked(tab)
-			closeTabs = append(closeTabs, tab)
-			delete(a.tabs, id)
-			a.removeTabOrderLocked(id)
-			if a.activeTabID == id {
-				a.activeTabID = ""
-			}
-		}
-		for key, tab := range a.detachedSessions {
-			if !tabInWorkspace(tab, dir) {
-				continue
-			}
-			closeDetached = append(closeDetached, tab)
-			delete(a.detachedSessions, key)
-		}
-		if len(a.tabs) == 0 {
-			fallback = a.createTabEntry("global", globalTabWorkspaceRoot(), "")
-			fallback.TopicTitle = "Global"
-			fallback.sink = &tabEventSink{tabID: fallback.ID, app: a, ctx: a.ctx}
-			a.tabs[fallback.ID] = fallback
-			a.tabOrder = append(a.tabOrder, fallback.ID)
-			a.activeTabID = fallback.ID
-		} else if a.activeTabID == "" {
-			if ordered := a.orderedTabIDsLocked(); len(ordered) > 0 {
-				a.activeTabID = ordered[0]
-			}
-		}
-		a.saveTabsLocked()
-		a.mu.Unlock()
+		var closeTabs, closeDetached []*WorkspaceTab
+		fallback, closeTabs, closeDetached = a.unlinkWorkspaceTabsForRemoval(dir, candidates)
 
 		for _, tab := range closeTabs {
 			a.closeTabRuntimeAdmissionHeld(tab)
@@ -4872,9 +4783,6 @@ func (a *App) RemoveWorkspace(dir string) error {
 	}
 
 	forgetWorkspace(dir)
-	if err := removeProject(dir); err != nil {
-		return err
-	}
 	// If the removed workspace was the active one, clear the pointer
 	// so we don't leave a stale reference to a deleted project.
 	if loadWorkspace() == dir {
@@ -4949,16 +4857,74 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is not a directory", dir)
 	}
-
-	// Open a registered topic so the new workspace appears in the project tree
-	// immediately instead of only existing as an in-memory tab.
-	topic, err := a.CreateTopic("project", dir, "")
+	// Selecting a workspace is navigation, not a new-session command. Serialize
+	// selection and initial-topic creation so duplicate/retried opens reuse it.
+	navigation := a.desktopSessions.navigationSeq.Add(1)
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
+	if a.desktopSessions.navigationSeq.Load() != navigation {
+		return "", errSessionNavigationSuperseded
+	}
+	releaseAdmission, err := a.beginProjectRuntimeAdmission("project", dir)
 	if err != nil {
 		return "", err
 	}
-	meta, err := a.ActivateTopic("project", dir, topic.ID, "")
+	releaseAdmission()
+
+	// Adding a folder is an explicit request to show that workspace again.
+	// EnsureWorkspaceResolved deliberately preserves an existing workspace's
+	// presentation, including Visible=false after RemoveWorkspace, so restore
+	// visibility through the dedicated presentation mutation before opening it.
+	workspaceID, err := a.ensureDesktopWorkspace(a.bootContext(), "project", dir)
 	if err != nil {
 		return "", err
+	}
+	registry := a.workspaceRegistry()
+	state, err := registry.Load(a.bootContext())
+	if err != nil {
+		return "", err
+	}
+	wasVisible := state.Workspaces[workspaceID].Visible
+	if !wasVisible {
+		if err := registry.SetWorkspaceVisible(a.bootContext(), workspaceID, true); err != nil {
+			return "", err
+		}
+	}
+	rollbackVisibility := func(cause error) error {
+		if wasVisible {
+			return cause
+		}
+		if restoreErr := registry.SetWorkspaceVisible(a.bootContext(), workspaceID, false); restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore workspace visibility: %w", restoreErr))
+		}
+		return cause
+	}
+
+	// Ensure project metadata is present before querying its existing topics,
+	// including placeholders left by an interrupted initial open.
+	if err := addProject(dir, ""); err != nil {
+		return "", rollbackVisibility(err)
+	}
+	topicID, sessionPath, err := a.workspaceEntryConversation(dir)
+	if err != nil {
+		return "", rollbackVisibility(err)
+	}
+	if topicID == "" && sessionPath == "" {
+		topic, err := a.CreateTopic("project", dir, "")
+		if err != nil {
+			return "", rollbackVisibility(err)
+		}
+		topicID = topic.ID
+	}
+	meta, err := a.activateTopicLocked("project", dir, topicID, sessionPath, navigation)
+	if err != nil {
+		return "", rollbackVisibility(err)
+	}
+	if !wasVisible {
+		// A restored workspace can reuse an existing topic, so no topic-created
+		// event follows the visibility write. Publish the completed membership
+		// change for already-mounted project trees as well as fresh readers.
+		a.emitProjectTreeMetadataChanged()
 	}
 	return meta.WorkspaceRoot, nil
 }
@@ -9048,6 +9014,15 @@ func (e *rebuildBusyError) Error() string {
 
 func rebuildControllerActiveWorkErrorFor(ctrl control.SessionAPI, setting string) error {
 	work := controllerActiveRuntimeWork(ctrl)
+	if setting == "model" || setting == "saved model settings" {
+		if !control.ModelReplacementBlocked(ctrl) {
+			return nil
+		}
+		if concrete, ok := ctrl.(*control.Controller); ok {
+			work.backgroundJobs = len(concrete.ModelReplacementJobs())
+		}
+		return &rebuildBusyError{setting: setting, work: work}
+	}
 	if !work.active() {
 		return nil
 	}

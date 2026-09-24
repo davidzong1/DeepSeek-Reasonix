@@ -63,6 +63,39 @@ assert.equal(active, notified);
 assert.deepEqual(source.getOrderSnapshot(), []);
 console.log("chat view: stable streaming, settlement, prepend, fold, incomplete history and disposal passed");
 
+const reasoningSource = new ChatSource("reasoning-isolation");
+let reasoningAnswer: Extract<Item, { kind: "assistant" }> = {
+  kind: "assistant", id: "reasoning-answer", text: "answer", reasoning: "thought", streaming: true, reasoningComplete: false,
+};
+const publishReasoning = () => reasoningSource.update({ ...input, items: [items[0], reasoningAnswer] });
+publishReasoning();
+await Promise.resolve();
+let reasoningChanges = 0;
+reasoningSource.subscribeNode("reasoning-answer:reasoning", () => reasoningChanges++);
+const unchangedReasoning = reasoningSource.getNodeSnapshot("reasoning-answer:reasoning");
+for (let index = 0; index < 20; index++) reasoningSource.updateLive({
+  id: reasoningAnswer.id, text: `answer ${index}`, reasoning: "thought", reasoningComplete: false,
+});
+assert.equal(reasoningChanges, 0, "text-only stream publications do not invalidate reasoning");
+assert.equal(reasoningSource.getNodeSnapshot("reasoning-answer:reasoning"), unchangedReasoning);
+reasoningAnswer = { ...reasoningAnswer, text: "projected answer" };
+publishReasoning();
+await Promise.resolve();
+assert.equal(reasoningChanges, 0, "controller/history projection shares the same reasoning isolation");
+reasoningSource.updateLive({ id: reasoningAnswer.id, text: "projected answer", reasoning: "thought", reasoningComplete: true });
+assert.equal(reasoningChanges, 1, "completion alone still publishes even when reasoning text is unchanged");
+reasoningSource.updateLive({ id: reasoningAnswer.id, text: "projected answer", reasoning: "new thought", reasoningComplete: true });
+assert.equal(reasoningChanges, 2, "reasoning content changes still publish");
+reasoningAnswer = { ...reasoningAnswer, reasoning: "new thought", reasoningComplete: true, streaming: false, reasoningDurationMs: 1234 };
+reasoningSource.update({ ...input, running: false, items: [items[0], reasoningAnswer] });
+await Promise.resolve();
+assert.equal(reasoningChanges, 3, "settlement and duration still publish");
+const settledReasoning = reasoningSource.getNodeSnapshot("reasoning-answer:reasoning");
+assert.ok(settledReasoning?.kind === "reasoning");
+assert.equal(settledReasoning.item.streaming, false);
+assert.equal(settledReasoning.item.reasoningDurationMs, 1234);
+reasoningSource.dispose();
+
 const recovered = new ChatSource("recovered-weather");
 const weather: Item[] = [
   { kind: "user", id: "weather-user", text: "weather", checkpointTurn: 4 },

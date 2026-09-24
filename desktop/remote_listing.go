@@ -44,10 +44,13 @@ type serveSessionEntry struct {
 }
 
 type serveHTTPStatusError struct {
+	data       map[string]any
 	url        string
 	statusCode int
 	message    string
 }
+
+func (e *serveHTTPStatusError) RPCErrorData() map[string]any { return e.data }
 
 func (e *serveHTTPStatusError) Error() string {
 	if e.message != "" {
@@ -149,12 +152,22 @@ func servePostForSession(ctx context.Context, client *http.Client, url string, b
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
+	var detail struct {
+		Message string         `json:"message"`
+		Data    map[string]any `json:"data"`
+	}
+	_ = json.Unmarshal(data, &detail)
+	message := strings.TrimSpace(string(data))
+	if detail.Message != "" {
+		message = detail.Message
+	}
 	return &serveHTTPStatusError{
-		url: url, statusCode: resp.StatusCode, message: strings.TrimSpace(string(data)),
+		data: detail.Data,
+		url:  url, statusCode: resp.StatusCode, message: message,
 	}
 }
 

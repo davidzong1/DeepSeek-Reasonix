@@ -41,11 +41,13 @@ type fileBrowserPreviewBinding struct {
 	BrowserTabID      string
 	URL               string
 	SessionGeneration uint64
+	release           func() // revokes the exact minted resource without App.mu
 }
 
 type preparedFileBrowserPreview struct {
 	url      string
 	identity string
+	release  func()
 }
 
 // OpenFileBrowserPreviewForTab validates the resource and opens it through the
@@ -81,6 +83,9 @@ func (a *App) openFileBrowserPreview(ctx context.Context, tabID string, request 
 	if err != nil {
 		return FileBrowserPreviewResult{}, err
 	}
+	// Serialize publications without making lifecycle cleanup wait on host RPC.
+	a.filePreviews.operations.Lock()
+	defer a.filePreviews.operations.Unlock()
 	tab, generation, err := a.fileBrowserPreviewTab(tabID, request.ExpectedSessionGeneration)
 	if err != nil {
 		return FileBrowserPreviewResult{}, err
@@ -98,17 +103,17 @@ func (a *App) openFileBrowserPreview(ctx context.Context, tabID string, request 
 	}
 	key := strings.Join([]string{tabID, fmt.Sprint(generation), request.Source, strings.TrimSpace(request.ToolCallID), filepath.Clean(prepared.identity)}, "\x00")
 
-	a.fileBrowserPreviewMu.Lock()
-	if a.fileBrowserPreviews == nil {
-		a.fileBrowserPreviews = map[string]fileBrowserPreviewBinding{}
-	}
-	var retiredURLs []string
-	binding, reusable := a.fileBrowserPreviews[key]
+	op, binding, reusable := a.filePreviews.begin(key, prepared)
+	defer a.filePreviews.end(op)
+	published := false
+	defer func() {
+		if !published {
+			prepared.release()
+		}
+	}()
 	if reusable {
 		tabs, listErr := exec.Tabs(ctx)
 		if listErr != nil {
-			a.fileBrowserPreviewMu.Unlock()
-			a.revokeWorkspaceBrowserPreview(prepared.url)
 			return FileBrowserPreviewResult{}, listErr
 		}
 		found := false
@@ -120,15 +125,13 @@ func (a *App) openFileBrowserPreview(ctx context.Context, tabID string, request 
 			// Navigating away explicitly releases the file binding. A later
 			// delivery opens a fresh tab instead of overwriting the user's page.
 			if candidate.URL != binding.URL {
-				delete(a.fileBrowserPreviews, key)
-				retiredURLs = append(retiredURLs, binding.URL)
+				a.filePreviews.retire(key, binding.URL)
 				reusable = false
 			}
 			break
 		}
 		if !found {
-			delete(a.fileBrowserPreviews, key)
-			retiredURLs = append(retiredURLs, binding.URL)
+			a.filePreviews.retire(key, binding.URL)
 			reusable = false
 		}
 	}
@@ -154,25 +157,26 @@ func (a *App) openFileBrowserPreview(ctx context.Context, tabID string, request 
 		browserTab, err = exec.Open(ctx, browser.OpenRequest{OperationID: request.OperationID, URL: prepared.url})
 	}
 	if err != nil {
-		a.fileBrowserPreviewMu.Unlock()
-		for _, retired := range retiredURLs {
-			a.revokeWorkspaceBrowserPreview(retired)
-		}
-		a.revokeWorkspaceBrowserPreview(prepared.url)
 		return FileBrowserPreviewResult{}, err
 	}
+	err = a.publishFileBrowserPreview(tab, generation, key, op, fileBrowserPreviewBinding{
+		BrowserTabID: browserTab.ID, URL: prepared.url, SessionGeneration: generation, release: prepared.release,
+	})
 	if reusable && binding.URL != prepared.url {
-		retiredURLs = append(retiredURLs, binding.URL)
+		binding.release()
 	}
-	a.fileBrowserPreviews[key] = fileBrowserPreviewBinding{BrowserTabID: browserTab.ID, URL: prepared.url, SessionGeneration: generation}
-	a.fileBrowserPreviewMu.Unlock()
-	for _, retired := range retiredURLs {
-		a.revokeWorkspaceBrowserPreview(retired)
+	if err != nil {
+		if reusable {
+			a.filePreviews.retire(key, binding.URL)
+		}
+		// The request can be cancelled after the host has created the tab.
+		// Cleanup needs its own bounded context or Close would fail immediately.
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelCleanup()
+		_ = exec.Close(cleanupCtx, browser.CloseRequest{OperationID: request.OperationID + "-stale-close", TabID: browserTab.ID})
+		return FileBrowserPreviewResult{}, err
 	}
-	if _, _, currentErr := a.fileBrowserPreviewTab(tabID, generation); currentErr != nil {
-		_ = exec.Close(context.Background(), browser.CloseRequest{OperationID: request.OperationID + "-stale-close", TabID: browserTab.ID})
-		return FileBrowserPreviewResult{}, currentErr
-	}
+	published = true
 	if recovery, ok := exec.(interface {
 		rememberFilePreview(context.Context, string, FileBrowserPreviewRequest)
 	}); ok {
@@ -240,39 +244,23 @@ func (a *App) prepareFileBrowserPreview(tabID string, request FileBrowserPreview
 		return preparedFileBrowserPreview{}, err
 	}
 	a.extendWorkspaceBrowserPreviewToken(preview.URL)
-	return preparedFileBrowserPreview{url: origin + preview.URL, identity: identity}, nil
+	store := a.ensureMediaTokenStore()
+	token := strings.SplitN(strings.TrimPrefix(preview.URL, "/__reasonix_workspace_media/"), "/", 2)[0]
+	return preparedFileBrowserPreview{url: origin + preview.URL, identity: identity, release: func() { store.revoke(token) }}, nil
 }
 
 func (a *App) releaseFileBrowserPreviewTab(browserTabID string) {
 	if browserTabID == "" {
 		return
 	}
-	a.fileBrowserPreviewMu.Lock()
-	var URLs []string
-	for key, binding := range a.fileBrowserPreviews {
-		if binding.BrowserTabID != browserTabID {
-			continue
-		}
-		delete(a.fileBrowserPreviews, key)
-		URLs = append(URLs, binding.URL)
-	}
-	a.fileBrowserPreviewMu.Unlock()
-	for _, rawURL := range URLs {
-		a.revokeWorkspaceBrowserPreview(rawURL)
-	}
+	a.filePreviews.releaseMatching(func(_ string, binding fileBrowserPreviewBinding) bool { return binding.BrowserTabID == browserTabID })
 }
 
 func (a *App) releaseFileBrowserPreviewURL(rawURL string) {
 	if rawURL == "" {
 		return
 	}
-	a.fileBrowserPreviewMu.Lock()
-	for key, binding := range a.fileBrowserPreviews {
-		if binding.URL == rawURL {
-			delete(a.fileBrowserPreviews, key)
-		}
-	}
-	a.fileBrowserPreviewMu.Unlock()
+	a.filePreviews.releaseMatching(func(_ string, binding fileBrowserPreviewBinding) bool { return binding.URL == rawURL })
 }
 
 func (a *App) releaseFileBrowserPreviewsForTask(tabID string) {
@@ -280,16 +268,5 @@ func (a *App) releaseFileBrowserPreviewsForTask(tabID string) {
 		return
 	}
 	prefix := tabID + "\x00"
-	a.fileBrowserPreviewMu.Lock()
-	var URLs []string
-	for key, binding := range a.fileBrowserPreviews {
-		if strings.HasPrefix(key, prefix) {
-			delete(a.fileBrowserPreviews, key)
-			URLs = append(URLs, binding.URL)
-		}
-	}
-	a.fileBrowserPreviewMu.Unlock()
-	for _, rawURL := range URLs {
-		a.revokeWorkspaceBrowserPreview(rawURL)
-	}
+	a.filePreviews.releaseMatching(func(key string, _ fileBrowserPreviewBinding) bool { return strings.HasPrefix(key, prefix) })
 }

@@ -91,6 +91,10 @@ func controllerAuthenticationError(ctrl control.SessionAPI) error {
 // check observes the selected controller under the same admission locks as the
 // running check and submit. A refusal must carry this owner's identity with it.
 func (a *App) beginRuntimeTurnChecked(tabID string, reclaim, detached bool, check func(control.SessionAPI) error, submissionID ...string) (*tabTurnAdmission, control.SessionAPI, error) {
+	return a.beginRuntimeTurnWithModelChoice(tabID, reclaim, detached, check, nil, submissionID...)
+}
+
+func (a *App) beginRuntimeTurnWithModelChoice(tabID string, reclaim, detached bool, check func(control.SessionAPI) error, choice *control.ModelApplicationChoice, submissionID ...string) (*tabTurnAdmission, control.SessionAPI, error) {
 	for {
 		tab, ctrl := a.tabAndCtrlByID(tabID)
 		if detached {
@@ -164,28 +168,18 @@ func (a *App) beginRuntimeTurnChecked(tabID string, reclaim, detached bool, chec
 			abort()
 			return nil, nil, control.ErrTurnRunning
 		}
-		if a.ctx != nil {
-			needed, err := modelSettingsNeedApply(ctrl)
-			if err != nil {
-				abort()
-				return nil, nil, fmt.Errorf("read saved model settings: %w", err)
-			}
-			if needed {
-				a.mu.RLock()
-				draftPending := tab.PendingCreateOperationID != ""
-				a.mu.RUnlock()
-				if draftPending {
-					abort()
-					return nil, nil, fmt.Errorf("model configuration changed before draft admission")
-				}
-				abort()
-				if err := a.refreshTabModelSettings(tab); err != nil {
-					return nil, nil, err
-				}
-				continue
-			}
+		usingApplied, choiceErr := validateModelApplicationChoice(ctrl, choice)
+		if choiceErr != nil {
+			abort()
+			return nil, nil, choiceErr
 		}
-		if snapshot, ok := ctrl.(imageCapabilitySnapshot); a.ctx != nil && ok && snapshot.ImageCapabilityChanged() {
+		if retry, err := a.applyTurnModelSettings(tab, ctrl, usingApplied, abort); retry || err != nil {
+			if err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		if snapshot, ok := ctrl.(imageCapabilitySnapshot); a.ctx != nil && !usingApplied && ok && snapshot.ImageCapabilityChanged() {
 			a.mu.RLock()
 			draftPending := tab.PendingCreateOperationID != ""
 			a.mu.RUnlock()

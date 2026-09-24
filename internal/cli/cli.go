@@ -35,8 +35,10 @@ import (
 	"reasonix/internal/extension/providerext"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
+	"reasonix/internal/jobs"
 	"reasonix/internal/netclient"
 	"reasonix/internal/notify"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
@@ -277,7 +279,9 @@ type cliBuildOverrides struct {
 	NativeLegacySession bool
 	// SessionTemp carries the previous Controller's private temporary directory
 	// manager across model/profile rebuilds so temporary files survive.
-	SessionTemp *sessiontemp.Manager
+	SessionTemp     *sessiontemp.Manager
+	BackgroundScope *jobs.SessionBackgroundScope
+	PersistentShell *persistentshell.Manager
 }
 
 // sessionTempFromCLIController returns the logical-session private temporary
@@ -320,6 +324,8 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		OnSessionRecovered:   overrides.OnSessionRecovered,
 		Ablation:             overrides.Ablation,
 		SessionTemp:          overrides.SessionTemp,
+		BackgroundScope:      overrides.BackgroundScope,
+		PersistentShell:      overrides.PersistentShell,
 	}
 	opts.MCPHostProfile = plugin.HostProfileForInteractive(overrides.InteractiveHost)
 	return opts
@@ -1203,6 +1209,15 @@ func chatREPL(args []string, version string) int {
 	// is runModelSubcommand's) and shares this TUI's sink.
 	m.buildController = func(spec controllerBuildSpec, carry []provider.Message, resumePath string, oldCtrl control.SessionAPI) (*control.Controller, error) {
 		effectiveOverrides := overrides.forSelection(m.cfg, spec)
+		scope, finish, abort, err := control.ReserveBackgroundReplacement(oldCtrl)
+		if err != nil {
+			return nil, err
+		}
+		defer abort()
+		effectiveOverrides.BackgroundScope = scope
+		if old, ok := oldCtrl.(*control.Controller); ok {
+			effectiveOverrides.PersistentShell = old.PersistentShell()
+		}
 		// Keep the logical-session private temporary directory across model /
 		// profile switches (Issue #7575).
 		effectiveOverrides.SessionTemp = sessionTempFromCLIController(oldCtrl)
@@ -1223,6 +1238,10 @@ func chatREPL(args []string, version string) int {
 		c.SetPlanMode(spec.PlanMode)
 		if spec.ToolApprovalMode != "" {
 			c.SetToolApprovalMode(spec.ToolApprovalMode)
+		}
+		if err := finish(c); err != nil {
+			c.ReleaseResources()
+			return nil, err
 		}
 		return c, nil
 	}

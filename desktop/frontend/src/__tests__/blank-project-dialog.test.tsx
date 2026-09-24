@@ -150,6 +150,35 @@ ok(
 );
 
 await act(async () => flowRoot.unmount());
+
+// A committed open followed by a failed refresh is not a failed creation.
+// Retrying must refresh the same project without allocating another topic.
+bridgeCalls.length = 0;
+let refreshAttempts = 0;
+const retryRoot = createRoot(rootElement);
+await act(async () => {
+  retryRoot.render(<LocaleProvider><BlankProjectFlow
+    onOpenProject={async path => { bridgeCalls.push(`open:${path}`); }}
+    onRefresh={async () => { if (++refreshAttempts === 1) throw new Error("snapshot unavailable"); }}
+    onClose={() => { bridgeCalls.push("close"); }}
+  /></LocaleProvider>);
+});
+await act(async () => {
+  const retryInput = document.querySelector<HTMLInputElement>(".blank-project-dialog__input")!;
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set?.call(retryInput, "retry-project");
+  retryInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+});
+const submitRetry = async () => act(async () => {
+  document.querySelector(".blank-project-dialog form, form.blank-project-dialog, [role=dialog] form")!
+    .dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+});
+await submitRetry();
+ok(document.body.textContent?.includes("snapshot unavailable") === true, "refresh failure remains visible");
+await submitRetry();
+ok(bridgeCalls.filter(call => call.startsWith("create:")).length === 1, "retry keeps the created directory");
+ok(bridgeCalls.filter(call => call.startsWith("open:")).length === 1, "refresh retry does not open another session");
+ok(refreshAttempts === 2 && bridgeCalls.at(-1) === "close", "retry completes the remaining refresh");
+await act(async () => retryRoot.unmount());
 dom.window.close();
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -80,7 +81,7 @@ func (a *Agent) checkpointSession(ctx context.Context, boundary SessionCheckpoin
 		return ctx.Err()
 	}
 	if err := a.svc.sessionCheckpointer.CheckpointSession(ctx, boundary); err != nil {
-		return err
+		return sessionSaveFailure(err)
 	}
 	return ctx.Err()
 }
@@ -107,15 +108,15 @@ func (a *Agent) confirmPendingModelContext(ctx context.Context) error {
 	result, err := recorder.RecordSessionModelContext(ctx, commit)
 	if err != nil {
 		a.sess.compactionMu.Unlock()
-		return fmt.Errorf("confirm pending model context: %w", err)
+		return sessionSaveFailure(fmt.Errorf("confirm pending model context: %w", err))
 	}
 	if !result.Accepted || !result.Durable {
 		a.sess.compactionMu.Unlock()
-		return errors.New("confirm pending model context: commit is not durable")
+		return sessionSaveFailure(errors.New("confirm pending model context: commit is not durable"))
 	}
 	if err := a.persistCompactionStateLocked(); err != nil {
 		a.sess.compactionMu.Unlock()
-		return fmt.Errorf("confirm pending model context sidecar: %w", err)
+		return sessionSaveFailure(fmt.Errorf("confirm pending model context sidecar: %w", err))
 	}
 	a.sess.pendingModelContextCommit = nil
 	a.sess.checkpointState = "applied"
@@ -134,6 +135,13 @@ func (a *Agent) confirmPendingModelContext(ctx context.Context) error {
 func cloneSessionModelContextCommit(commit SessionModelContextCommit) SessionModelContextCommit {
 	commit.Messages = freezeProviderRequest(provider.Request{Messages: commit.Messages}).Messages
 	return commit
+}
+
+func sessionSaveFailure(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", i18n.M.SessionSaveRecovery, err)
 }
 
 func (a *Agent) appendCommittedMessages(ctx context.Context, reason string, messages ...provider.Message) error {

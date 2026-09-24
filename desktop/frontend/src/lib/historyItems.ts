@@ -8,7 +8,7 @@ import { asArray } from "./array";
 import { historicalResultNotice } from "./completionResultState";
 import { appendNoticeItem, deliveryReadinessDetail, readinessMissingIds } from "./controllerNotices";
 import { appendHistoryAttachmentRefs } from "./historyAttachmentRefs";
-import { createUniqueItemIDAllocator } from "./historyItemIds";
+import { createUniqueItemIDAllocator, historyMessageIdentity } from "./historyItemIds";
 import { t } from "./i18n";
 import { upsertReadPause } from "./readPause";
 import { historySearchAndAnswer } from "./searchTranscript";
@@ -53,7 +53,9 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
 	const uniqueItemID = createUniqueItemIDAllocator();
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const m = messages[messageIndex];
-		const recordItemId = m.recordId ? `record:${m.recordId}` : `${idPrefix}${seq}`;
+		const noticeMessageID = m.role === "notice" ? historyMessageIdentity(m) : undefined;
+		const recordItemId = noticeMessageID ? `he:m:${noticeMessageID}`
+      : m.recordId ? `record:${m.recordId}` : `${idPrefix}${seq}`;
     if (m.role === "system") continue;
     if (m.role === "phase") {
       if (m.content.trim() !== "") {

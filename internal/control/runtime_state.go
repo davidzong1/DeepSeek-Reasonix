@@ -94,7 +94,9 @@ func (c *Controller) initializeRuntimeState() {
 		// A manager may be shared across a controller rebuild. Subscribe to all
 		// session transitions and filter against the current committed binding.
 		_, stop := c.jobs.SubscribeRuntime("", func(state jobs.RuntimeState) {
-			c.refreshRuntimeState(event.Event{})
+			if c.receivesBackgroundRuntimeEvents() {
+				c.refreshRuntimeState(event.Event{})
+			}
 		})
 		c.runtimeState.mu.Lock()
 		c.runtimeState.jobUnsubscribe = stop

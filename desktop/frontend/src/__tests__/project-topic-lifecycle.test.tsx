@@ -4,7 +4,9 @@ import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { useProjectTopicCommands } from "../app-runtime/useProjectTopicCommands";
 import type { ProjectTopicPorts } from "../app-runtime/projectTopicOwner";
+import { mockSessionTitleTarget } from "../lib/mockSessionTitle";
 import type { RemoteSessionView } from "../lib/remoteTypes";
+import type { ProjectNode } from "../lib/types";
 import { enqueueNavigationRequest, type NavigationCoalescingRefs } from "../lib/openTopicCoalescing";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
@@ -41,6 +43,19 @@ const navigation = {
   }),
   switchFolder: async (path?: string) => { effects.push(`project:${path}`); },
 };
+
+const source = { hostId: "local", path: "/fixture/session.jsonl" };
+const topicNode: ProjectNode = { key: "topic-A", kind: "topic", label: "A", topicId: "A", source };
+const projectNode: ProjectNode = { key: "project", kind: "project", label: "Project folder", root: "/fixture", children: [topicNode] };
+assert.equal(mockSessionTitleTarget([projectNode], { topicId: "A" }), topicNode,
+  "an unsaved titlebar session resolves by topic ID instead of its parent project");
+assert.equal(mockSessionTitleTarget([projectNode], { source }), topicNode,
+  "source selectors resolve the same session row");
+assert.equal(mockSessionTitleTarget([projectNode], {}), undefined,
+  "missing session identity never resolves to the project row");
+assert.equal(mockSessionTitleTarget([projectNode], { source: { ...source, path: "/fixture/other.jsonl" } }), undefined,
+  "an unknown source never resolves to the project row");
+
 function Probe({ tab, remote = false }: { tab: string; remote?: boolean }) {
   commands = useProjectTopicCommands({ visible: { tabId: tab, sessionKey: tab },
     topic: { id: tab, title: tab, target: remote

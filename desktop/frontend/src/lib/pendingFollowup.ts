@@ -1,5 +1,6 @@
 import type { AppBindings } from "./bridge";
 import type { InvocationRequest, StructuredInvocationSubmit } from "./invocationDisplay";
+import { submissionOutcome } from "./modelApplication";
 
 export type InboxTarget = { tabId: string; sessionPath: string; generation: number; selection: number; remote: boolean; hostId?: string; workspace?: string };
 export type FollowupReceipt = { itemId: string; disposition: string; position: number; paused: boolean; idempotent?: boolean; error?: string };
@@ -45,5 +46,7 @@ export async function confirmFollowup(binding: AppBindings, request: PendingFoll
 }
 
 export function followupNotSubmitted(error: unknown): boolean {
+  const outcome = submissionOutcome(error);
+  if (outcome) return outcome === "not_accepted";
   return /reasonix_error:(?:inbox_(?:not_submitted|capacity_items|capacity_bytes|item_too_large|empty|schema_readonly)|channel_read_only|workspace_start(?:ing|_failed)|image_attachment_unreadable)(?:$|\b)/.test(String(error));
 }

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -597,11 +598,15 @@ func loadBoundedStartupSessionState(ctx context.Context, dir string, file *os.Fi
 	}
 	if sawModelEvent {
 		inputs, hidden, retracted := state.projection.TranscriptInputs, state.projection.HiddenTurns, state.projection.RetractedInputs
+		// The first pass saw canonical results even before the latest context
+		// reset. Replaying only that reset's wire view cannot recover their state.
+		rejected := maps.Clone(state.projection.RejectedToolResults)
 		if err := loadCurrentModelProjection(ctx, file, content, state, modelOffset, modelSequence); err != nil {
 			return nil, 0, false, err
 		}
 		state.projection.TranscriptInputs, state.projection.HiddenTurns = inputs, hidden
 		state.projection.RetractedInputs = retracted
+		state.projection.RejectedToolResults = rejected
 	}
 	state.projection.Messages = nil
 	state.projection.CommittedSequence = state.durable

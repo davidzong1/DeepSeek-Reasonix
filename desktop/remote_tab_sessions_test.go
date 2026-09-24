@@ -748,7 +748,7 @@ func TestRemoteSessionPinnedOrderingAndProjectTitle(t *testing.T) {
 		_ = node
 	}
 	found := false
-	for _, node := range a.GetProjectTreeSnapshot().Projects {
+	for _, node := range mustProjectTreeSnapshot(t, a).Projects {
 		if node.Remote != nil && node.Remote.HostID == "box" {
 			found = true
 			if node.Label != "云端演示" {

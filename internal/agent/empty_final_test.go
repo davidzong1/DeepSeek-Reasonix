@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -79,31 +78,30 @@ func TestRunRequiresVisibleFinalOnlyWhenExplicitlyRequested(t *testing.T) {
 	}
 }
 
-func TestRunRetriesZeroContentWithTheSameFrozenRequest(t *testing.T) {
+func TestEmptyResponseLeavesRetryToUser(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{{Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "visible reply"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
-
-	if err := a.Run(context.Background(), "answer me"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := a.Run(t.Context(), "answer me"); !errors.Is(err, provider.ErrEmptyResponse) {
+		t.Fatalf("err=%v", err)
 	}
-	if prov.call != 2 {
-		t.Fatalf("provider calls = %d, want one empty-response retry", prov.call)
+	if prov.call != 1 || lastAssistantContent(a.Session()) != "" {
+		t.Fatalf("calls=%d", prov.call)
 	}
-	if len(prov.requests) != 2 || !reflect.DeepEqual(prov.requests[0], prov.requests[1]) {
-		t.Fatalf("retry requests differ; want the same frozen request:\nfirst=%#v\nsecond=%#v", prov.requests[0], prov.requests[1])
+	if err := a.Run(t.Context(), "try again"); err != nil {
+		t.Fatal(err)
 	}
-	if sessionHasUserMessageContaining(a.sess.conversation, "visible answer") {
-		t.Fatal("empty-response retry must not inject a synthetic user prompt")
+	if prov.call != 2 || lastAssistantContent(a.Session()) != "visible reply" {
+		t.Fatalf("manual retry calls=%d", prov.call)
 	}
-	if got := lastAssistantContent(a.sess.conversation); got != "visible reply" {
-		t.Fatalf("last assistant content = %q, want successful retry answer", got)
+	if sessionHasUserMessageContaining(a.Session(), "visible answer") {
+		t.Fatal("injected synthetic retry prompt")
 	}
 }
 
-func TestRunStopsAfterExhaustedZeroContentRetriesWithoutCommittingEmptyMessages(t *testing.T) {
+func TestRunStopsOnZeroContentWithoutCommittingEmptyMessages(t *testing.T) {
 	turns := make([][]provider.Chunk, maxSamplingAttempts)
 	for i := range turns {
 		turns[i] = []provider.Chunk{{Type: provider.ChunkDone}}
@@ -116,8 +114,8 @@ func TestRunStopsAfterExhaustedZeroContentRetriesWithoutCommittingEmptyMessages(
 	if !errors.Is(err, provider.ErrEmptyResponse) {
 		t.Fatalf("Run error = %v, want ErrEmptyResponse", err)
 	}
-	if prov.call != maxSamplingAttempts {
-		t.Fatalf("provider calls = %d, want %d bounded attempts", prov.call, maxSamplingAttempts)
+	if prov.call != 1 {
+		t.Fatalf("provider calls = %d, want 1", prov.call)
 	}
 	for _, message := range a.sess.conversation.Messages {
 		if message.Role == provider.RoleAssistant {
@@ -128,8 +126,8 @@ func TestRunStopsAfterExhaustedZeroContentRetriesWithoutCommittingEmptyMessages(
 		}
 	}
 	retries := sink.kinds(event.Retrying)
-	if len(retries) != maxStreamRecoveries {
-		t.Fatalf("retry events = %d, want %d", len(retries), maxStreamRecoveries)
+	if len(retries) != 0 {
+		t.Fatalf("unexpected retry events: %+v", retries)
 	}
 }
 

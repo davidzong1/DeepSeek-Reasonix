@@ -9,6 +9,7 @@ import { providerBrandIcons } from "../lib/providerBrandIcons";
 import type { ModelInfo } from "../lib/types";
 import { AnchoredPopover } from "./AnchoredPopover";
 import { Tooltip } from "./Tooltip";
+import { useModelApplicationStatus } from "../lib/useModelApplicationStatus";
 
 // ModelSwitcher opens an upward popover listing configured providers. Selecting
 // one switches the active model while the current conversation continues.
@@ -40,6 +41,7 @@ export function ModelSwitcher({
   onManage?: () => void;
 }) {
   const t = useT();
+  const application=useModelApplicationStatus(tabId);
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [query, setQuery] = useState("");
@@ -224,7 +226,7 @@ export function ModelSwitcher({
           onClick={() => setOpen((v) => !v)}
         >
           <Cpu size={14} className="modelsw__kind" />
-          <span className="modelsw__label">{label}{detailLabel && <span className="modelsw__detail"> · {detailLabel}</span>}</span>
+          <span className="modelsw__label">{label}{detailLabel && <span className="modelsw__detail"> · {detailLabel}</span>}{application?.application==="pending" && <span className="modelsw__detail"> · {t("modelApply.badge")}</span>}</span>
           <ChevronDown size={12} />
         </button>
       </Tooltip>

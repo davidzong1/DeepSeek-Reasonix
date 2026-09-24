@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LockKeyhole, RotateCcw } from "lucide-react";
@@ -74,7 +75,7 @@ export default function ProviderModelDialog({ initial, candidates, contextDefaul
           </div>}
           {capability?.reasoning?.state === "unknown" && <p>{t("settings.modelDialog.reasoningUnknown")}</p>}
           {capability?.reasoning?.state === "unsupported" && <p>{t("settings.modelDialog.reasoningUnsupported")}</p>}
-          {capability?.reasoning?.error && <p role="alert">{capability.reasoning.error}</p>}
+          {capability?.reasoning?.error && <p role="alert"><ErrorMessage error={capability.reasoning.error} /></p>}
         </section>
         <aside><h3>{t("settings.modelDialog.capabilities")}</h3>
           <div className="provider-model-dialog__capability-title">{t("settings.modelDialog.input")}</div>

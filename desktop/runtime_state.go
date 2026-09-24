@@ -263,9 +263,31 @@ func (a *App) runtimeStateSnapshotWithUpdate(update *localRuntimeUpdate) Runtime
 }
 
 func (a *App) projectRuntimeBindings(bindings []localRuntimeBinding) RuntimeStateProjection {
-	remote := a.sampleRemoteRuntimeSessions()
 	r := &a.runtimeStateProjection
-	r.mu.Lock()
+	var remote []RuntimeSessionState
+	for {
+		remote = a.sampleRemoteRuntimeSessions()
+		r.mu.Lock()
+		// Sampling can finish before archive/rebind and publish after its
+		// replacement projection. Validate under the publication lock so an
+		// obsolete binding set cannot receive a newer projection revision.
+		a.mu.RLock()
+		current := a.localRuntimeBindingsLocked()
+		valid := len(current) == len(bindings)
+		for _, binding := range bindings {
+			if !sameLocalRuntimeBinding(current[binding.key], binding) {
+				valid = false
+				break
+			}
+		}
+		a.mu.RUnlock()
+		if valid {
+			break
+		}
+		r.mu.Unlock()
+		// Controller reads must remain outside both locks, including retries.
+		bindings = a.sampleLocalRuntimeBindingsWithUpdate(nil)
+	}
 	defer r.mu.Unlock()
 	nextBindings := make(map[localRuntimeBindingKey]localRuntimeBinding, len(bindings))
 	next := RuntimeStateProjection{Epoch: r.snapshot.Epoch, Sessions: []RuntimeSessionState{}}
@@ -391,4 +413,7 @@ func (s *tabEventSink) RuntimeStateChanged(snapshot event.RuntimeStateSnapshot) 
 		return
 	}
 	app.queueRuntimeProjection(localRuntimeUpdate{tab: tab, ctrl: ctrl, state: current, generation: generation, path: path, sessionID: sessionID})
+	if !current.Running && app.deferredRebuildPending(id) {
+		app.kickDeferredRebuildRetry()
+	}
 }

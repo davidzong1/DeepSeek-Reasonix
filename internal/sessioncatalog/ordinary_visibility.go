@@ -131,6 +131,9 @@ func OrdinaryTreeSession(session SessionRecord, open, running bool, preferred ma
 	if open || running {
 		return true
 	}
+	if session.Health == HealthCorrupt || session.Health == HealthMissing {
+		return false
+	}
 	if session.RecoveryCopy || session.RecoveryRole == RecoveryRoleCoveredCopy {
 		return false
 	}

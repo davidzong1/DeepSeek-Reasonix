@@ -325,12 +325,22 @@ func (buffer *Buffer) applyNotice(e event.Event) {
 	if strings.TrimSpace(e.Text) == "" {
 		return
 	}
+	recordID := ""
+	if e.Code == event.NoticeCodeUnappliedSteer && e.MessageID != "" {
+		recordID = unappliedSteerRecordID(e.MessageID)
+		for _, row := range buffer.messages {
+			if row.message.RecordID == recordID && row.message.Role == "notice" {
+				return
+			}
+		}
+	}
 	level := "info"
 	if e.Level == event.LevelWarn {
 		level = "warn"
 	}
 	buffer.messages = append(buffer.messages, &bufferedMessage{message: Message{
 		Role:            "notice",
+		RecordID:        recordID,
 		MessageID:       e.MessageID,
 		Level:           level,
 		Content:         e.Text,

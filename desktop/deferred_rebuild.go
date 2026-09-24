@@ -255,14 +255,21 @@ func (a *App) retryDeferredRebuild(tabID string, request deferredRebuildRequest)
 		// racing a second build+swap against it is what this loop must avoid.
 		return
 	}
-	if controllerHasActiveRuntimeWork(ctrl) {
+	if request.label == "saved model settings" {
+		pending, err := modelSettingsNeedApply(ctrl)
+		if err == nil && !pending {
+			a.clearDeferredRebuildVersion(tabID, request.sequence)
+			return
+		}
+	}
+	if (request.label == "saved model settings" && control.ModelReplacementBlocked(ctrl)) || (request.label != "saved model settings" && controllerHasActiveRuntimeWork(ctrl)) {
 		return
 	}
 	if !a.deferredRebuildLeaseLooksFree(tab) {
 		return
 	}
 	setting := request.label
-	err := a.rebuildSettingTurnLocked(setting, tab, false, false)
+	err := a.rebuildSettingTurnLocked(setting, tab, false, setting == "saved model settings")
 	if err == nil {
 		// rebuildSettingLocked already cleared the pending entry for the tab it
 		// refreshed; just announce it.
@@ -279,6 +286,13 @@ func (a *App) retryDeferredRebuild(tabID string, request deferredRebuildRequest)
 	// Anything else will not resolve by waiting; give up loudly instead of
 	// retrying forever.
 	a.clearDeferredRebuildVersion(tabID, request.sequence)
+	if setting == "saved model settings" {
+		a.mu.Lock()
+		if a.ownsRuntimeTabLocked(tab) && tab.Ctrl == ctrl {
+			tab.modelApplication.failure = &modelSettingsApplyFailure{ctrl, request.revision, modelSettingsIssue("apply_failed", err).Message}
+		}
+		a.mu.Unlock()
+	}
 	slog.Warn("desktop: deferred settings rebuild failed", "setting", setting, "tab", tabID, "err", err)
 	a.warnForTab(tabID, fmt.Sprintf("%s was saved but the session could not refresh: %s", setting, err.Error()))
 }

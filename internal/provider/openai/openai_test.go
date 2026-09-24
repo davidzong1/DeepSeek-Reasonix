@@ -14,65 +14,49 @@ import (
 	"reasonix/internal/provider"
 )
 
-// TestStreamRetriesThenSucceeds drives the real retry path end-to-end: the
-// server returns 503 twice, then a valid SSE stream. The provider must back off,
-// fire the retry-notify callback for each attempt, and ultimately stream the answer.
-func TestStreamRetriesThenSucceeds(t *testing.T) {
-	var reqs int
+// TestStreamWaitsForExplicitRetry proves direct adapter callers also fail fast.
+func TestStreamWaitsForExplicitRetry(t *testing.T) {
+	reqs := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqs++
-		if reqs <= 2 {
+		if reqs == 1 {
+			w.Header().Set("Retry-After", "120")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":"overloaded"}`))
+			_, _ = io.WriteString(w, `{"error":"overloaded"}`)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi there\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
-
-	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k", HTTPClient: srv.Client()})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatal(err)
 	}
-
-	var attempts []int
-	ctx := provider.WithRetryNotify(context.Background(), func(i provider.RetryInfo) {
-		attempts = append(attempts, i.Attempt)
-		if i.Max != provider.MaxRetries {
-			t.Errorf("RetryInfo.Max = %d, want %d", i.Max, provider.MaxRetries)
-		}
-	})
-
-	ch, err := p.Stream(ctx, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	req := provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}}
+	_, err = p.Stream(t.Context(), req)
+	var api *provider.APIError
+	if reqs != 1 || !errors.As(err, &api) || api.Status != 503 {
+		t.Fatalf("requests=%d err=%v", reqs, err)
+	}
+	ch, err := p.Stream(t.Context(), req)
 	if err != nil {
-		t.Fatalf("Stream after retries: %v", err)
+		t.Fatal(err)
 	}
-	var got strings.Builder
+	var text strings.Builder
 	var usage *provider.Usage
-	for chunk := range ch {
-		if chunk.Type == provider.ChunkError {
-			t.Fatalf("unexpected stream error: %v", chunk.Err)
+	for c := range ch {
+		switch c.Type {
+		case provider.ChunkText:
+			text.WriteString(c.Text)
+		case provider.ChunkUsage:
+			usage = c.Usage
+		case provider.ChunkError:
+			t.Fatal(c.Err)
 		}
-		if chunk.Type == provider.ChunkText {
-			got.WriteString(chunk.Text)
-		}
-		if chunk.Type == provider.ChunkUsage {
-			usage = chunk.Usage
-		}
 	}
-	if got.String() != "hi there" {
-		t.Errorf("streamed text = %q, want %q", got.String(), "hi there")
-	}
-	if reqs != 3 {
-		t.Errorf("server saw %d requests, want 3 (2 failures + 1 success)", reqs)
-	}
-	if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
-		t.Errorf("retry-notify attempts = %v, want [1 2]", attempts)
-	}
-	if usage == nil || usage.RequestCount != 3 {
-		t.Errorf("usage request count = %+v, want 3", usage)
+	if reqs != 2 || text.String() != "hi there" || usage == nil || usage.RequestCount != 1 {
+		t.Fatalf("requests=%d text=%q usage=%+v", reqs, text.String(), usage)
 	}
 }
 

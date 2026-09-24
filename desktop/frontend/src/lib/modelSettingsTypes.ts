@@ -22,7 +22,7 @@ export interface ModelSettingsResult {
   persisted: boolean;
   revision: string;
   application: "not_required" | "pending" | "applied" | "failed";
-  targets: { tabId: string; title?: string; application: string; appliedRevision: string; desiredRevision: string }[];
+  targets: { tabId: string; title?: string; application: string; appliedRevision: string; desiredRevision: string; details?:import("./modelApplication").ModelApplicationDetails }[];
   issues: { code: string; message: string }[];
   appliedCatalogs: string[];
 }

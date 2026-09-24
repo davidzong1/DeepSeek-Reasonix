@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, FileText, GitBranch, GitMerge, Loader2 } from "lucide-react";
 import { app } from "../lib/bridge";
@@ -37,7 +38,7 @@ function BlockerList({ blockers }: { blockers: WorktreeMergeBlocker[] }) {
         <div className="worktree-merge__blocker" key={`${blocker.code}-${index}`}>
           <AlertTriangle size={15} aria-hidden="true" />
           <div>
-            <div>{blocker.message}</div>
+            <div><ErrorMessage error={blocker.message} /></div>
             {blocker.paths.length > 0 && <div className="worktree-merge__paths">{blocker.paths.join(", ")}</div>}
           </div>
         </div>
@@ -220,7 +221,7 @@ export function WorktreeMergeModal({ tabId, isOpen, onClose, onMerged }: Worktre
               )}
             </>
           ) : null}
-          {error && <div className="worktree-merge__error" role="alert"><AlertTriangle size={16} aria-hidden="true" /><span>{error}</span><button type="button" onClick={() => void fetchInspection()} disabled={merging}>{t("common.retry")}</button></div>}
+          {error && <div className="worktree-merge__error" role="alert"><AlertTriangle size={16} aria-hidden="true" /><span><ErrorMessage error={error} /></span><button type="button" onClick={() => void fetchInspection()} disabled={merging}>{t("common.retry")}</button></div>}
         </div>
 
         <footer className="worktree-merge__actions">

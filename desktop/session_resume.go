@@ -73,6 +73,12 @@ func canonicalOpenIdentity(ctrl control.SessionAPI) (control.IdentityLifecycle, 
 	if ctrl == nil {
 		return nil, nil
 	}
+	// A native historical JSONL runtime is a supported source, but has no
+	// canonical binding to reuse. Let the existing prepare-and-swap path build
+	// the destination runtime without closing or converting the source first.
+	if native, ok := ctrl.(*control.Controller); ok && native.NativeLegacySession() {
+		return nil, nil
+	}
 	identity, ok := ctrl.(control.IdentityLifecycle)
 	if !ok || !identity.UsesExclusiveSession() {
 		return nil, fmt.Errorf("session identity protocol is unavailable")

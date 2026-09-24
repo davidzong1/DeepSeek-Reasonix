@@ -10,6 +10,7 @@ import (
 
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/identitylock"
+	"reasonix/internal/session"
 	"reasonix/internal/sessioncatalog"
 )
 
@@ -36,6 +37,10 @@ func TestProjectTreeSnapshotIsReadOnlyAcrossManyUnmigratedWorkspaces(t *testing.
 			t.Fatal(err)
 		}
 		sessionID := fmt.Sprintf("session-%02d", i)
+		// Ordinary rows represent readable sessions, not registry-only ghosts.
+		if _, err := app.desktopSessionService("").Create(t.Context(), session.CreateOptions{SessionID: sessionID, CWD: root, Origin: session.SessionOriginNew}); err != nil {
+			t.Fatal(err)
+		}
 		if err := app.workspaceRegistry().AttachSession(t.Context(), "", workspaceID, sessionID, ""); err != nil {
 			t.Fatal(err)
 		}
@@ -60,7 +65,7 @@ func TestProjectTreeSnapshotIsReadOnlyAcrossManyUnmigratedWorkspaces(t *testing.
 		t.Fatal(err)
 	}
 
-	snapshot := app.GetProjectTreeSnapshot()
+	snapshot := mustProjectTreeSnapshot(t, app)
 	if len(snapshot.Projects) < 8 {
 		t.Fatalf("snapshot projects=%d, want at least 8", len(snapshot.Projects))
 	}

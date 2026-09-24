@@ -23,8 +23,8 @@ func TestHistoricalCatalogPublishesBoundedDiscoveryBeforeCompletion(t *testing.T
 		if err := os.MkdirAll(path, 0700); err != nil {
 			t.Fatal(err)
 		}
-		// Discovery only needs an identifiable artifact. Its deliberately
-		// unreadable JSON is never parsed before the first bounded batch.
+		// An identifiable but damaged source is checked in bounded batches;
+		// its recovery evidence survives cancellation without becoming a row.
 		if err := os.WriteFile(filepath.Join(path, "manifest.json"), []byte("{unread"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -32,12 +32,14 @@ func TestHistoricalCatalogPublishesBoundedDiscoveryBeforeCompletion(t *testing.T
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	notifications := 0
+	firstCount := 0
 	app.projectTreeChangedHook = func() {
 		notifications++
 		app.historicalImports.mu.Lock()
 		count := len(app.historicalImports.catalog)
 		app.historicalImports.mu.Unlock()
-		if count != historywork.BatchEntries {
+		firstCount = count
+		if count == 0 || count > historywork.BatchEntries {
 			t.Errorf("first publication count=%d", count)
 		}
 		cancel()
@@ -48,12 +50,12 @@ func TestHistoricalCatalogPublishesBoundedDiscoveryBeforeCompletion(t *testing.T
 	}
 	app.historicalImports.mu.Lock()
 	defer app.historicalImports.mu.Unlock()
-	if len(app.historicalImports.catalog) != historywork.BatchEntries {
+	if len(app.historicalImports.catalog) != firstCount {
 		t.Fatal("cancellation removed previously published entries")
 	}
 	for _, entry := range app.historicalImports.catalog {
-		if entry.node.TurnsState != "unknown" {
-			t.Fatal("unread metadata claimed a known turn count")
+		if entry.node.Health != "unavailable" {
+			t.Fatal("damaged metadata was advertised as a usable session")
 		}
 	}
 }

@@ -35,13 +35,53 @@ Run focused tests first, then race coverage for shared ownership, both Go module
 ```sh
 go test -p 4 ./...
 go test -race ./internal/config ./internal/boot ./internal/control ./internal/bot ./internal/serve
-(cd desktop && go test -p 2 ./...)
+(cd desktop && node ../scripts/desktop-windows-go-tests.mjs --all)
 (cd desktop && go test -race . -run 'TestModelSettings|TestRemoteModel|TestCredentialProxy|TestDeferred')
 (cd desktop/frontend && pnpm typecheck && pnpm test:all && pnpm build)
 go run ./tools/repolint
 ```
 
 The frontend test set includes receipt recovery, delayed editor saves, remote behavior and long-history performance. Uncertain writes are read back, never automatically repeated. Candidate route reservations protect builds, and Serve-wide ordered ownership receipts prevent stale status from retiring a published route. Offer release and retirement are atomic. Accepted old requests release their own references on completion.
+
+## Background-process replacement and submission recovery
+
+The background-scope change adds these regression owners. Local implementation
+checks are separate from the historical release qualification below.
+
+| Invariant | Regression owner |
+| --- | --- |
+| Gateway identity, output, cancellation and history survive repeated replacement | Desktop `TestModelSettingsGatewaySurvivesReplacementAndFailure`, with a real subprocess and local HTTP model |
+| Runtime tasks block until actual exit; cancellation targets only selected blockers | jobs scope tests and control `TestModelApplicationCancelOnlySelectedRuntimeTasks` |
+| Discarded candidates preserve processes and outgoing extension generation | boot `TestRebuildBackgroundCandidateFailurePreservesOwner`, `TestModelCandidateDiscardPreservesLiveExtensionManager` |
+| Candidate initialization and retired callbacks cannot affect the new owner | control `TestModelReplacementFencesCandidateAndRetiredCallbacks` |
+| Single-submit continuation validates all routes, credentials and limits | config continuation tests and Desktop model-application tests |
+| Overtaken remote candidates never publish; uncertain finish is recoverable | Serve `TestModelSettingsSourceFencesOvertakenBuildAndUncertainFinish` |
+| Reconnect/status refresh cannot revive old confirmations | Desktop `TestRemoteModelConfirmationExpiresOnReconnectAndNewRuntime` |
+| Rejection preserves drafts/attachments; applying never resends | frontend submission tests and `node bench/model-application.mjs` |
+| Structured rejection crosses the real Electron context bridge | `desktop/electron/scripts/smoke.mjs`, using the Go service and production renderer |
+
+Full Desktop verification uses the inventory-verified runner:
+`cd desktop && node ../scripts/desktop-windows-go-tests.mjs --all`.
+Also run targeted Go race tests, root `go test ./...`, repository lint,
+generated host-contract/inventory consistency, frontend types/build, browser
+and native Electron probes. Concurrency regressions use channels and publication
+boundaries instead of timing-dependent sleeps.
+
+This change has macOS execution coverage and Windows cross-compilation checks.
+Native Windows PowerShell process-tree cancellation/file-handle release and
+native Linux process lifetime remain release-validation gaps. Historical
+Windows results below **do not qualify this new lifecycle change**. No release
+artifact is published by local checks.
+
+Local qualification on 2026-09-23 passed root `go test -p 2 ./...`, all eleven
+Desktop inventory-verified partitions, targeted ownership/submission race
+tests, both Go linters (v2.12.2), repository lint, generated contract/inventory
+checks, frontend production build/types/recovery tests, the browser recovery
+probe and native Electron RPC smoke. Windows jobs and built-in shell test
+binaries cross-compiled successfully. Root/package aggregate alarms were
+diagnosed separately from test failures: reducing root parallelism preserved
+the default alarm; the two largest Desktop partitions used a local 30-minute
+aggregate budget without changing individual assertions or wait boundaries.
 
 ## Native Windows release gate
 

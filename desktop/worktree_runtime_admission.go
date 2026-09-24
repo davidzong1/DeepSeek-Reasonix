@@ -8,6 +8,31 @@ import (
 
 func noopRuntimeAdmission() {}
 
+// reserveWorkspaceRemoval waits for existing project-runtime publications and
+// rejects new ones until the sidebar stores and tab bindings agree on removal.
+// Reserve before lockRuntimeMutation: a publisher may hold this gate while
+// waiting for the runtime mutation lock.
+func (a *App) reserveWorkspaceRemoval(workspaceRoot string) (func(), error) {
+	key, err := canonicalRuntimeRootErr(workspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace removal identity: %w", err)
+	}
+	a.worktreeReservations.mu.Lock()
+	defer a.worktreeReservations.mu.Unlock()
+	if a.cleanupReservationOverlapsLocked(key) || a.mergeReservationOverlapsLocked(key) {
+		return nil, fmt.Errorf("workspace maintenance is already in progress")
+	}
+	if a.worktreeReservations.cleanup == nil {
+		a.worktreeReservations.cleanup = map[string]struct{}{}
+	}
+	a.worktreeReservations.cleanup[key] = struct{}{}
+	return func() {
+		a.worktreeReservations.mu.Lock()
+		delete(a.worktreeReservations.cleanup, key)
+		a.worktreeReservations.mu.Unlock()
+	}, nil
+}
+
 func (a *App) beginProjectRuntimeAdmission(scope, workspaceRoot string) (func(), error) {
 	if scope != "project" {
 		return noopRuntimeAdmission, nil

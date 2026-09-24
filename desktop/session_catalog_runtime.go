@@ -644,7 +644,10 @@ func (a *App) GetSessionCatalogStatus() SessionCatalogStatus {
 // catalog pages and project shells; it never migrates, scans, or decodes a
 // session synchronously.
 func (a *App) ListProjectTree() ([]ProjectNode, error) {
-	snapshot := a.GetProjectTreeSnapshot()
+	snapshot, err := a.GetProjectTreeSnapshot()
+	if err != nil {
+		return []ProjectNode{}, err
+	}
 	hasGlobal := false
 	for _, project := range snapshot.Projects {
 		if project.Kind == "global_folder" {

@@ -32,14 +32,19 @@ type Messages struct {
 	InitHint string
 
 	// chat REPL
-	ChatTip                string // tip line under the chat banner
-	TurnCancelled          string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
-	InterruptedRecovery    string // replay notice for a durable interrupted turn
-	FinalReadinessRecovery string // replay hint for a durable final-readiness pause
-	ReadinessContinuing    string // host is automatically finishing known readiness gaps
-	RecoveryPaused         string // controlled Auto retry pause; user can continue in the next message
-	CompletionUncertain    string // completion validator could not confirm the result; work is kept
-	ReasoningReplayRepair  string // provider rejected replayed thinking blocks; history repaired and retried once
+	ChatTip                  string // tip line under the chat banner
+	TurnCancelled            string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
+	InterruptedRecovery      string // replay notice for a durable interrupted turn
+	FinalReadinessRecovery   string // replay hint for a durable final-readiness pause
+	ReadinessContinuing      string // host is automatically finishing known readiness gaps
+	RecoveryPaused           string // controlled Auto retry pause; user can continue in the next message
+	CompletionUncertain      string // completion validator could not confirm the result; work is kept
+	ReasoningReplayRepair    string // provider rejected replayed thinking blocks; history repaired and retried once
+	ImageRequestRecovery     string // current image cannot be included; request a fresh attachment
+	ExtensionRequestRecovery string // extension produced an invalid model request
+	ExtensionBlockRecovery   string // actionable hint following an explicit extension block
+	ContextLimitRecovery     string // automatic context recovery exhausted
+	SessionSaveRecovery      string // durability failure; preserve the live conversation
 	// Host guard/recovery notices (event.Notice texts the fronts render verbatim).
 	EmptyFinal                       string // empty_final: no visible answer; retrying
 	ExecutorHandoff                  string // executor_handoff: answered without using tools
@@ -579,26 +584,28 @@ type Messages struct {
 	WriteEnvErr               string // "write .env:" — prefix for env-write failure
 
 	// provider HTTP error explanations — actionable, reason + fix per status code
-	ProviderErrBadRequest          string // 400
-	ProviderErrContextOverflowFmt  string // 400/413/422 shared-window overflow with numbers
-	ProviderErrAuth                string // 401 — no key configured / sent
-	ProviderErrAuthRejected        string // 401 — a key was sent but the server rejected it
-	ProviderErrModelFormatMismatch string // provider rejected the model on the selected wire format
-	ProviderErrOpenCodeGoGrokRoute string // recovery hint for OpenCode Go Grok routing
-	ProviderErrQuotaExhaustedFmt   string // provider name, actual HTTP status
-	ProviderErrReasonMissing       string
-	SearchSourcesNotProvided       string
-	SearchModelUnavailable         string
-	ProtocolRecoveryLabel          string
-	ProviderErrInsufficientBalance string // 402
-	ProviderErrNotFound            string // 404
-	ProviderErrUnprocessable       string // 422
-	ProviderErrInputSensitive      string // MiniMax 1026
-	ProviderErrOutputSensitive     string // MiniMax 1027
-	ProviderErrRateLimited         string // 429
-	ProviderErrServer              string // 500
-	ProviderErrServerBusy          string // 503
-	ProviderErrWaitExhaustedFmt    string // total time waited before giving up
+	ProviderErrBadRequest           string // 400
+	ProviderErrContextOverflowFmt   string // 400/413/422 shared-window overflow with numbers
+	ProviderErrAuth                 string // 401 — no key configured / sent
+	ProviderErrAuthRejected         string // 401 — a key was sent but the server rejected it
+	ProviderErrModelFormatMismatch  string // provider rejected the model on the selected wire format
+	ProviderErrOpenCodeGoGrokRoute  string // recovery hint for OpenCode Go Grok routing
+	ProviderErrQuotaExhaustedFmt    string // provider name, actual HTTP status
+	ProviderErrReasonMissing        string
+	ProviderErrStreamInterruptedFmt string
+	ProviderErrDisconnectedFmt      string
+	SearchSourcesNotProvided        string
+	SearchModelUnavailable          string
+	ProtocolRecoveryLabel           string
+	ProviderErrInsufficientBalance  string // 402
+	ProviderErrNotFound             string // 404
+	ProviderErrUnprocessable        string // 422
+	ProviderErrInputSensitive       string // MiniMax 1026
+	ProviderErrOutputSensitive      string // MiniMax 1027
+	ProviderErrRateLimited          string // 429
+	ProviderErrServer               string // 500
+	ProviderErrServerBusy           string // 503
+	ProviderErrWaitExhaustedFmt     string // total time waited before giving up
 
 	// selection menus
 	SelectOneHint      string // "(↑/↓ · Enter · q to cancel)"

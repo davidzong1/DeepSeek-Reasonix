@@ -450,10 +450,14 @@ failPersist = true;
 failureLog.length = 0;
 await clickXcodeMenuItem();
 ok(failureLog.join(",") === "open:xcode,persist:xcode", "the application launches before the preference write");
+const saveErrorToast = Array.from(failureContainer.querySelectorAll(".toast--error")).at(-1)!;
 ok(
-  toastTexts().includes(t("externalOpener.persistFailed", { name: "Xcode", error: "disk full" })),
-  "a failed preference write reports the save error after opening",
+  saveErrorToast.querySelector(".user-error__summary")?.textContent === t("error.diskFull"),
+  "a failed preference write reports the localized disk-full cause after opening",
 );
+await act(async () => saveErrorToast.querySelector<HTMLButtonElement>(".user-error__toggle")!.click());
+ok(saveErrorToast.querySelector(".user-error__detail")?.textContent === t("externalOpener.persistFailed", { name: "Xcode", error: "disk full" }),
+  "save error details preserve the original operation and exception");
 await act(async () => failureRoot.unmount());
 failureContainer.remove();
 

@@ -32,6 +32,59 @@ durable identity and format; new conversations use the current store.
 启动、普通打开和续聊不恢复中断的导入任务。显式导入、恢复，以及既有管理操作的
 所有权转换流程仍保留；本次未重新设计归档、移动、复制、分叉的存储事务。
 
+## One ordinary lifecycle / 统一的普通会话生命周期
+
+The ordinary sidebar combines usable native and historical conversations without
+requiring an import or recovery choice. Once source **a** has been adopted as
+**b**, only **b** is listed; archive and purge follow the same durable adoption
+and tombstone. A changed retained source does not automatically become another
+ordinary conversation. Purge removes exclusively owned, unchanged canonical
+source artifacts; shared JSONL/head data remains protected by the tombstone.
+
+普通侧栏统一展示可用的新旧会话，不要求用户选择导入或恢复。旧会话 **a** 已由 **b**
+接管后只展示 **b**，归档和删除沿用同一份归属记录与删除标记。保留的旧源即使变化，
+也不会自动变成另一条普通会话。彻底删除会清理独占且未变化的旧目录；共享 JSONL
+和分支数据通过删除标记隐藏，不为删除一个会话而误删其他分支。
+
+Background discovery repairs missing adoption receipts from matching source
+content and existing lifecycle evidence. Retired duplicate receipts cannot
+obscure a unique live owner; competing live owners are never arbitrarily chosen.
+An absent destination can be restored from a verified retained source under its
+original ID, with journaled restart recovery and generation fences. Existing
+destination content, title, pin and lifecycle are not replaced. The catalog's
+completion also schedules receipt recovery if it finished after startup discovery.
+This does not resume unrelated unfinished imports or convert ordinary unmigrated
+sessions merely to display them.
+
+后台发现流程结合源内容与生命周期证据补齐丢失的关联；已删除的重复记录不再阻挡
+唯一有效归属，但多个存活目标之间不会随意选一个。目标目录缺失时，可由验证过的
+保留源恢复原 ID，并通过事务日志支持中断重启、代际校验防止覆盖并发归档或删除。
+已有目标的正文、标题、置顶和生命周期保持不变。索引晚于首轮发现完成时，也会触发
+关联恢复；这不意味着启动时重试所有旧导入，也不会为了展示而转换未迁移会话。
+
+Confirmed unreadable or missing entries are omitted from ordinary lists, but
+their files are retained for later repair. Hiding is not deletion authority.
+Navigation reports the classified operation error, not a guessed missing-project
+error for every failed project conversation. A global legacy file with stale
+metadata pointing to an absent project uses its actual global storage owner;
+a file physically stored in a project is not silently reassigned elsewhere.
+
+确认不可读或缺失的条目不展示在普通列表，原文件仍保留以供后续恢复；隐藏不代表
+授权删除。打开失败按实际操作错误分类提示，不再一律误报项目不存在。全局旧文件
+若仍记录已经不存在的项目，会使用其实际全局存储归属；项目内文件不会静默转移。
+
+No persisted schema or RPC field is added by this reconciliation. Existing
+source mappings, migration receipts and import journal phases are reused; older
+readers can still parse these records, but do not gain the new recovery behavior.
+Regressions cover lost mappings, retired aliases, lost native/JSONL targets,
+continued target content, source changes during repair, interruption/replay,
+archive/purge/restart, corrupt-row filtering and stale registry generations.
+
+本次协调修复不新增持久化 schema 或 RPC 字段，复用现有来源关联、迁移回执和导入
+事务阶段；旧版仍能解析，但不因此具备新版恢复逻辑。回归覆盖关联丢失、已删除别名、
+新旧目标缺失、目标续聊、恢复中源变化、中断重放、归档/删除/重启、损坏条目过滤和
+过期注册表代际。
+
 ## History reads / 历史分页
 
 Follow negotiates `storageBackend: "legacy"` for path-backed sessions. The

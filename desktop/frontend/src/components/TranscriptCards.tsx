@@ -2,6 +2,7 @@
 // decision receipts, and compaction cards.
 
 import { useState } from "react";
+import { ErrorMessage } from "./ErrorMessage";
 import { CheckCheck, ChevronRight, CirclePlay, ClipboardCheck, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { Item } from "../lib/useController";
@@ -84,7 +85,7 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
         ) : (
           <>
             {item.title ? <div className="notice-line__title">{item.title}</div> : null}
-            <div className="notice-line__body">{item.text}</div>
+            <div className="notice-line__body">{item.level === "warn" ? <ErrorMessage error={item.text} /> : item.text}</div>
           </>
         )}
         {showActions ? (

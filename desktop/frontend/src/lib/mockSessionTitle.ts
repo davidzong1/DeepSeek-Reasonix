@@ -30,10 +30,13 @@ export function mockAIRenameTarget(nodes: ProjectNode[], target: string): string
 export function mockSessionTitleTarget(nodes: ProjectNode[], selector: SessionSelector): ProjectNode | undefined {
   const target = selector.ref?.sessionId
     ? `session-id:${selector.ref.sessionId}`
-    : selector.sessionPath?.trim() || selector.topicId?.trim() || "";
+    : selector.source
+      ? `session-source:${encodeURIComponent(JSON.stringify(selector.source))}`
+      : selector.sessionPath?.trim() || selector.topicId?.trim() || "";
+  if (!target) return undefined;
   const find = (rows: ProjectNode[]): ProjectNode | undefined => {
     for (const node of rows) {
-      if (sessionTitleTarget(node) === target || node.topicId === target) return node;
+      if (sessionTitleTarget(node) === target || node.topicId === target || node.sessionPath === target) return node;
       const child = find(node.children ?? []);
       if (child) return child;
     }

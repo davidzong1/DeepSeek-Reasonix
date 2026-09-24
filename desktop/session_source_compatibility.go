@@ -284,6 +284,14 @@ func (a *App) resolveDesktopImportTarget(ctx context.Context, query *session.Que
 			continue
 		}
 		id := op.SessionIDs[0]
+		if state.SessionStates[id].Lifecycle == workspacestate.Deleted {
+			// A completed import receipt can outlive purge. It is not a live
+			// reservation and cannot authorize reusing that identity.
+			if op.Phase == "committed" {
+				continue
+			}
+			return "", false, workspacestate.ErrMutationConflict
+		}
 		digest, err := canonicalMigrationDigest(ctx, query, session.SessionRef{HostID: localDesktopHostID, SessionID: id})
 		if errors.Is(err, session.ErrSessionNotFound) {
 			return id, true, nil
@@ -296,7 +304,28 @@ func (a *App) resolveDesktopImportTarget(ctx context.Context, query *session.Que
 		}
 		return id, false, nil
 	}
-	return resolveMigrationTarget(ctx, query, preferredID, key, contentDigest, path, headID)
+	remappedRetired := state.SessionStates[preferredID].Lifecycle == workspacestate.Deleted
+	if remappedRetired {
+		if err := a.proveRetiredImportOrigin(ctx, state, path, headID, preferredID); err != nil {
+			return "", false, err
+		}
+		digest := sha256.Sum256([]byte(mappingKey + "\x00" + preferredID + "\x00" + contentDigest))
+		preferredID = "migr-" + hex.EncodeToString(digest[:12])
+	}
+	id, needsImport, err := resolveMigrationTarget(ctx, query, preferredID, key, contentDigest, path, headID)
+	if err != nil {
+		return "", false, err
+	}
+	if state.SessionStates[id].Lifecycle == workspacestate.Deleted {
+		return "", false, workspacestate.ErrMutationConflict
+	}
+	for _, op := range state.PendingOperations {
+		if (remappedRetired || op.Kind == "archive-import") && op.Phase != "committed" && slices.Contains(op.SessionIDs, id) &&
+			(op.Mapping == nil || op.Mapping.SourceKey != mappingKey || op.Mapping.Fingerprint != fingerprint) {
+			return "", false, workspacestate.ErrMutationConflict
+		}
+	}
+	return id, needsImport, nil
 }
 
 func (a *App) legacyCanonicalRef(ctx context.Context, path string) (session.SessionRef, bool, error) {

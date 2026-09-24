@@ -23,6 +23,7 @@ func currentModelRef(c control.SessionAPI) string {
 }
 
 type modelSettingsStatusView struct {
+	Application *control.ModelApplicationDetails `json:"application,omitempty"`
 	config.ModelSettingsOwnership
 	Version           int      `json:"version"`
 	Revision          string   `json:"revision"`
@@ -38,7 +39,9 @@ func (s *Server) modelSettingsStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.validateExpectedSessionLocked(w, r) {
 		return
 	}
-	writeJSON(w, s.modelSettingsStatusLocked())
+	view := s.modelSettingsStatusLocked()
+	view.Application = s.modelApplicationDetailsLocked(r.Context())
+	writeJSON(w, view)
 }
 
 // Caller holds bindMu across validation, refresh and turn admission.
@@ -50,7 +53,7 @@ func (s *Server) admitModelSettingsRunLocked(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	if err := s.refreshRunModelSettingsLocked(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		s.rejectModelApplication(w, r, err)
 		return false
 	}
 	if !s.validateExpectedSessionLocked(w, r) {
@@ -120,7 +123,8 @@ func (s *Server) applyModelSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.validateExpectedSessionLocked(w, r) {
 		return
 	}
-	if controllerHasActiveRuntimeWork(s.ctl()) {
+	if control.ModelReplacementBlocked(s.ctl()) {
+		s.deferModelApplicationLocked()
 		http.Error(w, "cannot apply model settings while active work or background jobs are running", http.StatusConflict)
 		return
 	}
@@ -129,6 +133,9 @@ func (s *Server) applyModelSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := s.managedModels
+	s.modelApplicationRetry.mu.Lock()
+	s.modelApplicationRetry.failedRevision, s.modelApplicationRetry.failure = "", ""
+	s.modelApplicationRetry.mu.Unlock()
 	s.managedModels = &request.Settings
 	if err := s.switchModelLocked(r.Context(), ref); err != nil {
 		s.managedModels = previous

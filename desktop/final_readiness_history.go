@@ -28,7 +28,11 @@ func historyLocalOnlyRows(m provider.Message) ([]HistoryMessage, bool) {
 		return []HistoryMessage{{Role: "notice", Code: agent.HistoricalChecksNoticeCode, Level: "info",
 			Content: agent.HistoricalChecksNoticeText, Readiness: readiness}}, true
 	}
-	return historySteerRows(m.Content, true)
+	rows, handled := historySteerRows(m.Content, true)
+	for i := range rows {
+		rows[i].MessageID = m.ID
+	}
+	return rows, handled
 }
 
 func formatReadCompletionDetail(r *provider.ReadCompletion) string {

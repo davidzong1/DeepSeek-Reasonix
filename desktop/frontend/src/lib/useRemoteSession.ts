@@ -56,7 +56,7 @@ export interface RemoteSessionApi {
   /** Changes whenever the tab adopts a new/reconnected Serve session snapshot. */
   surfaceGeneration: number;
   promptError: string;
-  submit: (text: string, displayText?: string) => Promise<void>;
+  submit: (text: string, displayText?: string, choice?: import("./modelApplication").ModelApplicationChoice) => Promise<void>;
   runManagementCommand: (text: string, rehydrate?: boolean) => Promise<void>;
   compact: (instructions: string) => Promise<void>;
   cancelTurn: () => Promise<void>;
@@ -84,14 +84,10 @@ export function useRemoteComposer(
   session: RemoteSessionApi,
   showToast: (message: string, level: "warn" | "error") => void,
 ) {
-  const onSend = useCallback(async (displayText: string, submitText = displayText) => {
+  const onSend = useCallback(async (displayText: string, submitText = displayText, choice?: import("./modelApplication").ModelApplicationChoice) => {
     const text = (submitText || displayText).trim();
     if (!text) return;
-    try {
-      await session.submit(text);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), "error");
-    }
+    await session.submit(text, displayText, choice);
   }, [session, showToast]);
   const onCancel = useCallback(async (_queuedItemIDs?: string[]): Promise<CancelOutcome> => {
     void session.cancelTurn().catch((error) => {
@@ -469,7 +465,7 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     return () => window.clearInterval(timer);
   }, [tabId, state, spectator]);
 
-  const submit = useCallback(async (text: string, displayText = text) => {
+  const submit = useCallback(async (text: string, displayText = text, choice?: import("./modelApplication").ModelApplicationChoice) => {
     if (!tabId) return;
     if (transcriptRef.current.transcriptProtocol !== 2 || transcriptRef.current.transcriptConnection !== "connected") {
       throw new Error("Transcript v2 is not synchronized. Upgrade Desktop and Serve together, or reconnect.");
@@ -481,12 +477,21 @@ export function useRemoteSession(tabId: string | undefined, initial?: RemoteTabS
     const before = getTranscriptStore().states.get(tabId) ?? initialState;
     const binding = submitBindingRef.current;
     const current = () => submitBindingRef.current === binding && getTranscriptStore().states.get(tabId)?.sessionGen === before.sessionGen;
-    const submissionId = createTurnSubmissionId(tabId, before.sessionGen, before.seq, before.meta?.runtime?.epoch);
+    const submissions = Object.values(before.localSubmissions);
+    if (submissions.some(item => item.status === "sending" && (item.submitText ?? item.text).trim() === trimmed)) return;
+    const unresolved = submissions.find(item => item.status === "unknown");
+    if(unresolved && (choice || (unresolved.submitText ?? unresolved.text).trim()!==trimmed)) {
+      throw Object.assign(new Error("Confirm the previous submission before sending another message"),{data:{submissionOutcome:"unknown"}});
+    }
+    const submissionId = unresolved?.submissionId ?? createTurnSubmissionId(tabId, before.sessionGen, before.seq, before.meta?.runtime?.epoch);
     activityRevisionRef.current += 1;
     runtimeAtActivityRef.current = runtimeState.state;
-    setTranscript((s) => reducer(s, { type: "user", text: displayText.trim(), seq: s.seq, submissionId }));
+    if(!unresolved) setTranscript((s) => reducer(s, { type: "user", text: displayText.trim(), submitText:trimmed, seq: s.seq, submissionId }));
     try {
-      if (app.SubmitRemoteTabWithSubmission) await app.SubmitRemoteTabWithSubmission(tabId, trimmed, submissionId);
+      if (choice) {
+        if (!app.SubmitRemoteTabWithModelApplication) throw new Error("Upgrade Desktop to use model application recovery");
+        await app.SubmitRemoteTabWithModelApplication(tabId, trimmed, submissionId, choice);
+      } else if (app.SubmitRemoteTabWithSubmission) await app.SubmitRemoteTabWithSubmission(tabId, trimmed, submissionId);
       else await app.SubmitRemoteTab(tabId, trimmed);
       if (current()) setTranscript(s => reducer(s, { type: "send_confirmed", submissionId }));
     } catch (e) {

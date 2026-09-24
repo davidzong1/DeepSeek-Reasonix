@@ -42,27 +42,20 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	// Admission and controller replacement share one ownership boundary.
 	s.bindMu.Lock()
-	if !s.admitModelSettingsRunLocked(w, r) {
+	// Known durable receipts win before configuration validation on a retry.
+	identity := control.SubmissionRequest{ID: body.SubmissionID, HTTP: true, Input: body.Input, Format: body.Format, Action: body.Action, RecoveryID: body.RecoveryID}
+	if !s.validateExpectedSessionLocked(w, r) {
+		s.bindMu.Unlock()
+		return
+	}
+	if !s.admitModelSubmissionLocked(w, r, body.ModelApplication, trimmed, identity) {
 		s.bindMu.Unlock()
 		return
 	}
 	ctrl := s.ctl()
 	// Fix false 202 while a turn is active: SubmitHTTPFormat silently drops
 	// concurrent input. Clients must use POST /inbox/items for durable follow-up.
-	identity := control.SubmissionRequest{ID: body.SubmissionID, HTTP: true, Input: body.Input, Format: body.Format, Action: body.Action, RecoveryID: body.RecoveryID}
 	identified, identifiedOK := ctrl.(*control.Controller)
-	if identifiedOK && body.SubmissionID != "" && !isServeManagementCommand(trimmed) {
-		_, found, err := identified.LookupSubmission(identity)
-		if err != nil || found {
-			s.bindMu.Unlock()
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusConflict)
-			} else {
-				w.WriteHeader(http.StatusAccepted)
-			}
-			return
-		}
-	}
 	if ctrl.Running() {
 		s.bindMu.Unlock()
 		if _, err := control.MaintenanceCommandConflict(ctrl, trimmed); err != nil {
@@ -93,7 +86,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		_, err := identified.SubmitIdentified(identity)
 		if err != nil {
 			s.bindMu.Unlock()
-			http.Error(w, err.Error(), http.StatusConflict)
+			writeSubmissionFailure(w, err)
 			return
 		}
 		s.bindMu.Unlock()

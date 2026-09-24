@@ -17,6 +17,7 @@ import (
 // persistent session operation. Versions are strings at the RPC boundary so
 // JavaScript never truncates durable 64-bit sequence identities.
 type SessionMutationResult struct {
+	Outcome             string   `json:"outcome,omitempty"`
 	TargetKey           string   `json:"targetKey"`
 	OperationID         string   `json:"operationId"`
 	Committed           bool     `json:"committed"`
@@ -65,6 +66,9 @@ func sessionOperationErrorForTarget(err error, targetKey, operationID string) er
 			copy.OperationID = operationID
 		}
 		return &copy
+	}
+	if historicalSourceBusyError(err) {
+		return &SessionOperationError{Code: sessionOperationBusy, Message: "Another operation is using this session. Try again shortly.", TargetKey: targetKey, OperationID: operationID, Retryable: true}
 	}
 	switch {
 	case errors.Is(err, workspacestate.ErrMutationConflict):
@@ -186,6 +190,12 @@ func titleSequenceVersion(sequence uint64) string {
 // ArchiveSessionTarget archives one explicit durable target. It does not select
 // the target or create a conversation controller.
 func (a *App) ArchiveSessionTarget(selector SessionSelector) (SessionMutationResult, error) {
+	if selector.Ref == nil && selector.Source != nil {
+		return a.archiveHistoricalSource(selector)
+	}
+	if resolved, err := a.resolveSessionTarget(selector); err == nil && resolved.Source != nil {
+		return a.archiveHistoricalSource(SessionSelector{Source: resolved.Source, TopicID: resolved.TopicID})
+	}
 	target, err := a.resolveSessionMutationTarget(selector)
 	if err != nil {
 		return SessionMutationResult{}, err
@@ -205,6 +215,7 @@ func (a *App) ArchiveSessionTarget(selector SessionSelector) (SessionMutationRes
 	}
 	return SessionMutationResult{
 		TargetKey: key, OperationID: operationID, Committed: true,
+		Outcome:             "archived",
 		LifecycleGeneration: archived.LifecycleGeneration,
 		ProjectionPending:   archived.LifecycleGeneration == 0,
 		IdentityAliases:     a.sessionTargetIdentityAliases(target),

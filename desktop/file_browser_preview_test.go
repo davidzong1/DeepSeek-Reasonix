@@ -154,7 +154,7 @@ func TestFileBrowserPreviewExplicitRevokeReleasesBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.RevokeWorkspaceBrowserPreview(opened.URL)
-	if len(app.fileBrowserPreviews) != 0 {
-		t.Fatalf("preview registry retained %d bindings after explicit close revoke", len(app.fileBrowserPreviews))
+	if len(app.filePreviews.bindings) != 0 {
+		t.Fatalf("preview registry retained %d bindings after explicit close revoke", len(app.filePreviews.bindings))
 	}
 }

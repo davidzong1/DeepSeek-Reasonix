@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/event"
@@ -20,46 +19,6 @@ func TestCompatibleMissingReasoningDoesNotRegenerate(t *testing.T) {
 	}
 	if mock.CallCount() != 2 || len(sink.kinds(event.ToolResult)) != 1 || len(sink.kinds(event.Retrying)) != 0 {
 		t.Fatalf("calls=%d tools=%d retries=%d", mock.CallCount(), len(sink.kinds(event.ToolResult)), len(sink.kinds(event.Retrying)))
-	}
-}
-
-type transientHeaderProvider struct{ calls int }
-
-func (*transientHeaderProvider) Name() string { return "transient" }
-func (p *transientHeaderProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
-	p.calls++
-	return nil, &provider.APIError{Status: 503}
-}
-func TestMainWaitsAfterFiniteRetriesAndCancels(t *testing.T) {
-	p := &transientHeaderProvider{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	old := recoverySleep
-	defer func() { recoverySleep = old }()
-	recoverySleep = func(ctx context.Context, d time.Duration) bool {
-		if d < time.Minute {
-			t.Errorf("wait=%s", d)
-		}
-		cancel()
-		return false
-	}
-	sink := &recordSink{}
-	a := New(p, echoRegistry(), NewSession(""), Options{}, sink)
-	err := a.Run(withNoClosedLoop(ctx), "go")
-	if !errors.Is(err, context.Canceled) || p.calls != 4 {
-		t.Fatalf("calls=%d err=%v", p.calls, err)
-	}
-	retries := sink.kinds(event.Retrying)
-	if len(retries) != 4 || retries[3].Recovery == nil || !retries[3].Recovery.Waiting {
-		t.Fatalf("retries=%+v", retries)
-	}
-}
-func TestSubagentStopsAfterFiniteRetries(t *testing.T) {
-	p := &transientHeaderProvider{}
-	a := New(p, echoRegistry(), NewSession(""), Options{}, event.Discard)
-	err := a.Run(withNoClosedLoop(WithSubagentDepth(context.Background(), 1)), "go")
-	if err == nil || p.calls != 4 {
-		t.Fatalf("calls=%d err=%v", p.calls, err)
 	}
 }
 
@@ -92,7 +51,7 @@ func TestPartialStreamNeverEntersContinuousWaiting(t *testing.T) {
 	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err == nil {
 		t.Fatal("partial stream accepted")
 	}
-	if mock.CallCount() != 4 {
+	if mock.CallCount() != 1 {
 		t.Fatalf("calls=%d", mock.CallCount())
 	}
 	for _, e := range sink.kinds(event.Retrying) {
@@ -117,7 +76,7 @@ func TestPiReferenceRetryScenarios(t *testing.T) {
 		calls   int
 		success bool
 	}{
-		{"temporary_then_success", []testutil.Turn{{StreamError: &provider.APIError{Status: 503}}, {StreamError: &provider.APIError{Status: 503}}, {Text: "done"}}, 3, true},
+		{"temporary_failure_is_terminal", []testutil.Turn{{StreamError: &provider.APIError{Status: 503}}, {Text: "done"}}, 1, false},
 		{"quota", []testutil.Turn{{StreamError: &provider.APIError{Status: 429, Body: "insufficient_quota"}}}, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +98,7 @@ func TestMixedFailuresCannotRenewRecoveryBudget(t *testing.T) {
 	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err == nil {
 		t.Fatal("invalid reasoning accepted")
 	}
-	if p.CallCount() != 4 || len(sink.kinds(event.ToolResult)) != 0 {
+	if p.CallCount() != 1 || len(sink.kinds(event.ToolResult)) != 0 {
 		t.Fatalf("calls=%d tools=%d", p.CallCount(), len(sink.kinds(event.ToolResult)))
 	}
 }
@@ -165,17 +124,5 @@ func TestCanceledCompletionCannotStartTools(t *testing.T) {
 	}
 	if len(sink.kinds(event.ToolResult)) != 0 {
 		t.Fatal("late completion executed a tool")
-	}
-}
-
-func TestPlannerAndNonRetryableFailuresNeverEnterContinuousWait(t *testing.T) {
-	a := New(&transientHeaderProvider{}, echoRegistry(), NewSession(""), Options{}, event.Discard)
-	failure := provider.ClassifyRecovery(&provider.APIError{Status: 503})
-	if a.canWaitSampling(context.Background(), &samplingRecoveryState{}, provider.ClassifyRecovery(&provider.APIError{Status: 409})) {
-		t.Fatal("conflict allowed endless waiting")
-	}
-	ctx := context.WithValue(context.Background(), turnContextRoleKey{}, turnContextPlanner)
-	if a.canWaitSampling(ctx, &samplingRecoveryState{}, failure) {
-		t.Fatal("planner allowed endless waiting")
 	}
 }

@@ -1,5 +1,14 @@
 # OpenCode comparison after live tests / 真实测试后的 OpenCode 对照
 
+Current policy (2026-09-24): provider transport/service failures stop after the
+first failed request. Automatic transport retries and recovery waiting have
+been removed. The experiments and retry counts below describe the historical
+implementation; see [the current contract](AGENT_CORE_SIMPLIFICATION.md).
+
+当前策略（2026-09-24）：供应商连接或服务失败后直接结束请求，已取消自动传输
+重试和恢复等待。下文的实验结果及重试次数属于当时的实现；当前行为以
+[核心契约](AGENT_CORE_SIMPLIFICATION.zh-CN.md)为准。
+
 Date / 日期: 2026-09-05. Source baseline / 源码基线:
 [`bbd72fb8b0bb6de580d2041a0150016227c63ac0`](https://github.com/anomalyco/opencode/tree/bbd72fb8b0bb6de580d2041a0150016227c63ac0).
 This is a source comparison with Reasonix live experiments, not a same-account

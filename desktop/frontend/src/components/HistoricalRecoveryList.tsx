@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onProjectTreeChanged } from "../lib/bridge";
 import { asArray } from "../lib/array";
@@ -98,7 +99,7 @@ export function HistoricalRecoveryList({ active, onOpenSession }: {
     <input aria-label={t("history.searchPlaceholder")} placeholder={t("history.searchPlaceholder")} value={query} disabled={busy} onChange={event => setQuery(event.target.value)} />
     <button className="btn btn--small" disabled={busy || loading} onClick={() => void reload().catch(() => {})}>{t("common.retry")}</button>
     {loading && <div role="status">{t("common.loading")}</div>}
-    {error && <div role="alert">{error}</div>}
+    {error && <div role="alert"><ErrorMessage error={error} /></div>}
     {restored && onOpenSession && <button className="btn btn--small" onClick={() => void onOpenSession(restored.session).catch(err => setError(String(err)))}>{t("history.openRestored")}</button>}
     {!loading && !error && items.length === 0 && <p>{m("noHistoricalSessions")}</p>}
     {items.map(entry => <div className="archived-sessions__row" key={entry.id}>

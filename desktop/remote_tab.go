@@ -650,10 +650,13 @@ func (a *App) SubmitRemoteTabWithSubmission(tabID, text, submissionID string) er
 	if err := a.requireRemotePermissionPresets(tabID); err != nil {
 		return err
 	}
+	if a.remoteModelApplicationReady(tabID) {
+		return a.SubmitRemoteTabWithModelApplication(tabID, text, submissionID, control.ModelApplicationChoice{Mode: "latest"})
+	}
 	for {
 		revision, admittedGen, err := a.ensureRemoteModelSettings(tabID)
 		if err != nil {
-			return err
+			return &submissionNotAcceptedError{cause: err}
 		}
 		client, base, expectedPath, err := a.remoteTabCommandTarget(tabID)
 		if err != nil {

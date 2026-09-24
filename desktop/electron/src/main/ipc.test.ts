@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { IPC, type IpcResult } from "../shared/ipc.js";
 import { parseContract } from "./contract.js";
 import { isOpenableExternalURL, parseRendererDiagnostic, registerRendererIpc } from "./ipc.js";
+import { RpcError } from "./rpc.js";
 
 function fakeIpc() {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<IpcResult>>();
@@ -77,6 +78,7 @@ test("renderer invokes are gated by sender identity and the contract allowlist",
     invoke: async (method, args) => {
       invoked.push({ method, args });
       if (method === "OpenProjectTab" && args[0] === "/missing") throw new Error("workspace not found");
+      if (args[0] === "/pending-settings") throw new RpcError(-32000,"settings pending",{submissionOutcome:"not_accepted",modelApplication:{code:"model_settings_pending"}});
       return { opened: args[0] };
     },
     clipboard: { writeText: async () => undefined, readText: async () => "clip" },
@@ -103,14 +105,15 @@ test("renderer invokes are gated by sender identity and the contract allowlist",
   assert.deepEqual(await invoke({ sender: trustedSender, senderFrame: {} }, "OpenProjectTab", ["/p"]), { ok: false, message: "untrusted sender" });
   assert.deepEqual(await invoke(trusted, "OpenProjectTab", ["/p"]), { ok: true, value: { opened: "/p" } });
   assert.deepEqual(await invoke(trusted, "OpenProjectTab", ["/missing"]), { ok: false, message: "workspace not found" });
+  assert.deepEqual(await invoke(trusted,"OpenProjectTab",["/pending-settings"]),{ok:false,message:"settings pending",code:-32000,data:{submissionOutcome:"not_accepted",modelApplication:{code:"model_settings_pending"}}});
   assert.deepEqual(await invoke(trusted, "MinimiseMainWindow", []), { ok: true, value: undefined });
   assert.deepEqual(await invoke(trusted, "ToggleMaximiseMainWindow", []), { ok: true, value: undefined });
   assert.deepEqual(await invoke(trusted, "IsMainWindowMaximised", []), { ok: true, value: true });
   assert.deepEqual(await invoke(trusted, "CloseMainWindow", []), { ok: true, value: undefined });
   assert.deepEqual(nativeCalls, ["minimise", "toggle", "close"]);
-  assert.deepEqual(await invoke(trusted, "DeleteEverything", []), { ok: false, message: "-32601 method not found: DeleteEverything" });
-  assert.deepEqual(await invoke(trusted, "__proto__", []), { ok: false, message: "-32601 method not found: __proto__" });
-  assert.deepEqual(invoked.map((call) => call.method), ["OpenProjectTab", "OpenProjectTab"]);
+  assert.deepEqual(await invoke(trusted, "DeleteEverything", []), { ok: false, message: "-32601 method not found: DeleteEverything",code:-32601,data:undefined });
+  assert.deepEqual(await invoke(trusted, "__proto__", []), { ok: false, message: "-32601 method not found: __proto__",code:-32601,data:undefined });
+  assert.deepEqual(invoked.map((call) => call.method), ["OpenProjectTab", "OpenProjectTab", "OpenProjectTab"]);
 
   const contract = listeners.get(IPC.contract);
   assert.ok(contract);

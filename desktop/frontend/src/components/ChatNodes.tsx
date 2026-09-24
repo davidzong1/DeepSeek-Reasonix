@@ -1,5 +1,6 @@
-import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, lazy, Suspense, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FileText, Globe, GitBranch, PackageOpen, Search, Terminal, Users, Wrench, X } from "lucide-react";
+import { ErrorMessage } from "./ErrorMessage";
 import { ChatSource, type ChatNode } from "../lib/chatViewSource";
 import type { ChatContentLoader } from "../lib/chatContentLoader";
 import type { ChatScrollController } from "../lib/chatScrollController";
@@ -31,6 +32,21 @@ export function useChatNode(source: ChatSource, key: string) {
   const snapshot = useCallback(() => source.getNodeSnapshot(key), [source, key]);
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+
+function useProcessVisibility(source: ChatSource, node: ChatNode | undefined) {
+  const processKey = `${node?.turnKey}:process`;
+  const key = node?.key, kind = node?.kind;
+  const subscribe = useCallback((listener: () => void) => source.subscribeNode(processKey, listener), [source, processKey]);
+  const snapshot = useCallback(() => {
+    const process = source.getNodeSnapshot(processKey);
+    if (process?.kind !== "process" || !process.collapsed || !key) return "visible";
+    if (process.members.includes(key)) return "hidden";
+    return kind === "assistant" ? "answer" : "visible";
+  }, [source, processKey, key, kind]);
+  // Counts and membership grow with every tool call. Only a visibility change
+  // should rerender an unchanged row; the process seat owns the full summary.
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
+}
 /**
  * The transcript's fork affordance. Every question about one turn is answered
  * from the host's persisted turn records, so the entry never depends on
@@ -54,9 +70,13 @@ export type ChatActions = {
   recover: (id: string) => void;
   openTurnChanges?: (summary: WireCompletionSummary, initialPath?: string) => void;
 };
+const ChatForkContext = createContext<ChatForkAction | undefined>(undefined);
 type SeatProps = { source: ChatSource; nodeKey: string; loader: ChatContentLoader; scroll: ChatScrollController; actions: ChatActions; tabId?: string; hostId?: string };
 
 export const ChatNodeList = memo(function ChatNodeList(props: Omit<SeatProps, "nodeKey"> & { mounts: ChatMountedOrder }) {
+  const { openDetails, recover, openTurnChanges, fork } = props.actions;
+  // Fork availability belongs to the turn actions, not every tool/message row.
+  const actions = useMemo(() => ({ openDetails, recover, openTurnChanges }), [openDetails, recover, openTurnChanges]);
   const order = useSyncExternalStore(props.source.subscribeOrder, props.source.getOrderSnapshot, props.source.getOrderSnapshot);
   const [visible, setVisible] = useState<readonly string[]>(order);
   const committedVisibleRef = useRef(visible);
@@ -89,17 +109,15 @@ export const ChatNodeList = memo(function ChatNodeList(props: Omit<SeatProps, "n
     });
     return () => cancelAnimationFrame(frame);
   }, [order]);
-  return rendered.map(key => <ChatNodeSeat key={key} source={props.source} loader={props.loader} scroll={props.scroll}
-    actions={props.actions} tabId={props.tabId} hostId={props.hostId} nodeKey={key} />);
+  return <ChatForkContext.Provider value={fork}>{rendered.map(key => <ChatNodeSeat key={key} source={props.source} loader={props.loader} scroll={props.scroll}
+    actions={actions} tabId={props.tabId} hostId={props.hostId} nodeKey={key} />)}</ChatForkContext.Provider>;
 });
 
 const ChatNodeSeat = memo(function ChatNodeSeat({ source, nodeKey, loader, scroll, actions, tabId, hostId }: SeatProps) {
   const node = useChatNode(source, nodeKey);
-  const process = useChatNode(source, `${node?.turnKey}:process`);
+  const visibility = useProcessVisibility(source, node);
   const t = useT();
-  if (!node) return null;
-  const hidden = process?.kind === "process" && process.collapsed && process.members.includes(nodeKey);
-  if (hidden) return null;
+  if (!node || visibility === "hidden") return null;
   let body;
   switch (node.kind) {
     case "user": body = <ChatUser node={node} loader={loader} />; break;
@@ -115,7 +133,7 @@ const ChatNodeSeat = memo(function ChatNodeSeat({ source, nodeKey, loader, scrol
     case "tail": body = <ChatTurnTail node={node} source={source} actions={actions} loader={loader} tabId={tabId} hostId={hostId} />; break;
   }
   return <div className="chat-node" data-chat-anchor-key={node.key} data-chat-turn={node.turnKey} data-chat-kind={node.kind}
-    data-turn-process-answer={node.kind === "assistant" && process?.kind === "process" && process.collapsed && !process.members.includes(node.key) || undefined}>{body}</div>;
+    data-turn-process-answer={visibility === "answer" || undefined}>{body}</div>;
 });
 
 function ChatNotice({ node, actions, scroll }: { node: Extract<ChatNode, { kind: "notice" }>; actions: ChatActions; scroll: ChatScrollController }) {
@@ -126,7 +144,7 @@ function ChatNotice({ node, actions, scroll }: { node: Extract<ChatNode, { kind:
   // Empty delivery accounting is not a chat result. Keep meaningful records in details.
   if (summary && !summary.mutations && !summary.changed_files && !summary.checks_passed && !summary.checks_failed) return null;
   if (item.level === "warn" || item.action === "recover_context") return <div className="chat-notice" role="status" data-level={item.level}>
-    {item.title && <strong>{item.title} </strong>}{item.text}
+    {item.title && <strong>{item.title} </strong>}<ErrorMessage error={item.text} />
     {summary && <details className="chat-notice__details"><summary>{t("chat.details")}</summary><pre>{JSON.stringify(summary, null, 2)}</pre></details>}
     {item.detail && <ChatDisclosure label={t("chat.details")}><pre>{item.detail}</pre></ChatDisclosure>}
     {item.action === "recover_context" && item.recoveryId && <button className="btn" onClick={() => actions.recover(item.recoveryId!)}>{t("notice.protocolRecoveryAction")}</button>}
@@ -243,11 +261,11 @@ function ChatReasoning({ node, loader, source, scroll }: { node: Extract<ChatNod
 
 function ChatTurnTail({ node, source, actions, loader, tabId, hostId }: { node: Extract<ChatNode, { kind: "tail" }>; source: ChatSource; actions: ChatActions; loader: ChatContentLoader; tabId?: string; hostId?: string }) {
   const answer = useChatNode(source, node.answerKey ?? "");
+  const fork = useContext(ChatForkContext);
   const t = useT();
   const hasAnswer = answer?.kind === "assistant" && Boolean(answer.item.text.trim());
   const hasRecordedChanges = Boolean(node.completionSummary?.receipt?.diff?.files.length);
   if (!hasAnswer && !node.presentedFiles.length && !node.modifiedFiles.length && !hasRecordedChanges) return null;
-  const fork = actions.fork;
   // A tail with no answer has no message identity, so it can name no boundary.
   const target = hasAnswer ? fork?.targetFor(node.answerKey) : undefined;
   const reason = fork ? forkBlockReason({ target, loaded: fork.loaded, verifiable: fork.verifiable, blocked: fork.blocked, latest: node.latest }) : null;

@@ -25,6 +25,32 @@ func TestHistoryIdentityAndLegacyPresentation(t *testing.T) {
 	}
 }
 
+func TestHistorySteersRetainDistinctCanonicalMessageIdentities(t *testing.T) {
+	const content = "[Mid-turn steer queued by the user. Do not treat this as a new task; use it only as additional guidance for the current task after completing the current step.]\nSame guidance"
+	rows := History([]provider.Message{
+		{ID: "first", Role: provider.RoleUser, Content: content},
+		{ID: "second", Role: provider.RoleUser, Content: content},
+	}, HistoryOptions{})
+	if len(rows) != 2 {
+		t.Fatalf("same-text steers collapsed: %+v", rows)
+	}
+	for i, id := range []string{"first", "second"} {
+		if rows[i].MessageID != id || rows[i].RecordID != "m:"+id || rows[i].Content != "↪ Same guidance" || rows[i].Role != "notice" {
+			t.Fatalf("steer lost canonical identity: %+v", rows[i])
+		}
+	}
+}
+
+func TestHistoryUnappliedSteerKeepsLegacyRecordAddressAndMessageIdentity(t *testing.T) {
+	const content = "[Mid-turn steer queued by the user. Do not treat this as a new task; use it only as additional guidance for the current task after completing the current step.]\nUse plan B"
+	rows := History([]provider.Message{{ID: "queued", Role: provider.RoleTool, LocalOnly: true,
+		ToolCallID: provider.LocalOnlyToolID, Name: provider.LocalOnlyToolName, Content: content}}, HistoryOptions{})
+	if len(rows) != 1 || rows[0].Role != "notice" || rows[0].Code != event.NoticeCodeUnappliedSteer ||
+		rows[0].MessageID != "queued" || rows[0].RecordID != "m:queued:notice:0" {
+		t.Fatalf("unapplied steer identity = %+v", rows)
+	}
+}
+
 func TestHistoryCancelledLegacySuppressesCanonicalLocalBody(t *testing.T) {
 	rows := History([]provider.Message{{ID: "u", Role: provider.RoleUser, Origin: provider.MessageOriginUser, Content: "q"},
 		{ID: "partial", Role: provider.RoleAssistant, LocalOnly: true, Content: "must not duplicate"},

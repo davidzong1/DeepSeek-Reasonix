@@ -39,6 +39,41 @@ testing, and one explicit retry. Saving or testing never replays a failed turn.
 
 Desktop-managed remote sessions use immutable tunnel tokens. Remote browser turns and queued follow-ups check Desktop settings before starting; existing requests keep their old token until their work ends. An older Serve without snapshot support must be upgraded or safely reconnected after its current work finishes. Desktop does not force-stop it to apply a setting. Independently configured remote sessions continue to use remote configuration.
 
+## Background processes and sending recovery
+
+Built-in Bash/PowerShell background processes belong to the logical session.
+Model connection replacement retains their job IDs, output, cancellation
+controls and workspace write leases. Closing a tab follows its existing
+keep-running/stop behavior; ending the session cancels its processes.
+
+Background agent tasks still depend on the old runtime. The composer displays
+pending settings, specific blockers, the actual model and a sanitized connection
+origin. Inspect/stop selected blockers or retry application. Actual task exit
+triggers a coalesced application attempt; cancellation alone does not unblock
+replacement. Construction failures wait for explicit retry or a new revision.
+Automatic application never sends a rejected draft.
+
+**Send once with current settings** authorizes one submission after backend
+validation of the runtime, both revisions, all old model routes, credentials
+and policy. The next submission uses latest settings by default. Deleted
+providers/models, changed credentials (including authentication headers),
+tighter policy or unverifiable state disable this option. Address-only changes
+may be confirmed; URL authentication, query/path changes are conservatively
+treated as unverifiable. The UI omits keys, URL credentials, queries and paths.
+
+A definite rejection retains text/attachments and releases the draft's
+submission reservation. A lost response remains unknown: reconcile the original
+submission ID before retrying. Accepted receipts take precedence over changed
+settings to prevent duplicate execution. Draft-conflict controls appear only
+for actual draft/history conflicts.
+
+Desktop/Serve negotiate `model-application-v1`; older hosts keep conservative
+behavior and hide unsupported actions. Remote confirmations expire on reconnect
+or session changes. CLI/ACP share process ownership and model-replacement guards
+and default to latest settings. No config/history format, provider-visible
+message or tool schema changes are required. Rate limits and oversized contexts
+are separate issues.
+
 ## Recovery and older versions
 
 Configuration remains TOML, credentials remain in `.env`, and conversation history keeps its existing format. A key change writes a fresh credential reference before committing the configuration that names it. A failure before the configuration commit leaves the old connection usable; it may leave an unreferenced new credential. Cleanup only considers references created by that failed edit. It does not scan or delete user-defined credential variables.

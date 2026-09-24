@@ -14,10 +14,13 @@ import (
 )
 
 type Projection struct {
-	Submissions          SubmissionIndex
-	TranscriptInputs     []transcriptInput
-	HiddenTurns          map[string]bool
-	RetractedInputs      map[string]string
+	Submissions      SubmissionIndex
+	TranscriptInputs []transcriptInput
+	HiddenTurns      map[string]bool
+	RetractedInputs  map[string]string
+	// RejectedToolResults retains local execution evidence independently of the
+	// wire projection. Result message IDs scope evidence even when call IDs repeat.
+	RejectedToolResults  map[string]rejectedToolResult `json:"rejectedToolResults,omitempty"`
 	CommittedSequence    uint64
 	TurnID               string
 	TurnStatus           event.TurnStatus
@@ -617,6 +620,7 @@ func cloneProjection(projection Projection) Projection {
 	projection.TranscriptInputs = append([]transcriptInput(nil), projection.TranscriptInputs...)
 	projection.HiddenTurns = maps.Clone(projection.HiddenTurns)
 	projection.RetractedInputs = maps.Clone(projection.RetractedInputs)
+	projection.RejectedToolResults = maps.Clone(projection.RejectedToolResults)
 	projection.CurrentAttempts = maps.Clone(projection.CurrentAttempts)
 	projection.CurrentCalls = maps.Clone(projection.CurrentCalls)
 	projection.Messages = append([]provider.Message(nil), projection.Messages...)

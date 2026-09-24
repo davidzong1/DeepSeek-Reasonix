@@ -67,7 +67,7 @@ test("site ownership requires an exact release or a proven newer recovery pointe
 test("actual site observation fails closed on HTTP errors and malformed or stale responses", () => {
   const directory = mkdtempSync(join(tmpdir(), "release-site-observation-"));
   try {
-    writeFileSync(join(directory, "curl"), '#!/bin/sh\nprintf "%s" "$RESPONSE_BODY"\nexit "$RESPONSE_STATUS"\n', { mode: 0o755 });
+    writeFileSync(join(directory, "go"), '#!/bin/sh\nif [ "$RESPONSE_STATUS" != 0 ]; then exit "$RESPONSE_STATUS"; fi\nprintf "%s" "$RESPONSE_BODY" > "$4"\n', { mode: 0o755 });
     const helper = fileURLToPath(new URL("./observe-release-site.sh", import.meta.url));
     for (const [status, body, expected] of [
       [22, "", null], [22, '{"version":"v1.3.0"}', null],

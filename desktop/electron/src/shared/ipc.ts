@@ -73,7 +73,7 @@ export interface EventFrame {
   args: unknown[];
 }
 
-export type IpcResult = { ok: true; value: unknown } | { ok: false; message: string };
+export type IpcResult = { ok: true; value: unknown } | { ok: false; message: string; code?:number; data?:unknown };
 
 export interface WindowBounds {
   x: number;

@@ -533,8 +533,7 @@ func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatR
 
 	out := make(chan provider.Chunk)
 	// Body-phase stream cuts surface as StreamInterruptedError so the Agent
-	// can replay the exact frozen request. Connection+header retries stay in
-	// SendWithRetry; providers must not stack a second body-retry budget.
+	// can preserve partial output and let the user decide whether to retry.
 	go c.streamOnce(requestCtx, resp, out)
 	return out, nil
 }

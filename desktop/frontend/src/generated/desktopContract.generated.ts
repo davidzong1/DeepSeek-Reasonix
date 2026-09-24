@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:2608e43cc9630303af7712b7a8d7d8210f1df7b0d292dc63af997f835f82b157";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:8bd3b74b195c2d40ffd312b3df9b52a65d3836f894ca6be1e2459ae56ce03f78";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -72,6 +72,7 @@ export const DESKTOP_COMMANDS = [
   "CancelJob",
   "CancelJobForTab",
   "CancelJobsForTab",
+  "CancelModelApplicationBlockers",
   "CancelRemoteTab",
   "CancelRemoteTabJobs",
   "CancelSessionExport",
@@ -709,6 +710,7 @@ export const DESKTOP_COMMANDS = [
   "StartTurnForAttachmentTarget",
   "StartTurnForTab",
   "StartTurnForTabWithDrafts",
+  "StartTurnWithModelApplication",
   "Steer",
   "SteerForTab",
   "SteerInboxItem",
@@ -736,6 +738,7 @@ export const DESKTOP_COMMANDS = [
   "SubmitRemoteTab",
   "SubmitRemoteTabExtensionForm",
   "SubmitRemoteTabExtensionFormExact",
+  "SubmitRemoteTabWithModelApplication",
   "SubmitRemoteTabWithSubmission",
   "SubmitToTab",
   "SubmitToTabWithID",
@@ -1149,6 +1152,29 @@ export interface control_InvocationRequest {
   offset: number;
 }
 
+export interface ModelApplicationChoice {
+  mode: string;
+  expectedAppliedRevision: string;
+  expectedDesiredRevision: string;
+  expectedRuntimeIdentity: string;
+  confirmationToken?: string;
+}
+
+export interface ModelApplicationDetails {
+  code: string;
+  runtimeIdentity: string;
+  confirmationToken?: string;
+  appliedRevision: string;
+  desiredRevision: string;
+  model: string;
+  connectionTarget?: string;
+  blockingJobs: jobs_View[];
+  canUseApplied: boolean;
+  continuationUnavailable?: string;
+  applying: boolean;
+  availableActions: string[];
+}
+
 export interface PermissionCapabilities {
   backend: string;
   enforcement: string;
@@ -1332,7 +1358,7 @@ export interface RuntimeStateSnapshot {
   backgroundJobs: number;
   activity: string;
   recovery?: RecoveryStatus | null;
-  goal?: View | null;
+  goal?: goal_View | null;
   goalError?: string;
   maintenance?: MaintenanceState | null;
 }
@@ -1828,7 +1854,7 @@ export interface BlockReason {
   message: string;
 }
 
-export interface View {
+export interface goal_View {
   id: string;
   revision: number;
   objective: string;
@@ -1863,6 +1889,14 @@ export interface historywork_Diagnostics {
   instrumentedReadCalls: number;
   canceledReadCheckpoints: number;
   lastBackgroundSliceMs: number;
+}
+
+export interface jobs_View {
+  id: string;
+  kind: string;
+  label: string;
+  status: string;
+  startedAt: number;
 }
 
 export interface ActiveWorkView {
@@ -2990,6 +3024,7 @@ export interface ManualSessionCreationView {
   error?: string;
   settings: SessionDraftSettings;
   progress?: ManualCreationProgress | null;
+  surfaceReady?: boolean;
 }
 
 export interface MarkdownImageView {
@@ -3160,7 +3195,7 @@ export interface Meta {
   agentPreset?: string;
   goal?: string;
   goalStatus?: string;
-  goalView?: View | null;
+  goalView?: goal_View | null;
   goalRuntime?: GoalRuntimeView | null;
   canonicalTodos?: TodoItem[] | null;
   pinnedFiles?: PinnedFileInfo[];
@@ -3211,6 +3246,7 @@ export interface ModelSettingsResult {
 }
 
 export interface ModelSettingsTarget {
+  details?: ModelApplicationDetails | null;
   tabId: string;
   title?: string;
   application: string;
@@ -3441,6 +3477,7 @@ export interface ProjectTreeRuntimeSnapshot {
 
 export interface ProjectTreeSnapshot {
   revision: number;
+  workspaceGeneration?: number | null;
   projects: ProjectNode[];
   catalog: SessionCatalogStatus;
   indexed: number;
@@ -4316,6 +4353,7 @@ export interface SessionMeta {
 }
 
 export interface SessionMutationResult {
+  outcome?: string;
   targetKey: string;
   operationId: string;
   committed: boolean;
@@ -4642,7 +4680,7 @@ export interface TabMeta {
   floorInferred?: boolean;
   goal?: string;
   goalStatus?: string;
-  goalView?: View | null;
+  goalView?: goal_View | null;
   recovered?: boolean;
   recoveryReason?: string;
   recoveryDigest?: string;
@@ -5964,6 +6002,7 @@ export interface GeneratedDesktopCommands {
   CancelJob(arg0: string): Promise<boolean>;
   CancelJobForTab(arg0: string, arg1: string): Promise<boolean>;
   CancelJobsForTab(arg0: string, arg1: string[]): Promise<JobCancelBatchView>;
+  CancelModelApplicationBlockers(arg0: string, arg1: ModelApplicationChoice, arg2: string[]): Promise<void>;
   CancelRemoteTab(arg0: string): Promise<void>;
   CancelRemoteTabJobs(arg0: string, arg1: string[]): Promise<void>;
   CancelSessionExport(arg0: string): Promise<void>;
@@ -6601,6 +6640,7 @@ export interface GeneratedDesktopCommands {
   StartTurnForAttachmentTarget(arg0: string, arg1: string, arg2: SubmissionRequest): Promise<TurnStartView>;
   StartTurnForTab(arg0: string, arg1: string, arg2: string): Promise<TurnStartView>;
   StartTurnForTabWithDrafts(arg0: string, arg1: string, arg2: string, arg3: string[]): Promise<TurnStartView>;
+  StartTurnWithModelApplication(arg0: string, arg1: string, arg2: SubmissionRequest, arg3: ModelApplicationChoice): Promise<TurnStartView>;
   Steer(arg0: string): Promise<void>;
   SteerForTab(arg0: string, arg1: string): Promise<void>;
   SteerInboxItem(arg0: string, arg1: string): Promise<InboxReceiptView>;
@@ -6628,6 +6668,7 @@ export interface GeneratedDesktopCommands {
   SubmitRemoteTab(arg0: string, arg1: string): Promise<void>;
   SubmitRemoteTabExtensionForm(arg0: string, arg1: string, arg2: string, arg3: Record<string, unknown>): Promise<void>;
   SubmitRemoteTabExtensionFormExact(arg0: ExtensionFormTarget, arg1: Record<string, unknown>): Promise<void>;
+  SubmitRemoteTabWithModelApplication(arg0: string, arg1: string, arg2: string, arg3: ModelApplicationChoice): Promise<void>;
   SubmitRemoteTabWithSubmission(arg0: string, arg1: string, arg2: string): Promise<void>;
   SubmitToTab(arg0: string, arg1: string): Promise<void>;
   SubmitToTabWithID(arg0: string, arg1: string, arg2: string): Promise<void>;

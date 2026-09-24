@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
@@ -73,7 +74,7 @@ export function SessionTakeoverDialog({ tabId, onClose }: { tabId: string; onClo
   const busy = busyMode !== null;
   let body: React.ReactNode;
   if (queryError) {
-    body = <span className="reasonix-confirm-dialog__message-error">{t("takeover.unavailable", { reason: queryError })}</span>;
+    body = <span className="reasonix-confirm-dialog__message-error"><ErrorMessage error={t("takeover.unavailable", { reason: queryError })} /></span>;
   } else if (!view) {
     body = <span>{t("takeover.querying")}</span>;
   } else if (!view.available) {
@@ -103,7 +104,7 @@ export function SessionTakeoverDialog({ tabId, onClose }: { tabId: string; onClo
         <div className="modal__title reasonix-confirm-dialog__title" id={titleId}>{t("takeover.title")}</div>
         <div className="reasonix-confirm-dialog__message" id={messageId}>
           {body}
-          {actionError ? <span className="reasonix-confirm-dialog__message-error">{actionError}</span> : null}
+          {actionError ? <span className="reasonix-confirm-dialog__message-error"><ErrorMessage error={actionError} /></span> : null}
         </div>
         <div className="modal__actions reasonix-confirm-dialog__actions">
           <button ref={cancelRef} className="btn btn--small" type="button" disabled={busy} onClick={onClose}>
@@ -244,7 +245,7 @@ export function HistoricalSessionBanners({ tab, navigate, captureNavigation }: H
   if (!update) return null;
   return <div className={`banner ${updateError ? "banner--error" : "banner--warning"} banner--actionable`} role={updateError ? "alert" : "status"}>
     <span className="banner__msg">{m("historicalSourceUpdated")}</span>
-    {(updateError || busy) && <span className="banner__hint">{updateError || m("historicalImporting")}</span>}
+    {(updateError || busy) && <span className="banner__hint">{updateError ? <ErrorMessage error={updateError} /> : m("historicalImporting")}</span>}
     <span className="banner__spacer" />
     <button type="button" className="btn btn--small" disabled={busy} onClick={() => void importUpdate()}>{m("historicalImportOpen")} · {m("branch")}</button>
     <button type="button" className="btn btn--small" disabled={busy} onClick={dismissUpdate}>{t("updater.dismiss")}</button>

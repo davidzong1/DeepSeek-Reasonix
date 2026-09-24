@@ -11,6 +11,7 @@ import type { Message, TranscriptFollowResponse } from "../generated/desktopCont
 import { canonicalUserConfirmations } from "./localSubmissionState";
 import { snapshotRecords } from "./transcriptSnapshotState";
 import { signalOutline } from "./transcriptOutlineSignals";
+import { historyMessageIdentity } from "./historyItemIds";
 
 /** Canonical positions and projection indexes count different record sets.
  * Join the two ordered windows by shared message identity before assigning
@@ -180,14 +181,15 @@ export class TranscriptSessionFollowerRuntime {
     // including tool results. A snapshot may instead carry its projection
     // identity (for example tool:<toolCallId>); that explicit identity is
     // valid metadata, while messageId remains the merge key used by history.
-    const derived = message.messageId ? `m:${message.messageId}`
+    const messageId = historyMessageIdentity(message, outerRecordId);
+    const derived = messageId ? `m:${messageId}`
       : message.role === "tool" && message.toolCallId ? `tool:${message.toolCallId}` : undefined;
     if (outerRecordId && message.recordId && outerRecordId !== message.recordId) {
       throw new Error("transcript snapshot record identity mismatch");
     }
     const entryId = derived ?? message.recordId ?? outerRecordId;
     if (!entryId) throw new Error("invalid transcript snapshot record identity");
-    const normalized = message.recordId === entryId ? message : { ...message, recordId: entryId };
+    const normalized = message.recordId === entryId && message.messageId === messageId ? message : { ...message, messageId, recordId: entryId };
     let order = this.orders.get(entryId);
     if (order === undefined) {
       order = snapshotOrder ?? this.nextOrder;

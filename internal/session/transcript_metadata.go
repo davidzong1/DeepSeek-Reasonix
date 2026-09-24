@@ -19,12 +19,14 @@ func applyTranscriptMetadata(p *Projection, commit Commit, ev Event) {
 		p.TranscriptInputs = nil
 		p.HiddenTurns = nil
 		p.RetractedInputs = nil
+		p.RejectedToolResults = nil
 		messages, err := replacementEventMessages(ev, ev.Payload)
 		if err != nil {
 			return
 		}
 		for _, m := range messages {
 			noteTranscriptInput(p, "", m)
+			noteRejectedToolResult(p, m)
 		}
 	case "message/complete", "message/upsert":
 		var body struct {
@@ -41,12 +43,14 @@ func applyTranscriptMetadata(p *Projection, commit Commit, ev Event) {
 			}
 		}
 		noteTranscriptInput(p, commit.TurnID, body.Message)
+		noteRejectedToolResult(p, body.Message)
 	case "message/retract":
 		ids, err := retractedMessageIDs(ev, ev.Payload)
 		if err != nil {
 			return
 		}
 		for _, id := range ids {
+			delete(p.RejectedToolResults, id)
 			for i := 0; i < len(p.TranscriptInputs); i++ {
 				input := p.TranscriptInputs[i]
 				if input.ID != id {

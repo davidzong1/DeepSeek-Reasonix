@@ -23,9 +23,9 @@ import (
 	"reasonix/internal/sessioncontent"
 )
 
-// Version 6 retains optional submission receipts in recovery checkpoints.
+// Version 7 retains rejected tool execution evidence in recovery checkpoints.
 // Older projections are disposable and rebuild from the unchanged durable log.
-const recoveryProjectionVersion = 6
+const recoveryProjectionVersion = 7
 
 const (
 	recoveryFormatVersion = 1

@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useAppNavigationStore } from "../store/appNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -235,7 +236,7 @@ function RemoteFilesTab({ hostId, connected, navigationSignal, fileNavigation, f
   return (
     <div className="remote-files">
       <div className="remote-files__tree" role="tree">
-        {loadErr && <p className="remote-panel__error" role="alert">{loadErr}</p>}
+        {loadErr && <p className="remote-panel__error" role="alert"><ErrorMessage error={loadErr} /></p>}
         {presentedSelection && (
           <button
             className="remote-tree__row is-selected remote-tree__presented"
@@ -342,7 +343,7 @@ function RemoteFileView({ hostId, path, connected, dockGeneration, forceReadOnly
     <div className="remote-file-view">
       <div className="remote-file-view__toolbar">
         <span className="remote-file-view__path">{path}</span>
-        {err && <span className="remote-panel__error">{err}</span>}
+        {err && <span className="remote-panel__error"><ErrorMessage error={err} /></span>}
         {binary && <span className="remote-panel__hint">{t("remote.editor.binaryBlocked")}</span>}
         {truncated && <span className="remote-panel__hint">{t("remote.editor.truncatedBlocked")}</span>}
         {editable && draft === null && (
@@ -414,7 +415,7 @@ function RemotePortsTab({ hostId, connected }: { hostId: string; connected: bool
 
   return (
     <div className="remote-ports">
-      {actionErr && <p className="remote-panel__error" role="alert">{actionErr}</p>}
+      {actionErr && <p className="remote-panel__error" role="alert"><ErrorMessage error={actionErr} /></p>}
       {forwards.length === 0 ? (
         <p className="remote-panel__hint">{t("remote.ports.empty")}</p>
       ) : (
@@ -423,7 +424,7 @@ function RemotePortsTab({ hostId, connected }: { hostId: string; connected: bool
             <li key={f.id} className="remote-ports__row">
               <span className={`remote-dot remote-dot--${f.state}`} aria-hidden />
               <span>{f.label || f.id}</span>
-              {f.error && <span className="remote-panel__error">{f.error}</span>}
+              {f.error && <span className="remote-panel__error"><ErrorMessage error={f.error} /></span>}
               <button className="btn btn--ghost" onClick={() => void remove(f.id)}>
                 {t("remote.ports.remove")}
               </button>
@@ -546,8 +547,8 @@ function RemoteServerTab({ hostId, connected, defaultWorkspace }: { hostId: stri
       <div className="remote-server__status">
         {stateLabel}
         {server?.message ? ` — ${server.message}` : ""}
-        {server?.error ? ` — ${server.error}` : ""}
-        {actionErr ? ` — ${actionErr}` : ""}
+        {server?.error ? <ErrorMessage error={server.error} /> : null}
+        {actionErr ? <ErrorMessage error={actionErr} /> : null}
       </div>
       <div className="remote-server__actions">
         <button className="btn btn--primary" disabled={!connected || !workspace || busy} onClick={() => void start()}>

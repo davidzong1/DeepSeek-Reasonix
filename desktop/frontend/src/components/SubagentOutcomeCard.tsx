@@ -1,4 +1,5 @@
 import "./SubagentDetails.css";
+import { ErrorMessage } from "./ErrorMessage";
 
 import { useT, type Translator } from "../lib/i18n";
 import { parseSubagentOutcomeText, type SubagentOutcome } from "../lib/subagentOutcome";
@@ -32,7 +33,7 @@ export function SubagentOutcomeCard({
         {retryable ? ` · ${t("subagent.outcome.retryable")}` : ""}
       </div>
       {ref && <code>{ref}</code>}
-      {errorCode && <div className="tool__note">{errorCode}</div>}
+      {errorCode && <div className="tool__note"><ErrorMessage error={errorCode} /></div>}
     </div>
   );
 }

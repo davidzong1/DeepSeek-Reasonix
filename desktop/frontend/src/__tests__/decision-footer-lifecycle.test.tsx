@@ -51,6 +51,13 @@ try {
   const textarea = document.querySelector<HTMLTextAreaElement>("#composer-input")!;
   assert.ok(textarea);
   assert.equal(textarea.value, "retained draft");
+  props = { ...props, composer: { ...composer, hero: true, headline: "New conversation" }, creationNotice: <span data-testid="creation-notice">Preparing</span> };
+  await paint();
+  const hero = document.querySelector(".composer-decision-host--creation-hero")!;
+  assert.ok(hero.querySelector("[data-testid='creation-notice']"), "creation status belongs to the centered composer stack");
+  assert.equal(hero.children[1]?.getAttribute("data-testid"), "creation-notice", "status sits between headline and input");
+  props = { ...props, composer };
+  await paint();
   const undo = document.querySelector(".undo-rewind")!;
   assert.ok(undo);
   const todo = Array.from(document.querySelectorAll(".prompt-shelf")).find((node) => node.textContent?.includes("visible work"))!;

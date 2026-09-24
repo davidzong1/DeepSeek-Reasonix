@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useEffect, useRef, useState } from "react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -28,7 +29,7 @@ export function ToolRecoveryPanel({ tabId, sessionKey, running, refreshKey, bind
     <details open>
     <summary className="notice-line__title">{t("toolRecovery.title")}</summary>
     <div className="notice-line__text">
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert"><ErrorMessage error={error} /></p>}
       {!!snapshot?.calls.length && <p>{t("toolRecovery.retired")}</p>}
       {(snapshot?.calls ?? []).map(call => <div key={call.identity.attempt_id}>
         <p>{call.identity.canonical_tool} · {t("toolRecovery.unknown")}</p>

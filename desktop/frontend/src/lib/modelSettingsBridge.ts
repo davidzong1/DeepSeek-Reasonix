@@ -3,6 +3,8 @@ import type { ProviderPresetView, SettingsView } from "./types";
 import type { ModelSettingsChange, ModelSettingsResult } from "./modelSettingsTypes";
 
 export interface ModelSettingsBindings {
+	CancelModelApplicationBlockers?(tabID:string,choice:import("./modelApplication").ModelApplicationChoice,ids:string[]):Promise<void>;
+  StartTurnWithModelApplication?(tabID:string,submissionID:string,request:{input:string;display:string;original?:string;goal?:string;toolApprovalMode?:string;invocations:import("./invocationDisplay").InvocationRequest[];attachments:import("./invocationDisplay").SubmissionAttachment[]},choice:import("./modelApplication").ModelApplicationChoice):Promise<{turnId:string}>;
   Settings(): Promise<SettingsView>;
   ApplyModelSettings(change: ModelSettingsChange): Promise<ModelSettingsResult>;
   GetModelSettingsRequest(requestId: string): Promise<ModelSettingsResult>;

@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useProviderT as useT } from "../lib/providerSettingsLocale";
 import { useEffect, useRef, useState } from "react";
 import { Pencil, Plus, Plug, RefreshCw, Search, Trash2 } from "lucide-react";
@@ -80,7 +81,7 @@ export function ProviderModelsEditor({ provider, disabled, canFetch, onChange, o
       <button type="button" className="btn btn--small" disabled={disabled || fetching || !canFetch} onClick={() => void fetchModels()}><RefreshCw size={14} className={fetching ? "provider-spinning" : undefined} />{t(fetching ? "settings.fetchingModels" : "settings.fetchModels")}</button>
       <button type="button" className="btn btn--small" disabled={disabled} onClick={() => openEditor()}><Plus size={14} />{t("providerUI.manualAdd")}</button>
     </div></div>
-    {!editor && error && <p role="alert" className="provider-fetch-status provider-fetch-status--warn">{error}</p>}
+    {!editor && error && <p role="alert" className="provider-fetch-status provider-fetch-status--warn"><ErrorMessage error={error} /></p>}
     {!provider.models.length && <p className="provider-models-editor__empty">{t("providerUI.emptyModels")}</p>}
     <div className="provider-models-editor__list">
       {provider.models.map((model) => {
@@ -96,7 +97,7 @@ export function ProviderModelsEditor({ provider, disabled, canFetch, onChange, o
           </div>
           <ModelImageInputControl model={model} baseURL={provider.baseUrl} capability={modelCapabilityForModel(capabilities, model)} mode={imageInputModeForModel(imageInputModes(overrides), model)} disabled={disabled}
             onChange={(mode) => onChange(provider.models, mergeImageInputModes(overrides, provider.models, { ...imageInputModes(overrides), [model]: mode }), capabilities)} />
-          {result && <div role="status" className={`provider-fetch-status provider-fetch-status--${result.error ? "warn" : "ok"}`}>{result.busy ? t("providerUI.testing") : result.error || t("providerUI.testSuccess")}</div>}
+          {result && <div role="status" className={`provider-fetch-status provider-fetch-status--${result.error ? "warn" : "ok"}`}>{result.busy ? t("providerUI.testing") : result.error ? <ErrorMessage error={result.error} /> : t("providerUI.testSuccess")}</div>}
         </div>;
       })}
     </div>
@@ -107,7 +108,7 @@ export function ProviderModelsEditor({ provider, disabled, canFetch, onChange, o
         <ModelImageInputControl model={editor.value.model} baseURL={provider.baseUrl} capability={modelCapabilityForModel(capabilities, editor.value.model)}
           mode={editor.value.vision === "yes" ? "on" : editor.value.vision === "no" ? "off" : "auto"} disabled={disabled}
           onChange={(mode) => setEditor({ ...editor, value: { ...editor.value, vision: mode === "on" ? "yes" : mode === "off" ? "no" : "auto" } })} />
-        {error && <p role="alert" className="provider-fetch-status provider-fetch-status--warn">{error}</p>}
+        {error && <p role="alert" className="provider-fetch-status provider-fetch-status--warn"><ErrorMessage error={error} /></p>}
         <footer><button type="button" className="btn btn--small" onClick={() => { setEditor(null); setError(null); }}>{t("common.cancel")}</button><button type="submit" className="btn btn--primary btn--small" disabled={disabled}>{t(draft ? "providerUI.saveDraft" : "providerUI.applyModel")}</button></footer>
       </form>
     </ProviderDialog>}

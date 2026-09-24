@@ -16,9 +16,9 @@ type controllerAttachmentState struct {
 	attachments          atomic.Pointer[attachment.Service]
 	attachmentOwnerMu    sync.Mutex
 	attachmentOwnerScope string
-	imageRoutesOnce      sync.Once
+	imageRoutesMu        sync.Mutex
+	imageRoutesReady     bool
 	imageRoutes          map[string]ImageRequestRoute
-	imageRoutesErr       error
 }
 
 func (c *Controller) AttachmentOwnerIdentity() string {

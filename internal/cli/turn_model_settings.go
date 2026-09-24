@@ -64,7 +64,8 @@ func (m *chatTUI) handleTurnModelSettings(msg turnModelSettingsMsg) tea.Cmd {
 		return nil
 	}
 	if msg.changed {
-		if !m.runtimeSettingChangeReady() {
+		if m.modelReplacementBusy() {
+			m.notice("saved model settings are waiting for runtime-dependent work; your draft has been preserved")
 			return nil
 		}
 		cmd := m.scheduleCurrentControllerRebuild("model settings", "saved model settings applied")

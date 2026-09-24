@@ -60,6 +60,39 @@ test("grant, list and open are scoped to the grant's task", async () => {
   assert.deepEqual(listed.tabs.map((tab) => tab.id), [opened.id], "another task's tabs are invisible");
 });
 
+test("revoking a grant reclaims a pending open without closing a user-taken-over page", async () => {
+  for (const takeover of [false, true]) {
+    const s = await setup();
+    await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "session" });
+    const originalOpen = s.surfaces.open.bind(s.surfaces);
+    s.surfaces.open = async (...args) => {
+      const promise = originalOpen(...args);
+      const tab = s.surfaces.all()[0];
+      if (takeover) s.surfaces.takeover(tab.id, "user click");
+      await s.call("host/browser.revoke", { grantId: "g" });
+      return promise;
+    };
+    await assert.rejects(s.call("host/browser.tabs.open", { grantId: "g", url: "https://a.test", requestId: "pending" }),
+      /outcome is unknown/);
+    assert.equal(s.surfaces.all().length, takeover ? 1 : 0);
+    s.surfaces.destroyAll();
+  }
+});
+
+test("an open that finishes just before grant revocation cannot leave an unclaimed agent page", async () => {
+  const s = await setup();
+  await s.call("host/browser.grant", { grantId: "g", tabId: "task", sessionId: "session" });
+  const originalOpen = s.surfaces.open.bind(s.surfaces);
+  s.surfaces.open = async (...args) => {
+    const tab = await originalOpen(...args);
+    await s.call("host/browser.revoke", { grantId: "g" });
+    return tab;
+  };
+  await assert.rejects(s.call("host/browser.tabs.open", { grantId: "g", url: "https://a.test" }),
+    /outcome is unknown/);
+  assert.equal(s.surfaces.all().length, 0);
+});
+
 test("cancel and takeover release a capture lease before a late capture reply", async () => {
   for (const reason of ["cancel", "takeover", "revoke", "resize", "close"]) {
     let respond!: (value: never) => void;

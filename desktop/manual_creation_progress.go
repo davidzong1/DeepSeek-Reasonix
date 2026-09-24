@@ -52,6 +52,15 @@ func (m *manualCreationManager) progressLocked(t *manualCreationTask) ManualCrea
 
 func (a *App) creationView(v ManualSessionCreationView) ManualSessionCreationView {
 	v.Progress = nil
+	v.SurfaceReady = false
+	a.mu.RLock()
+	for _, tab := range a.tabs {
+		if !tab.removed && tab.SessionID == v.Ref.SessionID && v.Ref.SessionID != "" {
+			v.SurfaceReady = true
+			break
+		}
+	}
+	a.mu.RUnlock()
 	a.manualCreationMu.Lock()
 	m := a.manualCreations
 	a.manualCreationMu.Unlock()
@@ -132,7 +141,7 @@ func (m *manualCreationManager) scan() {
 			m.Ensure(r.Key, "recovery", "")
 			continue
 		}
-		if v.Phase != "ready" && v.Phase != "failed" {
+		if (v.Phase != "ready" && v.Phase != "failed") || legacyManualCreationConflict(v) {
 			m.Ensure(r.Key, "recovery", "")
 		}
 	}

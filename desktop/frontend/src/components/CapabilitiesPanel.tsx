@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { SettingsOptions } from "./SettingsOptions";
 import { SettingsSelect } from "./SettingsSelect";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -6,6 +7,7 @@ import { asArray } from "../lib/array";
 import { app } from "../lib/bridge";
 import { activeWorkBusyNoticeText, installMCPServer } from "../lib/capabilityMutations";
 import { useT } from "../lib/i18n";
+import { presentError } from "../lib/errorPresentation";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
 import { mcpSessionStateLabel, mcpSettingsSearchText } from "../lib/mcpSessionStatus";
 import { canUseNativeMCPOAuth } from "../lib/mcpOAuthEligibility";
@@ -20,7 +22,6 @@ import { ModalCloseButton } from "./ModalCloseButton";
 // each server shows a connected/failed dot, transport, and tool/prompt/resource
 // counts, with add / remove / retry; skills list their scope and run mode.
 type CapTab = "servers" | "skills";
-
 type SettingsSnapshot<T> = { key: string; value: T };
 
 function connectMCPServer(name: string, servers: ServerView[]): Promise<void> {
@@ -32,7 +33,6 @@ function connectMCPServer(name: string, servers: ServerView[]): Promise<void> {
 let mcpSettingsSnapshot: SettingsSnapshot<ServerView[]> | null = null;
 let skillsSettingsSnapshot: SettingsSnapshot<SkillsSettingsView> | null = null;
 let pluginsSettingsSnapshot: SettingsSnapshot<PluginView[]> | null = null;
-
 function settingsSnapshotKey(meta: Awaited<ReturnType<typeof app.Meta>> | null | undefined, tabs: TabMeta[] | null | undefined): string {
   const active = tabs?.find((tab) => tab.active);
   const tabID = (active?.id || "").trim();
@@ -179,7 +179,7 @@ export function CapabilitiesPanel({
           <div className="empty">{t("caps.loading")}</div>
         ) : (
           <div className="drawer__body">
-            {err && <div className="banner banner--error">{err}</div>}
+            {err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
 
             <div className="cap-tabs" role="tablist" aria-label={t("caps.title")}>
               <button
@@ -804,7 +804,7 @@ function FailedServersNotice({
                 <span className="cap-dot cap-dot--failed" />
                 <div className="cap-failure__text">
                   <div className="cap-failure__name">{s.name}</div>
-                  <div className="cap-failure__summary">{s.authStatus === "required" ? t("caps.authRequiredSummary") : summarizeServerError(error)}</div>
+                  <div className="cap-failure__summary">{s.authStatus === "required" ? t("caps.authRequiredSummary") : <ErrorMessage error={error} />}</div>
                 </div>
               </div>
               <div className="cap-failure__actions">
@@ -1122,7 +1122,7 @@ function ServerDetails({
                 <div className={`cap-tool${unavailable ? " cap-tool--unavailable" : ""}`} key={tool.name}>
                   <div className="cap-tool__name">{tool.name}</div>
                   <div className="cap-tool__desc">
-                    <span>{unavailable ? tool.schemaError : tool.description}</span>
+                    <span>{unavailable ? <ErrorMessage error={tool.schemaError} /> : tool.description}</span>
                     {unavailable ? (
                       <span className="cap-tool-hint cap-tool-hint--error" title={tool.schemaError}>
                         <CircleAlert aria-hidden size={11} strokeWidth={2.2} />
@@ -1804,7 +1804,7 @@ export function PluginsSettingsPage() {
 
 	return (
 		<section className="mem-section">
-			{err && <div className="banner banner--error">{err}</div>}
+			{err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
 			{notice && !err && <div className="banner banner--success">{notice}</div>}
 			<div className="settings-toolbar">
               <div><strong>{t("caps.installedPlugins")}</strong>{plugins && plugins.length > 0 && <div className="drawer__summary">{summary}</div>}</div>
@@ -1944,7 +1944,7 @@ function PluginPlanPreview({ plan }: { plan: PluginInstallPlanView }) {
 				{plan.status && <span className="cap-source-badge">{plan.status}</span>}
 			</div>
 			{plan.name && <div className="cap-plugin-plan__meta">{plan.name}</div>}
-			{plan.error && <div className="cap-plugin-plan__warning">{plan.error}</div>}
+			{plan.error && <div className="cap-plugin-plan__warning"><ErrorMessage error={plan.error} /></div>}
 			{plan.warnings.map((warning, idx) => (
 				<div className="cap-plugin-plan__warning" key={`${warning}-${idx}`}>{warning}</div>
 			))}
@@ -1959,7 +1959,7 @@ function PluginPlanPreview({ plan }: { plan: PluginInstallPlanView }) {
 							{asArray(action.mappedCapabilities).length > 0 && <span className="cap-plugin-action__source">{t("caps.pluginMappedCapabilities", { capabilities: asArray(action.mappedCapabilities).join(", ") })}</span>}
 							{asArray(action.skippedCapabilities).map((issue, issueIndex) => <span className="cap-plugin-plan__warning" key={`${issue.capability}-${issue.path || ""}-${issueIndex}`}>{issue.capability}: {issue.reason}</span>)}
 							{action.message && <span className="cap-plugin-action__source">{action.message}</span>}
-							{action.error && <span className="cap-plugin-plan__warning">{action.error}</span>}
+							{action.error && <span className="cap-plugin-plan__warning"><ErrorMessage error={action.error} /></span>}
 							{action.runtime ? <PluginRuntimeTrustBlock runtime={action.runtime} /> : null}
 						</div>
 					))}
@@ -2101,7 +2101,7 @@ function PluginRow({
 					{asArray(plugin.skippedCapabilities).map((issue, idx) => (
 						<div className="cap-source__warning" key={`${issue.capability}-${issue.path || ""}-${idx}`}>{t("caps.pluginSkippedCapability", { capability: issue.capability, reason: issue.reason })}</div>
 					))}
-					{diagnostic?.error && <div className="cap-source__warning">{diagnostic.error}</div>}
+					{diagnostic?.error && <div className="cap-source__warning"><ErrorMessage error={diagnostic.error} /></div>}
 					{warnings.map((warning, idx) => (
 						<div className="cap-source__warning" key={`${plugin.name}-warning-${idx}`}>{warning}</div>
 					))}
@@ -2439,7 +2439,7 @@ function mcpServerSchemaIssueCount(server: ServerView): number {
 
 function mcpSettingsServerSummary(server: ServerView, t: ReturnType<typeof useT>): string {
 	if (server.status === "failed") {
-		return server.authStatus === "required" ? t("caps.authRequiredSummary") : summarizeServerError(server.error || t("caps.failed"));
+		return server.authStatus === "required" ? t("caps.authRequiredSummary") : presentError(server.error || t("caps.failed"), t).summary;
 	}
 	if (server.status !== "connected") return serverStatusLabel(server, t);
 	const unavailable = mcpServerSchemaIssueCount(server);
@@ -2969,7 +2969,7 @@ function MCPServerSettingsEditor({
 						<span>{t("caps.quickVerifyConnection")}</span>
 						<span>{t("caps.quickEnableTools")}</span>
 					</div>
-					{quickError && <div className="banner banner--error" role="alert">{quickError}</div>}
+					{quickError && <div className="banner banner--error" role="alert"><ErrorMessage error={quickError} /></div>}
 				</div>
 			) : mode === "form" ? (
 				<div className="cap-mcp-form-grid">
@@ -3026,7 +3026,7 @@ function MCPServerSettingsEditor({
 						<textarea className="mem-textarea cap-mcp-json-editor__input" value={json} disabled={busy} onInput={(event) => { setJSON(event.currentTarget.value); setJSONError(""); }} spellCheck={false} />
 					</label>
 					<div className="cap-mcp-json-editor__hint">{t("caps.jsonPasteHint")}</div>
-					{jsonError && <div className="banner banner--error" role="alert">{jsonError}</div>}
+					{jsonError && <div className="banner banner--error" role="alert"><ErrorMessage error={jsonError} /></div>}
 				</div>
 			)}
 			<div className="cap-mcp-editor__actions">
@@ -3146,7 +3146,7 @@ export function MCPServersSettingsPage() {
 
 	return (
 		<section className="cap-mcp-settings">
-			{err && <div className="banner banner--error" role="alert">{err}</div>}
+			{err && <div className="banner banner--error" role="alert"><ErrorMessage error={err} /></div>}
 			{screen.kind === "list" && (
 				<>
 					<div className="cap-mcp-list-toolbar settings-toolbar">
@@ -3273,7 +3273,7 @@ export function MCPServersSettingsPage() {
 					<MCPSettingsSubpageHeader title={selectedServer.name} description={t("caps.serverDetailsHint")} onBack={() => setScreen({ kind: "list" })} />
 					{selectedServer.error && (
 						<div className="cap-mcp-detail-error">
-							<div className="banner banner--error">{summarizeServerError(selectedServer.error)}</div>
+							<div className="banner banner--error"><ErrorMessage error={selectedServer.error} /></div>
 							<details>
 								<summary>{t("caps.rawLog")}</summary>
 								<pre>{selectedServer.error}</pre>
@@ -3380,7 +3380,7 @@ export function SkillsSettingsPage({ activeWorkspaceKey = "" }: { activeWorkspac
 
 	return (
 		<section className="mem-section">
-			{err && <div className="banner banner--error">{err}</div>}
+			{err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
 			<div className="cap-search settings-toolbar">
 				<input
 					className="mem-input"

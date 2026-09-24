@@ -91,6 +91,7 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 			fallbackSet = true
 		}
 		a.markTabRemovedLocked(tab)
+		stopTabAutosave(tab)
 		delete(a.tabs, id)
 		a.removeTabOrderLocked(id)
 		if a.activeTabID == id {
@@ -106,6 +107,7 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 			fallbackSet = true
 		}
 		a.markTabRemovedLocked(tab)
+		stopTabAutosave(tab)
 		delete(a.detachedSessions, key)
 	}
 	if a.activeTabID == "" && len(a.tabOrder) > 0 {
@@ -119,6 +121,9 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 }
 
 func (a *App) finalizeRemovedTopicRuntimes(removed []removedSessionRuntime) {
+	if len(removed) > 0 {
+		a.lifecycleCheckpoint("before-topic-runtime-cleanup")
+	}
 	for _, item := range removed {
 		if item.sink != nil {
 			item.sink.clearContext()
@@ -129,6 +134,13 @@ func (a *App) finalizeRemovedTopicRuntimes(removed []removedSessionRuntime) {
 		item.ctrl.SetSessionPath("")
 		a.quiesceTabAutosave(item.tab)
 	}
+}
+
+// Stop admission without joining the saver under App/title/index locks.
+func stopTabAutosave(tab *WorkspaceTab) {
+	tab.saveMu.Lock()
+	tab.closing = true
+	tab.saveMu.Unlock()
 }
 
 func (a *App) tryLockRuntimeMutation(operation string) (func(), bool) {

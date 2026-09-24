@@ -31,12 +31,20 @@ func newSourceIdentityIndex(state State) *sourceIdentityIndex {
 				paths[mapping.Path] = path
 			}
 			if path != "" {
-				normalized := fmt.Sprintf("%x", sha256.Sum256([]byte(path+"\x00"+mapping.HeadID)))
-				if _, version, found := strings.Cut(key, ":review:"); found {
-					normalized += ":review:" + version
+				heads := []string{mapping.HeadID}
+				// Old lineage receipts kept the originating head for a single-session
+				// directory; discovery uses no head. Legacy DAG heads stay distinct.
+				if mapping.Format == "canonical" && mapping.HeadID != "" {
+					heads = append(heads, "")
 				}
-				if normalized != key {
-					keys = append(keys, normalized)
+				for _, head := range heads {
+					normalized := fmt.Sprintf("%x", sha256.Sum256([]byte(path+"\x00"+head)))
+					if _, version, found := strings.Cut(key, ":review:"); found {
+						normalized += ":review:" + version
+					}
+					if normalized != key {
+						keys = append(keys, normalized)
+					}
 				}
 			}
 			index.aliases[key] = keys
@@ -65,8 +73,8 @@ func (s State) sourceIdentityIndex() *sourceIdentityIndex {
 	return newSourceIdentityIndex(s)
 }
 
-// SourceKeys returns independent storage and current lookup identities. Head
-// and reviewed-version suffixes are never collapsed into the parent source.
+// SourceKeys returns durable storage and current lookup identities. Legacy DAG
+// heads and reviewed versions remain independent from their parent source.
 func (s State) SourceKeys(key string) []string {
 	keys := s.sourceIdentityIndex().aliases[key]
 	if len(keys) == 0 {

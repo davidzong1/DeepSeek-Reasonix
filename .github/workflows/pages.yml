@@ -65,6 +65,11 @@ jobs:
         if: inputs.release_version != ''
         with:
           node-version: "22"
+      - uses: actions/setup-go@v7
+        if: inputs.release_version != ''
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Recheck release ownership immediately before deployment
         if: inputs.release_version != ''
         env:

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/session"
 	"slices"
 	"strings"
@@ -53,9 +54,34 @@ func (a *App) resolveSourceSessionTarget(selector SessionSelector, allowArchived
 		}
 	}
 	if source.HeadID != "" {
-		return a.resolveHistoricalHeadTarget(*source, key)
+		target, err := a.resolveHistoricalHeadTarget(*source, key)
+		return recoverHistoricalRuntimeOwner(target), err
 	}
-	return a.resolveLegacySessionTarget(source.Path, selector.TopicID, allowArchived)
+	target, err := a.resolveLegacySessionTarget(source.Path, selector.TopicID, allowArchived)
+	if err == nil && target.SessionRef.SessionID == "" {
+		copy := *source
+		copy.HostID, copy.SourceKey = localDesktopHostID, key
+		target.Source = &copy
+		target = recoverHistoricalRuntimeOwner(target)
+	}
+	return target, err
+}
+
+// Global legacy storage is independent of old project metadata. If that
+// metadata names a removed project, recover its actual global storage owner.
+// A source inside a project never gains authority to run in another project.
+func recoverHistoricalRuntimeOwner(target SessionTarget) SessionTarget {
+	if target.Scope != "project" || target.Source == nil {
+		return target
+	}
+	if info, err := os.Stat(target.WorkspaceRoot); err == nil && info.IsDir() || err != nil && !os.IsNotExist(err) {
+		return target
+	}
+	dir := filepath.Dir(target.Source.Path)
+	if sameDesktopPath(dir, config.SessionDir()) || sameDesktopPath(dir, desktopSessionDir(globalWorkspaceRoot())) {
+		target.Scope, target.WorkspaceRoot = "global", ""
+	}
+	return target
 }
 
 func (a *App) resolveHistoricalHeadTarget(source SessionSourceRef, key string) (SessionTarget, error) {

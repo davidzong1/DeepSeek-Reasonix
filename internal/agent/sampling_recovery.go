@@ -3,26 +3,18 @@ package agent
 import (
 	"context"
 	"errors"
-	"math/rand"
 	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
 
-// defaultRecoveryWaitBudget bounds continuous waiting on an unreachable
-// provider (#9889): mainstream agents stop after ~10 attempts or ~10 minutes.
-const defaultRecoveryWaitBudget = 10 * time.Minute
-
-var recoveryWaitBudget = defaultRecoveryWaitBudget
-
 type samplingRecoveryState struct {
-	frozen                             samplingRequest
-	context                            contextRecoveryBudget
-	replay                             reasoningReplayRecoveryBudget
-	output, protocol, partial, missing bool
-	billable                           *provider.Usage
-	waited                             time.Duration
+	frozen                    samplingRequest
+	context                   contextRecoveryBudget
+	replay                    reasoningReplayRecoveryBudget
+	output, protocol, missing bool
+	billable                  *provider.Usage
 }
 
 func (a *Agent) samplingDeadline(ctx context.Context) (context.Context, context.CancelFunc, TaskBudget) {
@@ -100,11 +92,7 @@ func (a *Agent) streamWithSamplingRecovery(parent context.Context, turn int) (te
 			}
 			return done
 		}
-		state.partial = state.partial || sawSpeculativeSamplingOutput(result) || len(result.responsesItems) > 0 || len(result.serverSearch) > 0
 		if attempt < maxSamplingAttempts && a.trySamplingRepair(ctx, &state, result, sink, attempt, id) {
-			continue
-		}
-		if a.waitSamplingRetry(ctx, &state, &result, sink, attempt, id) {
 			continue
 		}
 		sink.Flush()
@@ -154,7 +142,6 @@ func (a *Agent) handleSamplingCandidate(s *samplingRecoveryState, result streame
 		result.usage = finalizeSamplingUsage(s.billable, result.usage)
 		return false, result
 	}
-	s.partial = true
 	_, claimed := a.observeMissingAssistantReasoning(result.assistantMessage(), result.reasoningComplete)
 	if (issue != ReasoningReplayMissing && issue != ReasoningReplayIncomplete) || s.protocol || a.protocolRecoverySpent() || !claimed || attempt >= maxSamplingAttempts {
 		return false, a.finishReasoningReplayOverflow(result, sink, issue, s.billable, id, attempt)
@@ -203,54 +190,6 @@ func (a *Agent) trySamplingRepair(ctx context.Context, s *samplingRecoveryState,
 		s.frozen = next
 	}
 	return ok
-}
-
-func (a *Agent) canWaitSampling(ctx context.Context, s *samplingRecoveryState, f provider.RecoveryFailure) bool {
-	role, _ := ctx.Value(turnContextRoleKey{}).(turnContextRole)
-	if role == turnContextPlanner {
-		return false
-	}
-	if SubagentDepth(ctx) != 0 || a.turn.graceRound || s.partial {
-		return false
-	}
-	return f.Retryable && (f.Phase == "connect" || (f.Phase == "headers" && (f.Status == 408 || f.Status == 429 || f.Status >= 500)))
-}
-
-func (a *Agent) waitSamplingRetry(ctx context.Context, s *samplingRecoveryState, result *streamedTurn, sink *deferredStreamSink, attempt int, id string) bool {
-	failure := provider.ClassifyRecovery(result.err)
-	// A capacity refusal was answered and billed in full, so it earns the short
-	// backoff replays but never the long wait, which exists for a provider that
-	// cannot be reached at all.
-	waiting := attempt >= maxSamplingAttempts && provider.AsCapacityError(result.err) == nil && a.canWaitSampling(ctx, s, failure)
-	if !failure.Retryable || (attempt >= maxSamplingAttempts && !waiting) {
-		return false
-	}
-	base := time.Duration(1<<min(attempt-1, 2)) * 2 * time.Second
-	delay := base
-	if waiting {
-		delay = time.Minute + time.Duration(rand.Intn(6001))*time.Millisecond
-	}
-	delay = max(delay, failure.RetryAfter)
-	if waiting && s.waited+delay > recoveryWaitBudget {
-		result.err = &provider.RecoveryWaitExhaustedError{Phase: failure.Phase, Code: failure.Code, Status: failure.Status, Waited: s.waited, Attempts: attempt, Cause: result.err}
-		return false
-	}
-	sink.Discard()
-	reason := failure.Phase
-	if provider.IsStreamInterrupted(result.err) {
-		reason = provider.StreamInterruptReason(result.err)
-	}
-	a.emitStreamAttempt(id, event.StreamAttemptDiscard, attempt, reason, result.err)
-	status := &event.RecoveryStatus{Phase: failure.Phase, Reason: failure.Code, NextAttemptAt: time.Now().Add(delay).UnixMilli(), WaitedMs: s.waited.Milliseconds(), Waiting: waiting}
-	if waiting {
-		status.WaitBudgetMs = recoveryWaitBudget.Milliseconds()
-	}
-	a.svc.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries, RetryScope: event.RetryScopeStream, Recovery: status})
-	s.waited += delay
-	if !waiting && failure.RetryAfter <= base {
-		return streamRetrySleep(ctx, attempt)
-	}
-	return recoverySleep(ctx, delay)
 }
 
 func unmeteredHeaderFailure(result streamedTurn, httpRequests int) bool {

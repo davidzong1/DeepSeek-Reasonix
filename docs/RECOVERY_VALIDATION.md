@@ -1,5 +1,14 @@
 # Protocol and recovery validation / 协议与恢复验证
 
+Current policy (2026-09-24): provider transport/service failures stop after the
+first failed request. Automatic transport retries and recovery waiting have
+been removed. The experiments and retry counts below describe the historical
+implementation; see [the current contract](AGENT_CORE_SIMPLIFICATION.md).
+
+当前策略（2026-09-24）：供应商连接或服务失败后直接结束请求，已取消自动传输
+重试和恢复等待。下文的实验结果及重试次数属于当时的实现；当前行为以
+[核心契约](AGENT_CORE_SIMPLIFICATION.zh-CN.md)为准。
+
 Implementation date / 实施日期: 2026-09-05.
 
 ## Reference scope / 参考范围

@@ -25,7 +25,7 @@ func TestProjectTreeUnregisteredHistoricalPins(t *testing.T) {
 		{scope: "project", node: ProjectNode{Key: "source_other", Root: other, Pinned: true, Source: &SessionSourceRef{HostID: localDesktopHostID, SourceKey: "other"}}},
 	}
 	for range 2 {
-		snapshot := app.GetProjectTreeSnapshot()
+		snapshot := mustProjectTreeSnapshot(t, app)
 		if len(snapshot.Projects) != 1 || len(snapshot.Projects[0].Children) != 1 || snapshot.Projects[0].Children[0].Key != "source_kept" {
 			t.Fatalf("unregistered project lost its pin or included another project's pin: %+v", snapshot.Projects)
 		}
@@ -95,7 +95,7 @@ func TestProjectTreeUnmigratedManualOrderMatchesExpandedPage(t *testing.T) {
 			}
 			want := []string{workspacestate.SessionKey("c"), workspacestate.SessionKey("a"), workspacestate.SessionKey("b")}
 			for range 2 {
-				snapshot := app.GetProjectTreeSnapshot()
+				snapshot := mustProjectTreeSnapshot(t, app)
 				if len(snapshot.Projects) != 1 || !reflect.DeepEqual(keys(snapshot.Projects[0].Children), want) {
 					t.Fatalf("cold snapshot order: %+v", snapshot.Projects)
 				}
@@ -113,7 +113,7 @@ func TestProjectTreeUnmigratedManualOrderMatchesExpandedPage(t *testing.T) {
 			if err := app.ReorderSessions("project", root, want); err != nil {
 				t.Fatal(err)
 			}
-			if got := keys(app.GetProjectTreeSnapshot().Projects[0].Children); !reflect.DeepEqual(got, want) {
+			if got := keys(mustProjectTreeSnapshot(t, app).Projects[0].Children); !reflect.DeepEqual(got, want) {
 				t.Fatalf("persisted order=%v want=%v", got, want)
 			}
 		})
@@ -168,7 +168,7 @@ func TestProjectTreeHistoricalManualOrderBeforeRegistration(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 2 {
-				snapshot := app.GetProjectTreeSnapshot()
+				snapshot := mustProjectTreeSnapshot(t, app)
 				if len(snapshot.Projects) != 1 {
 					t.Fatalf("projects=%+v", snapshot.Projects)
 				}

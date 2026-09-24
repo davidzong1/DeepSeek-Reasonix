@@ -1,4 +1,5 @@
 import { app } from "./bridge";
+import { historyMessageIdentity } from "./historyItemIds";
 import type { TranscriptSnapshot } from "./transcriptProtocol";
 import type { HistoryEntry, HistoryWindowPageView, HistoryWindowRequestView } from "./types";
 import type { HistoryOutlinePage, HistoryOutlineRequest } from "../generated/desktopContract.generated";
@@ -18,8 +19,9 @@ export function bindNativeTranscriptHistory(tabId: string, snapshot: TranscriptS
 
 export function nativeSnapshotWindow(snapshot: TranscriptSnapshot): HistoryWindowPageView {
   const entries: HistoryEntry[] = snapshot.records.map(record => {
-    const entryId = record.message.messageId ? `m:${record.message.messageId}` : record.message.recordId ?? record.id;
-    return { entryId, order: record.order, turn: record.message.historyTurn ?? 0, message: { ...record.message, recordId: entryId },
+    const messageId = historyMessageIdentity(record.message, record.id);
+    const entryId = messageId ? `m:${messageId}` : record.message.recordId ?? record.id;
+    return { entryId, order: record.order, turn: record.message.historyTurn ?? 0, message: { ...record.message, messageId, recordId: entryId },
       refs: record.refs.map(ref => ({ entryId, field: ref.path[0], size: ref.bytes, chunks: 1,
         revision: snapshot.coveredThroughSeq, revKnown: true, digest: snapshot.snapshotId, transcriptRef: ref })) };
   });

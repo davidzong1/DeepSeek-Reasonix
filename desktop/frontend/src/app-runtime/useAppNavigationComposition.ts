@@ -167,7 +167,7 @@ export function useAppNavigationComposition(input: AppNavigationCompositionInput
       target: { kind: "remote", ...activeTab.remote, sessionPath: activeTab.sessionPath || "", sessionId: activeTab.session?.sessionId || activeTab.sessionId },
     } : activeTab?.topicId ? {
       id: activeTab.topicId, title: activeTab.topicTitle || "", target: { kind: "local", topicId: activeTab.topicId,
-        selector: { ref: activeTab.session ?? undefined, sessionPath: activeTab.sessionPath } },
+        selector: { ref: activeTab.session ?? undefined, sessionPath: activeTab.sessionPath, topicId: activeTab.topicId } },
     } : undefined,
     ports: { ...desktopProjectAdapter, markChanged: setProjectRevision, refreshTabs: refreshTabMetas, syncActive: syncActiveTab },
     navigation: { openBlank: openBlankSession, enqueue: enqueueNavigation, switchFolder },

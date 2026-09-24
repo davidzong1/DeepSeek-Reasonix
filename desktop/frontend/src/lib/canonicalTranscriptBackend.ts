@@ -1,6 +1,7 @@
 import type { PersistentMessage } from "../generated/desktopContract.generated";
 import { HistoryPreparingError } from "./historyPreparation";
-import { canonicalUserDisplay } from "./canonicalUserDisplay";
+import { canonicalSteerGuidance, canonicalUserDisplay } from "./canonicalUserDisplay";
+import { isHostRecoveryGuidance } from "./hostRecoverySteer";
 import { parseSessionOperation, sessionOperationHistoryMessage } from "./sessionMaintenanceOperation";
 import type { HistoryContentChunk, HistoryContentRef, HistoryEntry, HistoryMessage, HistorySlice, HistorySliceRequest, HistoryWindowPageView, HistoryWindowRequestView, MemoryCitation } from "./types";
 
@@ -44,6 +45,15 @@ export function canonicalMessage(message: PersistentMessage, body: unknown): His
   const protocolRecovery = asWireObject(raw.protocol_recovery);
   if (Boolean(raw.local_only) && protocolRecovery.state === "pending" && typeof protocolRecovery.id === "string") {
     return { role: "notice", messageId: String(raw.id ?? message.messageId), content: "", code: "protocol_recovery", level: "info", pending: true, protocolRecovery: { id: protocolRecovery.id } };
+  }
+  if (Boolean(raw.local_only)) {
+    const guidance = canonicalSteerGuidance(String(raw.content ?? message.preview ?? ""));
+    if (guidance !== undefined) {
+      if (isHostRecoveryGuidance(guidance)) return { role: "hidden", messageId: String(raw.id ?? message.messageId), content: "" };
+      // Notice formatting reads guidance after the first newline. Keep that
+      // separator even when the user's guidance itself spans several lines.
+      return { role: "notice", messageId: String(raw.id ?? message.messageId), content: `\n${guidance}`, code: "unapplied_steer", level: "warn" };
+    }
   }
   const toolCalls = (Array.isArray(raw.tool_calls) ? raw.tool_calls as Record<string, unknown>[] : []).map(call => ({
     resultObservation: message.toolObservations?.[String(call.id ?? "")],

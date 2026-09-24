@@ -113,6 +113,58 @@ Recovery does not require deleting a data directory, clearing caches or reinstal
 
 ## Verification scope
 
+### Creation without waiting for runtime initialization / 无需等待运行时的新建流程
+
+Each explicit New click owns an independent operation and session ID. Replaying
+that operation keeps the same session. Workspace reservation and publication
+resolve the current directory owner inside the registry transaction, so a
+workspace-ID merge does not invalidate the creation journal. Replay validates
+the original directory before registering anything; it cannot move the request
+to another project or revive an archived/deleted session.
+
+Once the session and its tab exist, the UI opens that tab while its original
+runtime builder continues. Input is saved against the new session; sending stays
+disabled until readiness. Completion never selects a tab, so a later navigation
+wins. Temporarily unavailable project folders retry in the existing scheduler.
+Old `target_changed` failures are reconciled once; real conflicts receive a
+specific terminal result. Diagnostic export lives under Details.
+
+每次明确点击“新建”都有独立操作和会话 ID；同一次请求的重试复用原身份。
+工作区预约、挂载在注册表事务内解析目录当前所属的工作区，自动处理 ID 合并。
+重试不会注册无关项目、转移目录或复活已经归档、删除的会话。
+会话与标签页建立后即可进入输入界面，文字保存到新会话；原运行时继续初始化，
+准备好后才允许发送。后台完成不改变选择，连续点击时最后一次导航生效。
+目录暂不可用时自动等待；旧版 `target_changed` 失败会自动协调一次。
+无法协调的真实冲突给出明确结果，诊断导出收在“详情”中。
+
+Creation feedback is scoped to the selected navigation intent and shown next to
+the composer. The explicit creation observer also supplies UI progress; there is
+no second global recovery poll or in-memory failure catalog. Reopening a pending
+session discovers only its own operation and then observes that operation.
+Preparing has no actions, readiness removes the notice, and a terminal failure
+has one primary action (retry the same operation, choose a project, or create a
+new session). Closing a notice only hides it for the current selection; it never
+cancels host recovery or deletes input. New-session/project actions do not move
+input between sessions. Diagnostic export is available under Details on errors.
+
+创建提示只属于当前导航选择，并显示在输入框旁。创建请求的观察结果直接用于显示，
+不再另设全局恢复轮询或内存失败列表；重新打开未完成会话时，只查找并观察它自己的
+创建操作。准备中没有操作按钮，就绪后提示消失；失败只提供一个主要操作：复用原操作
+重试、选择项目或新建会话。关闭提示仅在当前选择下隐藏提示，不取消后台恢复、不删除
+输入；新建或选择项目不跨会话搬移输入。诊断导出只在错误的“详情”中提供。
+
+| Contract / 契约 | Compatibility / 兼容行为 |
+| --- | --- |
+| Creation journal / 创建记录 | Phases, identities and schema unchanged; unknown fields preserved. 阶段、身份和格式不变，保留未知字段。 |
+| `surfaceReady` RPC hint | Optional observation, never stored; absent means wait for ready on older hosts. 可选且不持久化，旧服务缺失时等待 ready。 |
+| `waiting_workspace` progress | Transient only; unknown-status fallback remains available to older clients. 仅进程内状态，旧客户端使用未知状态兜底。 |
+
+Regressions cover workspace merge between reservation and publication, restart
+with a stale ID, lost-response replay, archived-session protection, automatic
+directory retry, input saved before runtime readiness, and out-of-order frontend
+navigation. 回归覆盖预约与挂载间合并、旧 ID 重启恢复、响应丢失重试、归档保护、
+目录自动重试、运行时就绪前输入保存及前端乱序导航。
+
 Release qualification must include isolated packaged macOS, Windows and Linux
 application runs. Development-server tests cannot replace SQLite file-release,
 normal exit, crash/restart, attachment recovery and shell/service handshake checks.

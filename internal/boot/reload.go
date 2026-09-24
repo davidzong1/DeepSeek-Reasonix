@@ -84,6 +84,12 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if old == nil {
 		return nil, fmt.Errorf("boot: Rebuild requires the controller being replaced")
 	}
+	scope, finishBackground, abortBackground, err := control.ReserveBackgroundReplacement(old)
+	if err != nil {
+		return nil, err
+	}
+	opts.BackgroundScope = scope
+	defer abortBackground()
 	if opts.Owner == nil {
 		opts.Owner = old.RuntimeOwner()
 	}
@@ -177,14 +183,17 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 			res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
 		}
 	}
-	// Publish new generation only after Active + state migration. Then drain
-	// Removed/Reloaded clients still held by the previous Manager.
-	publishBuildResult(res)
-	replacementPublished = true
-	if opts.Extensions != nil && res.Plan != nil {
-		opts.Extensions.DrainPlan(res.Plan)
-	}
 	// SessionEnd is not fired on ordinary rebuild.
+	if err := finishBackground(res.Controller); err != nil {
+		res.Controller.ReleaseResources()
+		restoreLegacyEvents()
+		return nil, err
+	}
+	// A host can still reject the prepared candidate. Its extension generation
+	// must not retire the outgoing runtime before the final ownership transfer.
+	stageModelRuntimePublication(res, opts)
+	replacementPublished = true // candidate now owns commit/rollback responsibility
+	res.Controller.StageReplacementRollback(restoreLegacyEvents)
 	return res, nil
 }
 

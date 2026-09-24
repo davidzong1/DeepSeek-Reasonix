@@ -19,7 +19,6 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/anthropic"
 	"reasonix/internal/provider/openai"
-	"reasonix/internal/provider/responses"
 	"reasonix/internal/tool"
 )
 
@@ -78,153 +77,33 @@ func (s *recordSink) recoveryCount(kind event.ProtocolRecoveryKind) int {
 	return count
 }
 
-// TestAgentEmitsRetryingThenStreams drives the whole chain end-to-end: a real
-// OpenAI-compatible provider hits an httptest server that returns 503 twice then
-// a valid SSE stream. The agent must emit a Retrying event per backoff (so the
-// composer can show "retrying n/m") and still deliver the streamed answer.
-func TestAgentEmitsRetryingThenStreams(t *testing.T) {
-	var reqs int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqs++
-		if reqs <= 2 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":"overloaded"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi there\"}}]}\n\ndata: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	prov, err := openai.New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
-	if err != nil {
-		t.Fatalf("New provider: %v", err)
-	}
-
-	sink := &recordSink{}
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, sink)
-	if err := a.Run(context.Background(), "hi"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	retries := sink.kinds(event.Retrying)
-	if len(retries) != 2 || retries[0].RetryAttempt != 1 || retries[1].RetryAttempt != 2 {
-		t.Fatalf("want two Retrying events (1,2), got %+v", retries)
-	}
-	if retries[0].RetryMax != maxStreamRecoveries {
-		t.Errorf("RetryMax = %d, want %d", retries[0].RetryMax, maxStreamRecoveries)
-	}
-
-	var answer strings.Builder
-	for _, e := range sink.kinds(event.Text) {
-		answer.WriteString(e.Text)
-	}
-	if !strings.Contains(answer.String(), "hi there") {
-		t.Errorf("streamed answer = %q, want it to contain %q", answer.String(), "hi there")
-	}
-}
-
-// TestAgentRetriesCapacityRefusalInStream covers the other delivery of the same
-// overload: the gateway answers 200 and reports server_is_overloaded inside the
-// SSE body. The agent must back off and replay exactly as it does for the 503
-// status form, instead of ending the turn on the first attempt.
-func TestAgentRetriesCapacityRefusalInStream(t *testing.T) {
-	var reqs atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		if reqs.Add(1) <= 2 {
-			_, _ = io.WriteString(w, `data: {"error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"Our servers are currently overloaded. Please try again later."}}`+"\n\n")
-			return
-		}
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi there\"}}]}\n\ndata: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	prov, err := openai.New(provider.Config{Name: "opencode-go", BaseURL: srv.URL, Model: "gpt-5.6-luna", APIKey: "k"})
-	if err != nil {
-		t.Fatalf("New provider: %v", err)
-	}
-
-	sink := &recordSink{}
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, sink)
-	if err := a.Run(context.Background(), "hi"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	if got := reqs.Load(); got != 3 {
-		t.Fatalf("provider requests = %d, want 3 (two overloads replayed)", got)
-	}
-	if retries := sink.kinds(event.Retrying); len(retries) != 2 {
-		t.Fatalf("want two Retrying events, got %+v", retries)
-	}
-	var answer strings.Builder
-	for _, e := range sink.kinds(event.Text) {
-		answer.WriteString(e.Text)
-	}
-	if !strings.Contains(answer.String(), "hi there") {
-		t.Errorf("streamed answer = %q, want it to contain %q", answer.String(), "hi there")
-	}
-}
-
-// TestAgentRetriesResponsesOverloadInStream covers the same overload on the
-// Responses wire, which reports it as a response.failed event carrying the
-// provider's own code rather than in a chat error field.
-func TestAgentRetriesResponsesOverloadInStream(t *testing.T) {
-	var reqs atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		if reqs.Add(1) <= 2 {
-			_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"resp","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}`+"\n\n")
-			return
-		}
-		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"hi there"}`+"\n\n")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`+"\n\n")
-	}))
-	defer srv.Close()
-
-	prov := responses.New(responses.Config{Name: "opencode-go", BaseURL: srv.URL, Model: "gpt-5.6-luna", APIKey: "k"})
-
-	sink := &recordSink{}
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, sink)
-	if err := a.Run(context.Background(), "hi"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	if got := reqs.Load(); got != 3 {
-		t.Fatalf("provider requests = %d, want 3 (two overloads replayed)", got)
-	}
-	var answer strings.Builder
-	for _, e := range sink.kinds(event.Text) {
-		answer.WriteString(e.Text)
-	}
-	if !strings.Contains(answer.String(), "hi there") {
-		t.Errorf("streamed answer = %q, want it to contain %q", answer.String(), "hi there")
-	}
-}
-
-// TestAgentStopsAtCapacityRefusalBudget pins the retry budget for a capacity
-// refusal: it is replayed on the short backoff but never enters the long wait,
-// which exists for a provider that cannot be reached. Every replay carries the
-// full prompt, so an unbounded wait multiplies billed traffic ~13x.
-func TestAgentStopsAtCapacityRefusalBudget(t *testing.T) {
-	var reqs atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		reqs.Add(1)
-		_, _ = io.WriteString(w, `data: {"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`+"\n\n")
-	}))
-	defer srv.Close()
-
-	prov, err := openai.New(provider.Config{Name: "opencode-go", BaseURL: srv.URL, Model: "gpt-5.6-luna", APIKey: "k"})
-	if err != nil {
-		t.Fatalf("New provider: %v", err)
-	}
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, &recordSink{})
-	if err := a.Run(context.Background(), "hi"); err == nil {
-		t.Fatal("a persistent capacity refusal must fail the turn")
-	}
-	if got := reqs.Load(); got != maxSamplingAttempts {
-		t.Fatalf("provider requests = %d, want %d (short backoff only, no long wait)", got, maxSamplingAttempts)
+// TestAgentReturnsHTTPFailureWithoutRetry exercises the real OpenAI adapter.
+func TestAgentReturnsHTTPFailureWithoutRetry(t *testing.T) {
+	for _, status := range []int{429, 503} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Retry-After", "120")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":{"message":"upstream unavailable"}}`)
+			}))
+			defer srv.Close()
+			p, err := openai.New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4-flash", APIKey: "k", HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sink := &recordSink{}
+			a := New(p, tool.NewRegistry(), NewSession(""), Options{}, sink)
+			err = a.Run(withNoClosedLoop(t.Context()), "hi")
+			var api *provider.APIError
+			if !errors.As(err, &api) || api.Status != status || !strings.Contains(api.Body, "upstream unavailable") {
+				t.Fatalf("err=%v", err)
+			}
+			if calls.Load() != 1 || len(sink.kinds(event.Retrying)) != 0 {
+				t.Fatalf("calls=%d retries=%+v", calls.Load(), sink.kinds(event.Retrying))
+			}
+		})
 	}
 }
 

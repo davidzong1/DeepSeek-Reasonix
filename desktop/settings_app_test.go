@@ -1714,11 +1714,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 	if warning != "" {
 		t.Fatalf("protocol save acquired runtime lease: %q", warning)
 	}
-	if app.deferredRebuildPending(leased.ID) {
-		t.Fatal("saving protocol scheduled an immediate rebuild")
+	if !app.deferredRebuildPending(leased.ID) {
+		t.Fatal("leased tab lost its pending settings application")
 	}
-	if app.deferredRebuildPending(working.ID) {
-		t.Fatal("working sibling unexpectedly received a deferred rebuild")
+	if !app.deferredRebuildPending(working.ID) {
+		t.Fatal("working sibling did not schedule settings application")
 	}
 	if leased.Ctrl != oldLeased || oldLeased.closeCount.Load() != 0 {
 		t.Fatalf("leased tab changed controller: ctrl=%T closes=%d", leased.Ctrl, oldLeased.closeCount.Load())

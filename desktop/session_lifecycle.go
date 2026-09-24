@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -29,6 +28,14 @@ func (a *App) archiveSessionRefsWithOperation(refs []session.SessionRef, operati
 func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionRef, operationID string, verify func(context.Context, workspacestate.State) error, dependencies ...string) error {
 	a.sessionRemovalMu.Lock()
 	defer a.sessionRemovalMu.Unlock()
+	cleanup := archivedRuntimeCleanup{app: a}
+	defer cleanup.finish()
+	return a.archiveSessionRefsRemovalHeld(refs, operationID, verify, &cleanup, dependencies...)
+}
+
+// archiveSessionRefsRemovalHeld commits and detaches only. The caller holds
+// sessionRemovalMu and must finish cleanup after releasing title/index locks.
+func (a *App) archiveSessionRefsRemovalHeld(refs []session.SessionRef, operationID string, verify func(context.Context, workspacestate.State) error, cleanup *archivedRuntimeCleanup, dependencies ...string) error {
 	ctx := a.bootContext()
 	service := a.desktopSessionService("")
 	unique := map[string]session.SessionRef{}
@@ -113,13 +120,10 @@ func (a *App) archiveSessionRefsWithOperationConditional(refs []session.SessionR
 	if err := a.workspaceRegistry().CommitOperation(ctx, op.ID); err != nil {
 		return err
 	}
-	a.finishArchivedRuntimeBindings(removed)
+	a.detachArchivedRuntimeBindings(removed)
+	cleanup.removed = append(cleanup.removed, removed...)
 	for _, ref := range unique {
-		if err := a.retireArchivedSessionRuntime(ctx, ref); err != nil {
-			// Archive is already durable. Preserve that result and let purge's
-			// ownership check retry retirement after the client releases it.
-			slog.Warn("desktop: archived runtime retirement deferred", "err", err)
-		}
+		cleanup.refs = append(cleanup.refs, ref)
 	}
 	return nil
 }
@@ -164,6 +168,12 @@ func (a *App) beginConditionalArchiveOperation(ctx context.Context, state worksp
 
 // Called only after durable commit, with runtime mutation admission held.
 func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) {
+	a.detachArchivedRuntimeBindings(removed)
+	a.finalizeRemovedTopicRuntimes(removed)
+	a.closeRemainingRemovedSessionRuntimesAdmissionHeld(removed, map[control.SessionAPI]bool{})
+}
+
+func (a *App) detachArchivedRuntimeBindings(removed []removedSessionRuntime) {
 	a.mu.Lock()
 	for _, item := range removed {
 		tab := item.tab
@@ -171,6 +181,7 @@ func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) {
 			continue
 		}
 		a.markTabRemovedLocked(tab)
+		stopTabAutosave(tab)
 		a.releaseSessionRuntimeLocked(tab)
 		a.unregisterDetachedRuntimeLocked(tab)
 		delete(a.tabs, tab.ID)
@@ -192,8 +203,6 @@ func (a *App) finishArchivedRuntimeBindings(removed []removedSessionRuntime) {
 	if len(removed) > 0 {
 		a.saveTabsWrite(dir, entries, activeID, version)
 	}
-	a.finalizeRemovedTopicRuntimes(removed)
-	a.closeRemainingRemovedSessionRuntimesAdmissionHeld(removed, map[control.SessionAPI]bool{})
 }
 
 func (a *App) archiveCompatibleTopic(topicID string) error {
@@ -206,6 +215,12 @@ func (a *App) archiveCompatibleTopic(topicID string) error {
 }
 
 func (a *App) archiveCompatibleTopicAdmissionHeld(topicID, operationID string) error {
+	return a.archiveCompatibleTopicWithCleanupAdmissionHeld(topicID, operationID, nil)
+}
+
+// A non-nil cleanup means the caller already holds sessionRemovalMu, followed
+// by the title/index locks, for a confirmed session-backed topic removal.
+func (a *App) archiveCompatibleTopicWithCleanupAdmissionHeld(topicID, operationID string, cleanup *archivedRuntimeCleanup) error {
 	topicID = strings.TrimSpace(topicID)
 	if topicID == "" {
 		return fmt.Errorf("topicID is required")
@@ -250,7 +265,7 @@ func (a *App) archiveCompatibleTopicAdmissionHeld(topicID, operationID string) e
 		return err
 	}
 	if len(refs) == 0 && len(targets) == 0 {
-		return a.removeCompatiblePlaceholderAdmissionHeld(topicID)
+		return a.removeEmptyCompatibleTopicAdmissionHeld(topicID, cleanup)
 	}
 	// Originals stay in place, so retain existing leases and acquire only cold
 	// sources. The importer recognizes these same-process owners when freezing.
@@ -292,7 +307,12 @@ func (a *App) archiveCompatibleTopicAdmissionHeld(topicID, operationID string) e
 	if operationID == "" {
 		operationID = "archive-" + newTabID()
 	}
-	if err := a.archiveSessionRefsWithOperation(list, operationID, dependencies...); err != nil {
+	if cleanup != nil {
+		err = a.archiveSessionRefsRemovalHeld(list, operationID, nil, cleanup, dependencies...)
+	} else {
+		err = a.archiveSessionRefsWithOperation(list, operationID, dependencies...)
+	}
+	if err != nil {
 		return err
 	}
 	for _, lease := range leases {
@@ -301,6 +321,15 @@ func (a *App) archiveCompatibleTopicAdmissionHeld(topicID, operationID string) e
 	leases = nil
 	a.emitProjectTreeChanged()
 	return nil
+}
+
+func (a *App) removeEmptyCompatibleTopicAdmissionHeld(topicID string, cleanup *archivedRuntimeCleanup) error {
+	// A confirmed session removal must not silently turn into placeholder
+	// removal (which also acquires the removal/title locks).
+	if cleanup != nil {
+		return workspacestate.ErrMutationConflict
+	}
+	return a.removeCompatiblePlaceholderAdmissionHeld(topicID)
 }
 
 func (a *App) stageArchiveSource(ctx context.Context, path string) (session.SessionRef, string, error) {

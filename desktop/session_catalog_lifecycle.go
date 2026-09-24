@@ -43,6 +43,9 @@ func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan s
 			OnDiscovery: func(event sessioncatalog.DiscoveryEvent) {
 				slog.Info("desktop: history discovery", "root", event.Root, "sequence", event.Sequence,
 					"phase", event.Phase, "origin", event.Origin, "failure", event.Failure)
+				if event.Phase == "completed" {
+					a.requestHistoricalLegacyReconciliation(ctx)
+				}
 			},
 			OnRevision: func(revision uint64, roots []string, reason string) {
 				a.emitProjectTreeChangedV2(revision, roots, reason)

@@ -5675,6 +5675,10 @@ function makeMockApp(): MockAppBindings {
     async AIRenameSessionTarget(selector: SessionSelector): Promise<SessionMutationResult> {
       const node = mockSessionTitleTarget(mockProjectTree, selector);
       const title = node ? mockAIRenameTarget(mockProjectTree, sessionTitleTarget(node)) : "";
+      if (node?.topicId && title) {
+        mockTabs = mockTabs.map((tab) => tab.topicId === node.topicId ? { ...tab, topicTitle: title } : tab);
+        notifyMockProjectTreeChanged();
+      }
       return { targetKey: sessionTitleTarget(node ?? { key: "", kind: "topic", label: "" }), operationId: `mock-title-${Date.now()}`, committed: true, title, lifecycleGeneration: 1 };
     },
     async RenameSessionTarget(selector: SessionSelector, title: string): Promise<SessionMutationResult> {
@@ -5683,6 +5687,8 @@ function makeMockApp(): MockAppBindings {
       if (node && nextTitle) {
         const activePrefix = node.label?.startsWith("● ") ? "● " : "";
         node.label = `${activePrefix}${nextTitle}`;
+        mockTabs = mockTabs.map((tab) => tab.topicId === node.topicId ? { ...tab, topicTitle: nextTitle } : tab);
+        notifyMockProjectTreeChanged();
       }
       return { targetKey: node ? sessionTitleTarget(node) : "", operationId: `mock-title-${Date.now()}`, committed: Boolean(node), title: nextTitle, lifecycleGeneration: 1 };
     },

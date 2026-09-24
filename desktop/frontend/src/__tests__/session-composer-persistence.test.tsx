@@ -50,8 +50,13 @@ try {
  assert.equal(JSON.parse((await backend.GetSessionComposerState(b)).contentJson).text,"local window");
 
  // A lost response preserves input and must never call the send callback again.
+ const rejected=Object.assign(new Error("settings pending"),{data:{submissionOutcome:"not_accepted"}});
+ await act(async()=>{await assert.rejects(sendPersistedComposer(b.sessionId,"local window","local window","configuration-rejected",async()=>{throw rejected;}));});
+ assert.equal(editor.blocked,false,"definite rejection releases submission occupancy");
+ assert.equal(JSON.parse((await backend.GetSessionComposerState(b)).contentJson).text,"local window","configuration rejection preserves input");
  let sends=0;
- await act(async()=>{await assert.rejects(sendPersistedComposer(b.sessionId,"local window","local window","submission-lost",async()=>{sends++;throw Error("transport disconnected");}));});
+ const unknown=Object.assign(new Error("submission not accepted\ntransport acknowledgement lost"),{data:{submissionOutcome:"unknown"}});
+ await act(async()=>{await assert.rejects(sendPersistedComposer(b.sessionId,"local window","local window","submission-lost",async()=>{sends++;throw unknown;}));});
  await act(async()=>editor.retry());
  assert.equal(sends,1); assert.equal(editor.blocked,true);
  assert.equal(JSON.parse((await backend.GetSessionComposerState(b)).contentJson).text,"local window");

@@ -5,7 +5,7 @@ import type { RemoteNavigationCommand } from "../lib/remoteNavigationCommands";
 import { CommandCancelled } from "../lib/commandOutcome";
 
 type RemoteSendPorts = Pick<RemoteSessionApi, "compact" | "runManagementCommand" | "setModel" | "setEffort"> & {
-  send: (display: string, submit: string) => Promise<void>;
+  send: (display: string, submit: string, choice?: import("../lib/modelApplication").ModelApplicationChoice) => Promise<void>;
   applyGoal: (tab: string, goal: string) => Promise<unknown>;
   requestClear: () => void;
   newSession: RemoteNavigationCommand;
@@ -16,6 +16,7 @@ export type RemoteSendInput = {
   activateGoal: boolean;
   display: string;
   submit: string;
+  choice?: import("../lib/modelApplication").ModelApplicationChoice;
   commandText: string;
   command: ReturnType<typeof import("../lib/useRemoteComposerIntegration").remoteRuntimeCommand>;
   ports: RemoteSendPorts;
@@ -40,7 +41,7 @@ export async function executeRemoteSend(input: RemoteSendInput, authority: Sessi
     await ports.applyGoal(input.tabId, input.commandText);
     authority.checkpoint();
   }
-  await ports.send(input.display, input.submit);
+  await ports.send(input.display, input.submit, input.choice);
 }
 
 export type ComposerRuntimeInput = {

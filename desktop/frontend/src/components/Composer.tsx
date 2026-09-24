@@ -15,6 +15,8 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { attachmentExt, attachmentName, baseName, formatAttachmentDisplayReference, hasImageAttachments, sortComposerAttachments, type Attachment } from "../lib/composerAttachments";
 import type { PastedBlock, PersistentComposerDraft, PersistentComposerTarget, WorkspaceReference } from "../lib/composerDraftTypes";
 import { sendPersistedComposer, useSessionComposerPersistence } from "../lib/sessionComposerPersistence";
+import { ComposerModelApplicationRecovery } from "./ModelApplicationRecovery";
+import { definitelyNotAccepted, modelApplicationError, type ModelApplicationDetails, type ModelApplicationChoice } from "../lib/modelApplication";
 import type { SessionRef } from "../lib/sessionRef";
 import type { SessionIdentity } from "../lib/sessionIdentity";
 import type { ComposerTarget } from "../generated/desktopContract.generated";
@@ -850,6 +852,7 @@ export function Composer({
   persistentTargetsByDraftRef.current[draftKey] = persistentDraft;
   bridgeTargetsByDraftRef.current[draftKey] = bridgeTarget;
   const activeDraftKeyRef = useRef(draftKey);
+  const [remoteApplication, setRemoteApplication] = useState<{key:string; text:string; details:ModelApplicationDetails}|undefined>();
   const draftActivationEpochRef = useRef(0);
   const textRef = useRef(text);
   const invocationsRef = useRef(invocations);
@@ -2081,7 +2084,7 @@ export function Composer({
   };
 
   const submit = (guideCurrent = false) => trackPersistentTask(activeDraftKeyRef.current, performSubmit(guideCurrent));
-  const performSubmit = async (guideCurrent = false) => {
+  const performSubmit = async (guideCurrent = false, modelChoice?:ModelApplicationChoice) => {
     if (queueEditing) return;
     const queueOnly = running && (!guideCurrent || finishing || maintenanceActive);
     const submitDraftKey = activeDraftKeyRef.current;
@@ -2273,6 +2276,7 @@ export function Composer({
         }
         return;
       }
+			if(modelChoice) structured={...(structured ?? {display:displayText,input:submitText,invocations:[]}),modelApplicationChoice:modelChoice};
 			if (savedInput.target && submitTabId) {
         const submissionId = attachmentSubmissionId || `composer-${crypto.randomUUID()}`;
         await sendPersistedComposer(submitTabId, displayText, submitText, submissionId,
@@ -2281,8 +2285,10 @@ export function Composer({
 			attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
 			if (!persistentDraft && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
     } catch (error) {
-      if (followupNotSubmitted(error)) attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
-      if (savedInput.target) showToast(formatInboxError(error, locale), "warn");
+      if (definitelyNotAccepted(error) || followupNotSubmitted(error)) attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
+      if (savedInput.target && modelApplicationError(error)) savedInput.reportSubmissionError(error);
+      else if (savedInput.target) showToast(formatInboxError(error, locale), "warn");
+      else if (modelApplicationError(error)) setRemoteApplication({key:submitDraftKey,text:submittedDraft,details:modelApplicationError(error)!});
       else if (persistentDraft?.onTaskError) persistentDraft.onTaskError(persistentDraft.draftId, persistentDraft.generation, formatInboxError(error, locale));
       else showToast(formatInboxError(error, locale), "warn");
 		} finally {
@@ -4132,6 +4138,7 @@ export function Composer({
       data-native-drop-target={attachmentInputEnabled ? "" : undefined}
       onDropCapture={onFileDropCapture}
     >
+      <ComposerModelApplicationRecovery tabId={tabId} local={savedInput} remote={remoteApplication} setRemote={setRemoteApplication} draftKey={draftKey} text={followupDraftFingerprint(draftKey)} running={running} onUseApplied={choice=>trackPersistentTask(activeDraftKeyRef.current,performSubmit(false,choice))}/>
       <SessionInputRecovery input={savedInput} />
       <input
         ref={fileInputRef}
