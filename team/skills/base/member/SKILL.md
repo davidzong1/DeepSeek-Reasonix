@@ -21,6 +21,7 @@ team task, reassign yourself, or act as the leader.
    the repository's atomic/CAS write path where applicable; do not use the
    retired `member_acquire_file_lock` family of tools.
 4. Use `atomic_read`/`atomic_write`, never `cat`/`sed`/`>>`. To insert beside a line, `patch` that single line with `range` and put the original line plus the new lines in `content`.
+5. When you already know the files to read, emit one `atomic_read` per file in the same response instead of reading one file and thinking again. Each call still has a single `path`. For a large file use `outline` or a small window; do not pull many large files in full in that same response.
 
 ## Execute
 
@@ -39,9 +40,12 @@ team task, reassign yourself, or act as the leader.
   injected system prompt.
 - Treat task identity and generation as idempotency keys. Do not apply a stale
   assignment or duplicate a completed report.
-- Distinguish team dispatch from the local `task` capability. If a local task
-  tool is used for an implementation step, provide a concrete non-empty
-  `arguments.prompt`; correct the JSON shape instead of retrying an empty call.
+- For a wide read-only analysis whose result would be large, call
+  `read_only_task` and bring only the conclusion back into this session. Do not
+  open one before ordinary work. Implementation, tests, and
+  `member_report_result` stay here; a local `task` call is not team dispatch.
+  If you do call it, pass a concrete non-empty `arguments.prompt` and correct
+  the JSON shape instead of retrying an empty call.
 - Add focused regression coverage for changed behavior. Run formatting and
   relevant tests, then inspect the diff and lint output without widening a
   baseline.
