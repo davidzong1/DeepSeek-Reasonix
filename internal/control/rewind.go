@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reasonix/internal/cachereason"
 	"sync/atomic"
 
 	"reasonix/internal/agent"
@@ -55,7 +56,7 @@ func (a conversationApplier) ApplyConversationTruncate(boundary int, forward []b
 			return err
 		}
 	}
-	s.Rewrite(msgs[:boundary], "rewind_truncate")
+	s.Rewrite(msgs[:boundary], cachereason.RewindTruncate)
 	// Drop the projection only when the truncation reached into the folded
 	// prefix; a tail-only rewind keeps the covered prefix byte-identical.
 	c.executor.InvalidateProjectionIfStale()
@@ -75,7 +76,7 @@ func (a conversationApplier) RestoreConversation(forward []byte) error {
 	if err := json.Unmarshal(forward, &msgs); err != nil {
 		return err
 	}
-	c.executor.Session().Rewrite(msgs, "rewind_restore")
+	c.executor.Session().Rewrite(msgs, cachereason.RewindRestore)
 	c.executor.InvalidateProjectionIfStale()
 	if err := c.SnapshotRewrite(); err != nil {
 		return fmt.Errorf("restore conversation: %w", err)

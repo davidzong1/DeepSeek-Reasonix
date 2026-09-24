@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reasonix/internal/cachereason"
 	"slices"
 	"strings"
 	"sync"
@@ -354,7 +355,7 @@ func (gs *Session) normalizeAlternation() {
 	if !merged {
 		return
 	}
-	gs.sess.Rewrite(out, "guardian_merge")
+	gs.sess.Rewrite(out, cachereason.GuardianMerge)
 }
 
 // Load replaces the guardian's internal agent session with the one at path,

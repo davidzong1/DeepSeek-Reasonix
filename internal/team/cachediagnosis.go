@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"reasonix/internal/cachereason"
 )
 
 // CacheDiagnosisLabel is one attribution outcome. The vocabulary is closed: a
@@ -20,7 +22,8 @@ const (
 	// moved on samples that carry the stratum's miss.
 	CacheLabelStablePrefixChanged CacheDiagnosisLabel = "stable_prefix_changed"
 	// CacheLabelRewriteCorrelated means the prefix moves on those samples came
-	// from a content rewrite (compaction, snip, rewind, …).
+	// from a content rewrite the turn performed on its own content — a
+	// compaction/fold, a prune, or the lossy truncate rescue.
 	CacheLabelRewriteCorrelated CacheDiagnosisLabel = "rewrite_or_compaction_correlated"
 	// CacheLabelSchemaCorrelated means the fixed-prefix samples miss a small,
 	// stable amount of tokens comparable to the tool schema they carry.
@@ -36,6 +39,11 @@ const (
 	// measured here explains the miss. The local hashes cover system+tools only,
 	// so this is the honest answer, not a schema claim.
 	CacheLabelHighMissUnattributed CacheDiagnosisLabel = "stable_prefix_high_miss_unattributed"
+	// CacheLabelUnexplainedPrefixChange means the prefix moved for a reason the
+	// report cannot name: none was reported, or the reported value is not in the
+	// shared vocabulary. It is the plan's fallback for exactly this case, kept as
+	// its own label so a vocabulary drift is never read as "no cause".
+	CacheLabelUnexplainedPrefixChange CacheDiagnosisLabel = "unexplained_prefix_change"
 	// CacheLabelInsufficientSample means the stratum is below the publication
 	// gate. Its counts stand; no trend is claimed.
 	CacheLabelInsufficientSample CacheDiagnosisLabel = "insufficient_sample"
@@ -62,6 +70,10 @@ type CacheDiagnosisMetrics struct {
 	FixedPrefixMissP90     float64  `json:"fixed_prefix_miss_p90"`
 	MedianSchemaTokens     float64  `json:"median_schema_tokens_estimate"`
 	PrefixChangeReasons    []string `json:"prefix_change_reasons,omitempty"`
+	// UnrecognizedChangeReasons lists the reason values this report does not know,
+	// with their counts. It exists so a vocabulary the agent grew but the report
+	// did not is visible in the baseline rather than silently absorbed.
+	UnrecognizedChangeReasons []string `json:"unrecognized_change_reasons,omitempty"`
 }
 
 // CacheDiagnosis is one stratum's attribution.
@@ -84,11 +96,6 @@ type cacheGroupObservations struct {
 	gateReached bool
 	gates       cacheGroupGates
 }
-
-// rewriteReasons are the content-rewrite causes the agent reports on a prefix
-// change. They are separated from "system"/"tools" because only these are the
-// turn's own doing, and only these are candidates for moving to a fold boundary.
-var rewriteReasons = []string{"compact_auto", "snip", "rewind_truncate", "guardian_merge", "prune"}
 
 // diagnoseCacheGroup attributes one stratum. It follows the plan's order: rule
 // out the data and the semantics first, then the stable prefix, then the
@@ -193,23 +200,81 @@ func (in cacheGroupObservations) findRewrite(changed []MemberCacheRequest, warmM
 	if len(changed) == 0 || warmMiss <= 0 {
 		return
 	}
-	rewritten := make([]MemberCacheRequest, 0, len(changed))
-	for _, rec := range changed {
-		if len(rec.PrefixChangeReasons) > 0 && containsAny(rec.PrefixChangeReasons, rewriteReasons) {
-			rewritten = append(rewritten, rec)
+	rewritten, unexplained := splitByReasonKind(changed, map[string]int{}, out)
+	if len(rewritten) > 0 {
+		share := float64(missTokens(rewritten)) / float64(warmMiss)
+		if share >= 0.5 {
+			out.Findings = append(out.Findings, CacheFinding{
+				Label: CacheLabelRewriteCorrelated,
+				Evidence: fmt.Sprintf("%d of %d changed-prefix samples carry a rewrite reason (%s) and %.0f%% of the warm miss tokens",
+					len(rewritten), len(changed), strings.Join(out.Metrics.PrefixChangeReasons, ", "), share*100),
+			})
 		}
 	}
-	if len(rewritten) == 0 {
+	in.findUnexplainedChange(unexplained, out, warmMiss)
+}
+
+// splitByReasonKind partitions the changed-prefix samples into those carrying a
+// rewrite the report can name, and those whose reasons are missing or
+// unrecognized. A sample whose reasons are all structural is neither: the prefix
+// moved, the reason is known (the system prompt or tool surface changed), and
+// there is nothing to explain — only a content rewrite or an unknown value is a
+// cause this step has to report.
+func splitByReasonKind(changed []MemberCacheRequest, unrecognized map[string]int, out *CacheDiagnosis) (rewritten, unexplained []MemberCacheRequest) {
+	for _, rec := range changed {
+		rewrite, unknown, hasReasons := reasonKindsOf(rec.PrefixChangeReasons)
+		switch {
+		case rewrite:
+			rewritten = append(rewritten, rec)
+		case !hasReasons || len(unknown) > 0:
+			unexplained = append(unexplained, rec)
+			for _, reason := range unknown {
+				unrecognized[reason]++
+			}
+		}
+	}
+	out.Metrics.UnrecognizedChangeReasons = reasonHistogram(unrecognized)
+	return rewritten, unexplained
+}
+
+// reasonKindsOf summarises one sample's reason values: whether any of them is a
+// rewrite the vocabulary names, which of them it does not know, and whether there
+// were any at all. A structural value is neither — it is known, and knowing it
+// means this step has nothing to explain.
+func reasonKindsOf(reasons []string) (rewrite bool, unrecognized []string, hasReasons bool) {
+	for _, reason := range reasons {
+		kind, ok := cachereason.KindOf(reason)
+		switch {
+		case !ok:
+			unrecognized = append(unrecognized, reason)
+		case kind == cachereason.Rewrite:
+			rewrite = true
+		}
+	}
+	return rewrite, unrecognized, len(reasons) > 0
+}
+
+// findUnexplainedChange is the fallback of the plan's step three: a prefix that
+// moved with no reason, or with a reason this report does not know, is named as
+// such and pointed at instrumentation. Guessing a cause here would be worse than
+// saying the cause is unknown — the whole point of the step is to notice a change
+// the vocabulary cannot yet describe.
+func (in cacheGroupObservations) findUnexplainedChange(unexplained []MemberCacheRequest, out *CacheDiagnosis, warmMiss int) {
+	if len(unexplained) == 0 || warmMiss <= 0 {
 		return
 	}
-	share := float64(missTokens(rewritten)) / float64(warmMiss)
+	share := float64(missTokens(unexplained)) / float64(warmMiss)
 	if share < 0.5 {
 		return
 	}
+	detail := "carry no reason"
+	if len(out.Metrics.UnrecognizedChangeReasons) > 0 {
+		detail = fmt.Sprintf("carry unrecognized reasons (%s)", strings.Join(out.Metrics.UnrecognizedChangeReasons, ", "))
+	}
 	out.Findings = append(out.Findings, CacheFinding{
-		Label: CacheLabelRewriteCorrelated,
-		Evidence: fmt.Sprintf("%d of %d changed-prefix samples carry a rewrite reason (%s) and %.0f%% of the warm miss tokens",
-			len(rewritten), len(changed), strings.Join(out.Metrics.PrefixChangeReasons, ", "), share*100),
+		Label: CacheLabelUnexplainedPrefixChange,
+		Evidence: fmt.Sprintf("%d of %d changed-prefix samples %s and carry %.0f%% of the warm miss tokens; extend the reason vocabulary rather than guessing a cause",
+			len(unexplained), out.Metrics.DiagnosedSamples, detail, share*100),
 	})
 }
 
@@ -396,20 +461,17 @@ func prefixReasonHistogram(samples []MemberCacheRequest) []string {
 			counts[reason]++
 		}
 	}
+	return reasonHistogram(counts)
+}
+
+// reasonHistogram renders reason counts as "value=count" in key order, so two
+// reports over the same samples print the same line.
+func reasonHistogram(counts map[string]int) []string {
 	out := make([]string, 0, len(counts))
 	for _, reason := range sortedKeys(counts) {
 		out = append(out, fmt.Sprintf("%s=%d", reason, counts[reason]))
 	}
 	return out
-}
-
-func containsAny(values, wanted []string) bool {
-	for _, value := range values {
-		if slices.Contains(wanted, value) {
-			return true
-		}
-	}
-	return false
 }
 
 // exclusionSummary renders one stratum's exclusion reasons compactly.

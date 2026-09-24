@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"reasonix/internal/cachereason"
 	"slices"
 	"strings"
 	"sync"
@@ -130,7 +131,7 @@ func (s *Session) AddBatch(messages ...provider.Message) {
 
 // SetLeadingSystemPrompt updates or sets the leading system prompt message.
 func (s *Session) SetLeadingSystemPrompt(prompt string) {
-	s.SetLeadingSystemPromptWithReason(prompt, "system_prompt_refresh")
+	s.SetLeadingSystemPromptWithReason(prompt, cachereason.SystemPromptRefresh)
 }
 
 // SetLeadingSystemPromptWithReason refreshes the authoritative system prompt

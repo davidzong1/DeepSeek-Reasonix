@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/cachereason"
 )
 
 // diagnosisObservedAt is a fixed in-window instant, so a windowed test is
@@ -344,4 +346,105 @@ func labelsInReport(report CacheReport) string {
 		labels = append(labels, string(finding.Label))
 	}
 	return strings.Join(labels, ",")
+}
+
+// TestDiagnosisClassifiesEveryDeclaredReason iterates the shared vocabulary
+// rather than a list of its own, so a reason added to internal/cachereason is
+// covered here the moment it is declared. It is the test that would have caught
+// the mis-attributions this vocabulary was created to end: a live rewrite that
+// the report did not know reads as "the prefix moved for no stated cause".
+func TestDiagnosisClassifiesEveryDeclaredReason(t *testing.T) {
+	for _, reason := range cachereason.Values() {
+		t.Run(reason, func(t *testing.T) {
+			kind, ok := cachereason.KindOf(reason)
+			if !ok {
+				t.Fatalf("%q is in the vocabulary but has no kind", reason)
+			}
+			var samples []MemberCacheRequest
+			for i := range 30 {
+				samples = append(samples, changedPrefix(diagnosisSample(string(rune('a'+i%3)), 200_000, 100, 900, 4000), reason))
+			}
+			stat := diagnoseOne(t, samples, defaultDiagnosisGates())
+			labels := labelsOf(stat)
+			if !strings.Contains(labels, string(CacheLabelStablePrefixChanged)) {
+				t.Fatalf("labels = %v, want the prefix change reported", labels)
+			}
+			// A declared value is never unexplained: saying so would tell the
+			// reader to extend a vocabulary that already has it.
+			if strings.Contains(labels, string(CacheLabelUnexplainedPrefixChange)) {
+				t.Fatalf("labels = %v, want no unexplained claim for a declared value", labels)
+			}
+			if len(stat.Diagnosis.Metrics.UnrecognizedChangeReasons) != 0 {
+				t.Fatalf("unrecognized = %v, want none for a declared value", stat.Diagnosis.Metrics.UnrecognizedChangeReasons)
+			}
+			wantRewrite := kind == cachereason.Rewrite
+			if got := strings.Contains(labels, string(CacheLabelRewriteCorrelated)); got != wantRewrite {
+				t.Fatalf("rewrite label = %v, want %v for kind %q (labels %v)", got, wantRewrite, kind, labels)
+			}
+		})
+	}
+}
+
+// TestDiagnosisDisclosesAnUnknownReasonInsteadOfGuessing pins the honest
+// default: a prefix that moves for a reason outside the shared vocabulary is
+// named as unexplained, its value is published, and it is never silently
+// reclassified as a rewrite or as a tail problem.
+func TestDiagnosisDisclosesAnUnknownReasonInsteadOfGuessing(t *testing.T) {
+	var samples []MemberCacheRequest
+	for i := range 30 {
+		samples = append(samples, changedPrefix(diagnosisSample(string(rune('a'+i%3)), 200_000, 100, 900, 4000), "some_future_rewrite"))
+	}
+	stat := diagnoseOne(t, samples, defaultDiagnosisGates())
+	labels := labelsOf(stat)
+	if !strings.Contains(labels, string(CacheLabelUnexplainedPrefixChange)) {
+		t.Fatalf("labels = %v, want the unexplained fallback", labels)
+	}
+	if strings.Contains(labels, string(CacheLabelRewriteCorrelated)) {
+		t.Fatalf("labels = %v, an unknown value must not be read as a rewrite", labels)
+	}
+	if got := strings.Join(stat.Diagnosis.Metrics.UnrecognizedChangeReasons, ","); got != "some_future_rewrite=30" {
+		t.Fatalf("unrecognized = %q, want the value published with its count", got)
+	}
+	if !strings.Contains(stat.Diagnosis.Findings[len(stat.Diagnosis.Findings)-1].Evidence, "some_future_rewrite") {
+		t.Fatalf("the evidence must name the unknown value, got %q", stat.Diagnosis.Findings[0].Evidence)
+	}
+}
+
+// TestDiagnosisTreatsAStructuralChangeAsExplained pins the boundary of the
+// fallback: a tool-surface change is a known reason with a known cause, so it is
+// neither a rewrite nor unexplained — reporting it as unexplained would make the
+// fallback meaningless.
+func TestDiagnosisTreatsAStructuralChangeAsExplained(t *testing.T) {
+	var samples []MemberCacheRequest
+	for i := range 30 {
+		samples = append(samples, changedPrefix(diagnosisSample(string(rune('a'+i%3)), 200_000, 100, 900, 4000), "tools"))
+	}
+	stat := diagnoseOne(t, samples, defaultDiagnosisGates())
+	labels := labelsOf(stat)
+	if !strings.Contains(labels, string(CacheLabelStablePrefixChanged)) {
+		t.Fatalf("labels = %v, want the prefix change reported", labels)
+	}
+	for _, unwanted := range []CacheDiagnosisLabel{CacheLabelUnexplainedPrefixChange, CacheLabelRewriteCorrelated} {
+		if strings.Contains(labels, string(unwanted)) {
+			t.Fatalf("labels = %v, want no %s for a known structural change", labels, unwanted)
+		}
+	}
+}
+
+// TestDiagnosisTreatsAMissingReasonAsUnexplained pins the other half of the
+// fallback: a prefix that moved with no reason at all is exactly what the step
+// exists to surface.
+func TestDiagnosisTreatsAMissingReasonAsUnexplained(t *testing.T) {
+	var samples []MemberCacheRequest
+	for i := range 30 {
+		samples = append(samples, changedPrefix(diagnosisSample(string(rune('a'+i%3)), 200_000, 100, 900, 4000)))
+	}
+	stat := diagnoseOne(t, samples, defaultDiagnosisGates())
+	labels := labelsOf(stat)
+	if !strings.Contains(labels, string(CacheLabelUnexplainedPrefixChange)) {
+		t.Fatalf("labels = %v, want the unexplained fallback for a reason-less change", labels)
+	}
+	if !strings.Contains(stat.Diagnosis.Findings[len(stat.Diagnosis.Findings)-1].Evidence, "no reason") {
+		t.Fatalf("the evidence must say no reason was reported")
+	}
 }

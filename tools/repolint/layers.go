@@ -25,6 +25,7 @@ var leaves = []string{
 	"internal/ablation",
 	"internal/agentpreset",
 	"internal/billing",
+	"internal/cachereason",
 	"internal/diff",
 	"internal/extension/rpcwire",
 	"internal/extensioncontract",

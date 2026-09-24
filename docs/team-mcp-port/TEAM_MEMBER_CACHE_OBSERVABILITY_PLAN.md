@@ -44,7 +44,7 @@
 | `seconds_since_prev_request` | number/optional | 同一 writer/member 的相邻 provider request 间隔；首请求为空。禁止跨 session 计算。 |
 | `prefix_hash`, `stable_prefix_hash` | string/短 hash | 映射 `event.CacheDiagnostics`；不得存原 prompt 或原始工具 schema。 |
 | `prefix_changed`, `stable_prefix_changed` | bool | 原样映射诊断。没有前序 shape 时需以 `diagnostics_available=false` 表示，不能当作 false（未变化）。 |
-| `prefix_change_reasons` | string[] | 受控枚举：当前包括 `system`、`tools`、`session_context` 及内容重写原因（如 `compact_auto`、`snip`、`rewind_truncate`）；未知原因保留原值并归入 unknown 统计。 |
+| `prefix_change_reasons` | string[] | 原值照录，取值来自 `internal/cachereason`（该包是词表唯一 owner，每个值与其类别 structural/rewrite 同处声明）；不在词表内的值保留原值并计入 `unrecognized_change_reasons`，绝不改写或猜测。实现见 §11.13。 |
 | `tool_schema_tokens_estimate` | int | 映射 `ToolSchemaTokens`，字段名明确标识估算值。 |
 | `diagnostics_available` | bool | 是否存在完整诊断对象；nil 和“诊断字段全零”必须区分。 |
 | `session_context_digest`, `session_context_reasons` | string/array/optional | 可选映射 `SessionContext` 的 digest/reasons/section chars；只保留内容无关的 digest、字符数与枚举，不采集内容。 |
@@ -119,7 +119,7 @@
 2. **再确认比较组可比性**：匹配 Team member、provider/model/route、时间窗和 prompt 桶；区分首请求、重写后请求和 warm candidate。缺 route 信息时归为未知，不假设相同 cache scope。
 3. **稳定前缀是否变化**：比较相邻请求 `stable_prefix_hash` 和 `stable_prefix_changed`。变化时按 `system`、`tools`、session context / rewrite reason 统计 miss token 增量；若 hash 变化但 reason 缺失，归为 unexplained-prefix-change，优先补 instrumentation。
 4. **稳定前缀不变但 miss 偏高**：对比绝对 miss token 与 prompt 新增/尾部增长、`tool_schema_tokens_estimate`、时间间隔、model/route。稳定 hash 只覆盖 system/tools，不代表完整 provider 请求前缀稳定；本地目前不能独立精确测量消息尾部，应把该类标为 `stable_prefix_high_miss_unattributed`，避免武断归因 schema。
-5. **重写/压缩关联**：单独对比 `compact_auto`、`snip`、`rewind_truncate`、session-context digest/reason 前后请求；按 first-after-rewrite 和后续请求分别统计。不能只因同轮命中低就断定 compaction 导致 provider cache reset。
+5. **重写/压缩关联**：单独对比带 rewrite 类原因（取自 `internal/cachereason`）与 session-context digest/reason 的前后请求；按 first-after-rewrite 和后续请求分别统计。不能只因同轮命中低就断定 compaction 导致 provider cache reset。
 6. **cache scope/TTL 候选**：在 stable hash、模型、路由可比时，对比间隔分桶与命中率；只报告“与时间/route 关联”，需受控同 route 对照或 provider 证据才能归因为 TTL/账号池。
 7. **归因结果枚举**：`data_quality_or_semantics`、`stable_prefix_changed`、`rewrite_or_compaction_correlated`、`schema_size_correlated`、`tail_growth_or_content_correlated`、`route_or_interval_correlated`、`stable_prefix_high_miss_unattributed`、`insufficient_sample`。允许多标签；没有证据必须保留 unattributed/unknown。
 
@@ -240,7 +240,8 @@ usage event **不携带 provider request id**；`emitTurnUsage` 也不写 `event
 |---|---|
 | `data_quality_or_semantics` | 该层无任何诊断样本；或该层被排除样本占比 ≥20%（附排除原因明细） |
 | `stable_prefix_changed` | stable prefix 变化的样本承担了该层 ≥50% 的 miss token |
-| `rewrite_or_compaction_correlated` | 上述变化样本中带 rewrite 原因（`compact_auto`/`snip`/`rewind_truncate`/`guardian_merge`/`prune`）者承担 ≥50% 的 miss token |
+| `rewrite_or_compaction_correlated` | 上述变化样本中带 rewrite 原因者承担 ≥50% 的 warm miss |
+| `unexplained_prefix_change` | 变化样本的原因缺失，或原因值不在共享词表内（原值照实公布，见 §11.13） |
 | `schema_size_correlated` | 固定前缀样本的 miss 稳定（P90 ≤ 1.5×P10）且中位数落在工具 schema 估算中位数的 **[0.5×, 2×]** 区间内——低于下界说明 schema 大部分已命中，高于上界说明 miss 不是 schema 能解释的 |
 | `tail_growth_or_content_correlated` | 报表级：高 prompt 桶的未命中占比 ≥50% 且 ≥1.5× 最低桶 |
 | `route_or_interval_correlated` | 报表级：间隔分层的加权率极差 ≥10 个百分点（**只报"与时间关联"**，不主张 TTL） |
@@ -350,3 +351,35 @@ members：`cache-small` / `cache-mid` / `cache-large`，各自的开场 brief �
 - **样本只到 `32k_128k`**。600KB 的 brief 经真实 tokenizer 落在 111K token 左右（重复文本的 token/字符比高于 4:1），因此 §6 要求的 512K–1M 桶仍无真实样本，"大上下文命中率分布"这道阶段门仍未通过。要覆盖需要 MB 级 brief。
 - **`tail_growth_or_content_correlated` 与 `route_or_interval_correlated` 仍未在真实样本上触发**：本次所有 warm 请求 miss=0，跨桶增长没有信号；同一成员也未发生路由切换。两者仍只有单测证据。
 - **`cache_write_tokens` 全为 0**：`CacheWriteTokens` 来自响应里的 `cache_creation_input_tokens`，该网关在本轮所有请求上都没有给出该字段（单成员探针的逐请求日志同样每条 `write=0`）。记录如实写 0，报告不据此推断 cache 创建行为——"provider 未报告"不是"没有创建"。
+
+### 11.13 重写原因词表：根因与修复（Part B 交接项）
+
+Part B 交接：`truncate`（溢出救援投影）是真实内容重写，不在我的枚举里；他们按 §3.1"未知原因保留原值"照实发出。
+
+**我在上一轮据此做的修复基于一个错误结论，必须更正。** 我当时只查了 `NoteContentRewrite` 的调用点，得出"唯一生产者是 `projectionRewriteReason`，`snip`/`rewind_truncate`/`guardian_merge` 只存在于注释"——**这是错的**。`Session.Rewrite(msgs, reason)` 是另一条入队路径，`guardian_merge` 与 `rewind_truncate` 都由它发出。逐条枚举**全部**入队路径（`NoteContentRewrite`、`Session.Rewrite`、`SetLeadingSystemPromptWithReason`）后的真实词表是 **13 个值、7 个生产点、5 个包**——其中一个是 `desktop/` 这个**独立 Go module**，只扫 `internal/` 永远看不到它：
+
+| 类别 | 值 | 生产点 |
+|---|---|---|
+| structural | `system`、`tools`、`session_context` | `agent` `CompareShape` |
+| structural | `system_prompt_refresh` | `agent` session（`SetLeadingSystemPrompt` 默认） |
+| structural | `legacy_pinned_system_migration`、`team_role_prompt_refresh` | `control` pinned_context；前者另由 `desktop` session_prompt 发出 |
+| structural | `managed-runtime-activation` | `control` session_write_authority |
+| rewrite | `compact_auto`、`prune`、`truncate` | `agent` `projectionRewriteReason` |
+| rewrite | `rewind_truncate`、`rewind_restore` | `control` rewind |
+| rewrite | `guardian_merge` | `guardian` |
+
+**根因不是"列表写漏了一个值"，而是词表没有单一 owner。** 同一套词表此前写在三个地方——`event` 的字段注释（且已过时，写着从未发出的 `log_rewrite`）、`agent` 的 switch、`team` 的枚举——三处互不一致。更关键的是：**新增一个原因值时，没有任何地方强迫作者决定它的类别**，所以 `truncate` 无声地默认成"不是 rewrite"。证据是三次手写枚举三次都错：规划文档的示例错了（`snip` 从来不是前缀原因）、我的第一版漏了 `truncate`、我的第二版删掉了两个活值并仍漏掉 `rewind_restore`。手写枚举本身就是缺陷。
+
+**修法：`internal/cachereason`（新增 leaf 包）成为词表唯一 owner。**
+
+- 每个值与其**类别**（`Structural`/`Rewrite`）在同一处声明，因此加值必须同时决定类别——这正是此前缺失的那一步。
+- 7 个生产点（含 `desktop/` 模块的那个）全部改为引用常量，不再写字符串字面量。
+- `internal/team` 不再持有任何列表（连派生的也没有）：分类直接走 `KindOf`，所以这个包里没有可以过期的第二份词表。
+- 未声明的值一律 `unrecognized` → `unexplained_prefix_change`，并提示"应扩展词表"——这是诚实的兜底，不是猜测。
+- 它是 leaf（不 import 任何 reasonix 包），因为 `team/doc.go` 要求 team 不引入 agent/provider 树，而 `internal/event` import 了 provider，所以词表不能放在 event。已登记进 `tools/repolint/layers.go` 的 leaves，并在 `TestLayeringContract` 增加三行断言其 leaf 身份与两个合法使用方向。
+- 删除上一轮那个"读 agent 源码做对比"的守卫测试：根因消失后它只是死重量。取而代之的是 `TestDiagnosisClassifiesEveryDeclaredReason`——**遍历 `cachereason.Values()`**，因此新声明的值自动被覆盖，且断言类别与标签一致（rewrite 值必须得到 `rewrite_or_compaction_correlated`，所有已声明值都不得被判为 unexplained）。加值时测试自动扩展，无需同步任何列表。
+- 同时修掉三处会继续传播这个 bug 的过时注释（`event` 字段、`cache_shape.go` 两处、`run_metrics.go`），它们都改指向词表 owner。
+
+**上一轮引入的回归已消除**：`guardian_merge`、`rewind_truncate` 重新被识别为 rewrite，`rewind_restore`、`system_prompt_refresh`、`legacy_pinned_system_migration`、`team_role_prompt_refresh`、`managed-runtime-activation` 首次进入词表。
+
+残留：生产点仍接受 `string` 参数（改为具名类型不能阻止字面量，Go 的未类型化常量会隐式转换），所以理论上仍可写出一个字面量。但那种情况下报告会如实说"未识别的值、请扩展词表"，而不是把它误标成已知原因——失败的代价是可见的，不再是错误的归因。
