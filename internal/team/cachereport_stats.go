@@ -6,6 +6,80 @@ import (
 	"strings"
 )
 
+// CacheReportCoverage is the field-coverage ledger of one report: for every
+// dimension the report groups or excludes by, how many of the scoped samples
+// actually carried it. It counts the samples that entered the member-scoped
+// window, which is the population the baseline and the strata describe, and it
+// is published over every one of them rather than over the included subset:
+// coverage that is only reported for the samples that survived is not coverage.
+//
+// Every counter is a disclosure of absence, never a correction. A sample with
+// no route is not assigned one, and a sample whose request count was defaulted
+// is not reclassified as measured.
+type CacheReportCoverage struct {
+	Scoped int `json:"scoped"`
+	// RequestCountObserved is the only provenance that can qualify a sample as a
+	// single provider request; the other two are the ways a count is not one.
+	RequestCountObserved   int `json:"request_count_observed"`
+	RequestCountDefaulted  int `json:"request_count_defaulted"`
+	RequestCountUnrecorded int `json:"request_count_unrecorded"`
+	// RequestCountUnrecognized counts samples whose source value is outside the
+	// vocabulary. They are treated as unverified, and named here so a producer
+	// that grew a value is visible instead of silently absorbed.
+	RequestCountUnrecognized int `json:"request_count_unrecognized"`
+	// UsageSource counts samples by whether the emitting event named the billable
+	// call source (executor, planner, compaction, …).
+	UsageSourcePresent int `json:"usage_source_present"`
+	UsageSourceAbsent  int `json:"usage_source_absent"`
+	// RouteBucket and ModelRef count samples by whether the request could be
+	// located to one provider cache scope and one model.
+	RouteBucketPresent int `json:"route_bucket_present"`
+	RouteBucketAbsent  int `json:"route_bucket_absent"`
+	ModelRefPresent    int `json:"model_ref_present"`
+	ModelRefAbsent     int `json:"model_ref_absent"`
+	// DiagnosticsPresent counts samples that carried a prefix diagnosis. A sample
+	// without one is not evidence that its prefix stayed put.
+	DiagnosticsPresent int `json:"diagnostics_present"`
+	DiagnosticsAbsent  int `json:"diagnostics_absent"`
+}
+
+// observe files one scoped sample into the coverage ledger.
+func (c *CacheReportCoverage) observe(rec MemberCacheRequest) {
+	c.Scoped++
+	switch rec.RequestCountSource {
+	case RequestCountObserved:
+		c.RequestCountObserved++
+	case RequestCountDefaulted:
+		c.RequestCountDefaulted++
+	case RequestCountUnrecorded, "":
+		// An empty value is a document written before the field existed, which is
+		// the same fact as a source that recorded none: nobody can audit the count.
+		c.RequestCountUnrecorded++
+	default:
+		c.RequestCountUnrecognized++
+	}
+	if strings.TrimSpace(rec.UsageSource) == "" {
+		c.UsageSourceAbsent++
+	} else {
+		c.UsageSourcePresent++
+	}
+	if strings.TrimSpace(rec.RouteBucket) == "" {
+		c.RouteBucketAbsent++
+	} else {
+		c.RouteBucketPresent++
+	}
+	if strings.TrimSpace(rec.ModelRef) == "" {
+		c.ModelRefAbsent++
+	} else {
+		c.ModelRefPresent++
+	}
+	if rec.DiagnosticsAvailable {
+		c.DiagnosticsPresent++
+	} else {
+		c.DiagnosticsAbsent++
+	}
+}
+
 // CacheRateStats is a distribution of per-request cache hit rates. Percentiles
 // are nearest-rank over the eligible requests, so every published value is one
 // a request actually had.
@@ -37,6 +111,28 @@ func (t CacheTokenTotals) Rate() (float64, bool) {
 		return 0, false
 	}
 	return float64(t.HitTokens) / float64(total), true
+}
+
+// MissTokensPerRequest is the stratum's mean uncached prompt per request, and
+// reports false when there is no request to divide by. It is published beside
+// the rate because a rate alone cannot say whether a change moved the uncached
+// work or only the composition of the prompt: a request set whose fixed
+// overhead is constant shows a rising rate as its prompt grows, with no request
+// actually costing less. A candidate optimization is judged on this column.
+func (t CacheTokenTotals) MissTokensPerRequest() (float64, bool) {
+	if t.Requests <= 0 {
+		return 0, false
+	}
+	return float64(t.MissTokens) / float64(t.Requests), true
+}
+
+// HitTokensPerRequest is the companion of MissTokensPerRequest, so a reader can
+// see both halves of the prompt per request without re-deriving them.
+func (t CacheTokenTotals) HitTokensPerRequest() (float64, bool) {
+	if t.Requests <= 0 {
+		return 0, false
+	}
+	return float64(t.HitTokens) / float64(t.Requests), true
 }
 
 // CacheMemberRate is one member's contribution inside a group.

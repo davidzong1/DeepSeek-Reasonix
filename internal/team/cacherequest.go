@@ -84,15 +84,19 @@ type MemberCacheRequest struct {
 	CacheHitTokens      int `json:"cache_hit_tokens"`
 	CacheMissTokens     int `json:"cache_miss_tokens"`
 	// CacheWriteTokens is a subset of CacheMissTokens, never an addition to it.
-	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
-	CompletionTokens int    `json:"completion_tokens,omitempty"`
-	RequestCount     int    `json:"request_count"`
-	UsageUnknown     bool   `json:"usage_unknown,omitempty"`
-	UsageEstimated   bool   `json:"usage_estimated,omitempty"`
-	UsageSource      string `json:"usage_source,omitempty"`
-	FinishReason     string `json:"finish_reason,omitempty"`
-	ContextUsed      int    `json:"context_used,omitempty"`
-	ContextWindow    int    `json:"context_window,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	RequestCount     int `json:"request_count"`
+	// RequestCountSource names where RequestCount came from. The compatibility
+	// rule "zero means one" cannot express "nobody measured it", so a reader that
+	// must not treat an unmeasured request as a single one reads this instead.
+	RequestCountSource string `json:"request_count_source,omitempty"`
+	UsageUnknown       bool   `json:"usage_unknown,omitempty"`
+	UsageEstimated     bool   `json:"usage_estimated,omitempty"`
+	UsageSource        string `json:"usage_source,omitempty"`
+	FinishReason       string `json:"finish_reason,omitempty"`
+	ContextUsed        int    `json:"context_used,omitempty"`
+	ContextWindow      int    `json:"context_window,omitempty"`
 	// AccountingValid is false when the token fields are negative or the cache
 	// split does not close against the prompt. The values themselves are stored
 	// unmodified: a quality anomaly is reported, never silently corrected.
@@ -110,6 +114,43 @@ type MemberCacheRequest struct {
 	ToolSchemaTokensEstimate int      `json:"tool_schema_tokens_estimate,omitempty"`
 	SessionContextDigest     string   `json:"session_context_digest,omitempty"`
 	SessionContextReasons    []string `json:"session_context_reasons,omitempty"`
+}
+
+// Request-count provenance. The vocabulary is closed and additive: a reader
+// that meets a value it does not know must treat the count as unverified, which
+// is the safe direction for a sample that may enter a rate. "The usage said
+// one" and "the usage said nothing, so one was assumed" are different facts,
+// and the compatibility rule "zero means one" cannot express the second.
+const (
+	// RequestCountObserved means the emitted usage carried a count a producer had
+	// actually measured — the HTTP attempt count of the stream it came from.
+	RequestCountObserved = "observed"
+	// RequestCountDefaulted means the usage carried no count and the writer stored
+	// the compatibility default of one request.
+	RequestCountDefaulted = "defaulted"
+	// RequestCountUnrecorded means the source recorded no provenance at all: a
+	// document written before this field existed, or a foreign line. The count
+	// beside it is an assumption the reader cannot audit.
+	RequestCountUnrecorded = "unrecorded"
+)
+
+// RequestCountVerified reports whether this record's request count is a
+// measurement. Only a verified count of exactly one qualifies a sample as a
+// single provider request; everything else is a disclosed exclusion.
+func (r MemberCacheRequest) RequestCountVerified() bool {
+	return r.RequestCountSource == RequestCountObserved
+}
+
+// RequestCountSourceOf names the provenance of one usage's request count from
+// the two facts the producer has: the count it will store and whether that
+// count was measured. It lives here rather than in the writer so the vocabulary
+// has one owner, and the cli layer — the only place the provider tree and this
+// package meet — passes the primitives in.
+func RequestCountSourceOf(count int, observed bool) string {
+	if observed && count > 0 {
+		return RequestCountObserved
+	}
+	return RequestCountDefaulted
 }
 
 // Accounting reports whether the record's token fields are internally

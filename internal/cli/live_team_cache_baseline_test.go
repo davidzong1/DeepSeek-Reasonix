@@ -259,12 +259,22 @@ func assertLiveCachePipeline(t *testing.T, requests []team.MemberCacheRequest, r
 		if rec.RequestCount > 1 {
 			t.Fatalf("record %d is a multi-request aggregate, which a single turn must not produce (%+v)", i, rec)
 		}
+		if !rec.RequestCountVerified() {
+			t.Fatalf("record %d carries an unverified request count (%q), so it cannot enter the per-request baseline",
+				i, rec.RequestCountSource)
+		}
 	}
 	if got := report.Exclusions.Received; got != len(requests) {
 		t.Fatalf("report received %d samples for %d records", got, len(requests))
 	}
 	if report.Exclusions.Included+report.Exclusions.OutsideWindow+report.Exclusions.NonMemberScope != len(requests) {
 		t.Fatalf("report does not account for every sample: %+v", report.Exclusions)
+	}
+	if report.Exclusions.UnverifiedRequestCount != 0 {
+		t.Fatalf("a live member run must record a measured request count for every sample: %+v", report.Exclusions)
+	}
+	if report.Coverage.RequestCountObserved != len(requests) {
+		t.Fatalf("coverage = %+v, want every received sample's count measured", report.Coverage)
 	}
 	if len(report.Buckets) == 0 {
 		t.Fatal("no bucket was reached, so the baseline reports nothing")
@@ -439,12 +449,15 @@ func waitForTeamCacheRecords(t *testing.T, owners *team.OwnerStore) []team.Membe
 	return last
 }
 
+// logLiveTeamRecords prints one line per record, including the request-count
+// provenance, so a reader of the live evidence can see whether the baseline it
+// produced was built from measured counts or from the compatibility default.
 func logLiveTeamRecords(t *testing.T, requests []team.MemberCacheRequest) {
 	t.Helper()
 	for _, rec := range requests {
-		t.Logf("member=%s seq=%d bucket=%s route=%s prompt=%d hit=%d miss=%d reasons=%v",
+		t.Logf("member=%s seq=%d bucket=%s route=%s prompt=%d hit=%d miss=%d reqsrc=%s reasons=%v",
 			rec.MemberID, rec.SessionRequestSeq, team.CacheRequestBucketOf(rec.ContextPromptTokens), rec.RouteBucket,
-			rec.ContextPromptTokens, rec.CacheHitTokens, rec.CacheMissTokens, rec.PrefixChangeReasons)
+			rec.ContextPromptTokens, rec.CacheHitTokens, rec.CacheMissTokens, rec.RequestCountSource, rec.PrefixChangeReasons)
 	}
 }
 

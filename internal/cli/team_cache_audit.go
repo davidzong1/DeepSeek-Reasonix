@@ -52,6 +52,22 @@ type ledgerRow struct {
 	CacheHit   int       `json:"cache_hit"`
 	CacheMiss  int       `json:"cache_miss"`
 	Requests   int       `json:"requests"`
+	// RequestsObserved is the provenance of Requests. A row written before the
+	// field existed leaves it false, so its count cannot be told apart from the
+	// "zero means one" default and stays unverified.
+	RequestsObserved bool `json:"requests_observed"`
+}
+
+// requestCountSource names where one ledger row's request count came from, in
+// the same closed vocabulary the member records use. The ledger has one extra
+// way to be unverified: the field was not written at all. A row the writer
+// marked as measured but left without a count is unrecorded too — the marker
+// without a count is not a measurement.
+func (r ledgerRow) requestCountSource() string {
+	if r.RequestsObserved && r.Requests > 0 {
+		return team.RequestCountObserved
+	}
+	return team.RequestCountUnrecorded
 }
 
 // ledgerQuality is what the audit can say about the rows it read, before any
@@ -63,9 +79,13 @@ type ledgerQuality struct {
 	MissingSplit     int
 	AggregateRows    int
 	DoubleCountShape int
-	ModelRefs        []string
-	FirstObserved    string
-	LastObserved     string
+	// CountVerifiedRows counts the rows whose request count the writer marked as
+	// measured. Every other row carries a count this audit cannot audit, which is
+	// why the ledger's per-request baseline is unavailable rather than small.
+	CountVerifiedRows int
+	ModelRefs         []string
+	FirstObserved     string
+	LastObserved      string
 }
 
 // teamCacheAuditCommand renders one reproducible audit of the historical
@@ -276,7 +296,7 @@ func ledgerWindowContains(window cacheReportWindow, at time.Time) bool {
 // again after clipping so the published counters describe the rows actually
 // used, not the rows read.
 func (q *ledgerQuality) observe(rows []ledgerRow) {
-	q.MissingSplit, q.AggregateRows, q.DoubleCountShape = 0, 0, 0
+	q.MissingSplit, q.AggregateRows, q.DoubleCountShape, q.CountVerifiedRows = 0, 0, 0, 0
 	q.FirstObserved, q.LastObserved = "", ""
 	for _, row := range rows {
 		if row.CacheHit+row.CacheMiss <= 0 {
@@ -284,6 +304,9 @@ func (q *ledgerQuality) observe(rows []ledgerRow) {
 		}
 		if row.Requests > 1 {
 			q.AggregateRows++
+		}
+		if row.RequestsObserved && row.Requests > 0 {
+			q.CountVerifiedRows++
 		}
 		// The double-count signature: with an inclusive upstream read as
 		// exclusive, prompt - 2*hit lands small and positive. It is a heuristic
@@ -372,7 +395,7 @@ func ledgerRecords(rows []ledgerRow) []team.MemberCacheRequest {
 			RouteBucket:  ledgerRouteID(row.Model),
 			PromptTokens: row.Prompt, ContextPromptTokens: contextPrompt,
 			CacheHitTokens: row.CacheHit, CacheMissTokens: row.CacheMiss,
-			RequestCount: requests,
+			RequestCount: requests, RequestCountSource: row.requestCountSource(),
 		})
 	}
 	return out
@@ -409,12 +432,15 @@ func renderCacheAudit(report team.CacheReport, quality ledgerQuality, dir, clock
 	fmt.Fprintf(&b, "data quality: missing cache split %d  multi-request aggregates %d (booked separately, see exclusions)  "+
 		"double-count shape (0 < prompt-2*hit < 500) %d\n",
 		quality.MissingSplit, quality.AggregateRows, quality.DoubleCountShape)
+	fmt.Fprintf(&b, "request-count provenance: measured %d of %d rows; the rest carry a count no writer marked as measured\n",
+		quality.CountVerifiedRows, quality.Rows)
 	b.WriteString("\nwhat this audit cannot establish\n")
 	fmt.Fprintf(&b, "  - raw provider counters: the adapter normalizes them, so this ledger cannot independently verify upstream accounting\n")
 	fmt.Fprintf(&b, "  - a confirmed cold start: hit == 0 means no cache read was reported, and these rows carry no session identity\n")
 	fmt.Fprintf(&b, "  - a prefix-change cause: the ledger predates prefix diagnostics, so P1 (prefix moved) and P2 (content grew) are indistinguishable here\n")
 	fmt.Fprintf(&b, "  - member attribution: %s is a route label derived from the model ref, never a Team member id\n", ledgerTeamID)
 	fmt.Fprintf(&b, "  - the request prompt of a multi-request row: its prompt is an aggregate over attempts, so only single-request rows carry a bucket key\n")
+	fmt.Fprintf(&b, "  - a per-request rate over rows whose count is unverified: such a row may describe one request or several, so it is excluded from the per-request baseline and booked into the all-samples total instead\n")
 	b.WriteString("\n")
 	b.WriteString(renderCacheReport(report))
 	return b.String()

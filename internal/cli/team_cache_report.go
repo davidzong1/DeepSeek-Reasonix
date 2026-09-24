@@ -293,6 +293,40 @@ func cacheReportOutput(out string) (*os.File, func(), error) {
 	return f, func() { _ = f.Close() }, nil
 }
 
+// renderCacheCoverage renders the field-coverage ledger, which is what says how
+// much of the report rests on dimensions that were actually present. It is
+// printed above every rate because a rate read without it is a claim about a
+// population the reader has not seen.
+func renderCacheCoverage(report team.CacheReport) string {
+	c := report.Coverage
+	if c.Scoped == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "coverage over %d scoped samples: request_count measured=%d defaulted=%d unrecorded=%d unrecognized=%d\n",
+		c.Scoped, c.RequestCountObserved, c.RequestCountDefaulted, c.RequestCountUnrecorded, c.RequestCountUnrecognized)
+	fmt.Fprintf(&b, "  route_bucket=%d/%d model_ref=%d/%d usage_source=%d/%d prefix_diagnostics=%d/%d (present/scoped)\n",
+		c.RouteBucketPresent, c.Scoped, c.ModelRefPresent, c.Scoped,
+		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped)
+	return b.String()
+}
+
+// renderCacheAllSamples renders the whole-input token ledger beside the
+// baseline. The baseline answers "how were the requests I could measure
+// served"; this answers "how were all the tokens I read served", and the two are
+// different numbers whenever anything was excluded.
+func renderCacheAllSamples(report team.CacheReport) string {
+	totals := report.AllSamplesTotals()
+	if totals.HitTokens+totals.MissTokens <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("all samples (baseline + booked exclusions, never a per-request rate): "+
+		"hit=%d miss=%d weighted=%s  booked: aggregate hit=%d miss=%d  unverified_count hit=%d miss=%d\n",
+		totals.HitTokens, totals.MissTokens, formatCacheRate(totals.Rate()),
+		report.Exclusions.AggregateHitTokens, report.Exclusions.AggregateMissTokens,
+		report.Exclusions.UnverifiedHitTokens, report.Exclusions.UnverifiedMissTokens)
+}
+
 // renderCacheReport renders the human summary. Every rate is printed with its
 // sample counts, so a number is never read without the weight behind it.
 func renderCacheReport(report team.CacheReport) string {
@@ -310,11 +344,14 @@ func renderCacheReport(report team.CacheReport) string {
 	fmt.Fprintf(&b, "routes: %s\n", orDash(strings.Join(report.RouteBuckets, ", ")))
 	fmt.Fprintf(&b, "prompt basis: context=%d fallback=%d missing=%d\n",
 		report.PromptBasis.ContextPrompt, report.PromptBasis.PromptFallback, report.PromptBasis.Missing)
-	fmt.Fprintf(&b, "exclusions: received=%d included=%d outside_window=%d unknown=%d estimated=%d aggregate=%d accounting_invalid=%d no_split=%d unparsable_ts=%d non_member=%d\n",
+	fmt.Fprintf(&b, "exclusions: received=%d included=%d outside_window=%d unknown=%d estimated=%d aggregate=%d accounting_invalid=%d no_split=%d unparsable_ts=%d non_member=%d unverified_count=%d\n",
 		report.Exclusions.Received, report.Exclusions.Included, report.Exclusions.OutsideWindow,
 		report.Exclusions.UnknownUsage, report.Exclusions.EstimatedUsage, report.Exclusions.AggregateRequests,
 		report.Exclusions.AccountingInvalid, report.Exclusions.NoCacheSplit,
-		report.Exclusions.UnparsableObserved, report.Exclusions.NonMemberScope)
+		report.Exclusions.UnparsableObserved, report.Exclusions.NonMemberScope,
+		report.Exclusions.UnverifiedRequestCount)
+	b.WriteString(renderCacheCoverage(report))
+	b.WriteString(renderCacheAllSamples(report))
 	fmt.Fprint(&b, "\noverall (request-level, eligible samples only)\n")
 	b.WriteString(renderCacheGroup(report.Overall))
 	b.WriteString("\nby prompt bucket\n")
@@ -359,9 +396,10 @@ func renderCacheGroup(group team.CacheGroupStat) string {
 		formatCacheRate(group.Weighted, group.HasRate),
 		formatCacheRate(group.MemberSimpleMean, group.HasMemberMean),
 		formatPercentiles(group.Requests), gate)
-	fmt.Fprintf(&b, "      coverage: received=%d included=%d excluded=%d%s  mean_prompt=%.0f\n",
+	fmt.Fprintf(&b, "      coverage: received=%d included=%d excluded=%d%s  mean_prompt=%.0f  hit/req=%.0f miss/req=%.0f\n",
 		group.Coverage.Received, group.Coverage.Included, group.Coverage.Excluded,
-		formatExclusionReasons(group.Coverage.Reasons), group.MeanPromptTokens)
+		formatExclusionReasons(group.Coverage.Reasons), group.MeanPromptTokens,
+		group.HitTokensPerRequest, group.MissTokensPerRequest)
 	for _, member := range group.MembersOf {
 		fmt.Fprintf(&b, "      member %-14s requests=%-6d weighted=%s mean_request=%s\n",
 			member.MemberID, member.Requests,
@@ -387,6 +425,7 @@ func formatExclusionReasons(reasons team.CacheGroupExclusions) string {
 		{"accounting_invalid", reasons.AccountingInvalid},
 		{"no_split", reasons.NoCacheSplit},
 		{"unparsable_ts", reasons.UnparsableObserved},
+		{"unverified_count", reasons.UnverifiedRequestCount},
 	} {
 		if entry.count > 0 {
 			parts = append(parts, fmt.Sprintf("%s=%d", entry.name, entry.count))

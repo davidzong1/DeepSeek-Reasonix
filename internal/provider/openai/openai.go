@@ -626,7 +626,8 @@ func emitUsageAndDone(ctx context.Context, out chan<- provider.Chunk, usage *pro
 
 // mergeUsage folds token counters. countRequests is false for multiple usage
 // chunks from one HTTP stream (keep its request count), and true when combining
-// distinct prefix-continuation requests (sum their request counts).
+// distinct prefix-continuation requests (sum their request counts). The merged
+// count is a measurement only while every part was one.
 func mergeUsage(total, next *provider.Usage, countRequests bool) *provider.Usage {
 	if next == nil {
 		return total
@@ -635,8 +636,8 @@ func mergeUsage(total, next *provider.Usage, countRequests bool) *provider.Usage
 		clone := *next
 		return &clone
 	}
-	totalRequests := usageRequestCount(total)
-	nextRequests := usageRequestCount(next)
+	totalRequests := max(total.RequestCount, 1)
+	nextRequests := max(next.RequestCount, 1)
 	total.PromptTokens += next.PromptTokens
 	total.CompletionTokens += next.CompletionTokens
 	total.TotalTokens += next.TotalTokens
@@ -652,15 +653,9 @@ func mergeUsage(total, next *provider.Usage, countRequests bool) *provider.Usage
 	} else {
 		total.RequestCount = totalRequests
 	}
+	total.RequestCountObserved = total.RequestCountObserved && next.RequestCountObserved
 	total.FinishReason = next.FinishReason
 	return total
-}
-
-func usageRequestCount(usage *provider.Usage) int {
-	if usage != nil && usage.RequestCount > 0 {
-		return usage.RequestCount
-	}
-	return 1
 }
 
 // streamOnce drives a single body read. Mid-stream transport cuts become

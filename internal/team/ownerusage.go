@@ -42,10 +42,14 @@ type OwnerUsageLastTurn struct {
 	// Additive request-shape fields. They say what kind of usage the numbers
 	// above describe, so a reader never reads an aggregate or an estimate as one
 	// exact request. Older documents simply lack them.
-	RequestCount        int  `json:"request_count,omitempty"`
-	Estimated           bool `json:"estimated,omitempty"`
-	CacheWriteTokens    int  `json:"cache_write_tokens,omitempty"`
-	ContextPromptTokens int  `json:"context_prompt_tokens,omitempty"`
+	RequestCount int `json:"request_count,omitempty"`
+	// RequestCountSource is the provenance of RequestCount, in the same closed
+	// vocabulary MemberCacheRequest uses. Absent on a document written before it
+	// existed, which is the unverified case rather than a measured one.
+	RequestCountSource  string `json:"request_count_source,omitempty"`
+	Estimated           bool   `json:"estimated,omitempty"`
+	CacheWriteTokens    int    `json:"cache_write_tokens,omitempty"`
+	ContextPromptTokens int    `json:"context_prompt_tokens,omitempty"`
 	// CacheDiagnostics is the content-free prefix diagnosis of the latest
 	// observed request, for the status band. Absent for a writer that has
 	// published no diagnostics, which is not the same as "nothing changed".

@@ -160,6 +160,12 @@ type CacheGroupStat struct {
 	// MeanPromptTokens is the stratum's mean bucket key, so a reader can see the
 	// request size a rate describes without re-deriving it.
 	MeanPromptTokens float64 `json:"mean_prompt_tokens"`
+	// HitTokensPerRequest/MissTokensPerRequest are the two halves of the prompt
+	// per request, published beside the rate because the rate alone cannot say
+	// whether the uncached work moved or only the prompt's composition did.
+	HitTokensPerRequest  float64 `json:"hit_tokens_per_request"`
+	MissTokensPerRequest float64 `json:"miss_tokens_per_request"`
+	HasPerRequestTokens  bool    `json:"has_per_request_tokens"`
 	// MemberSimpleMean is the equal-weight mean of the members' token-weighted
 	// rates, so it differs from the group's own weighted rate whenever members
 	// differ in size. It is the primary cross-member figure.
@@ -183,6 +189,23 @@ type CacheGroupExclusions struct {
 	AccountingInvalid  int `json:"accounting_invalid"`
 	NoCacheSplit       int `json:"no_cache_split"`
 	UnparsableObserved int `json:"unparsable_observed_at"`
+	// UnverifiedRequestCount counts samples whose request count was not a
+	// measurement. The count beside such a sample may read 1, but nobody
+	// observed it, so it cannot qualify the sample as a single provider request.
+	UnverifiedRequestCount int `json:"unverified_request_count"`
+}
+
+// add folds one sample's exclusion reasons into this ledger. Reasons are
+// independent, so a sample that is both estimated and an aggregate advances both
+// counters: this is a disclosure, not a partition.
+func (e *CacheGroupExclusions) add(reasons CacheGroupExclusions) {
+	e.UnknownUsage += reasons.UnknownUsage
+	e.EstimatedUsage += reasons.EstimatedUsage
+	e.AggregateRequests += reasons.AggregateRequests
+	e.AccountingInvalid += reasons.AccountingInvalid
+	e.NoCacheSplit += reasons.NoCacheSplit
+	e.UnparsableObserved += reasons.UnparsableObserved
+	e.UnverifiedRequestCount += reasons.UnverifiedRequestCount
 }
 
 // CacheGroupCoverage is one stratum's receive ledger. Excluded and Included are
@@ -225,11 +248,34 @@ type CacheReportExclusions struct {
 	NoCacheSplit       int `json:"no_cache_split"`
 	UnparsableObserved int `json:"unparsable_observed_at"`
 	NonMemberScope     int `json:"non_member_scope"`
+	// UnverifiedRequestCount counts samples excluded because their request count
+	// was not a measurement, so no per-request rate may be computed from them.
+	UnverifiedRequestCount int `json:"unverified_request_count"`
 	// AggregateHitTokens/AggregateMissTokens are the tokens the excluded
 	// multi-request aggregates carried, so an all-samples rate adds them back
 	// explicitly instead of finding the totals quietly short.
 	AggregateHitTokens  int `json:"aggregate_hit_tokens"`
 	AggregateMissTokens int `json:"aggregate_miss_tokens"`
+	// UnverifiedHitTokens/UnverifiedMissTokens are the tokens the samples with an
+	// unverified request count carried, booked apart exactly as the aggregates are.
+	UnverifiedHitTokens  int `json:"unverified_hit_tokens"`
+	UnverifiedMissTokens int `json:"unverified_miss_tokens"`
+}
+
+// AllSamplesTotals is the report's whole-input token ledger: the baseline plus
+// every excluded class whose tokens were booked. A reader who wants "how were
+// all the tokens I read served" adds them back here instead of re-deriving the
+// exclusions, and a reader who wants the baseline reads Overall.
+//
+// The two unverified classes are named apart from the aggregates because they
+// answer different questions: an aggregate is one sample describing several
+// requests, while an unverified count is one sample whose request count nobody
+// measured. Both are unfit for a per-request rate, and neither is a miss.
+func (r CacheReport) AllSamplesTotals() CacheTokenTotals {
+	totals := r.Overall.Totals
+	totals.HitTokens += r.Exclusions.AggregateHitTokens + r.Exclusions.UnverifiedHitTokens
+	totals.MissTokens += r.Exclusions.AggregateMissTokens + r.Exclusions.UnverifiedMissTokens
+	return totals
 }
 
 // CacheSessionTotals is one member's published session cache ledger: the input
@@ -303,6 +349,9 @@ type CacheReport struct {
 	Intervals    []CacheGroupStat      `json:"intervals"`
 	PromptBasis  CachePromptBasis      `json:"prompt_basis"`
 	Exclusions   CacheReportExclusions `json:"exclusions"`
+	// Coverage is the field-coverage ledger over the member-scoped samples: how
+	// much of the report rests on a dimension that was actually present.
+	Coverage CacheReportCoverage `json:"coverage"`
 	// Diagnosis holds the findings that compare strata with each other, which no
 	// single stratum can state on its own.
 	Diagnosis []CacheFinding `json:"diagnosis,omitempty"`
@@ -367,13 +416,11 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 			report.Exclusions.NonMemberScope++
 			continue
 		}
+		report.Coverage.observe(rec)
 		bucket := in.bucketKeyOf(rec, &report.PromptBasis)
 		if eligible := cacheRequestIsBaselineEligible(rec); !eligible {
 			countCacheExclusions(rec, &report.Exclusions)
-			if rec.RequestCount > 1 {
-				report.Exclusions.AggregateHitTokens += rec.CacheHitTokens
-				report.Exclusions.AggregateMissTokens += rec.CacheMissTokens
-			}
+			bookExcludedTokens(rec, &report.Exclusions)
 			groups.buckets[bucket].exclude(rec)
 			continue
 		}
@@ -470,6 +517,9 @@ func cacheExclusionReasons(rec MemberCacheRequest) CacheGroupExclusions {
 	if rec.RequestCount > 1 {
 		out.AggregateRequests = 1
 	}
+	if !rec.RequestCountVerified() || rec.RequestCount <= 0 {
+		out.UnverifiedRequestCount = 1
+	}
 	if valid, _ := rec.Accounting(); !valid {
 		out.AccountingInvalid = 1
 	}
@@ -482,6 +532,22 @@ func cacheExclusionReasons(rec MemberCacheRequest) CacheGroupExclusions {
 	return out
 }
 
+// bookExcludedTokens records the tokens of one excluded sample in the class its
+// request count puts it in. Each sample's tokens are booked exactly once — an
+// aggregate first, since a multi-request row's tokens describe several requests
+// — so the all-samples total stays a sum of disjoint classes rather than
+// double-counting a sample that is both an aggregate and unverified.
+func bookExcludedTokens(rec MemberCacheRequest, out *CacheReportExclusions) {
+	switch {
+	case rec.RequestCount > 1:
+		out.AggregateHitTokens += rec.CacheHitTokens
+		out.AggregateMissTokens += rec.CacheMissTokens
+	case !rec.RequestCountVerified() || rec.RequestCount <= 0:
+		out.UnverifiedHitTokens += rec.CacheHitTokens
+		out.UnverifiedMissTokens += rec.CacheMissTokens
+	}
+}
+
 // countCacheExclusions books one sample's exclusion reasons into the report's
 // whole-input ledger.
 func countCacheExclusions(rec MemberCacheRequest, out *CacheReportExclusions) {
@@ -492,12 +558,17 @@ func countCacheExclusions(rec MemberCacheRequest, out *CacheReportExclusions) {
 	out.AccountingInvalid += reasons.AccountingInvalid
 	out.NoCacheSplit += reasons.NoCacheSplit
 	out.UnparsableObserved += reasons.UnparsableObserved
-}
-
-// cacheRequestIsBaselineEligible reports whether one sample may enter the main
+	out.UnverifiedRequestCount += reasons.UnverifiedRequestCount
+} // cacheRequestIsBaselineEligible reports whether one sample may enter the main
 // baseline: an exact, single-request, accounting-valid usage that reported a
 // cache split and carries a usable observation time. Everything else is
 // disclosed in the exclusion ledger instead, never silently corrected.
+//
+// A single provider request must be verified, not assumed. RequestCount's
+// compatibility rule reads a missing count as one, so accepting that value would
+// let a sample nobody measured into a per-request rate — the one place the
+// default is not good enough. A verified count of one is the only shape that
+// qualifies.
 //
 // The accounting verdict is recomputed from the values rather than read from the
 // stored flag: the record's flag says what the writer found, but a reader that
@@ -506,6 +577,9 @@ func countCacheExclusions(rec MemberCacheRequest, out *CacheReportExclusions) {
 // default.
 func cacheRequestIsBaselineEligible(rec MemberCacheRequest) bool {
 	if rec.UsageUnknown || rec.UsageEstimated || rec.RequestCount > 1 {
+		return false
+	}
+	if !rec.RequestCountVerified() || rec.RequestCount <= 0 {
 		return false
 	}
 	if valid, _ := rec.Accounting(); !valid {
@@ -634,13 +708,7 @@ func (a *cacheAccumulator) add(rec MemberCacheRequest, rate float64) {
 // them.
 func (a *cacheAccumulator) exclude(rec MemberCacheRequest) {
 	a.excluded++
-	reasons := cacheExclusionReasons(rec)
-	a.reasons.UnknownUsage += reasons.UnknownUsage
-	a.reasons.EstimatedUsage += reasons.EstimatedUsage
-	a.reasons.AggregateRequests += reasons.AggregateRequests
-	a.reasons.AccountingInvalid += reasons.AccountingInvalid
-	a.reasons.NoCacheSplit += reasons.NoCacheSplit
-	a.reasons.UnparsableObserved += reasons.UnparsableObserved
+	a.reasons.add(cacheExclusionReasons(rec))
 }
 
 // coverage is this stratum's receive ledger. Included is the eligible count and
@@ -663,6 +731,8 @@ func (a *cacheAccumulator) stat(key string, gates cacheGroupGates) CacheGroupSta
 	if a.requests > 0 {
 		stat.MeanPromptTokens = float64(a.prompt) / float64(a.requests)
 	}
+	stat.HitTokensPerRequest, _ = totals.HitTokensPerRequest()
+	stat.MissTokensPerRequest, stat.HasPerRequestTokens = totals.MissTokensPerRequest()
 	stat.Weighted, stat.HasRate = totals.Rate()
 	stat.MembersOf = a.memberRates()
 	stat.MemberSimpleMean, stat.HasMemberMean = simpleMeanOfMembers(stat.MembersOf)

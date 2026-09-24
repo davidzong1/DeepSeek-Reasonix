@@ -181,13 +181,16 @@ func collectLiveMemberRecords(t *testing.T, owners *team.OwnerStore, teamName st
 	return out
 }
 
+// logLiveMemberRecords prints one line per record, including the request-count
+// provenance: a member baseline is only quotable when every sample's count was
+// measured, so the evidence line says which it was.
 func logLiveMemberRecords(t *testing.T, requests []team.MemberCacheRequest) {
 	t.Helper()
 	for _, rec := range requests {
-		t.Logf("member=%-12s route=%s seq=%d prompt=%d hit=%d miss=%d reqs=%d diag=%v stable_changed=%v reasons=%v schema=%d",
+		t.Logf("member=%-12s route=%s seq=%d prompt=%d hit=%d miss=%d reqs=%d reqsrc=%s diag=%v stable_changed=%v reasons=%v schema=%d",
 			rec.MemberID, rec.RouteBucket, rec.SessionRequestSeq, rec.ContextPromptTokens,
-			rec.CacheHitTokens, rec.CacheMissTokens, rec.RequestCount, rec.DiagnosticsAvailable,
-			rec.StablePrefixChanged, rec.PrefixChangeReasons, rec.ToolSchemaTokensEstimate)
+			rec.CacheHitTokens, rec.CacheMissTokens, rec.RequestCount, rec.RequestCountSource,
+			rec.DiagnosticsAvailable, rec.StablePrefixChanged, rec.PrefixChangeReasons, rec.ToolSchemaTokensEstimate)
 	}
 }
 
@@ -212,5 +215,10 @@ func assertLiveMemberReport(t *testing.T, report team.CacheReport, bindings []te
 		if group.Coverage.Received == 0 {
 			t.Fatalf("bucket %s reports no received samples", group.Key)
 		}
+	}
+	// A member baseline is only quotable when every sample's request count was
+	// measured; the unverified path is excluded, not assumed away.
+	if report.Coverage.RequestCountObserved != report.Coverage.Scoped || report.Exclusions.UnverifiedRequestCount != 0 {
+		t.Fatalf("coverage = %+v, want every received sample's count measured", report.Coverage)
 	}
 }

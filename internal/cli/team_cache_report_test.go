@@ -56,12 +56,16 @@ func (f cacheReportFixture) seed(t *testing.T, requests []team.MemberCacheReques
 }
 
 // reportRequest is one record with the bucket key and cache split under test.
+// The request count is marked observed, which is what the baseline now requires:
+// a fixture that left the provenance unset would exercise the unverified path by
+// accident.
 func reportRequest(promptPrompt, hit, miss int, observedAt time.Time) team.MemberCacheRequest {
 	return team.MemberCacheRequest{
 		ObservedAt: observedAt.UTC().Format(time.RFC3339Nano),
 		TeamID:     "alpha", MemberID: "ipc-protocol", ModelRef: "deepseek/deepseek-v4-flash",
 		PromptTokens: hit + miss, ContextPromptTokens: promptPrompt,
-		CacheHitTokens: hit, CacheMissTokens: miss, RequestCount: 1,
+		CacheHitTokens: hit, CacheMissTokens: miss,
+		RequestCount: 1, RequestCountSource: team.RequestCountObserved,
 		DiagnosticsAvailable: true,
 	}
 }

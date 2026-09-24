@@ -13,13 +13,15 @@ import (
 var diagnosisObservedAt = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 
 // diagnosisSample is one eligible request with the prefix signal under test.
-// contextPrompt and schema drive the bucket and the fixed-tail check.
+// contextPrompt and schema drive the bucket and the fixed-tail check. The count
+// is marked observed so the sample is eligible on the terms the report applies.
 func diagnosisSample(member string, contextPrompt, hit, miss, schema int) MemberCacheRequest {
 	return MemberCacheRequest{
 		ObservedAt: diagnosisObservedAt.Format(time.RFC3339Nano),
 		TeamID:     "alpha", MemberID: member, ModelRef: "deepseek/deepseek-v4-flash",
 		PromptTokens: hit + miss, ContextPromptTokens: contextPrompt,
-		CacheHitTokens: hit, CacheMissTokens: miss, RequestCount: 1,
+		CacheHitTokens: hit, CacheMissTokens: miss,
+		RequestCount: 1, RequestCountSource: RequestCountObserved,
 		ToolSchemaTokensEstimate: schema, DiagnosticsAvailable: true,
 	}
 }

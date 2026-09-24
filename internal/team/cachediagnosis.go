@@ -490,6 +490,7 @@ func exclusionSummary(reasons CacheGroupExclusions) string {
 		{"accounting_invalid", reasons.AccountingInvalid},
 		{"no_split", reasons.NoCacheSplit},
 		{"unparsable_ts", reasons.UnparsableObserved},
+		{"unverified_count", reasons.UnverifiedRequestCount},
 	} {
 		if entry.count > 0 {
 			parts = append(parts, fmt.Sprintf("%s=%d", entry.name, entry.count))

@@ -131,6 +131,7 @@ func ApplyRequestAttemptCount(ctx context.Context, usage *Usage) {
 	}
 	if count := RequestAttemptCount(ctx); count > 0 {
 		usage.RequestCount = count
+		usage.RequestCountObserved = true
 	}
 }
 
@@ -145,11 +146,12 @@ func UsageWithRequestAttemptCount(ctx context.Context, usage *Usage) *Usage {
 		if count <= 0 {
 			return nil
 		}
-		return &Usage{RequestCount: count, Unknown: true}
+		return &Usage{RequestCount: count, RequestCountObserved: true, Unknown: true}
 	}
 	result := *usage
 	if count > 0 {
 		result.RequestCount = count
+		result.RequestCountObserved = true
 	}
 	return &result
 }

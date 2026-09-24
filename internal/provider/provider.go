@@ -719,6 +719,10 @@ type Usage struct {
 	// RequestCount is the number of provider requests represented by thisaggregate.
 	// Zeromeansonerequestforbackward compatibility. Recoverypaths that merge multiple attempts settheexactcount.
 	RequestCount int
+	// RequestCountObserved says RequestCount came from a counted HTTP attempt and
+	// not the zero-means-one default: "one request" and "nobody said" are different
+	// facts, so a consumer that must not assume reads this first.
+	RequestCountObserved bool
 	// Context* fields describe the latest single-request shape for contextgauges and rebind telemetry. Whenzero,
 	// consumers fall back to thebillable Prompt/Completion/… fields. Multi-attempt sampling recoverysets
 	// PromptTokens (etc.) tothebillable aggregate and fills Context*

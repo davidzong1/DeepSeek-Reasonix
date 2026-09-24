@@ -94,7 +94,7 @@ func fullCacheUsageEvent() event.Event {
 		Usage: &provider.Usage{
 			PromptTokens: 1000, ContextPromptTokens: 900, CompletionTokens: 40,
 			CacheHitTokens: 700, CacheMissTokens: 300, CacheWriteTokens: 120,
-			RequestCount: 1, FinishReason: "stop",
+			RequestCount: 1, RequestCountObserved: true, FinishReason: "stop",
 		},
 		CacheDiagnostics: &event.CacheDiagnostics{
 			PrefixHash: "aabbccdd", StablePrefixHash: "11223344",
@@ -128,6 +128,9 @@ func TestObservedRequestMapsEveryUsageField(t *testing.T) {
 	if got.PromptTokens != 1000 || got.ContextPromptTokens != 900 || got.CacheHitTokens != 700 ||
 		got.CacheMissTokens != 300 || got.CacheWriteTokens != 120 || got.CompletionTokens != 40 || got.RequestCount != 1 {
 		t.Fatalf("token fields = %+v, want the event's own numbers", got)
+	}
+	if got.RequestCountSource != team.RequestCountObserved {
+		t.Fatalf("request count source = %q, want the measured provenance carried through", got.RequestCountSource)
 	}
 	if got.SessionRequestSeq != 1 || got.HasPrevRequest {
 		t.Fatalf("first observed request must be sequence 1 with no predecessor, got %+v", got)
@@ -236,6 +239,29 @@ func got2slice(rec team.MemberCacheRequest) []team.MemberCacheRequest {
 	return []team.MemberCacheRequest{rec}
 }
 
+// TestUnmeasuredRequestCountIsStoredAsDefaulted pins the provenance rule at the
+// writer: a usage event that carried no measured count is recorded with the
+// compatibility default of one request AND with the fact that nobody measured
+// it, so a reader cannot mistake the default for an observation.
+func TestUnmeasuredRequestCountIsStoredAsDefaulted(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	e := fullCacheUsageEvent()
+	e.Usage.RequestCount = 0
+	e.Usage.RequestCountObserved = false
+	f.sink.Emit(e)
+	got := f.observedCacheRequests(t)[0]
+	if got.RequestCount != 1 || got.RequestCountSource != team.RequestCountDefaulted {
+		t.Fatalf("record = (count %d, source %q), want (1, %q)", got.RequestCount, got.RequestCountSource, team.RequestCountDefaulted)
+	}
+	report := team.BuildCacheReport(team.CacheReportInput{Requests: got2slice(got), GeneratedAt: time.Now()})
+	if report.Overall.Totals.Requests != 0 || report.Exclusions.UnverifiedRequestCount != 1 {
+		t.Fatalf("report = %+v, want a defaulted count excluded from the per-request baseline", report.Exclusions)
+	}
+	if report.Exclusions.UnverifiedHitTokens != got.CacheHitTokens || report.Exclusions.UnverifiedMissTokens != got.CacheMissTokens {
+		t.Fatalf("booked tokens = %+v, want the sample's own tokens", report.Exclusions)
+	}
+}
+
 // TestObservationSinkForALeaderIsTheGivenSink pins the isolation rule at the
 // seam the builder uses: a leader's sink carries no observation wrapper, so the
 // leader's requests cannot enter the member dataset.
@@ -324,8 +350,8 @@ func TestLegacyUsageDocumentStillReads(t *testing.T) {
 	if doc.LastTurn == nil || doc.LastTurn.CacheHitTokens != 700 {
 		t.Fatalf("last turn = %+v, want the legacy numbers", doc.LastTurn)
 	}
-	if doc.LastTurn.CacheDiagnostics != nil || doc.LastTurn.RequestCount != 0 {
-		t.Fatalf("a legacy document must carry no diagnosis, got %+v", doc.LastTurn)
+	if doc.LastTurn.CacheDiagnostics != nil || doc.LastTurn.RequestCount != 0 || doc.LastTurn.RequestCountSource != "" {
+		t.Fatalf("a legacy document must carry no diagnosis and no count provenance, got %+v", doc.LastTurn)
 	}
 	usage := providerUsageFromLastTurn(doc.LastTurn)
 	if usage == nil || usage.CacheHitTokens != 700 || usage.RequestCount != 0 {

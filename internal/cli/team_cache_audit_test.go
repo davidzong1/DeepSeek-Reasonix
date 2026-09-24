@@ -32,7 +32,10 @@ func writeLedgerDay(t *testing.T, dir, day string, rows ...map[string]any) {
 	}
 }
 
-// ledgerRowAt builds one ledger row at a local clock time on the given day.
+// ledgerRowAt builds one ledger row at a local clock time on the given day. A
+// non-zero requests value is written as a measured count, which is what a row
+// from a build that records provenance carries; requests == 0 omits the key
+// entirely, which is the unverified shape the audit must not baseline.
 func ledgerRowAt(day string, hour int, model string, prompt, hit, miss, requests int) map[string]any {
 	at := time.Date(2026, 9, 0, hour, 0, 0, 0, time.Local)
 	if parsed, err := time.ParseInLocation("2006-01-02", day, time.Local); err == nil {
@@ -44,6 +47,7 @@ func ledgerRowAt(day string, hour int, model string, prompt, hit, miss, requests
 	}
 	if requests != 0 {
 		row["requests"] = requests
+		row["requests_observed"] = true
 	}
 	return row
 }
@@ -119,7 +123,7 @@ func TestCacheAuditFiltersTheWindowBeforeClipping(t *testing.T) {
 func TestCacheAuditBooksAggregateRowsApart(t *testing.T) {
 	dir := t.TempDir()
 	writeLedgerDay(t, dir, "2026-09-24",
-		ledgerRowAt("2026-09-24", 1, auditTestModel, 1_000, 900, 100, 0),
+		ledgerRowAt("2026-09-24", 1, auditTestModel, 1_000, 900, 100, 1),
 		ledgerRowAt("2026-09-24", 2, auditTestModel, 9_000, 8_000, 1_000, 4),
 	)
 	window, _, err := ledgerWindow("2026-09-24", "2026-09-24")
@@ -137,15 +141,58 @@ func TestCacheAuditBooksAggregateRowsApart(t *testing.T) {
 	if report.Overall.Totals.Requests != 1 {
 		t.Fatalf("baseline requests = %d, want only the single-request row", report.Overall.Totals.Requests)
 	}
-	allHit := report.Overall.Totals.HitTokens + report.Exclusions.AggregateHitTokens
-	allMiss := report.Overall.Totals.MissTokens + report.Exclusions.AggregateMissTokens
-	if allHit != 8_900 || allMiss != 1_100 {
-		t.Fatalf("all-samples = hit %d miss %d, want 8,900/1,100", allHit, allMiss)
+	all := report.AllSamplesTotals()
+	if all.HitTokens != 8_900 || all.MissTokens != 1_100 {
+		t.Fatalf("all-samples = hit %d miss %d, want 8,900/1,100", all.HitTokens, all.MissTokens)
+	}
+	if report.Exclusions.AggregateHitTokens != 8_000 || report.Exclusions.UnverifiedHitTokens != 0 {
+		t.Fatalf("booked tokens = %+v, want the aggregate class only", report.Exclusions)
 	}
 	// A multi-request row has no request prompt shape, so it must not be bucketed
 	// as if its aggregate were one request's size.
 	if report.PromptBasis.PromptFallback != 1 || report.PromptBasis.ContextPrompt != 1 {
 		t.Fatalf("prompt basis = %+v, want the aggregate's key reported as absent", report.PromptBasis)
+	}
+}
+
+// TestCacheAuditExcludesRowsWithAnUnverifiedRequestCount pins the strict rule
+// this audit applies to its own source: a row whose count the writer never
+// marked as measured may describe one request or several, so it cannot enter a
+// per-request baseline. Its tokens are booked into the unverified class and the
+// report says the baseline is unavailable rather than small.
+func TestCacheAuditExcludesRowsWithAnUnverifiedRequestCount(t *testing.T) {
+	dir := t.TempDir()
+	writeLedgerDay(t, dir, "2026-09-24",
+		ledgerRowAt("2026-09-24", 1, auditTestModel, 1_000, 900, 100, 1),
+		ledgerRowAt("2026-09-24", 2, auditTestModel, 2_000, 1_500, 500, 0),
+	)
+	window, _, err := ledgerWindow("2026-09-24", "2026-09-24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, quality, err := readLedger(dir, window, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quality.CountVerifiedRows != 1 {
+		t.Fatalf("measured rows = %d, want only the row that carried the marker", quality.CountVerifiedRows)
+	}
+	report := ledgerReportForTest(rows, window)
+	if report.Overall.Totals.Requests != 1 || report.Exclusions.UnverifiedRequestCount != 1 {
+		t.Fatalf("report = %+v, want the unverified row excluded and disclosed", report.Exclusions)
+	}
+	if report.Exclusions.UnverifiedHitTokens != 1_500 || report.Exclusions.UnverifiedMissTokens != 500 {
+		t.Fatalf("booked unverified tokens = %+v", report.Exclusions)
+	}
+	all := report.AllSamplesTotals()
+	if all.HitTokens != 2_400 || all.MissTokens != 600 {
+		t.Fatalf("all-samples = hit %d miss %d, want 2,400/600", all.HitTokens, all.MissTokens)
+	}
+	if report.Coverage.RequestCountUnrecorded != 1 || report.Coverage.RequestCountObserved != 1 {
+		t.Fatalf("coverage = %+v, want the provenance of both rows", report.Coverage)
+	}
+	if text := renderCacheAudit(report, quality, dir, ""); !strings.Contains(text, "request-count provenance: measured 1 of 2 rows") {
+		t.Fatalf("the audit must state its own count provenance:\n%s", text)
 	}
 }
 

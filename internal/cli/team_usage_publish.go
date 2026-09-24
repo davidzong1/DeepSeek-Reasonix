@@ -322,6 +322,7 @@ func ownerUsageLastTurn(u *provider.Usage) *team.OwnerUsageLastTurn {
 		ReasoningTokens:     u.ReasoningTokens,
 		Unknown:             u.Unknown,
 		RequestCount:        u.RequestCount,
+		RequestCountSource:  team.RequestCountSourceOf(u.RequestCount, u.RequestCountObserved),
 		Estimated:           u.Estimated,
 		CacheWriteTokens:    u.CacheWriteTokens,
 		ContextPromptTokens: u.ContextPromptTokens,
@@ -384,10 +385,14 @@ func memberCacheRequest(e event.Event, key team.OwnerKey, route string, obs memb
 		CacheWriteTokens:    usage.CacheWriteTokens,
 		CompletionTokens:    usage.CompletionTokens,
 		RequestCount:        max(usage.RequestCount, 1),
-		UsageUnknown:        usage.Unknown,
-		UsageEstimated:      usage.Estimated,
-		UsageSource:         strings.TrimSpace(e.UsageSource),
-		FinishReason:        usage.FinishReason,
+		// The count's provenance travels with it: a reader of the record must be
+		// able to tell a measured request from the compatibility default, and this
+		// is the last layer that knows which one the provider reported.
+		RequestCountSource: team.RequestCountSourceOf(usage.RequestCount, usage.RequestCountObserved),
+		UsageUnknown:       usage.Unknown,
+		UsageEstimated:     usage.Estimated,
+		UsageSource:        strings.TrimSpace(e.UsageSource),
+		FinishReason:       usage.FinishReason,
 		// The gauges are the last sampled ones, at most one publish interval
 		// old. They are context-state reference only and never a bucket key.
 		ContextUsed:   obs.contextUsed,

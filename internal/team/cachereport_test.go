@@ -2,12 +2,15 @@ package team
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
 
 // reportSample builds one eligible record. Overrides are applied by the caller,
-// so each test states only the field it is about.
+// so each test states only the field it is about. The request count is marked
+// observed because that is what eligibility now requires: a fixture that left
+// the provenance unset would be testing the unverified path by accident.
 func reportSample(member string, contextPrompt int, hit, miss int) MemberCacheRequest {
 	return MemberCacheRequest{
 		ObservedAt: time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
@@ -16,7 +19,7 @@ func reportSample(member string, contextPrompt int, hit, miss int) MemberCacheRe
 		PromptTokens:        hit + miss,
 		ContextPromptTokens: contextPrompt,
 		CacheHitTokens:      hit, CacheMissTokens: miss,
-		RequestCount: 1, AccountingValid: true,
+		RequestCount: 1, RequestCountSource: RequestCountObserved, AccountingValid: true,
 		DiagnosticsAvailable: true,
 	}
 }
@@ -306,6 +309,202 @@ func TestCacheReportDeclaresItsQuery(t *testing.T) {
 	}
 	if report.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %d, want %d", report.SchemaVersion, SchemaVersion)
+	}
+}
+
+// TestCacheReportRequiresAMeasuredRequestCount is the eligibility rule the plan
+// asks for: a single provider request must be verified, not assumed. The
+// compatibility rule reads a missing count as one, so a sample nobody measured
+// would otherwise enter a per-request rate as if it had been counted.
+func TestCacheReportRequiresAMeasuredRequestCount(t *testing.T) {
+	measured := reportSample("m1", 1_000, 900, 100)
+	defaulted := reportSample("m1", 1_000, 900, 100)
+	defaulted.RequestCountSource = RequestCountDefaulted
+	unrecorded := reportSample("m1", 1_000, 900, 100)
+	unrecorded.RequestCountSource = ""
+	unrecognized := reportSample("m1", 1_000, 900, 100)
+	unrecognized.RequestCountSource = "some-future-value"
+	report := BuildCacheReport(CacheReportInput{
+		Requests:    []MemberCacheRequest{measured, defaulted, unrecorded, unrecognized},
+		GeneratedAt: time.Now(),
+	})
+	if report.Overall.Totals.Requests != 1 || report.Exclusions.Included != 1 {
+		t.Fatalf("baseline = %d included / %d requests, want only the measured sample",
+			report.Exclusions.Included, report.Overall.Totals.Requests)
+	}
+	if report.Exclusions.UnverifiedRequestCount != 3 {
+		t.Fatalf("unverified = %d, want the three unmeasured samples disclosed", report.Exclusions.UnverifiedRequestCount)
+	}
+	// Every unmeasured sample's tokens are booked, so the all-samples total is
+	// reconstructible and the baseline is never quietly short.
+	if report.Exclusions.UnverifiedHitTokens != 2_700 || report.Exclusions.UnverifiedMissTokens != 300 {
+		t.Fatalf("booked unverified tokens = %+v", report.Exclusions)
+	}
+	all := report.AllSamplesTotals()
+	if all.HitTokens != 3_600 || all.MissTokens != 400 {
+		t.Fatalf("all-samples = hit %d miss %d, want 3,600/400", all.HitTokens, all.MissTokens)
+	}
+	if all.Requests != 1 || all.Members != 1 {
+		t.Fatalf("all-samples request count = %+v, want the baseline's own, never the unmeasured ones", all)
+	}
+	// The unrecognized value is named apart rather than absorbed into "defaulted":
+	// a producer that grew a value must be visible in the report.
+	if report.Coverage.RequestCountObserved != 1 || report.Coverage.RequestCountDefaulted != 1 ||
+		report.Coverage.RequestCountUnrecorded != 1 || report.Coverage.RequestCountUnrecognized != 1 {
+		t.Fatalf("coverage = %+v, want each provenance counted separately", report.Coverage)
+	}
+}
+
+// TestCacheReportCoverageDescribesTheScopedPopulation pins what the coverage
+// ledger is over: the member-scoped samples the report claims to describe, not
+// the subset that survived eligibility. A rate published over a population whose
+// dimensions are mostly absent must say so.
+func TestCacheReportCoverageDescribesTheScopedPopulation(t *testing.T) {
+	full := reportSample("m1", 1_000, 900, 100)
+	full.UsageSource, full.RouteBucket = "executor", "anthropic/aaaa"
+	bare := reportSample("m2", 1_000, 900, 100)
+	bare.DiagnosticsAvailable = false
+	outside := reportSample("m3", 1_000, 900, 100)
+	outside.ObservedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	unowned := reportSample("m4", 1_000, 900, 100)
+	unowned.MemberID = ""
+	report := BuildCacheReport(CacheReportInput{
+		Requests: []MemberCacheRequest{full, bare, outside, unowned},
+		From:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), GeneratedAt: time.Now(),
+	})
+	c := report.Coverage
+	if c.Scoped != 2 {
+		t.Fatalf("scoped = %d, want the two member-scoped samples: an out-of-window or unowned sample is not scoped", c.Scoped)
+	}
+	if c.UsageSourcePresent != 1 || c.UsageSourceAbsent != 1 {
+		t.Fatalf("usage source coverage = %+v, want one of each", c)
+	}
+	if c.RouteBucketPresent != 1 || c.RouteBucketAbsent != 1 {
+		t.Fatalf("route coverage = %+v, want one of each", c)
+	}
+	if c.DiagnosticsPresent != 1 || c.DiagnosticsAbsent != 1 {
+		t.Fatalf("diagnostics coverage = %+v, want one of each", c)
+	}
+	if c.ModelRefPresent != 2 {
+		t.Fatalf("model coverage = %+v, want both scoped samples located", c)
+	}
+	// The excluded sample still counts as scoped: coverage is over the population
+	// the report read, so an exclusion never hides the absence it was excluded for.
+	encoded, err := json.Marshal(report.Coverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"request_count_observed":2`) {
+		t.Fatalf("the coverage ledger must be published with the report: %s", encoded)
+	}
+}
+
+// TestCacheReportKeepsLowHitSamplesInTheBaseline pins the no-filtering rule: a
+// sample whose rate is poor is neither dropped nor reclassified. The only way a
+// sample leaves the baseline is a disclosed exclusion, and a low rate is not one.
+func TestCacheReportKeepsLowHitSamplesInTheBaseline(t *testing.T) {
+	poor := reportSample("m1", 1_000, 10, 990)
+	good := reportSample("m1", 1_000, 990, 10)
+	report := BuildCacheReport(CacheReportInput{
+		Requests: []MemberCacheRequest{poor, good}, GeneratedAt: time.Now(),
+	})
+	if report.Overall.Totals.Requests != 2 || report.Exclusions.Included != 2 {
+		t.Fatalf("baseline = %+v, want both samples kept whatever their rate", report.Overall.Totals)
+	}
+	if report.Overall.Totals.HitTokens != 1_000 || report.Overall.Totals.MissTokens != 1_000 {
+		t.Fatalf("tokens = %+v, want the poor sample's tokens counted, not discarded", report.Overall.Totals)
+	}
+	if report.Exclusions.UnverifiedRequestCount != 0 {
+		t.Fatalf("a poor rate must not be booked as an exclusion: %+v", report.Exclusions)
+	}
+}
+
+// TestCacheReportCountProvenanceVocabularyIsClosed pins the vocabulary the
+// writer maps onto: a count is observed only when the producer measured it and
+// reported a positive number, and anything else is the compatibility default.
+func TestCacheReportCountProvenanceVocabularyIsClosed(t *testing.T) {
+	cases := []struct {
+		count    int
+		observed bool
+		want     string
+	}{
+		{1, true, RequestCountObserved},
+		{3, true, RequestCountObserved},
+		{0, true, RequestCountDefaulted},
+		{1, false, RequestCountDefaulted},
+		{0, false, RequestCountDefaulted},
+	}
+	for _, tc := range cases {
+		if got := RequestCountSourceOf(tc.count, tc.observed); got != tc.want {
+			t.Fatalf("RequestCountSourceOf(%d, %v) = %q, want %q", tc.count, tc.observed, got, tc.want)
+		}
+	}
+	if !(MemberCacheRequest{RequestCountSource: RequestCountObserved}).RequestCountVerified() {
+		t.Fatal("an observed source must verify")
+	}
+	for _, source := range []string{RequestCountDefaulted, RequestCountUnrecorded, "", "future"} {
+		if (MemberCacheRequest{RequestCountSource: source}).RequestCountVerified() {
+			t.Fatalf("source %q must not verify a request count", source)
+		}
+	}
+}
+
+// TestCacheReportPublishesMissTokensPerRequest pins the column a candidate
+// optimization is judged on. A rate alone cannot separate "the uncached work
+// shrank" from "the prompt grew around a constant uncached overhead", so the
+// per-request halves are published beside it.
+func TestCacheReportPublishesMissTokensPerRequest(t *testing.T) {
+	// A constant 100-token overhead per request: the rate rises with prompt size
+	// while nothing about the uncached work changes.
+	small := reportSample("m1", 1_000, 900, 100)
+	large := reportSample("m1", 40_000, 39_900, 100)
+	report := BuildCacheReport(CacheReportInput{
+		Requests: []MemberCacheRequest{small, large}, GeneratedAt: time.Now(),
+	})
+	overall := report.Overall
+	if !overall.HasPerRequestTokens || !almost(overall.MissTokensPerRequest, 100) {
+		t.Fatalf("miss/request = (%v, %v), want the constant 100", overall.MissTokensPerRequest, overall.HasPerRequestTokens)
+	}
+	if !almost(overall.HitTokensPerRequest, 20_400) {
+		t.Fatalf("hit/request = %v, want 20400", overall.HitTokensPerRequest)
+	}
+	// The composition effect is exactly the point: the large request's rate is
+	// higher although it misses the same absolute amount.
+	var smallRate, largeRate float64
+	for _, group := range report.Buckets {
+		if group.Key == string(CacheBucketLT32K) {
+			smallRate = group.Weighted
+		}
+		if group.Key == string(CacheBucket32K128K) {
+			largeRate = group.Weighted
+		}
+	}
+	if !(largeRate > smallRate) {
+		t.Fatalf("rates = (%v, %v), want the larger prompt to show the higher rate", smallRate, largeRate)
+	}
+	// A group with no eligible request has no per-request figure, not a zero.
+	empty := CacheTokenTotals{}
+	if _, ok := empty.MissTokensPerRequest(); ok {
+		t.Fatal("a group with no requests must have no per-request figure")
+	}
+}
+
+// TestCacheReportPerRequestColumnsAreEncoded guards the JSON surface a reader
+// keys on: the per-request columns must be present in the encoded report, since
+// a consumer cannot see a field that only exists in the struct.
+func TestCacheReportPerRequestColumnsAreEncoded(t *testing.T) {
+	report := BuildCacheReport(CacheReportInput{
+		Requests:    []MemberCacheRequest{reportSample("m1", 1_000, 900, 100)},
+		GeneratedAt: time.Now(),
+	})
+	encoded, err := json.Marshal(report.Overall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"miss_tokens_per_request":100`, `"hit_tokens_per_request":900`, `"has_per_request_tokens":true`} {
+		if !strings.Contains(string(encoded), key) {
+			t.Fatalf("the overall stratum must publish %s:\n%s", key, encoded)
+		}
 	}
 }
 
