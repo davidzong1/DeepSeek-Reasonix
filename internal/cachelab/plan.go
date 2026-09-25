@@ -220,35 +220,51 @@ func RegisteredConditions() []ConditionSpec {
 		"provider-visible request bytes", "cache policy", "context pruning policy",
 		"member isolation", "statistics denominator",
 	}
+	// Every behavior a condition turns on has to be named here: a key missing is a
+	// factor the matrix claims to isolate while both its arms run one build.
+	switches := func(compaction, latch, shape, rescue bool) map[string]string {
+		on := func(v bool) string {
+			if v {
+				return "true"
+			}
+			return "false"
+		}
+		return map[string]string{
+			"agent.cache_aware_compaction":  on(compaction),
+			"agent.low_yield_latch":         on(latch),
+			"agent.message_shape_diagnosis": on(shape),
+			"agent.context_rescue":          on(rescue),
+		}
+	}
 	return []ConditionSpec{
 		{
 			Condition: ConditionBaseline,
 			Enables:   []string{"none (the reference build)"},
-			Switches:  map[string]string{"agent.cache_aware_compaction": "false", "agent.context_rescue": "false"},
+			Switches:  switches(false, false, false, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionAOnly,
-			Enables:   []string{"context maintenance state machine", "post-fold headroom target"},
-			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "false"},
+			Enables:   []string{"context maintenance state machine", "post-fold headroom target", "low-yield latch"},
+			Switches:  switches(true, true, false, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionBOnly,
-			Enables:   []string{"provider-visible shape stability"},
-			Switches:  map[string]string{"agent.cache_aware_compaction": "false", "agent.context_rescue": "false"},
+			Enables:   []string{"provider-visible shape stability", "message-array rewrite attribution"},
+			Switches:  switches(false, false, true, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionAB,
 			Enables:   []string{"context maintenance state machine", "provider-visible shape stability"},
-			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "false"},
+			Switches:  switches(true, true, true, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionRescue,
 			Enables:   []string{"context rescue on an unrecoverable fold"},
-			Switches:  map[string]string{"agent.cache_aware_compaction": "true", "agent.context_rescue": "true"},
+			Switches:  switches(true, true, true, true),
 			Unchanged: unchanged,
 			// A rescue rotates the session, so its cold prefix is part of its cost.
 			// Running it as a routine arm would report that cost as an optimization.

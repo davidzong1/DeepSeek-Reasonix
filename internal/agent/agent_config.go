@@ -29,10 +29,12 @@ type agentConfig struct {
 	// contextWindow and compactRatio pick the fold trigger; recentKeep and
 	// archiveDir shape what is kept. visibleWindowTokens caps the tail below
 	// 16%; cacheAwareCompaction defers folds while the cache stays warm.
-	contextWindow        int
-	compactRatio         float64
-	visibleWindowTokens  int
-	cacheAwareCompaction bool
+	contextWindow         int
+	compactRatio          float64
+	visibleWindowTokens   int
+	cacheAwareCompaction  bool
+	lowYieldLatch         bool
+	messageShapeDiagnosis bool
 	// contextRescue opts the pre-send admission into certifying a continuation
 	// plan instead of a lossy truncation. See Options.EnableContextRescue.
 	contextRescue bool

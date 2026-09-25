@@ -221,7 +221,7 @@ func (a *Agent) settleMaintenanceFold(policy ContextPreparePolicy, sourceTokens,
 		return
 	}
 	decision := a.maintenanceDecisionFor(sourceTokens, resultTokens, fold, hard)
-	if policy.Trigger != CompactionTriggerPressure || decision.GoalMet() {
+	if !a.lowYieldLatch || policy.Trigger != CompactionTriggerPressure || decision.GoalMet() {
 		a.resetCompactionProgress()
 		return
 	}

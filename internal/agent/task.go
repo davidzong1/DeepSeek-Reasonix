@@ -259,6 +259,8 @@ type TaskTool struct {
 	compactRatio                  float64
 	visibleWindowTokens           int
 	cacheAwareCompaction          bool
+	lowYieldLatch                 bool
+	messageShapeDiagnosis         bool
 	recentKeep                    int
 	temperature                   float64
 	archiveDir                    string
