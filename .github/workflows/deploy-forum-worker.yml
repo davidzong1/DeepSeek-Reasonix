@@ -1,11 +1,6 @@
 name: Deploy forum worker
 
 on:
-  push:
-    branches: [main-v2]
-    paths:
-      - 'workers/forum/**'
-      - '.github/workflows/deploy-forum-worker.yml'
   workflow_dispatch:
 
 permissions:

@@ -55,15 +55,18 @@ type runResultUsage struct {
 }
 
 type runResult struct {
-	Type       string  `json:"type"`
-	Subtype    string  `json:"subtype"`
-	IsError    bool    `json:"is_error"`
-	DurationMS int64   `json:"duration_ms"`
-	NumTurns   int     `json:"num_turns"`
-	Result     string  `json:"result"`
-	SessionID  string  `json:"session_id,omitempty"`
-	TotalCost  float64 `json:"total_cost,omitempty"`
-	Currency   string  `json:"currency,omitempty"`
+	Type       string `json:"type"`
+	Subtype    string `json:"subtype"`
+	IsError    bool   `json:"is_error"`
+	DurationMS int64  `json:"duration_ms"`
+	NumTurns   int    `json:"num_turns"`
+	Result     string `json:"result"`
+	// ResultFromReasoning marks a Result taken from the turn's reasoning
+	// because the model emitted no visible text. Omitted when false.
+	ResultFromReasoning bool    `json:"result_from_reasoning,omitempty"`
+	SessionID           string  `json:"session_id,omitempty"`
+	TotalCost           float64 `json:"total_cost,omitempty"`
+	Currency            string  `json:"currency,omitempty"`
 	// TotalCostUSD is the released compatibility alias. It mirrors TotalCost;
 	// new consumers must pair TotalCost with Currency instead of assuming USD.
 	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
@@ -157,12 +160,27 @@ func runAuthenticationMetadata(err error) (code, status string, actions []string
 	return code, status, actions
 }
 
+// finalAnswer is the turn's answer together with where it came from. A
+// thinking model may answer entirely in the reasoning channel, finishing with
+// non-empty reasoning and an empty visible message - an accepted shape. The
+// transcript renderer prints a "thinking" marker for it, and the reasoning
+// itself under --show-thinking; these sinks print nothing at all and still
+// report success, so the answer is lost and nothing says so.
+//
+// The two fields are one value because they are only ever correct together: a
+// fromReasoning left over from an earlier turn would misreport the provenance
+// of a later visible answer.
+type finalAnswer struct {
+	text          string
+	fromReasoning bool
+}
+
 type runOutputSink struct {
 	mu                  sync.Mutex
 	format              runOutputFormat
 	out                 io.Writer
 	encoder             *json.Encoder
-	final               string
+	final               finalAnswer
 	usage               runResultUsage
 	cost                float64
 	currency            string
@@ -197,7 +215,10 @@ func (s *runOutputSink) Emit(e event.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.Kind == event.Message {
-		s.final = e.Text
+		s.final = finalAnswer{text: e.Text}
+		if e.Text == "" && e.Reasoning != "" {
+			s.final = finalAnswer{text: e.Reasoning, fromReasoning: true}
+		}
 	}
 	if e.Kind == event.Usage && e.Usage != nil {
 		s.usage.InputTokens += e.Usage.PromptTokens
@@ -265,8 +286,8 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 	// Mixed original currencies no longer error: totals use shared display
 	// valuations when complete, otherwise cost_complete=false with original_costs.
 	if s.format == runOutputText {
-		if s.final != "" {
-			_, s.err = fmt.Fprintln(s.out, s.final)
+		if s.final.text != "" {
+			_, s.err = fmt.Fprintln(s.out, s.final.text)
 		}
 		return s.err
 	}
@@ -292,11 +313,9 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 			Recovery:       recovery,
 		})
 	}
-	resultText := s.final
-	if runErr != nil {
-		if resultText == "" {
-			resultText = runErr.Error()
-		}
+	answer := s.final
+	if runErr != nil && answer.text == "" {
+		answer = finalAnswer{text: runErr.Error()}
 	}
 	turns := s.turns
 	if turns == 0 && !completion.isError {
@@ -323,27 +342,28 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 		}
 	}
 	return s.encoder.Encode(runResult{
-		Type:            "result",
-		Subtype:         completion.subtype,
-		IsError:         completion.isError,
-		DurationMS:      time.Since(started).Milliseconds(),
-		NumTurns:        turns,
-		Result:          resultText,
-		SessionID:       sessionID,
-		TotalCost:       s.cost,
-		Currency:        s.currency,
-		TotalCostUSD:    s.cost,
-		CostComplete:    s.costComplete || (!s.sawQuote && s.currency != ""),
-		DisplayComplete: s.displayComplete,
-		DisplayStatus:   s.displayStatus,
-		AggregateMode:   s.aggregateMode,
-		OriginalCosts:   s.originalCosts,
-		OriginalTotals:  s.originalTotals,
-		CostQuote:       aggQuote,
-		Usage:           s.usage,
-		ErrorCode:       errorCode,
-		Authentication:  authentication,
-		Recovery:        recovery,
+		Type:                "result",
+		Subtype:             completion.subtype,
+		IsError:             completion.isError,
+		DurationMS:          time.Since(started).Milliseconds(),
+		NumTurns:            turns,
+		Result:              answer.text,
+		ResultFromReasoning: answer.fromReasoning,
+		SessionID:           sessionID,
+		TotalCost:           s.cost,
+		Currency:            s.currency,
+		TotalCostUSD:        s.cost,
+		CostComplete:        s.costComplete || (!s.sawQuote && s.currency != ""),
+		DisplayComplete:     s.displayComplete,
+		DisplayStatus:       s.displayStatus,
+		AggregateMode:       s.aggregateMode,
+		OriginalCosts:       s.originalCosts,
+		OriginalTotals:      s.originalTotals,
+		CostQuote:           aggQuote,
+		Usage:               s.usage,
+		ErrorCode:           errorCode,
+		Authentication:      authentication,
+		Recovery:            recovery,
 	})
 }
 

@@ -1,11 +1,6 @@
 name: Deploy accounts worker
 
 on:
-  push:
-    branches: [main-v2]
-    paths:
-      - 'workers/accounts/**'
-      - '.github/workflows/deploy-accounts-worker.yml'
   workflow_dispatch:
 
 permissions:

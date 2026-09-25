@@ -27,3 +27,17 @@ type backend interface {
 	close() error
 	physicalWatches() uint64
 }
+
+// errScanOnly reports a service that was asked for no physical watches.
+var errScanOnly = errors.New("scan-only service has no physical watches")
+
+// scanOnlyBackend refuses every registration, which is how the service already
+// handles a backend it cannot use: the root degrades to backoff scanning and
+// the store keeps working from its scans. Options.ScanOnly selects it so a
+// caller can hold a real, closable service without a helper process.
+type scanOnlyBackend struct{}
+
+func (scanOnlyBackend) register(uint64, uint64, string, []string) error { return errScanOnly }
+func (scanOnlyBackend) cancel(uint64)                                   {}
+func (scanOnlyBackend) close() error                                    { return nil }
+func (scanOnlyBackend) physicalWatches() uint64                         { return 0 }

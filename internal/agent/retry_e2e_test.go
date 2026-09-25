@@ -183,7 +183,8 @@ func TestDeepSeekFlashMissingReasoningRecoveryWithRealSSE(t *testing.T) {
 // TestDeepSeekOpenAIReasoningReplay400RepairsOldHistory drives the OpenAI
 // adapter through the shared stale-history recovery path. The first request
 // replays an old assistant reasoning turn and is rejected; the repair retry
-// strips only provider-visible reasoning while preserving canonical history.
+// empties provider-visible reasoning while preserving canonical history. The
+// key itself stays: DeepSeek thinking mode rejects an assistant turn without it.
 func TestDeepSeekOpenAIReasoningReplay400RepairsOldHistory(t *testing.T) {
 	var mu sync.Mutex
 	var bodies [][]byte
@@ -231,7 +232,7 @@ func TestDeepSeekOpenAIReasoningReplay400RepairsOldHistory(t *testing.T) {
 	if !bytes.Contains(gotBodies[0], []byte(`"reasoning_content":"stale thinking"`)) {
 		t.Fatalf("first request did not replay old reasoning: %s", gotBodies[0])
 	}
-	if bytes.Contains(gotBodies[1], []byte("stale thinking")) || bytes.Contains(gotBodies[1], []byte("reasoning_content")) {
+	if bytes.Contains(gotBodies[1], []byte("stale thinking")) || !bytes.Contains(gotBodies[1], []byte(`"content":"old answer","reasoning_content":""`)) {
 		t.Fatalf("repair retry still carries old reasoning: %s", gotBodies[1])
 	}
 	if !bytes.Contains(gotBodies[1], []byte("old answer")) {

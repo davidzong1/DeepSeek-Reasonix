@@ -22,7 +22,7 @@ if (!tag) {
   console.error("usage: node npm/build.mjs <tag>   (e.g. v1.0.0 or npm-v1.0.0)");
   process.exit(1);
 }
-// npm ships on its own `npm-v*` tag (release-npm.yml); also accept a bare `v*`.
+// A release carries an `npm-v*` tag beside `v*`; accept either form.
 const version = tag.replace(/^(npm-)?v/, "");
 const binaryVersion = `v${version}`;
 const publish = process.argv.includes("--publish");
@@ -99,6 +99,24 @@ mainPkg.version = version;
 mainPkg.reasonixCandidateSha = candidateSha;
 for (const key of Object.keys(mainPkg.optionalDependencies)) {
   mainPkg.optionalDependencies[key] = version;
+}
+// Guard against drift between the platform packages we build and the
+// optionalDependencies the main package declares: a typo would otherwise ship
+// a main package referencing a binary package that was never built.
+const expectedNames = TARGETS.map((t) => `@reasonix/cli-${t.node}`);
+const writtenNames = Object.keys(mainPkg.optionalDependencies);
+const missing = expectedNames.filter((name) => !writtenNames.includes(name));
+const unexpected = writtenNames.filter(
+  (key) => !/^@reasonix\/cli-/.test(key) || !expectedNames.includes(key),
+);
+if (missing.length > 0 || unexpected.length > 0) {
+  throw new Error(
+    [
+      "main package optionalDependencies do not match build targets:",
+      ...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []),
+      ...(unexpected.length > 0 ? [`unexpected: ${unexpected.join(", ")}`] : []),
+    ].join("\n"),
+  );
 }
 writeFileSync(
   join(mainDir, "package.json"),

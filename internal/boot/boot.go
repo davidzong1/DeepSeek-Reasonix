@@ -62,6 +62,7 @@ import (
 	"reasonix/internal/sessioncontext"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/skill"
+	"reasonix/internal/skill/skillwatch"
 	"reasonix/internal/stats"
 	"reasonix/internal/taskmonitor"
 	"reasonix/internal/tool"
@@ -190,6 +191,8 @@ type Options struct {
 	// instead of creating new subprocesses, and the caller manages the host's
 	// lifecycle. When nil, Build creates and owns a new host as before.
 	SharedHost *plugin.Host
+	// SharedSkillWatchService is a caller-owned host watcher; nil gives Build its own.
+	SharedSkillWatchService *skillwatch.Service
 	// MCPHostProfile is the capability surface for hosts Build creates;
 	// ignored when SharedHost is set (it fixed its own profile).
 	MCPHostProfile plugin.HostProfile
@@ -665,18 +668,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
 	implicitSkillInvocation := cfg.ImplicitSkillInvocationEnabled()
-	// Production controllers own watchers; package fixtures opt out to avoid
-	// exhausting descriptors, while store watcher tests opt in explicitly.
-	watchSkills := !strings.HasSuffix(strings.TrimSuffix(os.Args[0], ".exe"), ".test")
+	watchSkills := watchSkillsEnabled()
 	// Skills: rediscovery skipped on no-op/interceptor/UI rebuilds when
 	// ReuseAssembly is retained from the previous BuildResult.
 	var skillStore *skill.Store
 	var skills []skill.Skill
 	var allSkillStore *skill.Store
 	var allSkills []skill.Skill
-	// Enabled and all-stores share one host-lifetime physical watch service.
-	skillWatchService := newSkillWatchService(watchSkills, opts.Stderr)
-	skillCleanup := func() { closeSkillsWithWatcher(skillStore, allSkillStore, &skillWatchService) }
+	skillWatchService, hostOwnedWatch := buildSkillWatchService(opts.SharedSkillWatchService, watchSkills, opts.Stderr)
+	skillCleanup := func() { closeSkillsWithWatcher(skillStore, allSkillStore, &skillWatchService, hostOwnedWatch) }
 	skillsOwned := false
 	defer closeUnownedSkills(&skillsOwned, skillCleanup)
 	canReuseSkills := opts.ReuseAssembly != nil && shouldReuseDiscovery(opts.PreviousPlan) &&
@@ -722,10 +722,10 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 	forbidReadRoots := RuntimeForbidReadRoots(cfg, root)
 	// managedConfig names the Reasonix-owned config FILES (config.toml,
-	// compatibility TOMLs, legacy v0.x config.json) the file-writers may repair
-	// outside the workspace after a fresh per-write human approval. The bash
-	// OS-sandbox write roots deliberately stay unwidened: config repair goes
-	// through the approval-gated file tools, not raw shell writes.
+	// compatibility TOMLs, legacy v0.x config.json) the file-writers gate behind
+	// a fresh per-write human approval wherever they sit, inside the roots too.
+	// The bash OS-sandbox write roots stay unwidened: config repair goes through
+	// the approval-gated file tools, not raw shell writes.
 	managedConfig := builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
 	bashSpec := sandbox.Spec{Mode: bashMode, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Network: networkEnabled}
 	bashSpec.Shell = shell

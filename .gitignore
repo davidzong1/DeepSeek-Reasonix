@@ -27,6 +27,8 @@ mem.prof
 /desktop/build/*
 !/desktop/build/appicon.png
 !/desktop/build/appicon.svg
+!/desktop/build/trayTemplate.png
+!/desktop/build/trayTemplate@2x.png
 /desktop/desktop
 /desktop/frontend/dist/*
 !/desktop/frontend/dist/.gitkeep

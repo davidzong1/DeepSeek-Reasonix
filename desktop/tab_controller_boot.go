@@ -56,6 +56,11 @@ func (a *App) buildTabControllerBoot(ctx context.Context, opts boot.Options) (co
 	if opts.OnSessionRotation == nil {
 		opts.OnSessionRotation = a.prepareDesktopSessionRotation
 	}
+	// Every controller on this host watches through one shared service, so a
+	// rebuild reuses the helper process instead of spawning another one.
+	if opts.SharedSkillWatchService == nil {
+		opts.SharedSkillWatchService = a.sharedSkillWatchService()
+	}
 	return boot.Build(ctx, opts)
 }
 

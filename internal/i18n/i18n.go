@@ -75,6 +75,7 @@ type Messages struct {
 	ReadCompleted                    string
 	ReadRestrictedStrategyFmt        string // %d = estimated tokens, %d = token budget
 	ContextRecoveryAdjustBudget      string
+	PromptTruncatedByServerNotice    string
 	ContextRecoveryCompacted         string
 	PlannerFallback                  string
 	PlannerSafetyFallback            string
@@ -594,6 +595,7 @@ type Messages struct {
 	ProviderErrReasonMissing        string
 	ProviderErrStreamInterruptedFmt string
 	ProviderErrDisconnectedFmt      string
+	ProviderErrNonStreamingFmt      string
 	SearchSourcesNotProvided        string
 	SearchModelUnavailable          string
 	ProtocolRecoveryLabel           string

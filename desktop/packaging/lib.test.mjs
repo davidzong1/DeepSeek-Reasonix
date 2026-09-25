@@ -189,7 +189,7 @@ test("required members cover every artifact and the checks report gaps", () => {
   assert.deepEqual(checkMembers(portable.filter((name) => !name.endsWith("app/Reasonix.exe")), "windows-portable-zip").missing, [String(/^versions\/v[^/]+\/app\/Reasonix\.exe$/)]);
   assert.deepEqual(checkMembers([...portable, "reasonix-guard.exe"], "windows-portable-zip").forbidden, ["reasonix-guard.exe"]);
 
-  const winApp = ["Reasonix.exe", "ffmpeg.dll", "libEGL.dll", "libGLESv2.dll", "resources.pak", "icudtl.dat", "locales\\en-US.pak", "resources\\app.asar", "resources\\app\\index.html", "resources\\build.json", "resources\\icons\\appicon.png"];
+  const winApp = ["Reasonix.exe", "ffmpeg.dll", "libEGL.dll", "libGLESv2.dll", "resources.pak", "icudtl.dat", "locales\\en-US.pak", "resources\\app.asar", "resources\\app\\index.html", "resources\\build.json", "resources\\icons\\appicon.png", "resources\\icons\\trayTemplate.png", "resources\\icons\\trayTemplate@2x.png"];
   assert.deepEqual(checkMembers(winApp, "windows-app-dir"), { missing: [], forbidden: [] });
 
   const tar = requiredMembers("linux-tar").map(String);

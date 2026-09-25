@@ -878,20 +878,7 @@ func (t *UseCapabilityTool) resolveSkillCall(skillName, id string, args json.Raw
 	// only exposes them (planner / plan mode).
 	for _, toolName := range []string{"run_skill", "read_only_skill", "read_skill"} {
 		if tl, ok := t.registry.Get(toolName); ok {
-			payload := args
-			if len(payload) == 0 || string(payload) == "null" {
-				payload = json.RawMessage(fmt.Sprintf(`{"name":%q}`, skillName))
-			} else {
-				var m map[string]any
-				if json.Unmarshal(payload, &m) == nil {
-					if _, has := m["name"]; !has {
-						m["name"] = skillName
-						if b, err := json.Marshal(m); err == nil {
-							payload = b
-						}
-					}
-				}
-			}
+			payload := normalizeSkillCapabilityArgs(skillName, args)
 			base.Target = tl
 			base.TargetName = toolName
 			base.ReadOnly = tl.ReadOnly()

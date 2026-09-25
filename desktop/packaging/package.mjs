@@ -168,6 +168,8 @@ try {
   });
   mkdirSync(join(staging, "icons"), { recursive: true });
   cpSync(join(desktop, "build", "appicon.png"), join(staging, "icons", "appicon.png"));
+  cpSync(join(desktop, "build", "trayTemplate.png"), join(staging, "icons", "trayTemplate.png"));
+  cpSync(join(desktop, "build", "trayTemplate@2x.png"), join(staging, "icons", "trayTemplate@2x.png"));
   // Packaged launches always read this identity, including the full version
   // tag. Environment overrides belong only to the unpackaged development shell.
   writeFileSync(join(staging, "build.json"), JSON.stringify(buildInfo({ version, channel, commit, electronVersion, target, buildTime, }), null, 2,) + "\n",);

@@ -197,6 +197,12 @@ func TestExplainError(t *testing.T) {
 		t.Errorf("connection reset should be actionable, got %q", disconnected.Error())
 	}
 
+	nonStreaming := fmt.Errorf("gw: stream ended before any SSE event: %w", provider.ErrNonStreamingResponse)
+	explained := explainError(nonStreaming)
+	if explained.Error() != fmt.Sprintf(i18n.M.ProviderErrNonStreamingFmt, nonStreaming) || !errors.Is(explained, provider.ErrNonStreamingResponse) {
+		t.Errorf("non-streaming endpoint should get its own hint, got %q", explained.Error())
+	}
+
 	plain := errors.New("some other failure")
 	//nolint:errorlint // identity check: explainError must return the same error, unwrapped.
 	if explainError(plain) != plain {

@@ -685,8 +685,7 @@
       "test-file-size": 1460
     },
     "internal/cli/complete.go": {
-      "essay": 1,
-      "file-size": 41
+      "essay": 1
     },
     "internal/cli/complete_test.go": {
       "test-file-size": 15

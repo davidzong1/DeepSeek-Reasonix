@@ -1395,6 +1395,14 @@ func defaultEnvTarget() string {
 	return config.CredentialsTargetDescription()
 }
 
+func setupUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: reasonix setup [--local|-l] [path]")
+	fmt.Fprintln(w, "Interactive configuration wizard. Writes a reasonix config and stores the")
+	fmt.Fprintln(w, "provider API key in Reasonix's credential file, never in the config itself.")
+	fmt.Fprintln(w, "  --local, -l   write ./reasonix.toml instead of the user-global config")
+	fmt.Fprintln(w, "  path          write the config to this path instead of the default")
+}
+
 // resolveSetupTargets picks where `reasonix setup` writes. Keys always go to the
 // global env. The config goes to the user-global dir by default, to ./reasonix.toml
 // under --local, or to an explicit path argument when given.
@@ -1425,6 +1433,23 @@ func displayPath(p string) string {
 // Project memory is a separate concern — the in-session `/init` skill generates
 // AGENTS.md (see initHint).
 func setupConfig(args []string) int {
+	if commandHelpRequested(args, len(args)) {
+		setupUsage(os.Stdout)
+		return 0
+	}
+	// resolveSetupTargets treats every unrecognized argument as the config path,
+	// so a mistyped flag — or --help — silently becomes the file it writes.
+	// Reject dashed arguments here instead.
+	for _, a := range args {
+		if a == "--local" || a == "-l" {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			fmt.Fprintf(os.Stderr, "unknown setup flag %q\n\n", a)
+			setupUsage(os.Stderr)
+			return 2
+		}
+	}
 	t := resolveSetupTargets(args)
 	path := t.config
 	if _, err := os.Stat(path); err == nil {
@@ -1906,7 +1931,7 @@ func promptCustomProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKey s
 		return providerPromptResult{}, fmt.Errorf("invalid API key variable name %q", keyEnv)
 	}
 	if apiKey == "" {
-		apiKey = ask(in, os.Stdout, i18n.M.CustomPromptAPIKey, "")
+		apiKey = askSecret(in, os.Stdout, i18n.M.CustomPromptAPIKey)
 	}
 	entry := config.ProviderEntry{
 		Name: providerName, Kind: "openai", BaseURL: baseURL,
@@ -1930,7 +1955,7 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
 	}
 	providerName := providerSlug("custom", baseURL)
 	keyEnv := promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, apiKeyEnvFromProviderName(providerName))
-	apiKey := ask(in, os.Stdout, i18n.M.CustomPromptAPIKey, "")
+	apiKey := askSecret(in, os.Stdout, i18n.M.CustomPromptAPIKey)
 
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.FetchingModelsFmt, "custom")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2008,7 +2033,7 @@ func promptAnthropicProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKe
 		return providerPromptResult{}, fmt.Errorf("invalid API key variable name %q", keyEnv)
 	}
 	if apiKey == "" {
-		apiKey = ask(in, os.Stdout, i18n.M.AnthropicPromptAPIKey, "")
+		apiKey = askSecret(in, os.Stdout, i18n.M.AnthropicPromptAPIKey)
 	}
 	entry := config.ProviderEntry{
 		Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL,
@@ -2032,7 +2057,7 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
 		return providerPromptResult{}, fmt.Errorf("base URL is required")
 	}
 	keyEnv := promptAPIKeyEnvName(in, os.Stdout, i18n.M.AnthropicPromptKeyEnv, "ANTHROPIC_API_KEY")
-	apiKey := ask(in, os.Stdout, i18n.M.AnthropicPromptAPIKey, "")
+	apiKey := askSecret(in, os.Stdout, i18n.M.AnthropicPromptAPIKey)
 
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchingModelsFmt, "anthropic")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2173,7 +2198,7 @@ func configureKeys(selected []config.ProviderEntry, r io.Reader, w io.Writer) []
 		if cur := os.Getenv(p.APIKeyEnv); cur != "" {
 			reset := ask(in, w, "  "+fmt.Sprintf(i18n.M.APIKeyResetPromptFmt, p.APIKeyEnv), "y/N")
 			if reset == "y" || reset == "Y" {
-				if key := ask(in, w, "  "+p.APIKeyEnv, ""); key != "" {
+				if key := askSecret(in, w, "  "+p.APIKeyEnv); key != "" {
 					envLines = append(envLines, p.APIKeyEnv+"="+key)
 					continue
 				}
@@ -2183,7 +2208,7 @@ func configureKeys(selected []config.ProviderEntry, r io.Reader, w io.Writer) []
 			continue
 		}
 
-		if key := ask(in, w, "  "+p.APIKeyEnv, ""); key != "" {
+		if key := askSecret(in, w, "  "+p.APIKeyEnv); key != "" {
 			envLines = append(envLines, p.APIKeyEnv+"="+key)
 		}
 	}

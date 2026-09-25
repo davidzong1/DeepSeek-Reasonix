@@ -382,5 +382,8 @@ func (a *App) shutdownBody(c *desktopShutdownCoordinator, items []desktopShutdow
 	if err := c.runErrorStep("session-services", a.closeSessionServicesResult); err != nil {
 		return &shutdownStepError{code: "session_service_close_failed", err: err}
 	}
+	// Last: every controller that subscribed to the host watcher is gone, and
+	// boot.Build leaves a caller-owned service alone, so this is the only close.
+	c.runStep("skill-watch-service", a.closeSharedSkillWatchService)
 	return nil
 }

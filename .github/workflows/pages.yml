@@ -2,9 +2,6 @@ name: Deploy site
 run-name: Deploy site ${{ inputs.release_version && format('v{0}', inputs.release_version) || github.sha }}${{ inputs.release_request && format(' [{0}]', inputs.release_request) || '' }}
 
 on:
-  push:
-    branches: [main-v2]
-    paths: ['site/**', 'release-notes/**', '.github/workflows/pages.yml']
   workflow_dispatch:
     inputs:
       release_version:

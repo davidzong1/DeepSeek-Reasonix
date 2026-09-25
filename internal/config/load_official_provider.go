@@ -550,6 +550,7 @@ func canCanonicalizeLegacyDeepSeekProviders(c *Config) bool {
 	}
 	for i := 1; i < len(legacy); i++ {
 		if !legacyDeepSeekProviderWideFieldsEqual(legacy[0], legacy[i]) ||
+			!strings.EqualFold(strings.TrimSpace(legacy[0].Effort), strings.TrimSpace(legacy[i].Effort)) ||
 			!legacyDeepSeekModelFieldsCompatible(legacy[0], legacy[i]) {
 			return false
 		}
@@ -589,8 +590,12 @@ func legacyDeepSeekProviderWideProjection(entry *ProviderEntry) ProviderEntry {
 	out.BalanceURL = normalizedDeepSeekBalanceURL(out.BalanceURL)
 	out.ResponsesMode = strings.TrimSpace(out.ResponsesMode)
 	out.Thinking = strings.TrimSpace(out.Thinking)
-	out.Effort = strings.TrimSpace(out.Effort)
 	out.VisionDetail = strings.TrimSpace(out.VisionDetail)
+
+	// Effort is a per-provider selection that /effort writes to the canonical
+	// member, so it cannot decide canonical-vs-legacy equality (#8337). Legacy
+	// members are compared on it separately: merging keeps only the first's.
+	out.Effort = ""
 
 	// These fields can be represented independently for every model in the
 	// canonical provider. They are compared by legacyDeepSeekModelFieldsCompatible.

@@ -74,23 +74,14 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	// Anthropic's API is at {root}/v1/messages, so baseURL stores the root, while
-	// the wizard lets users paste a full ".../v1" OpenAI-style URL. Stripping the
-	// trailing /v1 lands both on one endpoint instead of ".../v1/v1/messages".
-	root := strings.TrimRight(baseURL, "/")
-	root = strings.TrimSuffix(root, "/v1")
-	if root == "" {
-		root = defaultBaseURL
-	}
-	requestURL, _ := cfg.Extra["request_url"].(string)
-	requestURL = strings.TrimSpace(requestURL)
+	root, requestURL := resolveEndpoints(baseURL, cfg.Extra)
+	// The gateway's 1M-context beta is enabled by the query string as well as the
+	// header. It belongs on the endpoint this client derived; an override the
+	// operator wrote is theirs verbatim.
 	anthropicBeta, _ := cfg.Extra["anthropic_beta"].(string)
 	anthropicBeta = strings.TrimSpace(anthropicBeta)
-	if requestURL == "" {
-		requestURL = root + "/v1/messages"
-		if anthropicBeta != "" {
-			requestURL += "?beta=true"
-		}
+	if anthropicBeta != "" && requestURL == root+"/v1/messages" {
+		requestURL += "?beta=true"
 	}
 	officialDeepSeek := openai.IsDeepSeek(root)
 	reasoningProtocol, _ := cfg.Extra["reasoning_protocol"].(string)

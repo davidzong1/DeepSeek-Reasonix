@@ -45,6 +45,7 @@ func (a *App) sessionOpenBootOptions(
 		EffortModel:              snap.model,
 		SharedHost:               sharedHost,
 		BrowserExecutor:          a.browserExecutorForRuntime(tab.ID, snap.sink),
+		SharedSkillWatchService:  a.sharedSkillWatchService(),
 		MCPHostProfile:           plugin.HostProfileDesktopApps,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),

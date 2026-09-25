@@ -183,7 +183,7 @@ func IsConnReset(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNonStreamingResponse) {
 		return false
 	}
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
