@@ -93,6 +93,11 @@ func (a *Agent) emitContextMaintenance(r *ContextMaintenanceReceipt) {
 		InputTokens: r.InputTokens, ResultTokens: r.ResultTokens, SavedTokens: r.SavedTokens,
 		AffectedToolResults: r.AffectedToolResults, ProjectionVersion: r.ProjectionVersion,
 		CacheBreak: r.CacheBreak, Reason: r.Reason,
+		// The decision's diagnosis travels with the event so a reader that records
+		// it beside a request reads the decision, not a later snapshot of it.
+		MaintenanceState: r.MaintenanceState,
+		HeadroomTokens:   r.HeadroomTokens,
+		ReductionRatio:   r.ReductionRatio,
 	}})
 }
 

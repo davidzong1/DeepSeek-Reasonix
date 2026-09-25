@@ -90,6 +90,15 @@ type memberUsagePublisher struct {
 	observation memberUsageObservation
 }
 
+// memberMaintenanceObservation is one maintenance decision as the writer's own
+// event reported it. A zero value means nothing was observed, which is why the
+// state is the gate: it is the field a producer always sets.
+type memberMaintenanceObservation struct {
+	state          string
+	headroomTokens int
+	reductionRatio float64
+}
+
 // memberUsageObservation is what the observation sink remembers between
 // requests: the writer's own request counter, the previous request instant for
 // the interval, the session identity the request was stamped with, and the
@@ -100,6 +109,10 @@ type memberUsageObservation struct {
 	contextUsed   int
 	contextWindow int
 	diagnostics   *team.OwnerUsageLastTurnDiagnostics
+	// maintenance is the writer's most recent maintenance decision, remembered
+	// from the event stream. It is stamped onto each request recorded after it,
+	// so the diagnostic describes the decision that preceded that request.
+	maintenance *memberMaintenanceObservation
 	// sessionIDHash and sessionOrdinal track the writer's session identity. A
 	// context rescue rotates the member onto a fresh session, and its first
 	// request is a cold prefix that a per-writer sequence alone cannot name.
@@ -217,10 +230,19 @@ func (p *memberUsagePublisher) Close() {
 	}
 }
 
-// observe records one emitted event. Only a usage event with a payload is a
-// request worth recording; everything else is forwarded by the caller.
+// observe records one emitted event. A maintenance event is remembered so the
+// next recorded request can carry the decision that preceded it; a usage event
+// with a payload is the request worth recording; everything else is forwarded by
+// the caller untouched.
 func (p *memberUsagePublisher) observe(e event.Event) {
-	if p == nil || e.Kind != event.Usage || e.Usage == nil {
+	if p == nil {
+		return
+	}
+	if e.Kind == event.ContextMaintenanceEvent {
+		p.rememberMaintenance(e.Maintenance)
+		return
+	}
+	if e.Kind != event.Usage || e.Usage == nil {
 		return
 	}
 	p.mu.Lock()
@@ -474,7 +496,31 @@ func memberCacheRequest(e event.Event, key team.OwnerKey, route string, obs memb
 		rec.SecondsSincePrevRequest = now.Sub(obs.lastRequest).Seconds()
 	}
 	applyCacheDiagnostics(&rec, e.CacheDiagnostics)
+	// The remembered decision is read under the same lock the caller already
+	// held, so the record and the diagnosis it carries cannot disagree.
+	if obs.maintenance != nil {
+		rec.MaintenanceObserved = true
+		rec.MaintenanceState = obs.maintenance.state
+		rec.HeadroomTokens = obs.maintenance.headroomTokens
+		rec.ReductionRatio = obs.maintenance.reductionRatio
+	}
 	return rec
+}
+
+// rememberMaintenance keeps the latest decision the writer observed. A nil or
+// stateless payload is ignored rather than clearing the remembered one: an event
+// that carries no diagnosis is not a decision that undid the last one.
+func (p *memberUsagePublisher) rememberMaintenance(m *event.ContextMaintenance) {
+	if m == nil || strings.TrimSpace(m.MaintenanceState) == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.started && p.requests != nil {
+		p.observation.maintenance = &memberMaintenanceObservation{
+			state: m.MaintenanceState, headroomTokens: m.HeadroomTokens, reductionRatio: m.ReductionRatio,
+		}
+	}
+	p.mu.Unlock()
 }
 
 // cacheRequestID correlates one record with the usage event it came from. The

@@ -168,6 +168,16 @@ const (
 	// ConfoundAccountPool marks samples that may have been served by another
 	// member of a shared account pool.
 	ConfoundAccountPool = "shared_account_pool"
+	// PressureCompactRatio is the lowered compact_ratio the pressure profile
+	// registers. It sits far enough under the production default to bring the
+	// maintenance trigger inside a request the experiment can afford, and it is
+	// an experiment variable: no result under it is a production frequency.
+	PressureCompactRatio = 0.05
+	// PressureVisibleWindowTokens is the tail cap the pressure profile registers.
+	// It must stay under the trigger the ratio produces, or the fold's own goal
+	// would exceed the boundary it is measured against and every fold would latch
+	// by construction.
+	PressureVisibleWindowTokens = 16_000
 )
 
 // Condition names one client build under test. The condition matrix is the
@@ -193,14 +203,68 @@ const (
 	ConditionRescue Condition = "rescue_enabled"
 )
 
+// TriggerProfile names the maintenance threshold a run executes under. The
+// production profile is the configured default. A lowered profile exists because
+// the ordinary trigger sits far above any affordable request, so without one the
+// maintenance path is never entered and "not triggered" cannot be told from
+// "broken" — but a result under it proves only that the path runs, never how
+// often production reaches it. Registering the profile is what keeps that
+// distinction from depending on who is reading the report.
+type TriggerProfile struct {
+	ID string `json:"id"`
+	// Ratio is the compact_ratio this profile sets. 0 means the production
+	// default, which is the only value whose results are representative.
+	Ratio float64 `json:"ratio,omitempty"`
+	// VisibleWindowTokens caps the verbatim tail, and with it the headroom goal.
+	// Under a ratio below the goal's own 16% share every fold latches by
+	// construction, so the cap is what makes the profile's goal reachable.
+	VisibleWindowTokens int `json:"visible_window_tokens,omitempty"`
+	// ProductionRepresentative reports whether a result under this profile may be
+	// read as a production frequency. Only the default profile may.
+	ProductionRepresentative bool   `json:"production_representative"`
+	Note                     string `json:"note"`
+}
+
+// RegisteredTriggerProfiles are the two thresholds this round may run under.
+func RegisteredTriggerProfiles() []TriggerProfile {
+	return []TriggerProfile{
+		{
+			ID: "production", ProductionRepresentative: true,
+			Note: "the configured default threshold, unchanged; only results under it describe production frequency",
+		},
+		{
+			ID: "pressure", Ratio: PressureCompactRatio, VisibleWindowTokens: PressureVisibleWindowTokens,
+			ProductionRepresentative: false,
+			Note:                     "a lowered threshold with the tail cap that keeps its headroom goal reachable; it proves the path runs and is never quoted as a production rate",
+		},
+	}
+}
+
+// TriggerProfileByID resolves one registered profile. An unknown id is refused
+// rather than defaulted, so a run cannot claim a threshold it did not set.
+func TriggerProfileByID(id string) (TriggerProfile, error) {
+	id = strings.TrimSpace(id)
+	for _, profile := range RegisteredTriggerProfiles() {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return TriggerProfile{}, fmt.Errorf("cachelab: %q is not a registered trigger profile", id)
+}
+
 // ConditionSpec is one condition's registration: what it turns on, which
 // switches a run must set to reproduce it, and what it must not change. The
 // switches are named rather than applied here, because the switch surface is the
 // configuration's, not this package's.
 type ConditionSpec struct {
 	Condition Condition `json:"condition"`
-	// Enables names the client behaviors this condition turns on.
+	// Enables names the client behaviors this condition turns on. Only a change
+	// that alters what the client does belongs here.
 	Enables []string `json:"enables"`
+	// Observes names what the condition only reports. A receipt field or a
+	// counter changes no behavior, and naming it here is what keeps a
+	// measurement from being read as an effect.
+	Observes []string `json:"observes,omitempty"`
 	// Switches are the configuration keys a run sets, with the value it sets them
 	// to. They are the reproduction recipe, so a run cannot claim a condition it
 	// did not configure.
@@ -215,14 +279,21 @@ type ConditionSpec struct {
 // RegisteredConditions is the condition matrix. The three client conditions
 // share one switch set: A and B are independent configuration, so enabling one
 // must not imply the other.
+//
+// cache_aware_compaction is held at one value across every condition. It is an
+// existing upstream feature with its own default, so letting it ride along in
+// A-only would move a prefix-deferral behavior that has nothing to do with the
+// maintenance state machine, and no arm difference could be attributed to
+// either. A run that needs it measured registers a separate factor.
 func RegisteredConditions() []ConditionSpec {
 	unchanged := []string{
 		"provider-visible request bytes", "cache policy", "context pruning policy",
 		"member isolation", "statistics denominator",
 	}
-	// Every behavior a condition turns on has to be named here: a key missing is a
-	// factor the matrix claims to isolate while both its arms run one build.
-	switches := func(compaction, latch, shape, rescue bool) map[string]string {
+	// Every behavior a condition turns on has to be named here: a key missing is
+	// a factor the matrix claims to isolate while both arms run one build. The
+	// observation surface is not a switch, so it is in every arm.
+	switches := func(latch, shape, rescue bool) map[string]string {
 		on := func(v bool) string {
 			if v {
 				return "true"
@@ -230,41 +301,53 @@ func RegisteredConditions() []ConditionSpec {
 			return "false"
 		}
 		return map[string]string{
-			"agent.cache_aware_compaction":  on(compaction),
+			"agent.cache_aware_compaction":  on(false),
 			"agent.low_yield_latch":         on(latch),
 			"agent.message_shape_diagnosis": on(shape),
 			"agent.context_rescue":          on(rescue),
 		}
 	}
+	observed := []string{
+		"maintenance decision state (seven outcomes, receipt only)",
+		"post-fold headroom goal and whether the installed view met it",
+		"maintenance spend counters (summaries, projection installs, rescues, repeat blocks)",
+	}
 	return []ConditionSpec{
 		{
 			Condition: ConditionBaseline,
 			Enables:   []string{"none (the reference build)"},
-			Switches:  switches(false, false, false, false),
+			Observes:  observed,
+			Switches:  switches(false, false, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionAOnly,
-			Enables:   []string{"context maintenance state machine", "post-fold headroom target", "low-yield latch"},
-			Switches:  switches(true, true, false, false),
+			// The latch is the whole of A's behavior surface: the classifier and
+			// the headroom goal are read only by the branch the latch gates.
+			Enables:   []string{"low-yield latch on a view a fold failed to give headroom"},
+			Observes:  observed,
+			Switches:  switches(true, false, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionBOnly,
 			Enables:   []string{"provider-visible shape stability", "message-array rewrite attribution"},
-			Switches:  switches(false, false, true, false),
+			Observes:  observed,
+			Switches:  switches(false, true, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionAB,
-			Enables:   []string{"context maintenance state machine", "provider-visible shape stability"},
-			Switches:  switches(true, true, true, false),
+			Enables:   []string{"low-yield latch on a view a fold failed to give headroom", "provider-visible shape stability"},
+			Observes:  observed,
+			Switches:  switches(true, true, false),
 			Unchanged: unchanged,
 		},
 		{
 			Condition: ConditionRescue,
 			Enables:   []string{"context rescue on an unrecoverable fold"},
-			Switches:  switches(true, true, true, true),
+			Observes:  observed,
+			Switches:  switches(true, true, true),
 			Unchanged: unchanged,
 			// A rescue rotates the session, so its cold prefix is part of its cost.
 			// Running it as a routine arm would report that cost as an optimization.
@@ -298,6 +381,17 @@ func (c ConditionSpec) Validate() error {
 		return fmt.Errorf("cachelab: condition %s names no switches, so it has no reproduction recipe", c.Condition)
 	case len(c.Unchanged) == 0:
 		return fmt.Errorf("cachelab: condition %s does not list what it must leave unchanged", c.Condition)
+	}
+	// A condition that enables nothing but the reference build has no recipe to
+	// check: every other one must turn on at least one switch, or a run could
+	// claim it while running the baseline.
+	if c.Condition != ConditionBaseline {
+		for _, value := range c.Switches {
+			if value == "true" {
+				return nil
+			}
+		}
+		return fmt.Errorf("cachelab: condition %s enables no switch, so it is the baseline under another name", c.Condition)
 	}
 	return nil
 }

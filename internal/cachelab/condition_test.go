@@ -62,6 +62,86 @@ func TestConditionSwitchesAreAReproductionRecipe(t *testing.T) {
 	}
 }
 
+// TestCacheAwareCompactionIsFixedAcrossTheMatrix pins the matrix's shared-value
+// rule: cache_aware_compaction is an existing upstream feature, and a condition
+// that moved it would put a prefix-deferral behavior into an arm whose difference
+// is then attributable to neither. Every condition must carry the same value for
+// it, whatever that value is.
+func TestCacheAwareCompactionIsFixedAcrossTheMatrix(t *testing.T) {
+	const key = "agent.cache_aware_compaction"
+	seen := map[string][]Condition{}
+	for _, spec := range RegisteredConditions() {
+		value, ok := spec.Switches[key]
+		if !ok {
+			t.Fatalf("condition %s does not name %s, so a run could not tell whether it moved", spec.Condition, key)
+		}
+		seen[value] = append(seen[value], spec.Condition)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("%s is not fixed across the routine matrix: %v", key, seen)
+	}
+}
+
+// TestAOnlyMovesTheLatchAndNothingElse pins A's behavior surface. The classifier
+// and the headroom goal are read only by the branch the latch gates, so the latch
+// is the whole of what an A-only arm changes — and the observation surface stays
+// in every arm, baseline included, which is why a receipt difference is never an
+// effect. A second behavior switch appearing here would silently make the
+// baseline not a baseline.
+func TestAOnlyMovesTheLatchAndNothingElse(t *testing.T) {
+	baseline, err := ConditionByID(string(ConditionBaseline))
+	if err != nil {
+		t.Fatal(err)
+	}
+	aOnly, err := ConditionByID(string(ConditionAOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := []string{}
+	for _, key := range sortedSwitchKeys(aOnly.Switches) {
+		if aOnly.Switches[key] != baseline.Switches[key] {
+			moved = append(moved, key)
+		}
+	}
+	want := []string{"agent.low_yield_latch"}
+	if len(moved) != len(want) || moved[0] != want[0] {
+		t.Fatalf("A-only moves %v against the baseline, want exactly %v: a second behavior change makes the baseline not a baseline", moved, want)
+	}
+	// The observation surface is reported in every arm, so it is not a factor.
+	if len(aOnly.Observes) == 0 || len(baseline.Observes) == 0 {
+		t.Fatal("both the baseline and A-only must name what they observe, or an observation would be read as an effect")
+	}
+	if strings.Join(aOnly.Observes, ";") != strings.Join(baseline.Observes, ";") {
+		t.Fatalf("A-only observes %v but the baseline observes %v: the observation surface is not a factor",
+			aOnly.Observes, baseline.Observes)
+	}
+	for _, key := range moved {
+		if key == "agent.low_yield_latch" && !strings.Contains(strings.Join(aOnly.Enables, ";"), "latch") {
+			t.Fatalf("A-only moves %s but does not declare it as an enabled behavior", key)
+		}
+	}
+}
+
+// TestOnlyTheBaselineEnablesNothing pins the reference condition: a condition
+// that turns on no switch is the baseline under another name, and a run could
+// claim it while measuring the reference build.
+func TestOnlyTheBaselineEnablesNothing(t *testing.T) {
+	for _, spec := range RegisteredConditions() {
+		enabled := false
+		for _, value := range spec.Switches {
+			if value == "true" {
+				enabled = true
+			}
+		}
+		if spec.Condition == ConditionBaseline && enabled {
+			t.Fatalf("the baseline sets a switch to true (%v); it is not the reference build", spec.Switches)
+		}
+		if spec.Condition != ConditionBaseline && !enabled {
+			t.Fatalf("condition %s enables nothing; it is the baseline under another name", spec.Condition)
+		}
+	}
+}
+
 // TestConditionByIDRefusesAnUnregisteredCondition pins that a typo cannot
 // silently run an unregistered build.
 func TestConditionByIDRefusesAnUnregisteredCondition(t *testing.T) {
@@ -166,5 +246,51 @@ func TestRenderReportStatesEachArmsCondition(t *testing.T) {
 	rendered := RenderReport([]Arm{arm}, samples, Prices{})
 	if !strings.Contains(rendered, string(arm.Conditions[0])) {
 		t.Fatalf("the report does not name the arm's condition %q:\n%s", arm.Conditions[0], rendered)
+	}
+}
+
+// TestTriggerProfilesKeepTheMaintenancePathReachable pins the arithmetic the
+// pressure profile depends on: a lowered trigger is only usable when the
+// headroom goal fits inside it, because the goal is a share of the window and a
+// profile that leaves the goal above the trigger makes every fold latch — which
+// would be reported as a maintenance finding when it is the profile's own
+// arithmetic. The production profile must not carry an experiment value.
+func TestTriggerProfilesKeepTheMaintenancePathReachable(t *testing.T) {
+	profiles := RegisteredTriggerProfiles()
+	if len(profiles) == 0 {
+		t.Fatal("no trigger profile is registered")
+	}
+	representative := 0
+	for _, profile := range profiles {
+		if _, err := TriggerProfileByID(profile.ID); err != nil {
+			t.Fatalf("registered profile %s does not resolve: %v", profile.ID, err)
+		}
+		if profile.ProductionRepresentative {
+			representative++
+			if profile.Ratio != 0 || profile.VisibleWindowTokens != 0 {
+				t.Fatalf("profile %s is declared production-representative but carries an experiment value: %+v", profile.ID, profile)
+			}
+		}
+		if profile.Ratio <= 0 {
+			continue
+		}
+		// A 1M window is the member's own: the [1m] alias is what the live driver
+		// registers, and it is the widest window the profile could meet.
+		const window = 1_000_000
+		goal := profile.VisibleWindowTokens
+		if goal <= 0 {
+			goal = int(float64(window) * 0.16)
+		}
+		trigger := int(float64(window) * profile.Ratio)
+		if goal >= trigger {
+			t.Fatalf("profile %s: goal %d does not fit inside trigger %d, so every fold would latch by construction",
+				profile.ID, goal, trigger)
+		}
+	}
+	if representative != 1 {
+		t.Fatalf("%d profiles claim to be production-representative, want exactly one", representative)
+	}
+	if _, err := TriggerProfileByID("not-a-profile"); err == nil {
+		t.Fatal("an unregistered profile id must be refused, not defaulted")
 	}
 }

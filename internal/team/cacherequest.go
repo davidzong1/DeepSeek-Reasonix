@@ -153,6 +153,18 @@ type MemberCacheRequest struct {
 	// reuse: the direct measure of bytes the provider had already read being
 	// rewritten. Zero with MessagesComparable true is an append-only request.
 	MessagesRewritten int `json:"messages_rewritten,omitempty"`
+	// MaintenanceObserved gates the three fields below. False means no decision
+	// had been observed, so the three are unset rather than zero: a fold can
+	// legitimately buy no headroom, and that zero would look like a measurement.
+	MaintenanceObserved bool `json:"maintenance_observed,omitempty"`
+	// MaintenanceState names the outcome the writer had most recently observed
+	// when this request was recorded: the decision BEFORE it, not one it caused,
+	// and never a maintenance count, which is MaintenanceCost's job.
+	MaintenanceState string `json:"maintenance_state,omitempty"`
+	// HeadroomTokens and ReductionRatio are that decision's own numbers, written
+	// only with a state: a decision that installed nothing has no numbers.
+	HeadroomTokens int     `json:"headroom_tokens,omitempty"`
+	ReductionRatio float64 `json:"reduction_ratio,omitempty"`
 }
 
 // Request-count provenance. The vocabulary is closed and additive: a reader
