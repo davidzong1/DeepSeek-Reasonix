@@ -119,6 +119,49 @@ func TestTeamInboxStalePrefetchNeverRidesTheNextTurn(t *testing.T) {
 	}
 }
 
+// TestTeamInboxPrefetchQueuedBeforeAckNeverRides pins the OTHER ordering of the
+// same race, which is the one a real run hits: the read starts first and the
+// acknowledgement lands while it is still in flight, so the batch is filed
+// AFTER the acknowledgement that consumed its commands. Stamping the epoch at
+// filing time would make that stale batch look current and inject the same
+// commands twice; the epoch therefore has to be the one captured when the read
+// was queued.
+func TestTeamInboxPrefetchQueuedBeforeAckNeverRides(t *testing.T) {
+	writeTeamFixture(t, twoMemberTeam())
+	m := openTeamOverlay(t)
+	closeBoardOn(t, m)
+	seedCommand(t, m, "lead", 2, "t12", "raced work")
+	w := m.teamPick.board
+	inbox := w.inboxFor("lead")
+
+	// The in-flight read: it read the board before the acknowledgement.
+	batch, ok := fetchTeamInbox(inbox)
+	if !ok {
+		t.Fatal("the seeded command must be fetchable")
+	}
+	// The epoch prefetch captures when it queues the read — read here the same
+	// way, directly, rather than through a production accessor that would exist
+	// only for this test.
+	w.mu.Lock()
+	epoch := w.acks["lead"]
+	w.mu.Unlock()
+	// A turn's inline path acknowledges those very commands while the read runs.
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	if err := inbox.Ack(ctx, batch.next); err != nil {
+		t.Fatal(err)
+	}
+	w.noteAck("lead")
+	// Now the in-flight read finishes and files its batch, stamped with the epoch
+	// it was queued under rather than the one in force now.
+	batch.ackEpoch = epoch
+	w.storePrefetched("lead", inbox, batch)
+
+	if got := m.injectTeamTurn("hi"); got != "hi" {
+		t.Fatalf("a batch read before the acknowledgement must not inject after it, got:\n%s", got)
+	}
+}
+
 // TestTeamInboxPrefetchWithoutBindingStoresNothing pins the unbound gate: a
 // member with no persisted binding has no generation to answer for, so the
 // read-ahead settles with nothing queued instead of fabricating an inbox.

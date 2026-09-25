@@ -202,6 +202,10 @@ func (w *teamInboxWire) prefetch(member string) {
 	w.mu.Lock()
 	_, ready := w.prefetched[member]
 	skip := ready || w.fetching[member]
+	// The acknowledgement epoch is captured when the read is QUEUED, not when it
+	// is filed: an acknowledgement landing mid-read consumes the commands this
+	// batch is about to return, so it must be stamped with the older count.
+	epoch := w.acks[member]
 	if !skip {
 		if w.fetching == nil {
 			w.fetching = map[string]bool{}
@@ -220,6 +224,7 @@ func (w *teamInboxWire) prefetch(member string) {
 		}
 		batch, ok := fetchTeamInbox(inbox)
 		if ok {
+			batch.ackEpoch = epoch
 			w.storePrefetched(member, inbox, batch)
 		}
 	}()
@@ -246,16 +251,15 @@ func (w *teamInboxWire) endPrefetch(member string) {
 // storePrefetched files one read-ahead batch unless it lost its meaning while
 // the read ran: its inbox was replaced — an overlay reopen resets the cache, so
 // a batch read under the old bindings must not ride a turn bound to new ones.
-// The batch carries the acknowledgement epoch it was queued under, which is
-// what takePrefetched re-checks: a read that raced an acknowledgement describes
-// commands that acknowledgement already consumed.
+// The batch already carries the acknowledgement epoch it was queued under
+// (prefetch), which is what takePrefetched re-checks: a read that raced an
+// acknowledgement describes commands that acknowledgement already consumed.
 func (w *teamInboxWire) storePrefetched(member string, inbox *agentruntime.BoardInbox, batch teamInboxBatch) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if current, ok := w.inboxes[member]; !ok || current != inbox {
 		return
 	}
-	batch.ackEpoch = w.acks[member]
 	if w.prefetched == nil {
 		w.prefetched = map[string]teamInboxBatch{}
 	}
