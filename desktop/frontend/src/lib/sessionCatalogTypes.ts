@@ -22,6 +22,7 @@ export interface SessionCatalogStatus {
 
 export interface ProjectTreeSnapshot {
   revision: number;
+  workspaceGeneration?: number | null;
   projects: ProjectNode[];
   catalog: SessionCatalogStatus;
   indexed: number;

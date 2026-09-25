@@ -94,7 +94,7 @@ func TestMemberReportResultSupportsReadAndWriteModes(t *testing.T) {
 func TestLeaderAndMemberTaskToolSurfaces(t *testing.T) {
 	service := &teamTaskService{}
 	leader := newLeaderTaskTools(service, "alpha", "lead")
-	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status", "leader_retry_task", "leader_cancel_task", "leader_reassign_task", "leader_authz_log", "team_knowledge_recall", "team_knowledge_expire", "leader_wait"}
+	wantLeader := []string{"leader_list_team", "leader_select_task_members", "leader_assign_subtask", "leader_assign_task_to_relevant", "leader_check_member_status", "leader_retry_task", "leader_cancel_task", "leader_reassign_task", "leader_authz_log", "team_knowledge_recall", "team_knowledge_expire", "leader_wait", "leader_read_conclusions"}
 	if len(leader) != len(wantLeader) {
 		t.Fatalf("leader task tool count = %d, want %d", len(leader), len(wantLeader))
 	}
@@ -104,8 +104,8 @@ func TestLeaderAndMemberTaskToolSurfaces(t *testing.T) {
 		}
 	}
 	member := newMemberTaskTools(service, "alpha", "m1")
-	wantMember := []string{"member_get_my_task", "member_report_result", "member_set_approval_mode", "team_knowledge_recall"}
-	if len(member) != 4 {
+	wantMember := []string{"member_get_my_task", "member_report_result", "member_set_approval_mode", "team_knowledge_recall", "member_post_conclusion"}
+	if len(member) != 5 {
 		t.Fatalf("member task tool count = %d", len(member))
 	}
 	for i, want := range wantMember {

@@ -256,3 +256,35 @@ func TestRuntimeStateProjectionRevalidatesLocalBindingAfterSampling(t *testing.T
 		})
 	}
 }
+
+func TestRuntimeStateProjectionRejectsLateBindingPublication(t *testing.T) {
+	for _, mutation := range []string{"archive", "replace", "detach", "open"} {
+		t.Run(mutation, func(t *testing.T) {
+			isolateDesktopUserDirs(t)
+			reader := &bindingRuntimeReader{state: event.RuntimeStateSnapshot{RuntimeEpoch: "old", Revision: 1}}
+			tab := &WorkspaceTab{ID: "binding", Scope: "global", TopicID: "topic", SessionID: "old", Ctrl: reader}
+			app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, detachedSessions: map[string]*WorkspaceTab{}}
+			// Pause at the actual handoff between off-lock sampling and
+			// serialized publication, after the sampler's binding check.
+			late := app.sampleLocalRuntimeBindingsWithUpdate(nil)
+			app.mu.Lock()
+			switch mutation {
+			case "archive":
+				delete(app.tabs, tab.ID)
+			case "replace":
+				tab.SessionID, tab.SessionGeneration = "new", 2
+				tab.Ctrl = &bindingRuntimeReader{state: event.RuntimeStateSnapshot{RuntimeEpoch: "new", Revision: 1}}
+			case "detach":
+				delete(app.tabs, tab.ID)
+				app.detachedSessions[tab.SessionID] = tab
+			case "open":
+				app.tabs["another"] = &WorkspaceTab{ID: "another", Scope: "global", TopicID: "another", SessionID: "another"}
+			}
+			app.mu.Unlock()
+			current := app.GetRuntimeStateSnapshot()
+			if got := app.projectRuntimeBindings(late); !reflect.DeepEqual(got, current) {
+				t.Fatalf("late sample replaced the committed binding set: current=%+v late=%+v", current, got)
+			}
+		})
+	}
+}

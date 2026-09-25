@@ -496,7 +496,7 @@ func (a *Agent) runSummaryRequest(ctx context.Context, req provider.Request) (su
 	if a.svc.prov == nil {
 		return "", usage, fmt.Errorf("summary unavailable")
 	}
-	ch, err := provider.StreamAuxiliary(provider.WithRecoverySleeper(ctx, recoverySleep), a.svc.prov, req)
+	ch, err := provider.StreamAuxiliary(ctx, a.svc.prov, req)
 	if err != nil {
 		return "", usage, err
 	}

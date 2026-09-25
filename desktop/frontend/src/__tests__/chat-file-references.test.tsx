@@ -218,6 +218,9 @@ const store = new ChatFileReferenceStore("tab-b");
 const many = Array.from({ length: CHAT_FILE_REFERENCE_BATCH_LIMIT + 5 }, (_, index) => ({ key: `k${index}`, path: `/tmp/f${index}.svg` }));
 store.report("turn-a", 1, many);
 await flush();
+// Both host batches settle in microtasks; yield once to their completion
+// instead of assuming a fixed number of Promise continuations is sufficient.
+await new Promise<void>(resolve => setImmediate(resolve));
 ok(batchCalls.length === 2, "a set larger than the batch limit is split");
 ok(batchCalls.every(batch => batch.length <= CHAT_FILE_REFERENCE_BATCH_LIMIT), "no batch exceeds the host contract");
 ok(store.getTurnSnapshot("turn-a").size === many.length, "every candidate keeps a cached verdict");

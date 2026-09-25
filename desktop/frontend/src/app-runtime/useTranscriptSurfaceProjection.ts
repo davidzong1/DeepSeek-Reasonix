@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect } from "react";
 import { useCommittedCommand } from "../lib/useCommittedCommand";
 import type { useNavigationSurface } from "../lib/useNavigationSurface";
-import type { HistoryLoadOutcome, HistoryLoadTrigger, Item } from "../lib/useController";
+import type { HistoryLoadOutcome, HistoryLoadTrigger, Item, State } from "../lib/useController";
 import type { SessionAvailability } from "../lib/sessionAvailability";
 import type { NavigateToTurn, TurnNavigationTarget } from "../lib/historyTurnNavigation";
 
@@ -13,6 +13,7 @@ export type TranscriptSurfaceProjectionInput = {
   hydratePlaceholderItems: Item[] | undefined;
   hydratePlaceholderActive: boolean;
   items: Item[];
+  guidanceConsumed?: State["guidanceConsumed"];
   remote: boolean;
   remoteItems: Item[];
   activeTabId: string | undefined;
@@ -94,15 +95,7 @@ export function useTranscriptSurfaceProjection(input: TranscriptSurfaceProjectio
     const receipt = input.commitPaint(token, outcome);
     if (receipt) input.commitSingleSurface(receipt.targetTabId);
   });
-  const latestGuidanceConsumed = useMemo(() => {
-    for (let i = input.items.length - 1; i >= 0; i--) {
-      const item = input.items[i];
-      if (item.kind === "notice" && item.text.startsWith("↪ ")) {
-        return { key: item.id, itemId: item.inboxItemId, text: item.text.slice(2) };
-      }
-    }
-    return null;
-  }, [input.items]);
+  const latestGuidanceConsumed = input.guidanceConsumed ?? null;
 
   const handleTranscriptPrompt = useCommittedCommand((text: string, submitText = text) => {
     if (!activeTabId || !input.controllerReady) return;

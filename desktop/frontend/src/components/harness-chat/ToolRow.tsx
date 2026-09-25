@@ -2,6 +2,8 @@
 // Reasonix provides authorized content and inspection through slots, without Cordis.
 import { useState, type ReactNode } from "react";
 import { ScanSearch } from "lucide-react";
+import { useT } from "../../lib/i18n";
+import { presentError } from "../../lib/errorPresentation";
 import { DisclosureRow } from "./DisclosureRow";
 import { StateDot, type StateDotState } from "./StateDot";
 import css from "./ToolRow.styles";
@@ -13,7 +15,8 @@ export function ToolRow({ icon, title, summary, state, dot, statusLabel, errorSu
   inspectLabel: string; inspect: (trigger: HTMLElement) => void; beforeToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const failureLine = state === "error" ? errorSummary : undefined;
+  const t = useT();
+  const failureLine = state === "error" && errorSummary ? presentError(errorSummary, t).summary : undefined;
   const leading = dot ? <StateDot state={dot} /> : state === "error" || state === "stopped"
     ? <StateDot state={state === "error" ? "error" : "warning"} /> : icon;
   return <div className={`${css.root} chat-tool`} data-state={state}>

@@ -591,6 +591,68 @@ func projectionMatchesAfterSystemRefresh(st CompactionState, msgs []provider.Mes
 	return coveredPrefixHash(candidate, len(candidate)) == st.Projection.CoveredPrefixHash
 }
 
+// SameProviderView reports whether two transcripts send the same provider
+// request. Local-only recovery records and raw tool payloads are ignored, so a
+// durable reload of the writer's own log compares equal to the live session.
+func SameProviderView(a, b []provider.Message) bool {
+	return providerVisibleFingerprint(provider.ModelMessages(a)) == providerVisibleFingerprint(provider.ModelMessages(b))
+}
+
+// ProjectionValid reports whether the in-memory fold still describes the
+// current transcript. The context gauge and the next request both use it.
+func (a *Agent) ProjectionValid() bool {
+	if a == nil || a.sess.conversation == nil {
+		return false
+	}
+	a.sess.compactionMu.Lock()
+	st := a.sess.compactionState
+	key := a.currentPromptCacheKeyLocked()
+	a.sess.compactionMu.Unlock()
+	msgs, _ := a.sess.conversation.snapshotMessagesVersion()
+	return projectionValid(st, msgs, key)
+}
+
+// AdoptCoveringProviderView installs view as the model-visible body of the
+// whole current transcript when the live fold does not validate. Canonical
+// messages stay where they are; later appends still splice on after the
+// covered prefix. A view that is empty, or that is already the full
+// provider-visible transcript, is not a fold and is refused.
+func (a *Agent) AdoptCoveringProviderView(view []provider.Message) bool {
+	if a == nil || a.sess.conversation == nil || len(view) == 0 || a.ProjectionValid() {
+		return false
+	}
+	msgs, ver := a.sess.conversation.snapshotMessagesVersion()
+	if len(msgs) == 0 {
+		return false
+	}
+	if providerVisibleFingerprint(provider.ModelMessages(view)) == providerVisibleFingerprint(provider.ModelMessages(msgs)) {
+		return false
+	}
+	a.sess.compactionMu.Lock()
+	defer a.sess.compactionMu.Unlock()
+	key := a.currentPromptCacheKeyLocked()
+	n := len(msgs)
+	st := a.sess.compactionState
+	st.SchemaVersion = compactionStateSchemaCurrent
+	st.PromptCacheKey = key
+	st.TranscriptVersion = ver
+	st.Projection = ContextProjection{
+		Messages:          append([]provider.Message(nil), view...),
+		TranscriptVersion: ver,
+		ProjectionVersion: st.Projection.ProjectionVersion + 1,
+		CoveredCount:      n,
+		CoveredPrefixHash: coveredPrefixHash(msgs, n),
+		PinnedContextHash: pinnedContextCoverageHash(msgs, n),
+		CreatedAt:         time.Now(),
+	}
+	if !projectionValid(st, msgs, key) {
+		return false
+	}
+	a.sess.compactionState = st
+	a.sess.checkpointState = "restored"
+	return true
+}
+
 // modelVisibleFromProjection splices the projection with any messages appended
 // after it was built. LocalOnly messages stay excluded via ModelMessages later.
 func modelVisibleFromProjection(proj ContextProjection, canonical []provider.Message) []provider.Message {

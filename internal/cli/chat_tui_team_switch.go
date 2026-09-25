@@ -519,6 +519,10 @@ func (m *chatTUI) bindTeamBackends(users memberPoolLookup) {
 		workspaceRoot: workspaceRoot,
 		ambient:       ambientCarrier,
 		escalations:   m.teamEscalations,
+		// Members read other members' new conclusions before each thinking step
+		// through this reader. It wraps the same board the overlay opened, so a
+		// session with no board wires no hook rather than a failing one.
+		conclusions: conclusionDeltaReaderFor(m.teamPick.boardStore()),
 		release: func(teamName, memberID string) {
 			if m.teamBackends != nil {
 				m.teamBackends.release(teamName, memberID)

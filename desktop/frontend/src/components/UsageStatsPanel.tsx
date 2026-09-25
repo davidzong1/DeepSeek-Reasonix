@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { SettingsOptions } from "./SettingsOptions";
 // UsageStatsPanel renders the "usage statistics" subtab inside the Models
 // settings page. It reads aggregated stats from the Go backend (App.UsageStats)
@@ -25,8 +26,7 @@ const RANGE_PRESETS = ["7", "14", "30", "90"] as const;
 // kernel). "all" is the unfiltered aggregate; the rest match one source label.
 const SOURCES = ["all", "desktop", "cli", "serve", "bot", "remote"] as const;
 
-// The heatmap always shows a fixed 40-week window regardless of the range
-// preset (it only follows the source filter).
+// The heatmap always shows 40 weeks and only follows the source filter.
 const HEAT_WEEKS = 40;
 // Custom ranges may span up to ten years. Keep the detailed trend bounded so
 // one unusual range cannot create thousands of interactive SVG nodes.
@@ -382,7 +382,7 @@ export function UsageStatsPanel() {
         </button>
       </div>
 
-      {error && <div className="provider-fetch-banner provider-fetch-banner--warn">{error}</div>}
+      {error && <div className="provider-fetch-banner provider-fetch-banner--warn"><ErrorMessage error={error} /></div>}
       {loading && !stats && <div className="usage-stats__loading">{t("common.loading")}</div>}
       {!loading && stats && (
         <>

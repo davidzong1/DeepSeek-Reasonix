@@ -57,7 +57,17 @@ func TestLiveOfficialRecoveryMatrix(t *testing.T) {
 					err := a.Run(ctx, "Call echo exactly once, then report its result.")
 					wantRequests, wantExecutions := 2, int32(1)
 					switch scenario {
-					case "cut_once", "followup_503", "server_replay_rejection":
+					case "cut_once":
+						wantRequests, wantExecutions = 1, 0
+						if !provider.IsStreamInterrupted(err) {
+							t.Fatalf("expected stream failure: %v", err)
+						}
+					case "followup_503":
+						var api *provider.APIError
+						if !errors.As(err, &api) || api.Status != 503 {
+							t.Fatalf("expected upstream failure: %v", err)
+						}
+					case "server_replay_rejection":
 						wantRequests = 3
 					case "missing_once":
 						if protocol == "anthropic" {
@@ -76,7 +86,7 @@ func TestLiveOfficialRecoveryMatrix(t *testing.T) {
 							t.Fatalf("cancellation error=%v", err)
 						}
 					}
-					stopped := scenario == "cancel_before_commit" || scenario == "missing_persistent" && protocol == "anthropic"
+					stopped := scenario == "cut_once" || scenario == "followup_503" || scenario == "cancel_before_commit" || scenario == "missing_persistent" && protocol == "anthropic"
 					if !stopped && err != nil {
 						t.Fatalf("live run: %v", err)
 					}
@@ -89,7 +99,6 @@ func TestLiveOfficialRecoveryMatrix(t *testing.T) {
 					}
 					proxy.mu.Lock()
 					requests, upstream, mutations := proxy.requests, proxy.upstream, proxy.mutations
-					frozen := len(proxy.bodies) > 1 && bytes.Equal(proxy.bodies[0], proxy.bodies[1])
 					proxy.mu.Unlock()
 					if requests != wantRequests || executions.Load() != wantExecutions {
 						t.Fatalf("requests=%d executions=%d want=%d/%d err=%v", requests, executions.Load(), wantRequests, wantExecutions, err)
@@ -99,8 +108,8 @@ func TestLiveOfficialRecoveryMatrix(t *testing.T) {
 							t.Fatal("requested fault was not injected")
 						}
 					}
-					if scenario == "cut_once" && !frozen {
-						t.Fatal("stream retry did not reuse frozen request")
+					if (scenario == "cut_once" || scenario == "followup_503") && len(sink.kinds(event.Retrying)) != 0 {
+						t.Fatal("transport failure retried automatically")
 					}
 					if !stopped {
 						msgs := session.Snapshot()

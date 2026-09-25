@@ -1,6 +1,28 @@
 package boot
 
-import "reasonix/internal/config"
+import (
+	"fmt"
+	"reasonix/internal/config"
+	"reasonix/internal/provider"
+)
+
+func runtimeModelContinuationReader(root, modelName string, old *config.Config, settings *config.ModelRuntimeSettings, externalResolvers ...provider.Resolver) func() error {
+	return func() error {
+		for _, resolver := range externalResolvers {
+			if resolver != nil {
+				return fmt.Errorf("external model routes cannot verify continued credential access; apply the new settings first")
+			}
+		}
+		current, err := config.LoadModelRuntimeSnapshot(root, modelName)
+		if err != nil {
+			return err
+		}
+		if err := settings.Apply(current, root); err != nil {
+			return err
+		}
+		return config.ValidateModelRuntimeContinuation(old, current)
+	}
+}
 
 func runtimeModelSettingsReader(root, modelName, modelRef string, settings *config.ModelRuntimeSettings) func() (string, error) {
 	return func() (string, error) {

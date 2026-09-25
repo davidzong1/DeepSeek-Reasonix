@@ -106,3 +106,48 @@ func TestSourceIdentityAliasesRejectAmbiguousOwnership(t *testing.T) {
 		t.Fatal("exact durable identity was lost")
 	}
 }
+
+func TestConvertedDirectoryIdentityIncludesHeadlessDiscovery(t *testing.T) {
+	path := t.TempDir()
+	physical, err := sourcePathKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(head string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(physical+"\x00"+head))) }
+	for _, format := range []string{"canonical", "legacy"} {
+		t.Run(format, func(t *testing.T) {
+			state := newState()
+			mapping := SourceMapping{SourceKey: "previous-head-key", Path: path, HeadID: "main", Format: format, SessionID: "adopted"}
+			state.SourceMappings[mapping.SourceKey] = mapping
+			mapped, found, err := state.ResolveSource(key(""))
+			if err != nil || found != (format == "canonical") || (found && mapped.SessionID != "adopted") {
+				t.Fatalf("headless discovery: %+v %v %v", mapped, found, err)
+			}
+			if _, found, _ := state.ResolveSource(key("fork")); found {
+				t.Fatal("independent head became an alias")
+			}
+			delete(state.SourceMappings, mapping.SourceKey)
+			mapping.SourceKey += ":review:version-1"
+			state.SourceMappings[mapping.SourceKey] = mapping
+			if _, found, _ := state.ResolveSource(key("")); found {
+				t.Fatal("reviewed version consumed its parent identity")
+			}
+			_, found, err = state.ResolveSource(key("") + ":review:version-1")
+			if err != nil || found != (format == "canonical") {
+				t.Fatalf("reviewed directory identity: %v %v", found, err)
+			}
+			delete(state.SourceMappings, mapping.SourceKey)
+			state.PendingOperations["interrupted"] = Operation{ID: "interrupted", Mapping: &mapping}
+			if got := slices.Contains(state.SourceKeys(mapping.SourceKey), key("")+":review:version-1"); got != (format == "canonical") {
+				t.Fatal("interrupted conversion lost its directory identity")
+			}
+		})
+	}
+	state := newState()
+	for _, head := range []string{"main", "fork"} {
+		state.SourceMappings[head] = SourceMapping{SourceKey: head, Path: path, HeadID: head, Format: "canonical", SessionID: head}
+	}
+	if _, found, err := state.ResolveSource(key("")); found || !errors.Is(err, ErrMutationConflict) {
+		t.Fatalf("ambiguous converted directory chose a target: %v %v", found, err)
+	}
+}

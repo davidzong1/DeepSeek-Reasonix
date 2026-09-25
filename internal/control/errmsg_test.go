@@ -188,12 +188,12 @@ func TestExplainError(t *testing.T) {
 	}
 
 	interrupted := explainError(&provider.StreamInterruptedError{Err: io.ErrUnexpectedEOF})
-	if !strings.Contains(interrupted.Error(), "model stream interrupted") || !strings.Contains(interrupted.Error(), "continue") {
+	if interrupted.Error() != fmt.Sprintf(i18n.M.ProviderErrStreamInterruptedFmt, io.ErrUnexpectedEOF) || !errors.Is(interrupted, io.ErrUnexpectedEOF) {
 		t.Errorf("stream interruption should be actionable, got %q", interrupted.Error())
 	}
 
 	disconnected := explainError(io.ErrUnexpectedEOF)
-	if !strings.Contains(disconnected.Error(), "model stream disconnected") || !strings.Contains(disconnected.Error(), "retry") {
+	if disconnected.Error() != fmt.Sprintf(i18n.M.ProviderErrDisconnectedFmt, io.ErrUnexpectedEOF) || !errors.Is(disconnected, io.ErrUnexpectedEOF) {
 		t.Errorf("connection reset should be actionable, got %q", disconnected.Error())
 	}
 

@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { saveModelSettings, isModelSettingsResult } from "../lib/modelSettings";
 import { ModelSettingHelp } from "./ModelSettingHelp";
 import { desktopHost } from "../lib/desktopHost";
@@ -411,12 +412,12 @@ export function SettingsPanel({
                 <button className="btn btn--small" type="button" onClick={() => void reload()}>{t("common.retry")}</button>
               </div>
             )}
-            {needsSettings && err && <div className="banner banner--error">{err}</div>}
-            {needsSettings && warning && <div className="banner banner--warning">{warning}</div>}
+            {needsSettings && err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
+            {needsSettings && warning && <div className="banner banner--warning"><ErrorMessage error={warning} /></div>}
             {needsSettings && (tab === "models" || tab === "providers") && modelApplication && (modelApplication.application === "pending" || modelApplication.application === "failed") && (
               <div className="banner banner--warning" role="status">
                 <span>{t(modelApplication.application === "pending" ? "settings.models.savedPending" : "settings.models.savedApplyFailed")}</span>
-                {modelApplication.issues.map((issue, index) => <span key={`${issue.code}:${index}`}>{issue.message}</span>)}
+                {modelApplication.issues.map((issue, index) => <span key={`${issue.code}:${index}`}><ErrorMessage error={issue} /></span>)}
                 {modelApplication.targets.filter(target => target.application === "failed").map(target => (
                   <button className="btn btn--small" key={target.tabId} type="button" disabled={busy} onClick={() => void apply(() => app.RetryModelSettingsApplication(target.tabId))}>{t("settings.models.applyRetry")}{target.title ? ` · ${target.title}` : ""}</button>
                 ))}
@@ -1710,7 +1711,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
       <SessionExperienceSettings snapshot={s} busy={busy} apply={apply} />
 
       <SettingsSection title={t("settings.general.sectionSystem")} description={t("settings.general.sectionSystemHint")}>
-      {graphics && <SettingsField label={<span className="settings-graphics-label"><span>{t("settings.hardwareAcceleration")}</span>{graphics.restartRequired && graphics.override === "none" && <span className="settings-graphics-status">{t("settings.hardwareAccelerationRestartShort")}</span>}{graphics.override !== "none" && <span className="settings-graphics-status settings-graphics-status--warning">{t("settings.hardwareAccelerationOverride")}</span>}{graphicsError && <span className="settings-graphics-status settings-graphics-status--error" role="alert">{graphicsError}</span>}</span>} hint={t("settings.hardwareAccelerationHint")} icon={<Monitor size={18} />}>
+      {graphics && <SettingsField label={<span className="settings-graphics-label"><span>{t("settings.hardwareAcceleration")}</span>{graphics.restartRequired && graphics.override === "none" && <span className="settings-graphics-status">{t("settings.hardwareAccelerationRestartShort")}</span>}{graphics.override !== "none" && <span className="settings-graphics-status settings-graphics-status--warning">{t("settings.hardwareAccelerationOverride")}</span>}{graphicsError && <span className="settings-graphics-status settings-graphics-status--error" role="alert"><ErrorMessage error={graphicsError} /></span>}</span>} hint={t("settings.hardwareAccelerationHint")} icon={<Monitor size={18} />}>
         <div className="settings-graphics-control">
           <ToggleSegment value={graphics.hardwareAcceleration} disabled={graphicsBusy || !graphics.writable || graphics.override !== "none"} onChange={updateGraphics} />
         </div>
@@ -3416,7 +3417,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
             <p>
               {selectedInstallConnection
                 ? t("settings.botInstallAlreadyConnected", { provider: selectedInstallLabel })
-                : install.message || botTargetHint(installTarget, t)}
+                : install.status === "error" ? <ErrorMessage error={install.message || t("settings.botInstallFailed")} /> : install.message || botTargetHint(installTarget, t)}
             </p>
             {install.status === "showing" && install.timeLeft > 0 ? (
               <span className="bot-connect-panel__timer">{t("settings.botInstallTimeLeft", { time: formatInstallTimeLeft(install.timeLeft) })}</span>
@@ -4429,7 +4430,7 @@ export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboard
               />
             </SettingsField>
 
-            {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
+            {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn"><ErrorMessage error={modelIssue} /></div>}
           </details>
           </SettingsSection>
           <SettingsSection className="model-runtime-preferences" title={t("settings.runtimePreferences")}>
@@ -5397,7 +5398,7 @@ export function ProviderAccessCard({
       )}
       {fetchResult && (
         <div className={`provider-card-status provider-card-status--${fetchResult.kind}`}>
-          {fetchResult.text}
+          {fetchResult.kind === "warn" ? <ErrorMessage error={fetchResult.text} /> : fetchResult.text}
         </div>
       )}
 
@@ -6370,7 +6371,7 @@ export function ProviderEditor({
           rows={4}
         />
         <div className={`mem-hint${extraBodyInvalid ? " mem-hint--error" : ""}`}>
-          {extraBodyInvalid ? extraBodyParse.error : t("settings.providerExtraBodyHint")}
+          {extraBodyInvalid ? <ErrorMessage error={extraBodyParse.error} /> : t("settings.providerExtraBodyHint")}
         </div>
         <label className="set-check">
           <input
@@ -6494,7 +6495,7 @@ export function ProviderEditor({
       </div>
       </section>
       {fetchStatus && <div role="status" className="provider-fetch-status provider-fetch-status--ok">{fetchStatus}</div>}
-      {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
+      {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn"><ErrorMessage error={fetchFallback} /></div>}
       {modelDialog !== null && <Suspense fallback={null}><ProviderModelDialog
         baseURL={effectiveRequestUrl} candidates={modelCandidateNames} contextDefault={Number(ctx) || undefined}
         effortOptions={Array.from(new Set([...(modelCapabilities.find(item=>item.model === modelDialog)?.reasoning?.options ?? []).map(option=>option.id), ...(modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? supportedEfforts ?? [])])).filter(Boolean)}
@@ -6668,7 +6669,7 @@ function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | nul
   };
   return (
     <>
-      {err && <div className="banner banner--error">{err}</div>}
+      {err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
       <SettingsSection title={t("settings.hooksScopeSection")} description={t("settings.hooksScopeHint")}>
         <SettingsField label={t("settings.hooksScopeField")}>
           <SettingsSelect name="hooks-scope" className="mem-select set-grow" value={scope} disabled={busy} onValueChange={(value) => setScope(value === "project" ? "project" : "global")}>
@@ -6718,7 +6719,7 @@ function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | nul
                 setJsonError(null);
               }}
             />
-            {jsonError && <div className="hooks-json-panel__message hooks-json-panel__message--error">{jsonError}</div>}
+            {jsonError && <div className="hooks-json-panel__message hooks-json-panel__message--error"><ErrorMessage error={jsonError} /></div>}
             {jsonMessage && <div className="hooks-json-panel__message">{jsonMessage}</div>}
           </div>
         )}

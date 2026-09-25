@@ -57,10 +57,13 @@ type ModelSettingsOwnership struct {
 }
 
 type ModelSettingsSourceResponse struct {
-	Version  int                   `json:"version"`
-	Revision string                `json:"revision"`
-	Ref      string                `json:"ref,omitempty"`
-	Settings *ModelRuntimeSettings `json:"settings,omitempty"`
+	CanContinue             bool                  `json:"canContinue,omitempty"`
+	ConnectionTarget        string                `json:"connectionTarget,omitempty"`
+	ContinuationUnavailable string                `json:"continuationUnavailable,omitempty"`
+	Version                 int                   `json:"version"`
+	Revision                string                `json:"revision"`
+	Ref                     string                `json:"ref,omitempty"`
+	Settings                *ModelRuntimeSettings `json:"settings,omitempty"`
 }
 
 type ModelRuntimePreferences struct {

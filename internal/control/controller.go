@@ -213,7 +213,8 @@ type Controller struct {
 	// jobs is the session-scoped background-job manager. The agent's background
 	// tools spawn into it; Compose drains its completion notes into the next turn;
 	// Close cancels its still-running jobs.
-	jobs *jobs.Manager
+	jobs       *jobs.Manager
+	background controllerBackground
 	// workspaceLease is the Delivery writer owner shared with the executor.
 	// It is exposed only through a sanitized state snapshot for Desktop recovery.
 	workspaceLease *workspacelease.Owner
@@ -599,6 +600,8 @@ type Options struct {
 	ModelSettingsRevision       string
 	ModelSettingsSourceRevision string
 	ModelSettingsCurrent        func() (string, error)
+	ModelSettingsContinuation   func() error
+	ModelConnectionTarget       string
 	// BeforeInboxDispatch lets the owner reserve runtime admission before a
 	// queued message becomes a new turn. The returned release runs after claim
 	// and synchronous turn admission, outside every controller lock.
@@ -647,7 +650,9 @@ type Options struct {
 	BalanceKey    string
 	BalanceClient *http.Client
 	// Jobs is the session-scoped background-job manager (nil disables background jobs).
-	Jobs *jobs.Manager
+	Jobs            *jobs.Manager
+	BackgroundScope *jobs.SessionBackgroundScope
+	BackgroundSink  event.Sink
 	// TaskStore remains a FileStore-compatible authority. Desktop injects one
 	// observed instance so recorder and task-control APIs share post-commit
 	// projection hints; nil preserves the ordinary FileStore.
@@ -855,27 +860,29 @@ func New(opts Options) *Controller {
 		balanceKey:                        opts.BalanceKey,
 		balanceClient:                     opts.BalanceClient,
 		jobs:                              opts.Jobs,
-		workspaceLease:                    opts.WorkspaceLease,
-		mcp:                               newMcpManager(opts.Host, opts.Registry, pluginCtx, opts.MCPHostProfile),
-		mcpDefaultCallTimeout:             opts.MCPDefaultCallTimeout,
-		mcpConfigureSpec:                  opts.MCPConfigureSpec,
-		capabilityRuntime:                 opts.CapabilityRuntime,
-		ablation:                          opts.Ablation,
-		workspaceRoot:                     opts.WorkspaceRoot,
-		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
-		providerResolver:                  opts.ProviderResolver,
-		runtimeGeneration:                 opts.RuntimeGeneration,
-		runtimeOwner:                      runtimeOwner,
-		goalDriverControl:                 goalDriverControl{ctx: goalDriverCtx, cancel: goalDriverCancel},
-		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
-		turns:                             turnLoop{phase: session.RuntimeIdle},
-		closeFinalized:                    make(chan struct{}),
+		background: controllerBackground{scope: opts.BackgroundScope, sink: opts.BackgroundSink,
+			candidate: opts.BackgroundScope != nil && opts.BackgroundScope.Manager.ReplacementInProgress()},
+		workspaceLease:         opts.WorkspaceLease,
+		mcp:                    newMcpManager(opts.Host, opts.Registry, pluginCtx, opts.MCPHostProfile),
+		mcpDefaultCallTimeout:  opts.MCPDefaultCallTimeout,
+		mcpConfigureSpec:       opts.MCPConfigureSpec,
+		capabilityRuntime:      opts.CapabilityRuntime,
+		ablation:               opts.Ablation,
+		workspaceRoot:          opts.WorkspaceRoot,
+		externalFolderToolRefs: opts.ExternalFolderToolRefs,
+		providerResolver:       opts.ProviderResolver,
+		runtimeGeneration:      opts.RuntimeGeneration,
+		runtimeOwner:           runtimeOwner,
+		goalDriverControl:      goalDriverControl{ctx: goalDriverCtx, cancel: goalDriverCancel},
+		approval:               newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
+		turns:                  turnLoop{phase: session.RuntimeIdle},
+		closeFinalized:         make(chan struct{}),
 	}
 	c.authentication.initialForModel = opts.AuthenticationForModel
 	c.initializeOwnedResources(opts)
 	c.bindAttachmentService()
 	if opts.ImageRouteConfig != nil {
-		c.imageRoutesOnce.Do(func() { c.captureImageRoutes(opts.ImageRouteConfig) })
+		c.captureImageRoutes(opts.ImageRouteConfig)
 	}
 	return c
 }
@@ -956,9 +963,15 @@ func (c *Controller) initializeTaskRecorder(store taskmonitor.WriteStore) {
 	if store == nil {
 		store = taskmonitor.NewFileStore(filepath.Join(".reasonix", "tasks"))
 	}
-	c.jobs.SetTaskRecorder(taskmonitor.NewTaskRecorder(
-		store, c.workspaceRoot, func() string { return c.parentSessionID() },
-	))
+	sessionID := func() string { return c.parentSessionID() }
+	if c.background.scope != nil {
+		sessionID = c.jobs.ActiveSessionID
+	}
+	recorder := taskmonitor.NewTaskRecorder(store, c.workspaceRoot, sessionID)
+	c.background.recorder = recorder
+	if c.background.scope == nil {
+		c.jobs.SetTaskRecorder(recorder)
+	}
 }
 
 // SetDisplayRecorder installs an optional hook used by frontends that persist a
@@ -4124,6 +4137,11 @@ func (c *Controller) setSessionPath(p string, fresh bool) {
 
 func (c *Controller) setActiveJobSession(sessionPath string) {
 	if c.jobs != nil {
+		// A candidate borrows the registry without changing its active owner.
+		// Same-session replacement preserves the already bound artifact path.
+		if c.background.scope != nil && c.jobs.ReplacementInProgress() {
+			return
+		}
 		c.jobs.SetActiveSessionPath(agent.BranchID(sessionPath), sessionPath)
 	}
 }
@@ -4995,7 +5013,7 @@ func (c *Controller) finalizeControllerClose() {
 		}
 		c.mu.Lock()
 		started := c.startedOnce
-		fireSessionEnd := c.closeFireSessionEnd
+		fireSessionEnd := c.closeFireSessionEnd && !c.background.retired
 		jobsMode := c.closeJobsMode
 		c.mu.Unlock()
 		// Goal-driver workers may be inside the pre-admission durability
@@ -5021,7 +5039,9 @@ func (c *Controller) finalizeControllerClose() {
 			c.hooks.SessionEnd(context.Background(), "other")
 			c.extensionSessionEvent(extension.PointSessionEnd, dispatch.PhaseEnd, c.SessionPath())
 		}
-		if c.jobs != nil {
+		if c.background.scope != nil {
+			c.background.scope.Release(jobsMode == closeJobsAsync)
+		} else if c.jobs != nil {
 			switch jobsMode {
 			case closeJobsAsync:
 				c.jobs.CloseAsync()
@@ -5074,6 +5094,7 @@ func (c *Controller) finalizeControllerClose() {
 		if c.persistentShell != nil {
 			c.persistentShell.Release()
 		}
+		c.finishBackgroundReplacement(false)
 	})
 }
 
@@ -5237,7 +5258,7 @@ func (c *Controller) applyToolApprovalModeLocked(mode string) []string {
 	// Processes admitted under a broader preset may outlive their spawning
 	// turn. Only a downgrade must terminate them; an upgrade does not revoke
 	// any capability they already held.
-	if permissionPresetRank(mode) < permissionPresetRank(previousMode) {
+	if permissionPresetRank(mode) < permissionPresetRank(previousMode) && !c.isBackgroundCandidate() {
 		for _, job := range c.Jobs() {
 			c.CancelJob(job.ID)
 		}

@@ -26,6 +26,22 @@ func TestLegacyTopicArchiveVisibility(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					a, topic, root := topicRemovalFixture(t, scope, "Historical conversation")
+					openCatalog := func(owner *App, filename string) {
+						t.Helper()
+						catalog, err := sessioncatalog.Open(t.Context(), sessioncatalog.Options{Path: filepath.Join(t.TempDir(), filename), MetadataOnly: metadataOnly, DisableRepair: true})
+						if err != nil {
+							t.Fatal(err)
+						}
+						owner.sessionCatalog.Store(catalog)
+						// Register after this generation's TempDir cleanup and bind
+						// the owner now, so Windows sees closed SQLite handles first.
+						t.Cleanup(func() {
+							owner.desktopSessions.readSnapshots.close()
+							if !owner.stopSessionCatalog(time.Second) {
+								t.Error("session catalog did not stop before directory cleanup")
+							}
+						})
+					}
 					if err := a.SetTopicPinned(topic.ID, true); err != nil {
 						t.Fatal(err)
 					}
@@ -43,12 +59,7 @@ func TestLegacyTopicArchiveVisibility(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					catalog, err := sessioncatalog.Open(t.Context(), sessioncatalog.Options{Path: filepath.Join(t.TempDir(), "catalog.sqlite"), MetadataOnly: metadataOnly, DisableRepair: true})
-					if err != nil {
-						t.Fatal(err)
-					}
-					a.sessionCatalog.Store(catalog)
-					t.Cleanup(func() { a.desktopSessions.readSnapshots.close(); a.stopSessionCatalog(time.Second) })
+					openCatalog(a, "catalog.sqlite")
 					reconcileSessionCatalogForTest(t, a, dir, scope, root)
 					assertVisible := func(want int) {
 						t.Helper()
@@ -121,11 +132,7 @@ func TestLegacyTopicArchiveVisibility(t *testing.T) {
 					// Independent legacy content can share the consumed topic ID.
 					// Its real source row must remain visible after rediscovery.
 					sibling := writeTopicSessionWithPrompt(t, dir, "independent-sibling.jsonl", topic.ID, topic.Title, root, "independent history", time.Now())
-					catalog, err = sessioncatalog.Open(t.Context(), sessioncatalog.Options{Path: filepath.Join(t.TempDir(), "rebuilt-catalog.sqlite"), MetadataOnly: metadataOnly, DisableRepair: true})
-					if err != nil {
-						t.Fatal(err)
-					}
-					a.sessionCatalog.Store(catalog)
+					openCatalog(a, "rebuilt-catalog.sqlite")
 					reconcileSessionCatalogForTest(t, a, dir, scope, root)
 					page, err := a.ListProjectTopics(ProjectTopicPageRequest{Scope: scope, WorkspaceRoot: root, Limit: 1})
 					if err != nil || len(page.Items) != 1 || !sameDesktopPath(page.Items[0].SessionPath, sibling) || page.NextCursor != "" {

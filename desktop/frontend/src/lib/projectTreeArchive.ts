@@ -246,6 +246,8 @@ export function useProjectTreeArchiveController({
         archive: async () => {
           const receipt = await app.ArchiveSessionTarget({ ref: target.session, source: target.source, sessionPath });
           if (receipt.committed) sessionLifecycleFences.archive(target, receipt);
+          if (receipt.committed && receipt.outcome === "archived_copy") showToast(t("projectTree.archivedCopy"), "info");
+          if (receipt.committed && receipt.outcome === "already_removed") showToast(t("projectTree.alreadyRemovedSource"), "info");
         },
         commit: () => {
           const invalidatedKeys = folderKey ? [folderKey] : treeRef.current.filter((node) => node.kind === "project" || node.kind === "global_folder").map((node) => node.key);
@@ -268,7 +270,7 @@ export function useProjectTreeArchiveController({
     });
     archiveQueueRef.current = queued;
     await queued;
-  }, [closeMenu, invalidateProjectTopicLists, onTopicsChanged, optimisticallyRemoveSession, refreshRef, sessionErrorMessage, showToast, treeRef]);
+  }, [closeMenu, invalidateProjectTopicLists, onTopicsChanged, optimisticallyRemoveSession, refreshRef, sessionErrorMessage, showToast, t, treeRef]);
 
   return { trashingTopics, trashingSessions, currentArchiveTombstones, trashTopic, trashSession, inspectTopicRemoval, topicRemovalInspections };
 }

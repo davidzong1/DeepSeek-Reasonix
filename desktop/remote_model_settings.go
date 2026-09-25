@@ -17,6 +17,7 @@ import (
 )
 
 type remoteModelSettingsStatus struct {
+	Application *ModelApplicationDetails `json:"application,omitempty"`
 	config.ModelSettingsOwnership
 	Version           int      `json:"version"`
 	Revision          string   `json:"revision"`
@@ -227,12 +228,35 @@ func (a *App) serveModelSettingsSource(w http.ResponseWriter, r *http.Request, r
 	var request config.ModelSettingsSourceRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil || len(request.OfferID) != 32 || (request.Mode != "prepare" && request.Mode != "finish") {
+	if err := decoder.Decode(&request); err != nil || len(request.OfferID) != 32 || (request.Mode != "prepare" && request.Mode != "finish" && request.Mode != "inspect") {
 		http.Error(w, "invalid model settings request", http.StatusBadRequest)
 		return
 	}
 	if _, err := hex.DecodeString(request.OfferID); err != nil {
 		http.Error(w, "invalid model settings offer", http.StatusBadRequest)
+		return
+	}
+	if request.Mode == "inspect" {
+		cfg, err := config.LoadModelRuntimeSnapshot(".")
+		if err != nil {
+			http.Error(w, "cannot verify saved settings", http.StatusServiceUnavailable)
+			return
+		}
+		response := config.ModelSettingsSourceResponse{Version: 1, Revision: cfg.ModelRuntimeFingerprint(route.ref)}
+		if route.modelSnapshot != nil {
+			if entry, ok := route.modelSnapshot.ResolveModel(route.ref); ok {
+				response.ConnectionTarget = config.SafeModelConnectionTarget(config.ProviderEffectiveRequestURL(entry))
+			}
+		}
+		if request.AppliedRevision != route.revision {
+			response.ContinuationUnavailable = "configuration ownership changed"
+		} else if err := config.ValidateModelRuntimeContinuation(route.modelSnapshot, cfg); err != nil {
+			response.ContinuationUnavailable = err.Error()
+		} else {
+			response.CanContinue = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
 		return
 	}
 	offers := []string{request.PreviousOfferID}
@@ -411,6 +435,9 @@ func (a *App) ensureRemoteModelSettings(tabID string) (string, uint64, error) {
 				current.settings.failureRevision = desired
 			}
 			a.remoteTabMu.Unlock()
+			if detail := a.remoteModelApplicationDetails(tabID); detail != nil {
+				return "", 0, &modelApplicationError{cause: err, details: detail}
+			}
 			return "", 0, fmt.Errorf("model settings were saved but the remote session could not apply them: %w", err)
 		}
 		a.remoteTabMu.Lock()
@@ -455,7 +482,8 @@ func (a *App) appendRemoteModelSettingsStatus(result *ModelSettingsResult) {
 		state := "applied"
 		if tab.settings.revision != desired || tab.settings.generation != tab.gen || tab.settings.sessionPath != tab.routing.currentPath {
 			state = "pending"
-			if tab.settings.failure != "" && tab.settings.failureRevision == desired {
+			blocked := tab.settings.details != nil && tab.settings.details.Code == "model_settings_pending"
+			if tab.settings.failure != "" && tab.settings.failureRevision == desired && !blocked {
 				state = "failed"
 				result.Application = "failed"
 				result.Issues = append(result.Issues, ModelSettingsIssue{Code: "remote_apply_failed", Message: tab.settings.failure})
@@ -463,17 +491,24 @@ func (a *App) appendRemoteModelSettingsStatus(result *ModelSettingsResult) {
 				result.Application = "pending"
 			}
 		}
-		result.Targets = append(result.Targets, ModelSettingsTarget{TabID: tab.id, Title: tab.topicTitle, Application: state, AppliedRevision: tab.settings.revision, DesiredRevision: desired})
+		target := ModelSettingsTarget{TabID: tab.id, Title: tab.topicTitle, Application: state, AppliedRevision: tab.settings.revision, DesiredRevision: desired}
+		if state != "applied" {
+			target.Details = tab.settings.details
+		}
+		result.Targets = append(result.Targets, target)
 	}
 }
 
 // remoteModelApplicationState is scoped to one acknowledged session binding.
 type remoteModelApplicationState struct {
-	revision        string
-	failure         string
-	failureRevision string
-	generation      uint64
-	sessionPath     string
+	details           *ModelApplicationDetails
+	detailsGeneration uint64
+	detailsPath       string
+	revision          string
+	failure           string
+	failureRevision   string
+	generation        uint64
+	sessionPath       string
 	// unsupportedGen records a generation whose Serve predates model-settings;
 	// a reconnect or replacement generation probes the protocol again.
 	unsupportedGen uint64

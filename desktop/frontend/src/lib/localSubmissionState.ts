@@ -59,6 +59,8 @@ export function pruneSubmissionHandoffs<T extends LocalSubmissionFields>(state: 
 }
 
 export function isUnknownSubmissionError(error: unknown): boolean {
+  const outcome=(error as {data?:{submissionOutcome?:string}} | undefined)?.data?.submissionOutcome;
+  if(outcome) return outcome === "unknown";
   return /timeout|timed out|network|connection|socket|channel.*closed|fetch failed|failed to fetch|\beof\b/i.test(error instanceof Error ? error.message : String(error));
 }
 

@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { Archive, ArrowLeft, Ellipsis, MessageSquare, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onLegacyEmptySessionCleanupChanged, onProjectTreeChanged } from "../lib/bridge";
@@ -177,8 +178,8 @@ export function ArchivedSessionsList({ active, onOpenSession }: {
     {!!cleanupStatus?.pending && <div className="management-notice" role="status">
       {t("history.legacyCleanupPending", { n: cleanupStatus.pending })}
     </div>}
-    {(error || pendingRequest) && <div className="management-notice" role="alert">{error}<button className="btn btn--small" disabled={busy} onClick={() => pendingRequest ? void mutate(pendingRequest) : refresh()}>{t(pendingRequest ? "history.retryFailed" : "common.retry")}</button></div>}
-    {loadError && <div className="management-notice" role="alert">{loadError}<button className="btn btn--small" disabled={busy} onClick={refresh}>{t("common.retry")}</button></div>}
+    {(error || pendingRequest) && <div className="management-notice" role="alert"><ErrorMessage error={error} /><button className="btn btn--small" disabled={busy} onClick={() => pendingRequest ? void mutate(pendingRequest) : refresh()}>{t(pendingRequest ? "history.retryFailed" : "common.retry")}</button></div>}
+    {loadError && <div className="management-notice" role="alert"><ErrorMessage error={loadError} /><button className="btn btn--small" disabled={busy} onClick={refresh}>{t("common.retry")}</button></div>}
     <div className="archived-sessions__layout" data-detail={!!visibleSelected}>
       <div className="archived-sessions__list">
         {loading && <p role="status">{t("common.loading")}</p>}
@@ -194,7 +195,7 @@ export function ArchivedSessionsList({ active, onOpenSession }: {
         <header><button className="archived-sessions__back" onClick={closePreview}><ArrowLeft size={14} />{t("history.backToTrash")}</button><div className="archived-sessions__preview-heading"><h3>{visibleSelected.title}</h3><p>{visibleSelected.workspace} · {t("history.previewReadOnly")}</p></div><div className="archived-sessions__preview-actions"><button className="btn btn--primary" disabled={busy || !visibleSelected.canRestore} aria-label={t("history.restoreSession")} onClick={() => void mutate(requestFor([visibleSelected], "restore"))}><RotateCcw size={14} />{t("history.restore")}</button><button className="btn archived-sessions__session-menu" disabled={busy || !visibleSelected.canPurge} aria-label={t("history.sessionManage")} aria-haspopup="menu" aria-expanded={!!sessionMenu} onClick={event => openMenu(event, "session")}><Ellipsis size={16} /></button></div></header>
         <div className="archived-sessions__messages">
           {previewLoading && <p role="status">{t("common.loading")}</p>}
-          {previewError && <div role="alert">{previewError}<button className="btn btn--small" onClick={() => void select(visibleSelected)}>{t("common.retry")}</button></div>}
+          {previewError && <div role="alert"><ErrorMessage error={previewError} /><button className="btn btn--small" onClick={() => void select(visibleSelected)}>{t("common.retry")}</button></div>}
           {!previewLoading && !previewError && !preview.length && <p>{t("history.emptySession")}</p>}
           {preview.map((message, index) => <article key={message.messageId || message.recordId || index}><small>{message.role}</small><div>{message.content}</div></article>)}
           {previewCursor && <button className="btn btn--small" onClick={() => void select(visibleSelected, previewCursor)}>{t("projectTree.loadMore")}</button>}

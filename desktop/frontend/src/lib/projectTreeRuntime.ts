@@ -108,7 +108,7 @@ export function projectTreeApplyRuntimeTopics(
         && (scope !== "project" || topic.workspaceRoot === root));
     const aliases = new Map<string, string>();
     for (const node of [...asArray(project.children), ...available.map(topic => topic.node)]) {
-      if (!node.session) continue;
+      if (!node.session && !node.tabId) continue;
       for (const alias of projectSessionKeys(node)) aliases.set(alias, projectSessionIdentity(node));
     }
     const identityOf = (node: ProjectNode) => aliases.get(projectSessionIdentity(node)) ?? projectSessionIdentity(node);

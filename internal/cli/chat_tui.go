@@ -481,6 +481,13 @@ type chatTUI struct {
 
 type tuiState int
 
+func (m *chatTUI) modelReplacementBusy() bool {
+	if m == nil {
+		return false
+	}
+	return control.ModelReplacementBlocked(m.ctrl) || m.pendingApproval != nil || m.chooser != nil
+}
+
 func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Confirm booting → idle on the first Update. User input (keys/mouse/focus)
 	// must NOT refresh the active-turn heartbeat; only elapsedTick and work

@@ -27,11 +27,12 @@ const (
 // agent goroutine — a browser that can't keep up loses intermediate frames, not
 // the whole session (it can refetch /history).
 type Broadcaster struct {
-	mu              sync.Mutex
-	subs            map[chan []byte]subscription
-	ledgers         map[string]*billing.Ledger
-	current         string
-	displayCurrency string
+	mu                      sync.Mutex
+	subs                    map[chan []byte]subscription
+	ledgers                 map[string]*billing.Ledger
+	current                 string
+	displayCurrency         string
+	modelApplicationChanged func()
 }
 
 // NewBroadcaster returns an empty Broadcaster ready to accept subscribers.

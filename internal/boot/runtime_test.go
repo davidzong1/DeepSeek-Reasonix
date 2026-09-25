@@ -354,6 +354,9 @@ func TestRebuildKeepsLegacySessionNativeWithHostService(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	if err := control.ActivateControllerReplacement(old.Controller, rebuilt.Controller); err != nil {
+		t.Fatal(err)
+	}
 	next, err := Rebuild(context.Background(), rebuilt.Controller, Options{SessionService: other})
 	if err != nil {
 		t.Fatal(err)

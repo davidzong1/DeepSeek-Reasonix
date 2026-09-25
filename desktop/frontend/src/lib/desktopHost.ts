@@ -62,6 +62,7 @@ export interface ReasonixDesktopHost {
   readonly contract: { protocolVersion: number; digest: string; commands: readonly string[] };
   readonly platform: { os: "darwin" | "windows" | "linux"; arch: string; versions: Record<string, string> };
   invoke(method: string, args: unknown[]): Promise<unknown>;
+  invokeResult?(method:string,args:unknown[]):Promise<{ok:true;value:unknown}|{ok:false;message:string;code?:number;data?:unknown}>;
   on(name: string, cb: (...args: unknown[]) => void): () => void;
   native: NativePerformanceActions & {
     processDiagnostics?(): Promise<ProcessDiagnosticsSnapshot | null>;
@@ -217,7 +218,12 @@ const electronHostFrom = (host: ReasonixDesktopHost): DesktopHost => {
     // never leaves the proxy pointing at a stale command set.
     app: new Proxy({} as AppBindings, {
       get: (_target, prop) =>
-        typeof prop === "string" && host.contract.commands.includes(prop) ? (...args: unknown[]) => host.invoke(prop, args) : undefined,
+        typeof prop === "string" && host.contract.commands.includes(prop) ? async (...args: unknown[]) => {
+          if(!host.invokeResult) return host.invoke(prop,args);
+          const result=await host.invokeResult(prop,args);
+          if(result.ok) return result.value;
+          throw Object.assign(new Error(result.message),{code:result.code,data:result.data});
+        } : undefined,
     }),
     events: { on: (name, cb) => host.on(name, cb) },
     native: {

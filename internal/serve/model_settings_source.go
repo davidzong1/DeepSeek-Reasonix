@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,9 +63,16 @@ func sourceModelRef(settings *config.ModelRuntimeSettings, remoteRef string) str
 // failure leaves the existing controller and queued work intact. Approvals,
 // steers, and children remain on their already accepted runtime.
 func (s *Server) refreshRunModelSettingsLocked(ctx context.Context) error {
-	return s.refreshModelSettingsOwnerLocked(ctx, modelSettingsRuntimeOwner{
+	if err := s.cachedModelApplicationFailureLocked(ctx); err != nil {
+		return err
+	}
+	err := s.refreshModelSettingsOwnerLocked(ctx, modelSettingsRuntimeOwner{
 		current: s.ctl, settings: &s.managedModels, offerID: &s.modelSettingsOfferID, apply: s.switchModelLocked,
 	})
+	if err != nil && !control.ModelReplacementBlocked(s.ctl()) {
+		s.recordModelApplicationFailureLocked(ctx, err)
+	}
+	return err
 }
 
 type modelSettingsRuntimeOwner struct {
@@ -146,6 +154,9 @@ func (s *Server) refreshModelSettingsOwnerLocked(ctx context.Context, owner mode
 				(*owner.offerID) = ""
 			}
 			if applyErr != nil {
+				if sourceCandidateOvertaken(applyErr, ackErr, offered, ack.Revision) {
+					continue // discard an overtaken candidate before publishing it
+				}
 				return fmt.Errorf("saved model settings could not be applied: %w", applyErr)
 			}
 			if ackErr != nil {
@@ -165,6 +176,10 @@ func (s *Server) refreshModelSettingsOwnerLocked(ctx context.Context, owner mode
 		}
 		return nil
 	}
+}
+
+func sourceCandidateOvertaken(applyErr, ackErr error, offered *config.ModelRuntimeSettings, acknowledged string) bool {
+	return errors.Is(applyErr, control.ErrModelChoiceStale) && ackErr == nil && offered != nil && acknowledged != offered.Revision
 }
 
 func validateModelSettingsSourceOffer(id string, response config.ModelSettingsSourceResponse) error {

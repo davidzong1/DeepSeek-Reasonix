@@ -6,6 +6,7 @@ import { ChevronRight, Compass } from "lucide-react";
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
 import { useT } from "../lib/i18n";
+import { presentError } from "../lib/errorPresentation";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
 import { app } from "../lib/bridge";
@@ -194,13 +195,13 @@ function toolOutputDuplicatesError(output: string | undefined, error: string | u
   return normalizedOutput === normalizedError || withoutErrorPrefix(normalizedOutput) === withoutErrorPrefix(normalizedError);
 }
 
-function summarizeToolError(error: string, receiptMismatchText: string): string {
+function summarizeToolError(error: string, receiptMismatchText: string, localizedSummary: string): string {
   const text = withoutErrorPrefix(error);
   if (!text) return "";
   if (/has no matching successful receipt/i.test(text)) {
     return receiptMismatchText;
   }
-  const firstLine = text.split("\n")[0]?.trim() ?? "";
+  const firstLine = localizedSummary;
   if (firstLine.length <= ERROR_SUMMARY_MAX_CHARS) return firstLine;
   return `${firstLine.slice(0, ERROR_SUMMARY_MAX_CHARS - 1)}…`;
 }
@@ -363,7 +364,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const hasSubagentOutcome = Boolean(item.subagentOutcome || effectiveOutput?.includes("Subagent outcome:"));
   const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasSubagentOutcome || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
-  const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
+  const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch"), presentError(errorText, t).summary) : "";
   const hasErrorDetails = errorText ? errorNeedsDetails(errorText, errorSummary) : false;
   useEffect(() => {
     if (!open) setAppInstance(null);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -230,191 +231,74 @@ func TestRunCancelledMidStreamLeavesResumableSession(t *testing.T) {
 	}
 }
 
-func TestRunRecoversInterruptedStreamAfterPartialText(t *testing.T) {
-	interrupted := &provider.StreamInterruptedError{Err: errors.New("deepseek-flash: read stream: unexpected EOF"), Reason: provider.StreamInterruptPrematureEOF}
-	mp := testutil.NewMock("m",
-		testutil.Turn{Text: "partial ", ChunkError: interrupted},
-		testutil.Turn{Text: "continued"},
-	)
-	sink := &recordSink{}
-	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
-
-	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err != nil {
-		t.Fatalf("Run should recover the interrupted stream, got %v", err)
-	}
-	if mp.CallCount() != 2 {
-		t.Fatalf("provider calls = %d, want 2", mp.CallCount())
-	}
-
-	reqs := mp.Requests()
-	if len(reqs) != 2 {
-		t.Fatalf("recorded requests = %d, want 2", len(reqs))
-	}
-	// Codex-style: exact original request replay — no synthetic recovery user
-	// message, no partial assistant in the provider body.
-	if !providerRequestBodiesEqual(reqs[0], reqs[1]) {
-		t.Fatalf("retry must replay the identical provider request\nfirst=%+v\nsecond=%+v", reqs[0], reqs[1])
-	}
-	for _, message := range reqs[1].Messages {
-		if message.LocalOnly || message.Content == "partial " {
-			t.Fatalf("partial assistant leaked into provider recovery request: %+v", reqs[1].Messages)
-		}
-		if strings.Contains(message.Content, "interrupted") && message.Role == provider.RoleUser {
-			t.Fatalf("synthetic stream recovery must not be injected: %+v", message)
-		}
-	}
-	// Successful recovery never persists a LocalOnly interrupted record.
-	for _, message := range a.Session().Messages {
-		if message.LocalOnly {
-			t.Fatalf("successful recovery must not leave LocalOnly interrupt records: %+v", message)
-		}
-	}
-
-	var streamed strings.Builder
-	for _, e := range sink.kinds(event.Text) {
-		streamed.WriteString(e.Text)
-	}
-	// Both attempts emit text to the sink; Desktop discards the first via
-	// stream_attempt. Agent still emits both for non-journal sinks.
-	if !strings.Contains(streamed.String(), "continued") {
-		t.Fatalf("streamed text = %q, want final continued answer", streamed.String())
-	}
-	retries := sink.kinds(event.Retrying)
-	if len(retries) != 1 || retries[0].RetryAttempt != 1 || retries[0].RetryMax != maxStreamRecoveries || retries[0].RetryScope != event.RetryScopeStream {
-		t.Fatalf("retry events = %+v, want one stream recovery retry", retries)
-	}
-	attempts := sink.kinds(event.StreamAttempt)
-	if len(attempts) < 3 {
-		t.Fatalf("stream_attempt events = %d, want begin/discard/begin/commit at least", len(attempts))
-	}
-	var sawDiscard, sawCommit bool
-	for _, e := range attempts {
-		if e.StreamAttempt.Action == event.StreamAttemptDiscard {
-			sawDiscard = true
-			if e.StreamAttempt.Reason != provider.StreamInterruptPrematureEOF {
-				t.Fatalf("discard reason = %q", e.StreamAttempt.Reason)
+func TestInterruptedStreamStopsUntilUserRetries(t *testing.T) {
+	interrupted := &provider.StreamInterruptedError{Err: errors.New("unexpected EOF"), Reason: provider.StreamInterruptPrematureEOF}
+	for _, partialTool := range []bool{false, true} {
+		t.Run(fmt.Sprintf("partialTool=%v", partialTool), func(t *testing.T) {
+			first := testutil.Turn{Text: "partial ", ChunkError: interrupted}
+			if partialTool {
+				first = testutil.Turn{Chunks: []provider.Chunk{
+					{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: "incomplete", Name: "echo"}},
+					{Type: provider.ChunkError, Err: interrupted},
+				}}
 			}
-		}
-		if e.StreamAttempt.Action == event.StreamAttemptCommit {
-			sawCommit = true
-		}
-	}
-	if !sawDiscard || !sawCommit {
-		t.Fatalf("stream attempts missing discard/commit: %+v", attempts)
+			p := testutil.NewMock("m", first, testutil.Turn{Text: "continued"})
+			sink := &recordSink{}
+			a := New(p, echoRegistry(), NewSession(""), Options{}, sink)
+			if err := a.Run(withNoClosedLoop(t.Context()), "go"); !errors.Is(err, interrupted) {
+				t.Fatalf("lost stream failure: %v", err)
+			}
+			if p.CallCount() != 1 || len(sink.kinds(event.Retrying)) != 0 || len(sink.kinds(event.ToolResult)) != 0 {
+				t.Fatalf("calls=%d retries=%v tools=%v", p.CallCount(), sink.kinds(event.Retrying), sink.kinds(event.ToolResult))
+			}
+			if !partialTool {
+				found := false
+				for _, m := range a.Session().Snapshot() {
+					if m.LocalOnly && m.Content == "partial " {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("partial reply lost")
+				}
+			}
+			if err := a.Run(withNoClosedLoop(t.Context()), "try again"); err != nil {
+				t.Fatal(err)
+			}
+			if p.CallCount() != 2 || lastAssistantContent(a.Session()) != "continued" {
+				t.Fatalf("manual retry calls=%d", p.CallCount())
+			}
+			for _, m := range provider.ModelMessages(p.Requests()[1].Messages) {
+				if m.Content == "partial " || m.ToolCallID == "incomplete" {
+					t.Fatalf("uncommitted output leaked into manual retry: %+v", m)
+				}
+			}
+		})
 	}
 }
 
-func TestRunRecoversRepeatedInterruptedStreams(t *testing.T) {
-	interrupted := &provider.StreamInterruptedError{Err: errors.New("deepseek-flash: read stream: unexpected EOF")}
-	mp := testutil.NewMock("m",
-		testutil.Turn{Text: "first ", ChunkError: interrupted},
-		testutil.Turn{Text: "second ", ChunkError: interrupted},
-		testutil.Turn{Text: "done"},
-	)
+func TestInterruptedStreamAccountsOnlyAttemptedRequest(t *testing.T) {
+	interrupted := provider.StreamInterrupt(errors.New("eof"), provider.StreamInterruptPrematureEOF)
+	p := testutil.NewMock("m", testutil.Turn{Text: "a", Usage: &provider.Usage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31, CacheMissTokens: 30}, ChunkError: interrupted}, testutil.Turn{Text: "must not retry"})
 	sink := &recordSink{}
-	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
-
-	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err != nil {
-		t.Fatalf("Run should recover repeated interrupted streams, got %v", err)
-	}
-	if mp.CallCount() != 3 {
-		t.Fatalf("provider calls = %d, want 3", mp.CallCount())
-	}
-	reqs := mp.Requests()
-	if !providerRequestBodiesEqual(reqs[0], reqs[1]) || !providerRequestBodiesEqual(reqs[0], reqs[2]) {
-		t.Fatalf("all retries must replay the same frozen provider request")
-	}
-
-	var streamed strings.Builder
-	for _, e := range sink.kinds(event.Text) {
-		streamed.WriteString(e.Text)
-	}
-	if !strings.Contains(streamed.String(), "done") {
-		t.Fatalf("streamed text = %q, want final done", streamed.String())
-	}
-	retries := sink.kinds(event.Retrying)
-	if len(retries) != 2 || retries[0].RetryAttempt != 1 || retries[1].RetryAttempt != 2 {
-		t.Fatalf("retry events = %+v, want attempts 1 and 2", retries)
-	}
-	for _, retry := range retries {
-		if retry.RetryMax != maxStreamRecoveries || retry.RetryScope != event.RetryScopeStream {
-			t.Fatalf("retry = %+v, want max=%d scope=stream", retry, maxStreamRecoveries)
-		}
-	}
-}
-
-func TestRunRecoversInterruptedPartialToolCallWithoutExecutingIt(t *testing.T) {
-	interrupted := &provider.StreamInterruptedError{Err: errors.New("deepseek-flash: read stream: unexpected EOF")}
-	mp := testutil.NewMock("m",
-		testutil.Turn{Chunks: []provider.Chunk{
-			{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: "c1", Name: "echo"}},
-			{Type: provider.ChunkError, Err: interrupted},
-		}},
-		testutil.Turn{Text: "recovered"},
-	)
-	a := New(mp, echoRegistry(), NewSession(""), Options{}, event.Discard)
-
-	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err != nil {
-		t.Fatalf("Run should recover the interrupted tool-call stream, got %v", err)
-	}
-
-	for _, m := range a.Session().Messages {
-		if m.Role == provider.RoleTool && !m.LocalOnly {
-			t.Fatalf("partial tool call should not have executed or produced a tool result: %+v", m)
-		}
-		if m.LocalOnly {
-			t.Fatalf("successful recovery must not leave LocalOnly interrupt: %+v", m)
-		}
-	}
-	reqs := mp.Requests()
-	if len(reqs) != 2 || !providerRequestBodiesEqual(reqs[0], reqs[1]) {
-		t.Fatalf("partial-tool interrupt must exact-replay without synthetic recovery")
-	}
-}
-
-func TestRunStreamRetryRequestCountIsLinearNotTriangular(t *testing.T) {
-	interrupted := &provider.StreamInterruptedError{Err: errors.New("eof"), Reason: provider.StreamInterruptPrematureEOF}
-	mp := testutil.NewMock("m",
-		testutil.Turn{Text: "a", Usage: &provider.Usage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31, CacheMissTokens: 30}, ChunkError: interrupted},
-		testutil.Turn{Text: "b", Usage: &provider.Usage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31, CacheMissTokens: 30}, ChunkError: interrupted},
-		testutil.Turn{Text: "ok", Usage: &provider.Usage{PromptTokens: 30, CompletionTokens: 2, TotalTokens: 32, CacheMissTokens: 30}},
-	)
-	sink := &recordSink{}
-	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
-	if err := a.Run(withNoClosedLoop(context.Background()), "go"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if mp.CallCount() != 3 {
-		t.Fatalf("provider calls = %d, want 3", mp.CallCount())
+	a := New(p, echoRegistry(), NewSession(""), Options{}, sink)
+	if err := a.Run(withNoClosedLoop(t.Context()), "go"); !errors.Is(err, interrupted) {
+		t.Fatal(err)
 	}
 	usages := sink.kinds(event.Usage)
-	if len(usages) != 1 || usages[0].Usage == nil {
-		t.Fatalf("usage events = %d, want one aggregate", len(usages))
+	if p.CallCount() != 1 || len(usages) != 1 || usages[0].Usage == nil {
+		t.Fatalf("calls=%d usage=%+v", p.CallCount(), usages)
 	}
 	u := usages[0].Usage
-	if u.RequestCount != 3 {
-		t.Fatalf("RequestCount = %d, want 3 (linear, not triangular 6)", u.RequestCount)
+	if u.RequestCount != 1 || u.PromptTokens != 30 || u.CompletionTokens != 1 || u.CacheHitTokens+u.CacheMissTokens != u.PromptTokens {
+		t.Fatalf("usage=%+v", u)
 	}
-	// Billable input is summed; context gauge uses ContextPromptTokens.
-	if u.PromptTokens != 90 {
-		t.Fatalf("PromptTokens = %d, want billable sum 90", u.PromptTokens)
-	}
-	if u.ContextPromptTokens != 30 {
-		t.Fatalf("ContextPromptTokens = %d, want latest 30", u.ContextPromptTokens)
-	}
-	if u.CacheHitTokens+u.CacheMissTokens != u.PromptTokens {
-		t.Fatalf("cache split %d+%d must align with PromptTokens %d", u.CacheHitTokens, u.CacheMissTokens, u.PromptTokens)
-	}
-	if u.CompletionTokens != 4 {
-		t.Fatalf("CompletionTokens = %d, want billable sum 4", u.CompletionTokens)
-	}
-	// ContextSnapshot and compaction use the latest full attempt shape.
 	if last := a.sess.output.lastUsage.Load(); last == nil || last.PromptTokens != 30 {
-		t.Fatalf("lastUsage prompt = %+v, want latest attempt prompt 30", last)
+		t.Fatalf("latest usage=%+v", last)
 	}
 }
 
-func TestRunExhaustedStreamRetriesPersistPendingLocalOnly(t *testing.T) {
+func TestRunInterruptedStreamPersistsPendingLocalOnly(t *testing.T) {
 	interrupted := &provider.StreamInterruptedError{Err: errors.New("eof"), Reason: provider.StreamInterruptPrematureEOF}
 	turns := make([]testutil.Turn, 0, maxSamplingAttempts)
 	for range maxSamplingAttempts {
@@ -425,10 +309,10 @@ func TestRunExhaustedStreamRetriesPersistPendingLocalOnly(t *testing.T) {
 
 	err := a.Run(withNoClosedLoop(context.Background()), "go")
 	if !provider.IsStreamInterrupted(err) {
-		t.Fatalf("Run error = %v, want StreamInterruptedError after exhausting retries", err)
+		t.Fatalf("Run error = %v, want original StreamInterruptedError", err)
 	}
-	if mp.CallCount() != maxSamplingAttempts {
-		t.Fatalf("provider calls = %d, want %d", mp.CallCount(), maxSamplingAttempts)
+	if mp.CallCount() != 1 {
+		t.Fatalf("provider calls = %d, want 1", mp.CallCount())
 	}
 	var pending *provider.InterruptedTurnRecovery
 	var local provider.Message
@@ -439,7 +323,7 @@ func TestRunExhaustedStreamRetriesPersistPendingLocalOnly(t *testing.T) {
 		}
 	}
 	if pending == nil || local.Content != "half" {
-		t.Fatalf("exhausted retries must leave one pending LocalOnly record: local=%+v pending=%+v", local, pending)
+		t.Fatalf("interruption must leave one pending LocalOnly record: local=%+v pending=%+v", local, pending)
 	}
 	// No synthetic recovery user messages mid-turn.
 	for _, m := range a.Session().Messages {
@@ -464,8 +348,11 @@ func TestRunCompleteUncommittedToolCallNeverExecutes(t *testing.T) {
 		testutil.Turn{Text: "recovered without write"},
 	)
 	a := New(mp, reg, NewSession(""), Options{}, event.Discard)
-	if err := a.Run(withNoClosedLoop(context.Background()), "write it"); err != nil {
+	if err := a.Run(withNoClosedLoop(context.Background()), "write it"); !errors.Is(err, interrupted) {
 		t.Fatalf("Run: %v", err)
+	}
+	if mp.CallCount() != 1 {
+		t.Fatalf("interrupted request retried: %d calls", mp.CallCount())
 	}
 	if writer.calls.Load() != 0 {
 		t.Fatalf("writer executed %d times, want 0 (uncommitted tool call)", writer.calls.Load())
@@ -483,52 +370,6 @@ func (c *countingWriterTool) ReadOnly() bool { return false }
 func (c *countingWriterTool) Execute(context.Context, json.RawMessage) (string, error) {
 	c.calls.Add(1)
 	return "wrote", nil
-}
-
-// providerRequestBodiesEqual compares the provider-visible request surface
-// (messages, tools order/bytes, temperature, token limit, response format).
-func providerRequestBodiesEqual(a, b provider.Request) bool {
-	if a.MaxTokens != b.MaxTokens {
-		return false
-	}
-	if (a.Temperature == nil) != (b.Temperature == nil) {
-		return false
-	}
-	if a.Temperature != nil && b.Temperature != nil && *a.Temperature != *b.Temperature {
-		return false
-	}
-	if (a.ResponseFormat == nil) != (b.ResponseFormat == nil) {
-		return false
-	}
-	if a.ResponseFormat != nil && b.ResponseFormat != nil && a.ResponseFormat.Type != b.ResponseFormat.Type {
-		return false
-	}
-	if len(a.Messages) != len(b.Messages) || len(a.Tools) != len(b.Tools) {
-		return false
-	}
-	for i := range a.Messages {
-		am, bm := a.Messages[i], b.Messages[i]
-		if am.Role != bm.Role || am.Content != bm.Content || am.ReasoningContent != bm.ReasoningContent ||
-			am.Name != bm.Name || am.ToolCallID != bm.ToolCallID || am.LocalOnly != bm.LocalOnly {
-			return false
-		}
-		if len(am.ToolCalls) != len(bm.ToolCalls) {
-			return false
-		}
-		for j := range am.ToolCalls {
-			if am.ToolCalls[j].ID != bm.ToolCalls[j].ID || am.ToolCalls[j].Name != bm.ToolCalls[j].Name ||
-				am.ToolCalls[j].Arguments != bm.ToolCalls[j].Arguments {
-				return false
-			}
-		}
-	}
-	for i := range a.Tools {
-		if a.Tools[i].Name != b.Tools[i].Name || a.Tools[i].Description != b.Tools[i].Description ||
-			string(a.Tools[i].Parameters) != string(b.Tools[i].Parameters) {
-			return false
-		}
-	}
-	return true
 }
 
 func TestRunGenericStreamErrorPersistsLocalDisplayAndInjectsBoundedRecovery(t *testing.T) {
@@ -638,11 +479,11 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 	}
 }
 
-// TestRunNotifiesWhenStreamRetriesExhausted pins the #9560 visibility fix:
-// when every sampling attempt of a model round ends in a stream interruption,
+// TestRunNotifiesWhenStreamFails pins the #9560 visibility fix:
+// when a model request ends in a stream interruption,
 // the run must surface a user-readable warn notice explaining the failure —
 // not only the generic interrupted-turn record.
-func TestRunNotifiesWhenStreamRetriesExhausted(t *testing.T) {
+func TestRunNotifiesWhenStreamFails(t *testing.T) {
 	interrupted := &provider.StreamInterruptedError{Err: errors.New("dial tcp: lookup gw.invalid: no such host"), Reason: provider.StreamInterruptIdleTimeout}
 	script := make([]testutil.Turn, maxSamplingAttempts)
 	for i := range script {
@@ -654,7 +495,7 @@ func TestRunNotifiesWhenStreamRetriesExhausted(t *testing.T) {
 
 	err := a.Run(withNoClosedLoop(context.Background()), "go")
 	if err == nil {
-		t.Fatal("Run must fail after exhausting stream retries")
+		t.Fatal("Run must fail immediately on stream interruption")
 	}
 	if !provider.IsStreamInterrupted(err) {
 		t.Fatalf("terminal error = %v, want a stream interruption", err)

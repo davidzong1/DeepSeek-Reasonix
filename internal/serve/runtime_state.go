@@ -117,6 +117,9 @@ func (b *Broadcaster) publishRuntimeState(path string, snapshot event.RuntimeSta
 	path = agent.CanonicalSessionPath(path)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.modelApplicationChanged != nil {
+		b.modelApplicationChanged()
+	}
 	frame, err := json.Marshal(eventwire.Event{Kind: "runtime_state", SessionPath: path, SessionCurrent: path == b.current, RuntimeState: &snapshot})
 	if err != nil {
 		return

@@ -398,10 +398,14 @@ func (s *Session) Snapshot() Snapshot { return s.snapshot(true, true) }
 // message and completed turn on each activity update.
 func (s *Session) StateSnapshot() Snapshot { return s.snapshot(false, false) }
 
-// ExecutionSnapshot exposes the current provider projection and business
-// state without materializing durable UI history. Controllers use it for
-// turn/model decisions; UI history is obtained from Query.
-func (s *Session) ExecutionSnapshot() Snapshot { return s.snapshot(false, true) }
+// ExecutionSnapshot exposes the current model workset and business state,
+// retaining local refusal evidence until outbound request normalization. It
+// never materializes durable UI history; UI history is obtained from Query.
+func (s *Session) ExecutionSnapshot() Snapshot {
+	snapshot := s.snapshot(false, true)
+	restoreRejectedToolResults(&snapshot.Projection)
+	return snapshot
+}
 
 func (s *Session) snapshot(includeHistory, includeModel bool) Snapshot {
 	if s == nil {
@@ -477,6 +481,9 @@ func (s *Session) cacheWeight() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	weight := int64(64 << 10)
+	for id, result := range s.projection.RejectedToolResults {
+		weight += int64(128 + len(id) + len(result.ToolCallID) + len(result.Name) + len(result.State))
+	}
 	for _, message := range s.projection.ModelMessages {
 		weight += int64(len(message.ID) + len(message.Content) + len(message.RawContent) + len(message.ProviderContent) + len(message.ReasoningContent) + len(message.ReasoningSignature) + len(message.Original))
 		for _, image := range message.Images {

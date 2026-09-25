@@ -24,6 +24,7 @@ window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEvent
 const { createRoot } = await import("react-dom/client");
 const { ProjectTree } = await import("../components/ProjectTree");
 const { LocaleProvider } = await import("../lib/i18n");
+const { ToastProvider } = await import("../lib/toast");
 const { resetProjectTreeRuntimeWindowLimits } = await import("../lib/projectTreeWindow");
 
 const roots = ["/review-a", "/review-b"];
@@ -37,7 +38,9 @@ let mountID = 0;
 let rows: Record<string, ProjectNode[]> = {};
 let groups: SessionGroup[] = [];
 let calls: ProjectTopicPageRequest[] = [];
+const removedWorkspaces: string[] = [];
 let intercept: ((req: ProjectTopicPageRequest) => Promise<ProjectTopicPage> | undefined) | undefined;
+let snapshotFailure: Error | null = null;
 const catalog = () => ({ state: "ready", revision, indexed: 2, total: 2, repairPending: 0 });
 
 function page(req: ProjectTopicPageRequest): ProjectTopicPage {
@@ -53,12 +56,17 @@ const bindings = {
     revision++;
     return { committed: true, lifecycleGeneration: 1, operationId: `archive-${sessionPath}` };
   },
-  GetProjectTreeSnapshot: async () => ({ revision, projects: visibleProjects, catalog: catalog() }),
+  GetProjectTreeSnapshot: async () => {
+    if (snapshotFailure) throw snapshotFailure;
+    return { revision, projects: visibleProjects, catalog: catalog() };
+  },
   ReleaseReadSnapshot: async (id: string) => { releasedSnapshots.push(id); },
   ListProjectTopics: async (req: ProjectTopicPageRequest) => { calls.push(req); return intercept?.(req) ?? page(req); },
   GetSessionCatalogStatus: async () => catalog(),
   GetSessionOrganization: async () => ({ groups, revision, order: [], manualOrderEnabled: false }),
   GetProjectTreeRuntimeSnapshot: async () => ({ revision: 0, topics: [] }),
+  IsolatedWorktreeAvailability: async () => ({ available: true, reason: "" }),
+  RemoveWorkspace: async (path: string) => { removedWorkspaces.push(path); },
   Platform: async () => "darwin",
   RemoteConnectionStatuses: async () => [],
 };
@@ -104,15 +112,15 @@ async function search(value: string) {
   });
   await flush();
 }
-async function mount(withGroups = false, withSessions = false) {
+async function mount(withGroups = false, withSessions = false, onTopicsChanged?: () => Promise<void>) {
   mountID++;
-  revision = 1; calls = []; intercept = undefined; visibleProjects = projects; releasedSnapshots.length = 0;
+  revision = 1; calls = []; intercept = undefined; snapshotFailure = null; visibleProjects = projects; releasedSnapshots.length = 0; removedWorkspaces.length = 0;
   rows = Object.fromEntries(roots.map((path, i) => [path, Array.from({ length: 12 }, (_, n) => topic(`${i ? "B" : "A"}-${n}`, path))]));
   if (withSessions) rows = Object.fromEntries(Object.entries(rows).map(([path, items]) => [path, items.map(row => ({ ...row, kind: "session", sessionPath: `/sessions/${mountID}/${row.key}` }))]));
   groups = withGroups ? [{ id: "feature", title: "Feature", topicIds: [] }] : [];
   resetProjectTreeRuntimeWindowLimits(); localStorage.clear();
   root = createRoot(container);
-  await act(async () => root.render(<LocaleProvider><ProjectTree activeScope="project" activeWorkspaceRoot={roots[0]} onOpenTopic={() => {}} onAddProject={async () => {}} /></LocaleProvider>));
+  await act(async () => root.render(<LocaleProvider><ToastProvider><ProjectTree activeScope="project" activeWorkspaceRoot={roots[0]} onOpenTopic={() => {}} onAddProject={async () => {}} onTopicsChanged={onTopicsChanged} /></ToastProvider></LocaleProvider>));
   await flush(); await advance();
 }
 async function unmount() { await act(async () => root.unmount()); }
@@ -404,6 +412,35 @@ try {
   assert.ok(releasedSnapshots.includes("removed-project-read"));
   await unmount();
   console.log("  PASS  project removal/re-addition fences late responses and releases obsolete snapshots");
+
+  let projectSyncs = 0;
+  await mount(false, false, async () => { projectSyncs++; });
+  const firstProject = container.querySelector<HTMLElement>(".project-tree__folder--project");
+  assert.ok(firstProject, "project folder exists");
+  await act(async () => firstProject.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, clientX: 30, clientY: 30 })));
+  await flush();
+  const removeItem = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+    .find(button => ["Remove", "Confirm remove"].includes(button.textContent?.trim() ?? ""));
+  assert.ok(removeItem(), "remove project command exists");
+  await act(async () => removeItem()!.click()); await flush();
+  assert.ok(removeItem(), "remove project command asks for confirmation");
+  await act(async () => removeItem()!.click()); await flush();
+  assert.deepEqual(removedWorkspaces, [roots[0]], "the selected workspace is removed");
+  assert.equal(projectSyncs, 1, "workspace removal synchronizes tabs and the active session");
+  await unmount();
+  console.log("  PASS  project removal synchronizes the application session surface");
+
+  await mount();
+  snapshotFailure = new Error("workspace snapshot failed");
+  const addMenus = container.querySelectorAll<HTMLButtonElement>('.project-tree__header-menu-wrap button[aria-haspopup="menu"]');
+  assert.ok(addMenus.length > 0, "add project menu exists");
+  await act(async () => addMenus[addMenus.length - 1].click()); await flush();
+  const addFolder = document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[1];
+  assert.ok(addFolder, "add local folder command exists");
+  await act(async () => addFolder.click()); await flush();
+  assert.ok(document.querySelector(".toast--error")?.textContent?.includes("workspace snapshot failed"), "add project reports snapshot refresh failure");
+  await unmount();
+  console.log("  PASS  add project reports shell refresh failures");
 } finally {
   mock.timers.reset();
   dom.window.close();

@@ -19,6 +19,15 @@ export async function submitTurn(
   initialGoal?: { goal: string; collaborationMode: CollaborationMode; toolApprovalMode: ToolApprovalMode },
 ): Promise<SubmitOutcome> {
   let receipt: unknown;
+  if (structured?.modelApplicationChoice) {
+    if (!app.StartTurnWithModelApplication) throw new Error("Model application choice is unsupported by this host");
+    const result=await app.StartTurnWithModelApplication(tabId,submissionId,{
+      input:structured.input,display:structured.display,original,
+      goal:initialGoal?.goal,toolApprovalMode:initialGoal?.toolApprovalMode,
+      invocations:structured.invocations,attachments:structured.attachments ?? [],
+    },structured.modelApplicationChoice);
+    return initialGoal ? [1, []] : [3,result.turnId];
+  }
   // Management commands have no durable user row to edit. Preserve the actual
   // instructions (including expanded paste blocks) through the typed admission.
   if (isCompactSubmission(submit, structured, initialGoal)) receipt = typeof app.StartTurnForTab === "function"

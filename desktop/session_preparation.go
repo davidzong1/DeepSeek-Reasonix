@@ -272,9 +272,6 @@ func (a *App) checkHistoricalSourceUpdate(ctx context.Context, id string, source
 	if !ok {
 		return HistoricalSourceUpdateView{SourceKey: id, Status: "not_prepared", Retryable: true}
 	}
-	if state.SessionStates[mapping.SessionID].Lifecycle != workspacestate.Active {
-		return HistoricalSourceUpdateView{SourceKey: id, Status: "retired"}
-	}
 	release, err := acquireHistoricalSource(ctx, id, source)
 	if err != nil {
 		if historicalSourceBusyError(err) {
@@ -289,6 +286,9 @@ func (a *App) checkHistoricalSourceUpdate(ctx context.Context, id string, source
 	}
 	ref := session.SessionRef{HostID: localDesktopHostID, SessionID: mapping.SessionID}
 	status := "unchanged"
+	if state.SessionStates[mapping.SessionID].Lifecycle != workspacestate.Active {
+		status = "retired"
+	}
 	if fingerprint != mapping.Fingerprint {
 		status = "available"
 	}

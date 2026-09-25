@@ -127,6 +127,13 @@ export class ChatSource implements ChatViewSource {
   };
   private put(node: ChatNode) {
     const previous = this.nodes.get(node.key);
+    if (node.kind === "reasoning") {
+      // Both stream and history publications pass here. Reasoning owns only
+      // its own content and lifecycle, never the growing answer text/totals.
+      const { id, turnId, reasoning, streaming, reasoningComplete, reasoningDurationMs } = node.item;
+      const item = { kind: "assistant" as const, id, turnId, text: "", reasoning, streaming, reasoningComplete, reasoningDurationMs };
+      node = { ...node, item: previous?.kind === "reasoning" && shallowSame(previous.item, item) ? previous.item : item };
+    }
     if (previous && shallowSame(previous, node)) return;
     this.nodes.set(node.key, node);
     this.dirty.add(node.key);

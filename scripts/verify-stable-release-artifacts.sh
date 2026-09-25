@@ -51,15 +51,15 @@ verify_site() {
 	local homepage="$tmp_dir/homepage.html"
 	local changelog="$tmp_dir/changelog.html"
 	local cask="$tmp_dir/reasonix.rb"
-	curl -fsSL https://dl.reasonix.io/latest/latest.json >"$manifest"
+	bash "$script_dir/fetch-stable-release-manifest.sh" "$version" "$manifest"
 	jq -e --arg version "v$version" '
 		.version == $version and
 		([.platforms[], (.native_packages // {})[], (.downloads // {})[]] |
 		 all(.url | type == "string" and startswith("https://dl.reasonix.io/desktop-" + $version + "/")))
 	' "$manifest" >/dev/null
-	curl -fsSL "https://reasonix.io/?download=desktop&release-postflight=v$version" >"$homepage"
+	go run "$script_dir/release-site-fetch/main.go" homepage "$version" "$homepage"
 	! grep -Eq 'href="[^"]*(tag|download)/desktop-v[0-9]+\.[0-9]+\.[0-9]+' "$homepage"
-	curl -fsSL "https://reasonix.io/changelog/v$version/" >"$changelog"
+	go run "$script_dir/release-site-fetch/main.go" changelog "$version" "$changelog"
 	grep -Fq "v$version" "$changelog"
 	curl -fsSL https://raw.githubusercontent.com/esengine/homebrew-reasonix/main/Casks/reasonix.rb >"$cask"
 	grep -Eq "version ['\"]$version['\"]" "$cask"
@@ -70,7 +70,10 @@ verify_site() {
 		done
 	fi
 	[ -n "$browser" ] || { echo "::error::a Chromium browser is required for hydrated homepage verification" >&2; return 1; }
+	# GitHub's default HeadlessChrome identity is challenged by Cloudflare. Use the
+	# ordinary Chrome browser identity proven by the protected site probe.
 	"$browser" --headless=new --disable-gpu --no-sandbox --virtual-time-budget=10000 \
+		--user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' \
 		--dump-dom "https://reasonix.io/?download=desktop&release-postflight=v$version" \
 		>"$tmp_dir/homepage-hydrated.html"
 	grep -Fq "data-release-version=\"desktop\">v$version<" "$tmp_dir/homepage-hydrated.html"
@@ -125,7 +128,7 @@ if [ "${DESKTOP_MANUAL_ONLY:-false}" = "true" ]; then
 		echo "::error::GitHub latest advanced to the manual release $desktop_tag" >&2
 		exit 1
 	fi
-	curl -fsSL https://dl.reasonix.io/latest/latest.json > "$tmp_dir/desktop-pointer.json"
+	bash "$script_dir/fetch-stable-release-manifest.sh" "$version" "$tmp_dir/desktop-pointer.json"
 	jq -e --arg v "v$version" '.version != $v' "$tmp_dir/desktop-pointer.json" >/dev/null
 	gh release view "$desktop_tag" --repo "$repository" --json body --jq .body | grep -F 'manual-download only'
 fi

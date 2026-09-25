@@ -12,11 +12,18 @@ build request
   -> provider stream
   -> clean final: done
   -> tool call: execute, next step
-  -> request error: unified retry
+  -> transport/service/empty-response failure: return error, user may retry
   -> unhandled error: explicit failure
 ```
 
 ## Product decisions
+
+- Connection failures, HTTP errors (including 429/5xx), interrupted streams and
+  empty responses stop the current attempt. There is no automatic backoff,
+  minute-long recovery wait, or unchanged-request replay, including auxiliary
+  search/summary requests. Keep the original error, partial display output and
+  actual request usage; another user submission can try again. Targeted
+  protocol/context repairs remain bounded and separate from transport retries.
 
 - Normal requests are executor-only; the planner is opt-in (`planner_model`).
 - Normal agents ship with synthetic continuation disabled; Goal, review,
@@ -68,12 +75,13 @@ New consolidated suite: `internal/agent/agent_contract_test.go`.
 |---|---|
 | clean final makes exactly one model request | `TestContractCleanFinalMakesOneModelRequest` |
 | tool call executes, loop advances | `TestContractToolCallAdvancesToNextStep` |
-| thinking survives the unified retry (frozen request) | `TestContractThinkingSurvivesUnifiedRetry` |
-| no long-lived fallback state after retry exhaustion | `TestContractNoLongLivedFallbackStateAfterRetryExhaustion` |
+| explicit retry retains thinking without a degraded mode | `TestContractExplicitRetryPreservesThinking` |
+| provider failure stops after one request in every agent role | `TestProviderFailureReturnsWithoutWaitingOrRetrying` |
+| interrupted output survives until the user retries | `TestInterruptedStreamStopsUntilUserRetries` |
 | clean final adds no synthetic continuation | `TestContractCleanFinalAddsNoSyntheticContinuation` |
 | reasoning-only clean stop completes | `TestRunAcceptsReasoningOnlyFinalAnswer` |
-| zero content retries via unified `EMPTY_RESPONSE` path | `TestRunRetriesZeroContentWithTheSameFrozenRequest` |
-| exhausted retries return an explicit protocol error | `TestRunStopsAfterExhaustedZeroContentRetriesWithoutCommittingEmptyMessages` |
+| empty response leaves retry to the user | `TestEmptyResponseLeavesRetryToUser` |
+| zero content returns an error without committing an empty message | `TestRunStopsOnZeroContentWithoutCommittingEmptyMessages` |
 | strict-provider missing reasoning: one frozen-request retry | `TestRunSilentlyRecoversMissingToolCallReasoning` and the replay suites in `loop_e2e_test.go`/`retry_e2e_test.go` (#9776 repair) |
 | incomplete-read gate | `incomplete_read_test.go` |
 | final readiness | `final_readiness_test.go` |

@@ -148,11 +148,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 	// happen to have observed. Validation failures emit a failed terminal;
 	// once runFleet starts it owns the lifecycle (the background job runs
 	// runFleet inside the job, after this function has returned).
-	groupParentID, groupSink, _, ok := CallContext(ctx)
-	if !ok || groupSink == nil {
-		groupParentID = "fleet"
-		groupSink = event.Discard
-	}
+	groupParentID, groupSink := fleetCallContext(ctx)
 	// The merger emits already-namespaced group/child IDs, so it must use the
 	// raw call sink. A nested subSink would prefix the group ID a second time
 	// (group/group), leaving the frontend unable to match its lifecycle card.
@@ -256,7 +252,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 				writerRegistered = true
 			}
 		}
-		job := jm.StartForSession(jobs.SessionFromContext(ctx), "fleet", label, func(jobCtx context.Context, _ io.Writer) (string, error) {
+		job, startErr := jm.TryStartForSession(jobs.SessionFromContext(ctx), "fleet", label, func(jobCtx context.Context, _ io.Writer) (string, error) {
 			// Execute returns as soon as the job is registered, so the job owns
 			// the handed-off merger until every child preview and terminal has
 			// flushed. Closing it in Execute would strand child cards at running.
@@ -272,6 +268,9 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			jobCtx = withSubagentProgressMerger(jobCtx, merger)
 			return f.runFleet(jobCtx, groupSink, specs, plan, parentID)
 		})
+		if startErr != nil {
+			return rejectedFleetStart(observer, writerID, writerRegistered, startErr)
+		}
 		// runFleet (inside the job) owns the terminal and merger close from
 		// here on. Foreground runFleet hands off only the terminal; Execute
 		// still closes the merger after the synchronous call returns.

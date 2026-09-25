@@ -3,6 +3,8 @@ import { AlertTriangle, FileText, Pin, X } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { useToast } from "../lib/toast";
+import { presentError } from "../lib/errorPresentation";
+import { ErrorMessage } from "./ErrorMessage";
 import type { PinnedFileInfo } from "../lib/pinnedContextBridge";
 
 export function PinnedFilesShelf({
@@ -55,14 +57,15 @@ export function PinnedFilesShelf({
             key={file.path}
             onClick={() => handleOpenFile(file.path)}
             className={`group flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface hover:bg-surface-hover border text-foreground cursor-pointer transition-colors shadow-2xs ${file.error ? "border-red-500/60" : "border-border/60"}`}
-            title={file.error || `${file.path} (${file.sizeBytes} B · ~${file.tokenEstimate} tok)`}
+            title={file.error ? presentError(file.error, t).summary : `${file.path} (${file.sizeBytes} B · ~${file.tokenEstimate} tok)`}
           >
             {file.error ? (
-              <AlertTriangle size={11} className="text-red-500" aria-label={file.error} />
+              <AlertTriangle size={11} className="text-red-500" aria-label={presentError(file.error, t).summary} />
             ) : (
               <FileText size={11} className="text-muted-foreground group-hover:text-foreground transition-colors" />
             )}
             <span className="font-mono text-[11px] max-w-[160px] truncate">{basename}</span>
+            {file.error && <ErrorMessage error={file.error} />}
             {file.tokenEstimate > 0 && (
               <span className="text-[10px] text-muted-foreground">
                 ~{file.tokenEstimate}t

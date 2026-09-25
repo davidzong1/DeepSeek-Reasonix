@@ -54,6 +54,15 @@ func (a *Agent) truncateView(visible []provider.Message, target int) ([]provider
 	head := a.pinnedPrefixLen(visible)
 	budget := max(1, min(a.recentTailBudget(), target/truncateProtectShare))
 	protect := tailStart(visible, head, budget, a.tokPerChar(), minRecentKeep)
+	for i := len(visible) - 1; i >= head; i-- {
+		m := visible[i]
+		if IsUserAuthoredTurnMessage(m) || (m.Role == provider.RoleUser && !m.LocalOnly && !IsHostGeneratedUserMessage(m) && len(m.Images)+len(m.ImageInputs) > 0) {
+			// An active tool loop can push its initiating request outside the
+			// token-based tail. Preserve that intent before abbreviating results.
+			protect = min(protect, i)
+			break
+		}
+	}
 	projected := append([]provider.Message(nil), visible...)
 	remaining, affected := total, 0
 	for i := head; i < protect && remaining >= target; i++ {
@@ -70,10 +79,40 @@ func (a *Agent) truncateView(visible []provider.Message, target int) ([]provider
 		projected, dropped = a.dropOldestUnits(projected, head, protect, target)
 		affected += dropped
 	}
+	// A single large result in the protected tail can exceed the entire
+	// window. After older history is exhausted, abbreviate those observations
+	// while retaining every call/result identity and the user's latest request.
+	remaining = a.estimatedVisibleRequestTokens(projected)
+	for i := head; i < len(projected) && remaining >= target; i++ {
+		elided, ok := abbreviateRecentToolResult(projected[i])
+		if !ok {
+			continue
+		}
+		saved := a.messageTokens(projected[i]) - a.messageTokens(elided)
+		if saved <= 0 {
+			continue
+		}
+		projected[i] = elided
+		remaining -= saved
+		affected++
+	}
 	if affected == 0 || a.estimatedVisibleRequestTokens(projected) >= total {
 		return nil, 0
 	}
 	return projected, affected
+}
+
+func abbreviateRecentToolResult(m provider.Message) (provider.Message, bool) {
+	if m.Role != provider.RoleTool || m.LocalOnly || len(m.Content) <= 2048 || strings.HasPrefix(m.Content, elidedToolResultPrefix) {
+		return m, false
+	}
+	out := m
+	prefix := strings.ToValidUTF8(m.Content[:512], "")
+	suffix := strings.ToValidUTF8(m.Content[len(m.Content)-512:], "")
+	out.Content = fmt.Sprintf("%s: %d bytes; original retained in session history. Only the beginning and end follow; omitted content is unknown.]\n%s\n[... omitted ...]\n%s", elidedToolResultPrefix, len(m.Content), prefix, suffix)
+	out.RawContent, out.ProviderContent = "", ""
+	out.Images, out.ImageInputs = nil, nil
+	return out, true
 }
 
 func (a *Agent) messageTokens(m provider.Message) int {

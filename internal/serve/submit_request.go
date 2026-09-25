@@ -13,11 +13,12 @@ import (
 // An optional "format":"json_object" asks the model for structured JSON output
 // on this turn (text.format on the wire).
 type submitRequest struct {
-	SubmissionID string `json:"submissionId"`
-	Input        string `json:"input"`
-	Format       string `json:"format"`
-	Action       string `json:"action"`
-	RecoveryID   string `json:"recoveryId"`
+	ModelApplication *control.ModelApplicationChoice `json:"modelApplication,omitempty"`
+	SubmissionID     string                          `json:"submissionId"`
+	Input            string                          `json:"input"`
+	Format           string                          `json:"format"`
+	Action           string                          `json:"action"`
+	RecoveryID       string                          `json:"recoveryId"`
 }
 
 func decodeSubmitRequest(w http.ResponseWriter, r *http.Request) (submitRequest, string, bool) {

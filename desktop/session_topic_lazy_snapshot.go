@@ -47,6 +47,12 @@ func (a *App) lazyProjectTopicSnapshot(req ProjectTopicPageRequest, reader works
 		snap.closeRead = nil
 		return ProjectTopicPage{}, nil, err != nil, err
 	}
+	excluded, flat := lazyTopicSourceExclusions(state, workspaceID)
+	if !flat {
+		lease.Close()
+		snap.closeRead = nil
+		return ProjectTopicPage{}, nil, false, nil
+	}
 	workspace := state.Workspaces[workspaceID]
 	workspace.SessionIDs = admittedWorkspaceTopicMembers(req, state, workspace)
 	infos, _ := listWorkspaceSessionInfo(a.bootContext(), reader, workspace.SessionIDs)
@@ -76,12 +82,6 @@ func (a *App) lazyProjectTopicSnapshot(req ProjectTopicPageRequest, reader works
 		return projectTopicLess(left, right, req.SortMode, false)
 	}
 	sort.SliceStable(extras, func(i, j int) bool { return less(extras[i], extras[j]) })
-	excluded := []string{}
-	for _, mapping := range state.SourceMappings {
-		if mapping.WorkspaceID == workspaceID && sourceMappingHasPathAlias(mapping) {
-			excluded = append(excluded, mapping.Path)
-		}
-	}
 	excludedJSON, _ := json.Marshal(excluded)
 	var deletedTopicsJSON []byte
 	if deleted := loadProjectsFile().DeletedTopics; len(deleted) > 0 {
@@ -99,6 +99,7 @@ func (a *App) lazyProjectTopicSnapshot(req ProjectTopicPageRequest, reader works
 	case "ungrouped":
 		query.ExcludeSourceKeysJSON = groupJSON
 	}
+	query.ExcludeSourceKeysJSON = a.excludeUnavailableHistoricalSources(query.ExcludeSourceKeysJSON)
 	// Freeze the localized default along with the search predicate. SQLite's
 	// lower() does not implement the existing Go Unicode matching semantics.
 	recordTitle := ordinaryRecordTitle(a.localizedDefaultTopicTitle())
@@ -136,6 +137,25 @@ func (a *App) lazyProjectTopicSnapshot(req ProjectTopicPageRequest, reader works
 		}
 		return fence.validateWithCurrent(current)
 	}, true, nil
+}
+
+func lazyTopicSourceExclusions(state workspacestate.State, workspaceID string) ([]string, bool) {
+	excluded := []string{}
+	for _, mapping := range state.SourceMappings {
+		if mapping.WorkspaceID != workspaceID {
+			continue
+		}
+		// Canonical directories have one source identity even if an older
+		// migration receipt retained their originating head ID.
+		if mapping.Format != "canonical" && !sourceMappingHasPathAlias(mapping) {
+			// The catalog may not yet know about a new sibling, or the head
+			// index may be unavailable. Only the head-aware adapter can filter
+			// adopted identities without inventing a new path-only source.
+			return nil, false
+		}
+		excluded = append(excluded, mapping.Path)
+	}
+	return excluded, true
 }
 
 // Group membership comes from the same immutable organization as the canonical

@@ -197,6 +197,9 @@ func (s *Store) BeginOperation(ctx context.Context, op Operation) error {
 		if op.ExpectedGeneration != 0 && op.ExpectedGeneration != state.Generation {
 			return ErrMutationConflict
 		}
+		if err := validateArchiveImportReservation(state, op); err != nil {
+			return err
+		}
 		// Bind child admission to the original command's observed state,
 		// not to a newer snapshot taken after content/ownership validation.
 		if split := strings.LastIndex(op.ID, "-"); split > 0 {
@@ -585,23 +588,6 @@ func (s *Store) CompletePurge(ctx context.Context, id string) error {
 		delete(state.Presentation, id)
 		op.Phase, op.ResultGeneration = "committed", state.Generation+1
 		state.PendingOperations[key] = op
-		return nil
-	})
-}
-
-func (s *Store) RecordSource(ctx context.Context, mapping SourceMapping, presentation Presentation) error {
-	return s.mutate(ctx, func(state *State) error {
-		if old, ok := state.SourceMappings[mapping.SourceKey]; ok {
-			if old.SessionID != mapping.SessionID || old.Fingerprint != mapping.Fingerprint {
-				return ErrMutationConflict
-			}
-			return nil
-		}
-		state.SourceMappings[mapping.SourceKey] = mapping
-		adoptOrganizationSource(state, mapping)
-		if _, exists := state.Presentation[mapping.SessionID]; !exists {
-			state.Presentation[mapping.SessionID] = presentation
-		}
 		return nil
 	})
 }

@@ -1,9 +1,6 @@
 package cachelab
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
 // usageOf parses one response body exactly as the recorder does, so a parser
 // test exercises the production path rather than a copy of it.
@@ -56,37 +53,38 @@ func TestUsageParserResolvesTheOpenAIVocabulary(t *testing.T) {
 	}
 }
 
-// TestUsageParserRefusesAMixedVocabulary pins the gap the earlier probe found: a
-// response carrying both vocabularies at once used to resolve to neither, which
-// silently produced no split on a response that did carry a cache read. It must
-// now resolve through one of them and say which.
-func TestUsageParserRefusesAMixedVocabulary(t *testing.T) {
-	body := `{"usage":{"input_tokens":10,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,` +
-		`"prompt_tokens":100,"prompt_cache_hit_tokens":90,"completion_tokens":4}}`
-	got := usageOf(t, body)
+// TestUsageParserDeclinesOneObjectSpeakingTwoDialects pins the rule: when ONE
+// object carries both vocabularies, no split is claimed rather than one dialect
+// being preferred silently. The live gateway puts the two vocabularies in
+// DIFFERENT objects, and that case resolves — see the oracle tests.
+func TestUsageParserDeclinesOneObjectSpeakingTwoDialects(t *testing.T) {
+	got := usageOf(t, `{"usage":{"input_tokens":42,"prompt_tokens":42}}`)
 	if !got.Reported {
 		t.Fatalf("usage = %+v, want the response recognized as carrying usage", got)
 	}
-	if !got.Split {
-		t.Fatalf("usage = %+v, want a split: both vocabularies agree the hit is 90, so refusing is a lost measurement", got)
+	if got.Split {
+		t.Fatalf("usage = %+v, want no split: one object speaking two dialects is not decidable", got)
 	}
-	if got.Shape != UsageShapeAnthropic {
-		t.Fatalf("shape = %q, want the gateway's own %q vocabulary preferred", got.Shape, UsageShapeAnthropic)
-	}
-	if got.Hit != 90 || got.Miss != 10 || got.Prompt != 100 {
-		t.Fatalf("split = hit %d miss %d prompt %d, want 90/10/100", got.Hit, got.Miss, got.Prompt)
+	if got.Problem != UsageProblemUnresolved {
+		t.Fatalf("problem = %q, want %q", got.Problem, UsageProblemUnresolved)
 	}
 }
 
-// TestUsageParserPrefersTheProvidersOwnShapeOverAMixedOne pins the fallback: a
-// response whose two vocabularies disagree is resolved through the shape the
-// response's own event stream used, and the choice is recorded in Shape.
-func TestUsageParserPrefersTheProvidersOwnShapeOverAMixedOne(t *testing.T) {
-	// Only OpenAI keys carry a value here; the anthropic keys are present but the
-	// response has no input_tokens, so the OpenAI reading is the usable one.
-	got := usageOf(t, `{"usage":{"prompt_tokens":1000,"prompt_cache_hit_tokens":900,"cache_read_input_tokens":0}}`)
+// TestUsageParserReadsADialectWithAnUnpopulatedSiblingKey pins what happens when
+// a usage object carries an OpenAI reading beside a zero-valued Anthropic cache
+// field: that key makes it speak both dialects, and one object speaking two
+// dialects is declined rather than read as one.
+func TestUsageParserReadsADialectWithAnUnpopulatedSiblingKey(t *testing.T) {
+	// The cache_read_input_tokens makes the object speak both dialects, so it is
+	// declined. The OpenAI reading is reachable only without that key.
+	declined := usageOf(t, `{"usage":{"prompt_tokens":1000,"prompt_cache_hit_tokens":900,"cache_read_input_tokens":0}}`)
+	if declined.Split || declined.Problem != UsageProblemUnresolved {
+		t.Fatalf("usage = %+v, want one object speaking two dialects declined", declined)
+	}
+	// The same numbers without the Anthropic key resolve through OpenAI.
+	got := usageOf(t, `{"usage":{"prompt_tokens":1000,"prompt_cache_hit_tokens":900}}`)
 	if !got.Split || got.Shape != UsageShapeOpenAI {
-		t.Fatalf("usage = %+v, want the openai reading when the anthropic keys cannot resolve", got)
+		t.Fatalf("usage = %+v, want the openai reading", got)
 	}
 	if got.Hit != 900 || got.Miss != 100 {
 		t.Fatalf("split = hit %d miss %d, want 900/100", got.Hit, got.Miss)
@@ -98,17 +96,9 @@ func TestUsageParserPrefersTheProvidersOwnShapeOverAMixedOne(t *testing.T) {
 // a provider that reports cache_read_input_tokens=0 has reported a real miss,
 // while a provider that omitted the key has reported nothing.
 func TestUsageParserDistinguishesAMissingKeyFromAnExplicitZero(t *testing.T) {
-	var raw rawUsage
-	raw.merge(map[string]any{"input_tokens": json.Number("100"), "cache_read_input_tokens": json.Number("0")})
-	if !raw.has(keyCacheReadInput) {
-		t.Fatal("an explicit zero cache read must count as present: the provider reported a full miss")
-	}
-	var absent rawUsage
-	absent.merge(map[string]any{"input_tokens": json.Number("100")})
-	if absent.has(keyCacheReadInput) {
-		t.Fatal("an omitted cache read must not count as present")
-	}
-	// The explicit zero resolves to a full miss, which is a measurement.
+	// The key-vs-zero distinction is asserted through the parser's own output,
+	// not the collector's internal map: what a reader relies on is the resolved
+	// reading. An explicit zero resolves to a full miss, which is a measurement.
 	got := usageOf(t, `{"usage":{"input_tokens":100,"cache_read_input_tokens":0}}`)
 	if !got.Split || got.Hit != 0 || got.Miss != 100 {
 		t.Fatalf("usage = %+v, want an explicit zero hit and a full miss", got)
@@ -126,10 +116,15 @@ func TestUsageParserDistinguishesAMissingKeyFromAnExplicitZero(t *testing.T) {
 // TestUsageParserReadsNestedAndStreamedUsage pins the two shapes the recorder
 // actually receives: a usage object nested inside a larger document, and a
 // stream whose numbers arrive across several events.
+//
+// The gateway's billing block is read as the oracle, not as the reading.
 func TestUsageParserReadsNestedAndStreamedUsage(t *testing.T) {
-	nested := usageOf(t, `{"id":"x","billing_usage":{"openai_usage":{"prompt_tokens":1000,"cached_tokens":900}},"extra":{"usage":{"completion_tokens":3}}}`)
-	if !nested.Split || nested.Hit != 900 || nested.Prompt != 1000 || nested.Completion != 3 {
-		t.Fatalf("nested usage = %+v, want the values read out of the nesting", nested)
+	nested := usageOf(t, `{"id":"x","usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":3},"billing_usage":{"openai_usage":{"prompt_tokens":1000,"cached_tokens":900}}}`)
+	if !nested.Split || nested.Hit != 90 || nested.Miss != 10 || nested.Completion != 3 {
+		t.Fatalf("nested usage = %+v, want the protocol's own reading out of the nesting", nested)
+	}
+	if !nested.OraclePresent || nested.OraclePrompt != 1000 || nested.OracleHit != 900 {
+		t.Fatalf("oracle = %+v, want the gateway's own account recorded beside it", nested)
 	}
 	stream := usageOf(t, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":900}}}\n\n"+
 		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n")

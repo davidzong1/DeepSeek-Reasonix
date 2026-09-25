@@ -38,7 +38,7 @@ func (s *Server) beforeDetachedInboxDispatch(ctrl *control.Controller) (func(), 
 		release()
 		return nil, control.ErrInboxRuntimeUnpublished
 	}
-	if controllerHasActiveRuntimeWork(ctrl) {
+	if control.ModelReplacementBlocked(ctrl) {
 		release()
 		return nil, control.ErrTurnRunning
 	}
@@ -69,7 +69,7 @@ func (s *Server) beforeDetachedInboxDispatch(ctrl *control.Controller) (func(), 
 func (s *Server) detachedHasPendingWork(d *detachedSession) bool {
 	d.admissionMu.Lock()
 	defer d.admissionMu.Unlock()
-	if controllerHasActiveRuntimeWork(d.ctrl) {
+	if status := d.ctrl.RuntimeStatus(); status.Running || status.PendingPrompt || status.BackgroundJobs > 0 {
 		return true
 	}
 	if inbox, ok := d.ctrl.(control.Inbox); ok {
@@ -92,7 +92,7 @@ func (s *Server) detachedHasPendingWork(d *detachedSession) bool {
 
 func (s *Server) rebuildDetachedModelSettings(ctx context.Context, owner *detachedSession, ref string) error {
 	old, ok := owner.ctrl.(*control.Controller)
-	if !ok || controllerHasActiveRuntimeWork(old) {
+	if !ok || control.ModelReplacementBlocked(old) {
 		return fmt.Errorf("background runtime cannot apply model settings yet")
 	}
 	if err := old.Snapshot(); err != nil {
@@ -115,6 +115,16 @@ func (s *Server) rebuildDetachedModelSettings(ctx context.Context, owner *detach
 		return err
 	}
 	if err := next.Snapshot(); err != nil {
+		_ = owner.keeper.BindControllerAuthority(old)
+		s.closeTaggedController(next)
+		return err
+	}
+	if err := validateModelCandidate(ctx, next, owner.modelSettings); err != nil {
+		_ = owner.keeper.BindControllerAuthority(old)
+		s.closeTaggedController(next)
+		return err
+	}
+	if err := control.ActivateControllerReplacement(old, next); err != nil {
 		_ = owner.keeper.BindControllerAuthority(old)
 		s.closeTaggedController(next)
 		return err

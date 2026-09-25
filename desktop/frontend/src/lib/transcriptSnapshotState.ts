@@ -112,6 +112,7 @@ export function transcriptSnapshotState(state: State, snapshot: TranscriptSnapsh
     && state.activeTurnId === snapshot.runtime.turnId && state.runtimeStatusEpoch === snapshot.identity.runtimeEpoch;
   if (state.transcriptSessionId && state.transcriptSessionId !== sessionId) {
     state = { ...state, localSubmissions: {}, localSubmissionOrder: [], visibleSubmissionHandoffs: {},
+      guidanceConsumed: undefined,
       pendingSubmissionId: undefined, pendingUser: undefined, sessionGen: state.sessionGen + 1 };
   }
   const records = snapshotRecords(snapshot);

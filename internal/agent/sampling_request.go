@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -35,7 +37,7 @@ func modelInputMessages(msgs []provider.Message) []provider.Message {
 // replay so their cacheable prefix has the same role projection and metadata
 // cleanup. Interceptors deliberately remain outside this helper.
 func (a *Agent) normalizeModelRequestMessages(msgs []provider.Message) []provider.Message {
-	requestMessages := a.providerProjectionMessages(modelInputMessages(provider.RepairRejectedArguments(msgs)))
+	requestMessages := a.providerProjectionMessages(modelInputMessages(provider.RepairHistoryForReplay(msgs)))
 	// ModelMessages intentionally has a zero-copy fast path for clean input.
 	// Detach before removing local metadata from the request-only representation.
 	requestMessages = append([]provider.Message(nil), requestMessages...)
@@ -53,7 +55,7 @@ func (a *Agent) resolveRequestImages(ctx context.Context, msgs []provider.Messag
 		return msgs, nil
 	}
 	for _, msg := range msgs {
-		if len(msg.ImageInputs) > 0 {
+		if !msg.LocalOnly && len(msg.ImageInputs) > 0 {
 			if a.imageResolver == nil {
 				return nil, errors.New("image request resolver is unavailable")
 			}
@@ -97,7 +99,12 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 // prepareSamplingRequest freezes one model-round request (preflight + interceptors).
 // Output budgets are resolved only here and never change the compact_ratio
 // trigger. Physical overflow may attempt at most one recovery summary.
-func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
+func (a *Agent) prepareSamplingRequest(ctx context.Context) (result samplingRequest, requestErr error) {
+	defer func() {
+		if errors.Is(requestErr, ErrCompactionRequired) {
+			requestErr = fmt.Errorf("%s: %w", i18n.M.ContextLimitRecovery, requestErr)
+		}
+	}()
 	// Recover an accepted context-maintenance event before ContextManager can
 	// perform more maintenance or freeze a request from unconfirmed state.
 	if err := a.confirmPendingModelContext(ctx); err != nil {
@@ -177,7 +184,7 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 		return samplingRequest{}, err
 	}
 	if err := provider.ValidateModelTranscript(req.Messages); err != nil {
-		return samplingRequest{}, err
+		return samplingRequest{}, fmt.Errorf("%s: %w", i18n.M.ExtensionRequestRecovery, err)
 	}
 	return samplingRequest{req: req}, nil
 }

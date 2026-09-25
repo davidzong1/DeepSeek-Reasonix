@@ -20,9 +20,8 @@ func messagesUsage(inTok, outTok, cacheCreate, cacheRead int, billedWrite float6
 	prompt := inTok + cacheCreate + cacheRead
 	if inclusive {
 		// The cache counters are already inside inTok, so the uncached part is
-		// what is left once the reads come out. Cache writes are uncached input
-		// and stay in that remainder, which is the subset relationship the
-		// CacheWriteTokens field documents.
+		// what is left once the reads come out; cache writes are uncached input
+		// and stay in that remainder (see the CacheWriteTokens field).
 		miss = max(inTok-cacheRead, 0)
 		prompt = cacheRead + miss
 	}

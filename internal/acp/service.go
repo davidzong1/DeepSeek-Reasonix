@@ -24,9 +24,11 @@ import (
 	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/jobs"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioninbox"
+	"reasonix/internal/sessiontemp"
 	"reasonix/internal/store"
 	"reasonix/internal/tool/builtin"
 )
@@ -44,6 +46,9 @@ import (
 // agent to connect for this session. The path hooks keep service bookkeeping
 // aligned; factories must wire both into the controller they build.
 type SessionParams struct {
+	BackgroundScope *jobs.SessionBackgroundScope
+	SessionTemp     *sessiontemp.Manager
+	PersistentShell *persistentshell.Manager
 	// MCPInteractions enables interactive MCP only after explicit client negotiation.
 	MCPInteractions bool
 	Cwd             string
@@ -1749,7 +1754,8 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		sess.mu.Unlock()
 		return sessionConfigActiveWorkError("answer pending prompts before switching config")
 	}
-	if !sess.running && !status.Running && status.BackgroundJobs > 0 {
+	modelOnly := modelOnlyConfigDeltas(deltas)
+	if !sess.running && !status.Running && status.BackgroundJobs > 0 && configBackgroundBlocked(sess.ctrl, modelOnly) {
 		sess.mu.Unlock()
 		return sessionConfigActiveWorkError("stop background jobs before switching config")
 	}
@@ -1813,7 +1819,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		NativeLegacySession: prevPath != "",
 	}
 	s.bindSessionClients(sess.id, &rebuildParams)
-	newCtrl, err := s.factory.NewSession(ctx, rebuildParams)
+	newCtrl, err := s.buildConfigReplacement(ctx, cur, rebuildParams, modelOnly)
 	if err != nil {
 		return &RPCError{Code: ErrInternal, Message: "session config: " + err.Error()}
 	}

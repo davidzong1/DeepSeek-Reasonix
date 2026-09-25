@@ -33,20 +33,21 @@ import (
 const credentialProxyProviderName = "reasonix-desktop-proxy"
 
 type credProxyRoute struct {
-	proxy     *httputil.ReverseProxy
-	model     string
-	ref       string
-	apiKeyEnv string
-	provider  string
-	origins   map[string]bool
-	scope     string
-	revision  string
-	active    int
-	retired   bool
-	extraBody map[string]any
-	host      string
-	workspace string
-	holds     map[string]bool
+	modelSnapshot *config.Config
+	proxy         *httputil.ReverseProxy
+	model         string
+	ref           string
+	apiKeyEnv     string
+	provider      string
+	origins       map[string]bool
+	scope         string
+	revision      string
+	active        int
+	retired       bool
+	extraBody     map[string]any
+	host          string
+	workspace     string
+	holds         map[string]bool
 }
 
 // credentialProxy is the desktop-side key holder: a loopback HTTP endpoint
@@ -232,7 +233,8 @@ func (p *credentialProxy) setRouteLocked(token, ref string, up proxyUpstream) {
 		origins[up.requestURL.Scheme+"://"+up.requestURL.Host] = true
 	}
 	p.routes[token] = &credProxyRoute{
-		proxy: proxy, model: up.model, ref: ref,
+		modelSnapshot: up.modelSnapshot,
+		proxy:         proxy, model: up.model, ref: ref,
 		apiKeyEnv: strings.TrimSpace(up.apiKeyEnv), provider: strings.TrimSpace(up.provider),
 		origins: origins,
 		scope:   up.scope, revision: up.revision, extraBody: up.extraBody,
@@ -351,6 +353,7 @@ type credentialProxyRouteInfo struct {
 
 // proxyUpstream is the resolved desktop-side provider a route forwards to.
 type proxyUpstream struct {
+	modelSnapshot            *config.Config
 	host, workspace, offerID string
 	apiKey                   string
 	url                      *url.URL
@@ -401,7 +404,8 @@ func resolveProxyProvider(cfg *config.Config, ref string) (proxyUpstream, error)
 		}
 	}
 	return proxyUpstream{
-		apiKey: apiKey, url: upstream, model: entry.Model, kind: kind,
+		modelSnapshot: cfg,
+		apiKey:        apiKey, url: upstream, model: entry.Model, kind: kind,
 		apiKeyEnv: entry.APIKeyEnv, provider: entry.Name,
 		requestURL: exactURL, headers: entry.Headers, extraBody: entry.ExtraBody, authHeader: entry.AuthHeader,
 	}, nil

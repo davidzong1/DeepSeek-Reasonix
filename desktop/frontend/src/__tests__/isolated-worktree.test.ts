@@ -44,7 +44,8 @@ ok(/bindings\.ForkWorktreeForTab\(sourceTabId, turn\)/.test(forkAction) && /make
 ok(!/ForkForTab\(sourceTabId, turn, isolate/.test(forkAction), "shared fork never sends an extra bridge argument");
 ok(/result\.sourceDirty[\s\S]*forkWorktreeDirtySource/.test(forkAction), "dirty sources are refused with actionable guidance");
 ok(/result\.fallbackToShared[\s\S]*forkWorktreeFallbackNotice/.test(forkAction), "backend fallback state reaches the user");
-ok(!message.includes("fork-worktree") && !message.includes("actions.checkpoints") && /actions\.fork/.test(message),
+ok(!message.includes("fork-worktree") && !message.includes("actions.checkpoints")
+  && /fork\?\.targetFor\(node\.answerKey\)/.test(message) && /forkBlockReason\(\{ target/.test(message),
   "chat exposes only the persisted-turn fork entry and never the worktree scope");
 ok(messageActionLabelKey("fork-worktree", false) === "rewind.forkWorktree", "isolated fork keeps its menu label after extraction");
 ok(messageActionLabelKey("fork-worktree", true) === "rewind.confirmForkWorktree", "isolated fork keeps its confirmation label after extraction");

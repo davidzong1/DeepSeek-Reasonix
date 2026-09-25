@@ -25,6 +25,7 @@ export type InvocationRequest = {
 };
 
 export type StructuredInvocationSubmit = {
+	modelApplicationChoice?: import("./modelApplication").ModelApplicationChoice;
   display: string;
   input: string;
   invocations: InvocationRequest[];

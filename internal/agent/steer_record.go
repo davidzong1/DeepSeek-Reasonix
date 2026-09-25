@@ -30,7 +30,9 @@ func (a *Agent) RecordUnappliedSteer(text string, itemID ...string) {
 	if len(itemID) > 0 {
 		id = itemID[0]
 	}
+	messageID := NewMessageID()
 	_ = a.appendCommittedMessages(context.Background(), "unapplied-steer", provider.Message{
+		ID:         messageID,
 		Role:       provider.RoleTool,
 		Content:    a.withTurnPreferences(midTurnSteerMessage(text)),
 		ToolCallID: provider.LocalOnlyToolID,
@@ -38,10 +40,11 @@ func (a *Agent) RecordUnappliedSteer(text string, itemID ...string) {
 		LocalOnly:  true,
 	})
 	a.svc.sink.Emit(event.Event{
-		Kind:   event.Notice,
-		Level:  event.LevelWarn,
-		Code:   event.NoticeCodeUnappliedSteer,
-		Text:   UnappliedSteerNotice(text),
-		ItemID: id,
+		Kind:      event.Notice,
+		MessageID: messageID,
+		Level:     event.LevelWarn,
+		Code:      event.NoticeCodeUnappliedSteer,
+		Text:      UnappliedSteerNotice(text),
+		ItemID:    id,
 	})
 }

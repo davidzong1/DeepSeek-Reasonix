@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clipboard, Loader2, RefreshCw } from "lucide-react";
 import { app } from "../lib/bridge";
@@ -170,7 +171,7 @@ export function DiagnosticsSettingsPage({
           {(credentialReport?.checks ?? []).map((check) => (
             <div key={check.id} className={`diag-issue diag-issue--${check.status === "failed" ? "error" : "info"}`}>
               <header><code>{check.id}</code><span>{check.status}</span></header>
-              {check.message && <p className="diag-issue__msg">{check.message}</p>}
+              {check.message && <p className="diag-issue__msg">{check.status === "failed" ? <ErrorMessage error={check.message} /> : check.message}</p>}
             </div>
           ))}
           {(credentialReport?.actions ?? []).map((action) => <p key={action} className="diag-issue__fix">{action}</p>)}
@@ -193,7 +194,7 @@ export function DiagnosticsSettingsPage({
       </section>
 
       {loading && !report && <div className="empty">{t("settings.loading")}</div>}
-      {error && <div className="settings-error" role="alert">{error}</div>}
+      {error && <div className="settings-error" role="alert"><ErrorMessage error={error} /></div>}
 
       {report && (
         <>
@@ -289,7 +290,7 @@ export function DiagnosticsSettingsPage({
                             <code>{issue.code}</code>
                             {issue.name ? <span className="diag-issue__name">{issue.name}</span> : null}
                           </header>
-                          <p className="diag-issue__msg">{issue.message}</p>
+                          <p className="diag-issue__msg"><ErrorMessage error={issue.message} /></p>
                           {issue.source ? <p className="diag-path">{issue.source}</p> : null}
                           {issue.remediation ? <p className="diag-issue__fix">{issue.remediation}</p> : null}
                           {issue.settings_tab && onNavigate ? (

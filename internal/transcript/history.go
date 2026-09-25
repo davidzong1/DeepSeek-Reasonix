@@ -104,7 +104,11 @@ func defaultHistoryRows(m provider.Message, messageIndex int, opts HistoryOption
 		}
 		row := Message{Role: "notice", Content: "↪ " + text}
 		if m.LocalOnly {
-			row.Content, row.Code, row.Level = agent.UnappliedSteerNotice(text), event.NoticeCodeUnappliedSteer, "warn"
+			row.Content, row.Code, row.Level, row.MessageID = agent.UnappliedSteerNotice(text), event.NoticeCodeUnappliedSteer, "warn", m.ID
+		} else {
+			// The live steer receipt and canonical history refer to this same
+			// message; retain its identity when presenting it as a notice.
+			row.MessageID = m.ID
 		}
 		return []Message{row}
 	}
@@ -186,6 +190,10 @@ func stampHistoryRows(rows []Message, m provider.Message) {
 		switch {
 		case row.Role == "tool" && row.ToolCallID != "":
 			row.RecordID = "tool:" + row.ToolCallID
+		case row.Code == event.NoticeCodeUnappliedSteer:
+			// Keep the established record address while exposing its message
+			// identity to live notice events and history readers.
+			row.RecordID = unappliedSteerRecordID(m.ID)
 		case row.MessageID != "":
 			row.RecordID = "m:" + row.MessageID
 		default:
@@ -195,6 +203,10 @@ func stampHistoryRows(rows []Message, m provider.Message) {
 			row.CreatedAt = m.CreatedAt
 		}
 	}
+}
+
+func unappliedSteerRecordID(messageID string) string {
+	return "m:" + messageID + ":notice:0"
 }
 
 // appendLegacyTurnRows reports whether the replayed turn carried a

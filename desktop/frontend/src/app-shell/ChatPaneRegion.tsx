@@ -1,3 +1,4 @@
+import { ErrorMessage } from "../components/ErrorMessage";
 import { lazy, Suspense, type ReactNode } from "react";
 import { Transcript, type TranscriptProps } from "../components/Transcript";
 import { SessionRecoveryBanner, SessionRecoveryPlaceholder } from "../components/SessionRecoveryBanner";
@@ -118,9 +119,9 @@ export function ChatPaneRegion(props: ChatPaneRegionProps) {
           <button type="button" onClick={props.draft.onUseSaved}><RotateCcw size={14} />{t("draft.useSaved")}</button>
           <button type="button" onClick={props.draft.onKeepLocal}>{t("draft.keepLocal")}</button>
         </div> : null}
-        {draft.error ? <p className="session-draft-surface__error">{draft.error} <button type="button" onClick={props.draft.onRetrySave}>{t("draft.retrySave")}</button></p> : null}
-        {operationError ? <p className="session-draft-surface__error">{operationError}</p> : null}
-        {draft.taskError && !sameDraftError(draft.taskError, operationError) && !sameDraftError(draft.taskError, draft.error) ? <p className="session-draft-surface__error">{draft.taskError} <button type="button" onClick={props.draft.onDismissTaskError}>{t("common.close")}</button></p> : null}
+        {draft.error ? <p className="session-draft-surface__error"><ErrorMessage error={draft.error} /> <button type="button" onClick={props.draft.onRetrySave}>{t("draft.retrySave")}</button></p> : null}
+        {operationError ? <p className="session-draft-surface__error"><ErrorMessage error={operationError} /></p> : null}
+        {draft.taskError && !sameDraftError(draft.taskError, operationError) && !sameDraftError(draft.taskError, draft.error) ? <p className="session-draft-surface__error"><ErrorMessage error={draft.taskError} /> <button type="button" onClick={props.draft.onDismissTaskError}>{t("common.close")}</button></p> : null}
         {draft.operation?.canResume ? <button type="button" disabled={draft.resumingSubmission} onClick={props.draft.onResume}>{t("draft.resume")}</button> : null}
         {operationUnknown ? <button type="button" onClick={props.draft.onCheckSubmission}>{t("draft.checkSubmission")}</button> : null}
         {draft.operation?.phase === "accepted" ? <button type="button" onClick={props.draft.onOpenSession}>{t("draft.openSession")}</button> : null}

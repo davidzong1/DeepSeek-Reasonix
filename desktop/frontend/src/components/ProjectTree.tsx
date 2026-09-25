@@ -130,6 +130,8 @@ export function ProjectTree({
   const [tree, setTree] = useState<ProjectNode[]>([]);
   const treeRef = useRef<ProjectNode[]>([]);
   const latestRevisionRef = useRef(0);
+  const shellRequestRef = useRef(0);
+  const shellGenerationRef = useRef<number | undefined>(undefined);
   const [organizationRevision, setOrganizationRevision] = useState(0);
   const {
     topicRevisionRef, topicCompletePageRef, topicPageState, setTopicPageState, topicPageStateRef,
@@ -463,15 +465,25 @@ export function ProjectTree({
   // Snapshot carries project shells plus lightweight pinned topic shells.
   // Preserve already loaded pages by project key while reconciling pins, so a
   // metadata refresh does not collapse or blank the sidebar.
-  const refresh = useCallback(async (options?: ProjectTreeRefreshOptions) => {
+  const refresh = useCallback(async (options?: ProjectTreeRefreshOptions, throwOnSnapshotError = false) => {
+    const request = ++shellRequestRef.current;
     const reloadRequestedProjects = (projects: ProjectNode[]) => reloadProjectTreeTopics(projects, options, reloadProjectTopicLists), catalogStatusGeneration = catalogStatusGenerationRef.current;
     try {
       const snapshot = await app.GetProjectTreeSnapshot();
+      if (request !== shellRequestRef.current) return;
       const rev = snapshot.revision ?? 0, empty = treeRef.current.length === 0;
-      if (!projectTreeShouldApplyShellSnapshot({ currentRevision: latestRevisionRef.current, incomingRevision: rev, treeEmpty: empty })) {
+      // Catalog revisions describe topic indexing, not workspace membership.
+      // Compare the authoritative membership generation independently; an old
+      // registry cannot become fresh merely because an index scan advanced.
+      const generation = snapshot.workspaceGeneration ?? undefined;
+      const fresh = generation === undefined
+        ? projectTreeShouldApplyShellSnapshot({ currentRevision: latestRevisionRef.current, incomingRevision: rev, treeEmpty: empty })
+        : shellGenerationRef.current === undefined || generation >= shellGenerationRef.current;
+      if (!fresh) {
         await reloadRequestedProjects(treeRef.current);
         return;
       }
+      if (generation !== undefined) shellGenerationRef.current = generation;
       if (projectTreeRevisionIsFresh(latestRevisionRef.current, rev)) latestRevisionRef.current = Math.max(latestRevisionRef.current, rev);
       const projects = asArray(snapshot.projects);
       if (!catalogRebuildFailedRef.current && catalogStatusGeneration === catalogStatusGenerationRef.current) setCatalogStatus(snapshot.catalog);
@@ -483,10 +495,11 @@ export function ProjectTree({
         return { ...project, children: projectTreeShellChildren(previous?.children, project.children) };
       })));
       await reloadRequestedProjects(projects);
-    } catch {
+    } catch (err) {
       // A shell snapshot is metadata-only. If it fails, the resident folder
       // identity can still drive the requested canonical topic reload.
-      await reloadRequestedProjects(treeRef.current);
+      if (request === shellRequestRef.current) await reloadRequestedProjects(treeRef.current);
+      if (throwOnSnapshotError) throw err;
     }
   }, [applyRuntimeProjection, reloadProjectTopicLists]);
   refreshRef.current = refresh;
@@ -495,7 +508,7 @@ export function ProjectTree({
   const remoteSessionActions = useRemoteSessionActions(remoteSessions, refreshRemoteSessions, (error) => showToast(error instanceof Error ? error.message : String(error), "error"));
   const { addingProject, handleAddProject, openBlankProjectFlow, blankProjectFlow, openRemoteConnectFlow, remoteConnectFlow } = useProjectCreation({
     onAddProject,
-    onRefresh: refresh,
+    onRefresh: () => refresh(undefined, true),
     showToast,
   });
 
@@ -551,6 +564,7 @@ export function ProjectTree({
 
   useEffect(() => {
     void refresh();
+    return () => { shellRequestRef.current++; };
   }, [refresh, refreshSignal]);
 
   useEffect(() => {
@@ -942,6 +956,7 @@ export function ProjectTree({
       setMenuPoint(null);
       setConfirmRemoveProject(null);
       await refresh();
+      await onTopicsChanged?.();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
     }

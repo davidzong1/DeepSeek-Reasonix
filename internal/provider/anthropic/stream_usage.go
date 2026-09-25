@@ -22,6 +22,10 @@ type streamUsage struct {
 	// exclusive records that input_tokens is the uncached remainder rather than the
 	// whole prompt, so the caller folds through the opposite convention.
 	exclusive bool
+	// haveSplit records that a split-bearing event has been folded, so the reading
+	// describes how the request was served and no later split-free event may
+	// replace its input reading.
+	haveSplit bool
 	have      bool
 }
 
@@ -36,7 +40,10 @@ func newStreamUsage() *streamUsage { return &streamUsage{} }
 // stands. A stream with no split anywhere (a cold request, or a gateway that
 // reports no cache counters) keeps the newest non-zero reading of each counter, so
 // a later event that omits a field cannot erase an earlier one that carried it.
-// output_tokens is genuinely cumulative and keeps the maximum.
+// Once a split has been folded, a later split-free event is a restatement rather
+// than a correction: its input_tokens is the whole prompt, and taking it would add
+// the served cache read to the prompt a second time. output_tokens is genuinely
+// cumulative and keeps the maximum.
 func (u *streamUsage) merge(usage *wireUsage) {
 	if usage == nil {
 		return
@@ -44,7 +51,7 @@ func (u *streamUsage) merge(usage *wireUsage) {
 	u.out = max(u.out, usage.OutputTokens)
 	u.have = true
 	if usage.CacheReadInputTokens == 0 && usage.CacheCreationInputTokens == 0 {
-		if usage.InputTokens != 0 {
+		if usage.InputTokens != 0 && !u.haveSplit {
 			u.in = usage.InputTokens
 			u.estimateInput = max(u.estimateInput, usage.InputTokens)
 		}
@@ -55,4 +62,5 @@ func (u *streamUsage) merge(usage *wireUsage) {
 	// simply cannot fit inside input_tokens.
 	u.exclusive = u.estimateInput > usage.InputTokens || usage.CacheReadInputTokens > usage.InputTokens
 	u.in, u.cacheCreate, u.cacheRead = usage.InputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens
+	u.haveSplit = true
 }

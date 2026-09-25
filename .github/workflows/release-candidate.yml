@@ -49,6 +49,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Resolve reviewed source
         id: candidate
         env:
@@ -104,7 +108,7 @@ jobs:
           HAS_MINISIGN: ${{ secrets.MINISIGN_PRIVATE_KEY != '' && secrets.MINISIGN_PASSWORD != '' }}
         run: |
           bash scripts/validate-release-control-plane.sh
-          bash scripts/check-release-public-access.sh
+          bash scripts/check-release-public-access.sh "${{ steps.candidate.outputs.version }}"
           if [ "$OFFICIAL_REPOSITORY" = true ]; then
             for configured in "$HAS_APPLE_SIGNING" "$HAS_CERTUM_SIGNING" "$HAS_MINISIGN"; do
               [ "$configured" = true ] || { echo "::error::release signing configuration is incomplete"; exit 1; }

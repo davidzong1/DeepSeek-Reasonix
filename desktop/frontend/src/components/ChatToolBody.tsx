@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ErrorMessage } from "./ErrorMessage";
 import type { ChatNode } from "../lib/chatViewSource";
 import type { ChatContentLoader } from "../lib/chatContentLoader";
 import { useT } from "../lib/i18n";
@@ -57,8 +58,9 @@ export default function ChatToolBody({ item, loader }: { item: Extract<ChatNode,
   const search = kind === "search" && !limited ? normalizeSearchSources(item.searchSources ?? parseSearchSources(value.output || "")) : undefined;
   const searchMeta = searchOutputMetadata(value.output);
   return <>
+    {value.error && (kind === "shell" || diffs.length > 0) && <p role="alert"><ErrorMessage error={value.error} /></p>}
     {!limited && kind === "shell" && (item.execution || item.status === "running" || item.status === "stopped") ? <TerminalBlock command={typeof args.command === "string" ? args.command : value.args || ""}
-      output={value.error || value.output} running={presentation.state === "running"} exitCode={presentation.exitCode}
+      output={value.output} running={presentation.state === "running"} exitCode={presentation.exitCode}
       presentation={{ state: presentation.dot, label: t(presentation.label) }}
       maxLines={200} className={toolCss.terminalBody}
       labels={{ ...labels, signal: signal => signal, exitCode: code => `${code}`, running: t("chat.running"), failed: t("chat.failed"), done: t("chat.done"), noOutput: t("chat.noOutput") }} />
@@ -80,7 +82,8 @@ export function ToolPayload({ text, preview }: { text: string; preview: boolean 
   const entries = preview ? boundedPayloadSections(value as Record<string, unknown>)
     : Object.entries(value).filter(([, content]) => content != null).map(([key, content]) => ({ key, body: typeof content === "string" ? content : JSON.stringify(content, null, 2) }));
   return <>{entries.map(({ key, body }) => {
-    const label = key === "args" ? t("chat.tool.input") : key === "output" ? t("chat.tool.output") : key;
+    const label = key === "args" ? t("chat.tool.input") : key === "output" ? t("chat.tool.output") : key === "error" ? t("tool.error") : key;
+    if (key === "error") return <section key={key} className={toolCss.ioSection}><ErrorMessage error={body} /></section>;
     return <section key={key} className={toolCss.ioSection}><span className={toolCss.ioLabel}>{label}</span><pre className={toolCss.ioText} data-error={key === "error" || undefined}>{body}</pre></section>;
   })}</>;
 }

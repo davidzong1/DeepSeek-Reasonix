@@ -99,6 +99,19 @@ func (c desktopMigrationCheckpoint) matchesCompletedContent(digest string) bool 
 }
 
 func (c desktopMigrationCheckpoint) complete(targetID, digest string) error {
+	revision, err := c.verifiedRevision()
+	if err != nil {
+		return errors.Join(err, updateDesktopMigrationLedger(c.key, targetID, "failed", "source_changed", digest))
+	}
+	return updateDesktopMigrationLedger(c.key, targetID, "completed", "", digest, revision)
+}
+
+func (c desktopMigrationCheckpoint) verify() error {
+	_, err := c.verifiedRevision()
+	return err
+}
+
+func (c desktopMigrationCheckpoint) verifiedRevision() (string, error) {
 	revision, err := desktopMigrationSourceRevision(c.files)
 	if err == nil && revision != c.revision && c.inputDigest != "" {
 		// A catalog repair can rewrite identical JSONL bytes and refresh only
@@ -110,10 +123,9 @@ func (c desktopMigrationCheckpoint) complete(targetID, digest string) error {
 		err = digestErr
 	}
 	if err != nil || revision != c.revision {
-		return errors.Join(errors.New("desktop migration source changed during import"), err,
-			updateDesktopMigrationLedger(c.key, targetID, "failed", "source_changed", digest))
+		return "", errors.Join(errors.New("desktop migration source changed during import"), err)
 	}
-	return updateDesktopMigrationLedger(c.key, targetID, "completed", "", digest, c.revision)
+	return revision, nil
 }
 
 func canonicalMigrationSourceFiles(root, sessionID string) []string {

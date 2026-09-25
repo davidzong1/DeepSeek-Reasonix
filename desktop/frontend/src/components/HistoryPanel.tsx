@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useManagementT } from "../lib/managementLocale";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
@@ -564,7 +565,7 @@ export function HistoryPanel({
         </div>
         {!isTrash && catalogError && (
           <div className="management-modal__summary history-modal__summary" role="alert">
-            {catalogError} <button type="button" onClick={retryCatalog}>Retry</button>
+            <ErrorMessage error={catalogError} /> <button type="button" onClick={retryCatalog}>{tr("common.retry")}</button>
           </div>
         )}
         {!isTrash && catalogPartial && (

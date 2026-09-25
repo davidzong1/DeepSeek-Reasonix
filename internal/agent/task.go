@@ -860,7 +860,7 @@ func (t *TaskTool) runBackgroundProfileSpec(ctx context.Context, spec ProfileExe
 	backgroundEvidence := evidence.NewLedger()
 	slotReq := acquireReq
 	trk.queued()
-	job := jm.StartForSession(jobs.SessionFromContext(ctx), "task", label, func(jobCtx context.Context, _ io.Writer) (result string, err error) {
+	job, startErr := jm.TryStartForSession(jobs.SessionFromContext(ctx), "task", label, func(jobCtx context.Context, _ io.Writer) (result string, err error) {
 		if writerRegistered {
 			defer mutationObserver.UnregisterWriter(recoveryTaskID)
 		}
@@ -896,6 +896,13 @@ func (t *TaskTool) runBackgroundProfileSpec(ctx context.Context, spec ProfileExe
 		return FormatSubagentRunResult(answer, run, false), nil
 	})
 	releaseStart()
+	if startErr != nil {
+		if writerRegistered {
+			mutationObserver.UnregisterWriter(recoveryTaskID)
+		}
+		result, saveErr := t.failBeforeSubagentRelease(run, startErr)
+		return result, saveErr, false
+	}
 	queuedNote := ""
 	if t.scheduler != nil {
 		queuedNote = " It may wait in the session queue until a concurrency/write slot is free."

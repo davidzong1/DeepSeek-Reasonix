@@ -37,7 +37,7 @@ when it is safe. workspace write lease is busy; read-only work remains concurren
 | 后台保留窗口 `backgroundGrace = 30s` | `internal/workspacelease/lease.go:25` |
 | hold 覆盖整个工具执行（取在 Execute 之前、defer 释放） | `internal/agent/execute_one.go:329`、`internal/agent/execute_one.go:44` |
 | 锁文件按 canonical worktree 根哈希，目录是**OS 用户级全局**的（刻意忽略 `REASONIX_HOME`） | `internal/workspacelease/scope.go` + `internal/config/paths.go:353-362` |
-| 每个 boot 装配一个 `workspacelease.Owner`，`onWait` 发 `NoticeCodeWorkspaceLease` | `internal/boot/boot.go:556-562` |
+| 每个 boot 装配一个 `workspacelease.Owner`，`onWait` 发 `NoticeCodeWorkspaceLease` | `internal/boot/background_scope.go:14-42` |
 
 ### 2.2 获取链（谁取到什么级别的锁）
 
@@ -657,7 +657,7 @@ go test -race ./internal/cli/ -run 'Team|Cockpit|Replay|Roster' -count=2
 | 位置 | 内容 |
 | --- | --- |
 | `internal/cli/team_backend_build.go:426` | 所有成员共用同一 `WorkspaceRoot` |
-| `internal/boot/boot.go:556-562` | 每成员一个 Owner；`onWait` 发通知；`RetainUntil` 挂到后台任务 |
+| `internal/boot/background_scope.go:14-42` | 每成员一个 Owner；`onWait` 发通知；`RetainUntil` 挂到后台任务 |
 | `internal/agent/path_bound_tools.go:150` | 路径级白名单（7 个内置写工具，不含 bash） |
 | `internal/agent/tool_write_coordination.go:24-76` | hooks → 整工作区；白名单 → 路径级；其余 → 整工作区 |
 | `internal/agent/path_bound_tools.go:278` | `extractWritePathsFromArgs`（工具参数的写路径：租约粒度与令牌 scope 都用它） |

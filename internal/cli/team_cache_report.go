@@ -317,9 +317,10 @@ func renderCacheCoverage(report team.CacheReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "coverage over %d scoped samples: request_count measured=%d defaulted=%d unrecorded=%d unrecognized=%d\n",
 		c.Scoped, c.RequestCountObserved, c.RequestCountDefaulted, c.RequestCountUnrecorded, c.RequestCountUnrecognized)
-	fmt.Fprintf(&b, "  route_bucket=%d/%d model_ref=%d/%d usage_source=%d/%d prefix_diagnostics=%d/%d (present/scoped)\n",
+	fmt.Fprintf(&b, "  route_bucket=%d/%d model_ref=%d/%d usage_source=%d/%d prefix_diagnostics=%d/%d session=%d/%d (present/scoped)\n",
 		c.RouteBucketPresent, c.Scoped, c.ModelRefPresent, c.Scoped,
-		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped)
+		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped,
+		c.SessionPresent, c.Scoped)
 	fmt.Fprintf(&b, "  session_identity=%d/%d (present/scoped); a sample without one cannot have its cold status decided\n",
 		c.SessionIdentityPresent, c.Scoped)
 	fmt.Fprintf(&b, "  message_shape_comparable=%d/%d (scoped); a sample without it cannot be told apart from a rewrite\n",

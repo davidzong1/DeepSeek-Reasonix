@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { SettingsOptions } from "./SettingsOptions";
 import { SettingsSelect } from "./SettingsSelect";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -125,7 +126,7 @@ export function SubagentsSettingsPage({ s, onUseInChat }: { s: SettingsView; onU
 
   return (
     <section className="mem-section">
-      {err && <div className="banner banner--error">{err}</div>}
+      {err && <div className="banner banner--error"><ErrorMessage error={err} /></div>}
       {!formOpen && (
         <div className="cap-search subagents-toolbar settings-toolbar">
           <input
@@ -697,7 +698,7 @@ function SubagentProfileForm({
           {tryRunning ? t("subagents.cancelRun") : t("subagents.run")}
         </button>
       </div>
-      {tryError && <div className="banner banner--error">{tryError}</div>}
+      {tryError && <div className="banner banner--error"><ErrorMessage error={tryError} /></div>}
       {tryResult && <pre className="subagents-tryit-result">{tryResult}</pre>}
 
       <label className="set-label">{t("subagents.scope")}</label>

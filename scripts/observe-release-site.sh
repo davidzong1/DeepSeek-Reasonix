@@ -9,5 +9,5 @@ fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 manifest="$(mktemp)"
 trap 'rm -f -- "$manifest"' EXIT
-bash "$script_dir/fetch-stable-release-manifest.sh" "$manifest"
+bash "$script_dir/fetch-stable-release-manifest.sh" "$1" "$manifest"
 node "$script_dir/release-publication-ledger.mjs" site-owner "$1" "$2" "$manifest"

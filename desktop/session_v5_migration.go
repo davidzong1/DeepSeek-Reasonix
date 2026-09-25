@@ -392,6 +392,11 @@ func (a *App) migrateCanonicalSession(ctx context.Context, old *session.Service,
 		return a.completeRegisteredMigration(ctx, source, checkpoint, checkpoint.record.TargetSessionID, checkpoint.record.ContentDigest)
 	}
 	oldRef := session.SessionRef{HostID: "migration-source", SessionID: sessionID}
+	release, err := acquireHistoricalCanonicalRead(filepath.Join(source.root, sessionID))
+	if err != nil {
+		return err
+	}
+	defer release()
 	contentDigest, err := canonicalMigrationDigest(ctx, old.Query(), oldRef)
 	if err != nil {
 		return errors.Join(err, updateDesktopMigrationLedger(key, sessionID, "failed", "source_read"))
@@ -401,6 +406,9 @@ func (a *App) migrateCanonicalSession(ctx context.Context, old *session.Service,
 	}
 	if checkpoint.matchesCompletedContent(contentDigest) {
 		return a.completeRegisteredMigration(ctx, source, checkpoint, checkpoint.record.TargetSessionID, contentDigest)
+	}
+	if handled, err := a.reconcileCanonicalConversion(ctx, source, checkpoint, contentDigest); handled || err != nil {
+		return err
 	}
 	if workspaceID == "" {
 		workspaceID, err = a.ensureDesktopMigrationWorkspace(ctx, source)

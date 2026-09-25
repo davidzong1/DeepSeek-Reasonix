@@ -73,6 +73,12 @@ type ArmStats struct {
 	QualityPass      int
 	QualityFail      int
 	QualityUnchecked int
+	// OraclePresent/Agrees/Disagrees count eligible samples by whether the
+	// gateway's own second account was carried and whether the protocol reading
+	// reproduced it. Coverage is published beside them, never as a route property.
+	OraclePresent   int
+	OracleAgrees    int
+	OracleDisagrees int
 	// GateReached reports whether this arm met its registered warm minimum.
 	GateReached bool
 }
@@ -100,6 +106,14 @@ func Summarize(arm Arm, samples []Sample, prices Prices) ArmStats {
 		stats.MissTokens += s.CacheMissTokens
 		stats.PromptTokens += s.PromptTokens
 		stats.Rates = append(stats.Rates, s.HitRate())
+		if s.UsageOraclePresent {
+			stats.OraclePresent++
+			if s.UsageOracleAgrees {
+				stats.OracleAgrees++
+			} else {
+				stats.OracleDisagrees++
+			}
+		}
 		if cost, ok := prices.CostUSD(s); ok {
 			stats.CostUSD += cost
 			stats.CostKnown = true

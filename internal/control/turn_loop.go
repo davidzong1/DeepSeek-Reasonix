@@ -188,8 +188,26 @@ func ActivateControllerReplacement(old, next *Controller) error {
 	if next == nil {
 		return session.ErrSessionNotRunning
 	}
+	if old != nil && old.background.scope != nil && old.background.scope == next.background.scope {
+		if old.workspaceRoot != next.workspaceRoot {
+			return fmt.Errorf("background ownership cannot cross workspaces")
+		}
+		before, beforeOK := old.SessionRef()
+		after, afterOK := next.SessionRef()
+		if beforeOK && afterOK && before.SessionID != after.SessionID {
+			return fmt.Errorf("background ownership cannot cross sessions")
+		}
+		if ModelReplacementBlocked(old) {
+			return fmt.Errorf("session changed while preparing replacement")
+		}
+	}
+	if old != nil && old.background.scope != nil && old.background.scope == next.background.scope && old.ToolApprovalMode() != next.ToolApprovalMode() && len(old.jobs.Running()) > 0 {
+		return fmt.Errorf("permission changes require stopping background jobs before replacement")
+	}
 	_, nextRuntime, nextExclusive := next.v3Binding()
 	if !nextExclusive || nextRuntime == nil {
+		retireBackgroundCallbacks(old, next)
+		next.PublishBackgroundScope()
 		return nil
 	}
 	expected := uint64(0)
@@ -199,7 +217,20 @@ func ActivateControllerReplacement(old, next *Controller) error {
 			expected = old.ExecutionGeneration()
 		}
 	}
-	return next.ActivateSessionExecution(expected)
+	if err := next.ActivateSessionExecution(expected); err != nil {
+		return err
+	}
+	retireBackgroundCallbacks(old, next)
+	next.PublishBackgroundScope()
+	return nil
+}
+
+func retireBackgroundCallbacks(old, next *Controller) {
+	if old != nil && old != next && old.background.scope != nil && old.background.scope == next.background.scope {
+		old.mu.Lock()
+		old.background.retired = true
+		old.mu.Unlock()
+	}
 }
 
 // ActivateSessionAPIReplacement is the host-facing form used at a final

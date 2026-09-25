@@ -75,6 +75,16 @@ func (a *App) resumeReadyHistoricalImport(ctx context.Context, state workspacest
 		}
 		return SessionRestoreResult{Session: ref, WorkspaceID: mapping.WorkspaceID, Generation: state.Generation}, true, nil
 	}
+	for _, op := range state.PendingOperations {
+		if op.Kind != "archive-import" || op.Phase == "committed" || op.Mapping == nil {
+			continue
+		}
+		for _, key := range state.SourceKeys(op.Mapping.SourceKey) {
+			if historicalSourceKeyMatches(key, id) {
+				return SessionRestoreResult{}, true, errHistoricalSourceBusy
+			}
+		}
+	}
 	op := pendingHistoricalOperation(state, id)
 	if op == nil || op.Phase != "content_ready" || op.Lifecycle != workspacestate.Active {
 		return SessionRestoreResult{}, false, nil

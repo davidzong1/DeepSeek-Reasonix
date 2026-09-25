@@ -978,6 +978,22 @@
       ]
     }
   },
+  "CancelModelApplicationBlockers": {
+    "domain": "desktop/model_application_actions.go",
+    "owner": "App.CancelModelApplicationBlockers",
+    "sources": [
+      "desktop/model_application_actions.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.CancelModelApplicationBlockers",
+      "inputs": [
+        "tabID",
+        "choice",
+        "ids"
+      ]
+    }
+  },
   "CancelRemoteTab": {
     "domain": "desktop/remote_tab.go",
     "owner": "App.CancelRemoteTab",
@@ -10184,6 +10200,23 @@
       ]
     }
   },
+  "StartTurnWithModelApplication": {
+    "domain": "desktop/model_application_submit.go",
+    "owner": "App.StartTurnWithModelApplication",
+    "sources": [
+      "desktop/model_application_submit.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.StartTurnWithModelApplication",
+      "inputs": [
+        "tabID",
+        "submissionID",
+        "req",
+        "choice"
+      ]
+    }
+  },
   "Steer": {
     "domain": "desktop/app.go",
     "owner": "App.Steer",
@@ -10617,6 +10650,23 @@
       "inputs": [
         "target",
         "values"
+      ]
+    }
+  },
+  "SubmitRemoteTabWithModelApplication": {
+    "domain": "desktop/remote_model_application.go",
+    "owner": "App.SubmitRemoteTabWithModelApplication",
+    "sources": [
+      "desktop/remote_model_application.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SubmitRemoteTabWithModelApplication",
+      "inputs": [
+        "tabID",
+        "text",
+        "submissionID",
+        "choice"
       ]
     }
   },

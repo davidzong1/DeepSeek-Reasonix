@@ -316,6 +316,12 @@ func topicRemovalResult(item workspacestate.TopicRemoval) TopicRemovalResult {
 }
 
 func (a *App) removeTopicSessionsAdmissionHeld(req TopicRemovalRequest) (TopicRemovalResult, error) {
+	// Match AI/manual rename: removal -> title -> index. Cleanup must run
+	// after title/index unlock, while removal and runtime admission remain held.
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
+	cleanup := archivedRuntimeCleanup{app: a}
+	defer cleanup.finish()
 	// Serialize title/organization changes from this process across admission.
 	a.topicTitleMutationMu.Lock()
 	defer a.topicTitleMutationMu.Unlock()
@@ -358,7 +364,7 @@ func (a *App) removeTopicSessionsAdmissionHeld(req TopicRemovalRequest) (TopicRe
 	}
 	if !finished {
 		a.lifecycleCheckpoint("topic-sessions-before-archive")
-		if err := a.archiveCompatibleTopicAdmissionHeld(req.Target.TopicID, archiveID); err != nil {
+		if err := a.archiveCompatibleTopicWithCleanupAdmissionHeld(req.Target.TopicID, archiveID, &cleanup); err != nil {
 			return TopicRemovalResult{}, err
 		}
 	}
@@ -375,6 +381,8 @@ func (a *App) removePlaceholderAdmissionHeld(req TopicRemovalRequest) (TopicRemo
 		return TopicRemovalResult{}, errTopicArchiveBusy
 	}
 	defer a.sessionRemovalMu.Unlock()
+	var removed []removedSessionRuntime
+	defer func() { a.finalizeRemovedTopicRuntimes(removed) }()
 	a.topicTitleMutationMu.Lock()
 	defer a.topicTitleMutationMu.Unlock()
 	topicIndexMu.Lock()
@@ -429,10 +437,10 @@ func (a *App) removePlaceholderAdmissionHeld(req TopicRemovalRequest) (TopicRemo
 	if err != nil {
 		return TopicRemovalResult{}, err
 	}
-	removed := a.captureTopicRuntimeBindings(req.Target.TopicID)
-	_, unchanged := a.removeTopicRuntimeBindingsIfUnchanged(req.Target.TopicID, removed)
+	captured := a.captureTopicRuntimeBindings(req.Target.TopicID)
+	_, unchanged := a.removeTopicRuntimeBindingsIfUnchanged(req.Target.TopicID, captured)
 	if unchanged {
-		a.finalizeRemovedTopicRuntimes(removed)
+		removed = captured
 	}
 	a.emitProjectTreeChanged()
 	return topicRemovalResult(result), nil

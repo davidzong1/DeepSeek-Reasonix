@@ -132,11 +132,38 @@ func (c *Controller) ReloadHistoryIfChanged(ctx context.Context, stamp string) (
 		return false, err
 	}
 	c.setLastHistoryStamp(stamp)
+	// The writer's own durable log round-trips to the same provider view, so
+	// replacing the live transcript with that copy would only drop the in-memory
+	// fold (the gauge then sizes the whole canonical log). Keep the live session.
+	if agent.SameProviderView(c.executor.Session().Snapshot(), messages) {
+		return false, nil
+	}
 	// An empty history is a real state, not a miss: the view is replaced with
 	// nothing so the observer renders the cleared transcript instead of
 	// keeping the previous owner's content on screen.
 	c.executor.Session().Replace(messages)
+	// A peer append keeps a fold whose covered prefix still matches. When the
+	// reload breaks the fold, the durable provider view — the compacted
+	// model context, not the canonical log — is what the next request sends.
+	if !c.executor.ProjectionValid() {
+		if view := c.durableProviderView(); len(view) > 0 {
+			c.executor.AdoptCoveringProviderView(view)
+		} else if path := strings.TrimSpace(c.SessionPath()); path != "" && !c.sessionEngineEnabled() {
+			c.executor.LoadProjectionSidecar(path)
+		}
+	}
 	return true, nil
+}
+
+// durableProviderView is the provider-visible transcript stored beside the
+// canonical log. Compaction writes it without rewriting history, so it is the
+// fold to restore when a history reload invalidates the in-memory one.
+func (c *Controller) durableProviderView() []provider.Message {
+	snapshot, ok := c.sessionEventSnapshot()
+	if !ok || len(snapshot.Projection.ModelMessages) == 0 {
+		return nil
+	}
+	return append([]provider.Message(nil), snapshot.Projection.ModelMessages...)
 }
 
 // lastHistoryStamp and setLastHistoryStamp keep the observed stamp under its

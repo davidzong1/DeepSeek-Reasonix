@@ -7,7 +7,7 @@ import { getMarkdownWorkerClient } from "../src/lib/markdownWorkerClient";
 import { Composer } from "../src/components/Composer";
 import { canonicalMessage } from "../src/lib/canonicalTranscriptBackend";
 import { historyMessagesToItems } from "../src/lib/historyItems";
-import type { ControllerLiveStore, Item, LiveStream } from "../src/lib/useController";
+import type { ControllerLiveStore, Item, LiveStream, State } from "../src/lib/useController";
 import { initialState, reducer } from "../src/lib/useController";
 import type { RuntimeState } from "../src/lib/runtimeStateStore";
 import "../src/styles.css";
@@ -47,7 +47,7 @@ function weatherTurn(): Item[] {
     { ...end, id: "weather-final", text: "今天上海天气如下。以下为界面回放测试数据。\n\n## 上海 · 今日实况\n\n| 项目 | 数值 |\n|---|---|\n| 天气 | 晴 ☀️ |\n| 气温 | **25.5 °C** |\n| 湿度 | 66% |\n\n**全天**：多云转晴，23～30 °C。", reasoning: "" } as Item,
   ];
 }
-declare global { interface Window { chatFixture: { maintenance(stage: "start" | "refresh" | "completed" | "unknown"): void; authored(): void; toolAliasRegression(): void; backgroundLaunch(): void; backgroundOutputHistory(): void; weather(): void; replace(count: number): void; reset(count: number): void; older(): void; tick(index: number): void; settle(): void; switchSession(): void; prepend(): void; ready: number; pending(): number } } }
+declare global { interface Window { chatFixture: { steer(order: "record-first" | "event-first", count: number): void; unappliedSteer(order: "record-first" | "event-first", count: number): void; maintenance(stage: "start" | "refresh" | "completed" | "unknown"): void; authored(): void; toolAliasRegression(): void; backgroundLaunch(): void; backgroundOutputHistory(): void; weather(): void; replace(count: number): void; reset(count: number): void; older(): void; tick(index: number): void; settle(): void; switchSession(): void; prepend(): void; ready: number; pending(): number } } }
 function Fixture() {
   const [items, setItems] = useState(() => new URLSearchParams(window.location.search).has("deliverables") ? weatherTurn() : makeTurns(20));
   const [session, setSession] = useState(0);
@@ -73,6 +73,41 @@ function Fixture() {
   useLayoutEffect(() => {
     window.chatFixture = {
       ready, pending: () => getMarkdownWorkerClient().stats().pending,
+      steer: (order, count) => {
+        let state: State = { ...initialState, transcriptProtocol: 2 };
+        const text = "对比源码信息应该更准一些";
+        const formal: Item[] = [];
+        for (let i = 0; i < count; i++) {
+          const messageId = `steer-${i}`;
+          const event = { type: "event" as const, e: { kind: "steer" as const, messageId, itemId: `inbox-${i}`, text } };
+          if (order === "event-first") state = reducer(state, event);
+          formal.push(...historyMessagesToItems([{ role: "notice", messageId, recordId: `m:${messageId}`, content: `↪ ${text}` }], "steer").items);
+          state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: {
+            items: [...formal], removeIds: [], startTurn: 1, endTurn: 1, totalTurns: 1, hasOlder: false, hasNewer: false,
+            revision: i + 1, revisionKnown: true, digest: "steer",
+          } });
+          state = reducer(state, event);
+        }
+        clearLive(); setItems(state.items); setRunning(false); setSession(value => value + 1);
+      },
+      unappliedSteer: (order, count) => {
+        let state: State = { ...initialState, transcriptProtocol: 2 };
+        const text = "Guidance was not applied:\n对比源码信息应该更准一些";
+        const formal: Item[] = [];
+        for (let i = 0; i < count; i++) {
+          const messageId = `unapplied-${i}`;
+          const event = { type: "event" as const, e: { kind: "notice" as const, code: "unapplied_steer", level: "warn" as const, messageId, text } };
+          if (order === "event-first") state = reducer(state, event);
+          formal.push(...historyMessagesToItems([{ role: "notice", messageId, recordId: `m:${messageId}:notice:0`,
+            code: "unapplied_steer", level: "warn", content: text }], "unapplied").items);
+          state = reducer(state, { type: "transcript_records", confirmedUsers: [], projection: {
+            items: [...formal], removeIds: [], startTurn: 1, endTurn: 1, totalTurns: 1, hasOlder: false, hasNewer: false,
+            revision: i + 1, revisionKnown: true, digest: "unapplied",
+          } });
+          state = reducer(state, event);
+        }
+        clearLive(); setItems(state.items); setRunning(false); setSession(value => value + 1);
+      },
       maintenance: stage => {
         const op = { operationId: "bench-maintenance", kind: "compact", status: "running", activity: "running", operationRevision: 1, runtimeEpoch: "bench-runtime" };
         const idle: RuntimeState = { schemaVersion: 1, projectionEpoch: "bench-projection", runtimeEpoch: "bench-runtime", activityRevision: 1, revision: 1,

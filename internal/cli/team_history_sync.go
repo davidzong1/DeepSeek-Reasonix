@@ -338,11 +338,6 @@ func (m *chatTUI) publishTurnOwnerHistory(member string) {
 // sessionSwitch arming and the install all happen together when the read lands
 // (handleReplayReadReady) — clearing now would blank the transcript for the
 // length of that read, which is the stall this path exists to avoid.
-//
-// sessionSwitch is armed with that install for the same reason every other
-// transcript rebuild arms it: the clear is a whole-screen replacement, and the
-// legacy scroll-clear workaround (see chat_tui.go) would answer it with a second
-// ClearScreen mid-refresh.
 func (m *chatTUI) replayBoundHistory() tea.Cmd {
 	if m == nil || m.ctrl == nil {
 		return nil

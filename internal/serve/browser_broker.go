@@ -244,6 +244,9 @@ func (s *Server) capabilities() []string {
 		capabilitySessionHistory,
 		capabilityMaintenanceV1,
 	}
+	if _, ok := s.ctl().(*control.Controller); ok {
+		caps = append(caps, modelApplicationCapability)
+	}
 	if identity, ok := s.ctl().(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
 		if _, ok := s.ctl().(*control.Controller); ok {
 			caps = append(caps, servecontract.SubmissionIdentityV1, servecontract.InboxMutationsV1)

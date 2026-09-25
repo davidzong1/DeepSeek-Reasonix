@@ -1,3 +1,4 @@
+import { ErrorMessage } from "../components/ErrorMessage";
 import { lazy, Suspense } from "react";
 import type { Translator } from "../lib/i18n";
 import { RemoteReclaimBanner } from "../components/RemoteReclaimBanner";
@@ -43,7 +44,7 @@ export function SessionStatusBanners(props: SessionStatusBannersProps) {
       ) : null}
       {props.leaseBlocked ? (
         <div className="banner banner--error">
-          <span className="banner__msg">{t("topbar.startupError", { msg: props.leaseBlocked.message })}</span>
+          <span className="banner__msg"><ErrorMessage error={t("topbar.startupError", { msg: props.leaseBlocked.message })} /></span>
           <span className="banner__spacer" />
           <button type="button" className="btn btn--small" onClick={() => props.onOpenTakeover(props.leaseBlocked!.tabId)}>
             {t("takeover.bannerButton")}
@@ -51,13 +52,13 @@ export function SessionStatusBanners(props: SessionStatusBannersProps) {
         </div>
       ) : props.startupError ? (
         <div className="banner banner--error">
-          <span className="banner__msg">{t("topbar.startupError", { msg: props.startupError })}</span>
+          <span className="banner__msg"><ErrorMessage error={t("topbar.startupError", { msg: props.startupError })} /></span>
         </div>
       ) : null}
       {props.configWarnings.length > 0 && (
         <div className="banner banner--warning banner--actionable">
           <span className="banner__msg" title={props.configWarnings.join("\n")}>
-            {t("config.loadWarning", { msg: props.configWarnings[0] })}
+            <ErrorMessage error={t("config.loadWarning", { msg: props.configWarnings.join("\n") })} />
           </span>
           <span className="banner__spacer" />
           <button type="button" className="btn btn--small" onClick={props.onOpenConfigFile}>

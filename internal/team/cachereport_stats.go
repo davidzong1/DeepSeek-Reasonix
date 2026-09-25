@@ -41,9 +41,14 @@ type CacheReportCoverage struct {
 	// without one is not evidence that its prefix stayed put.
 	DiagnosticsPresent int `json:"diagnostics_present"`
 	DiagnosticsAbsent  int `json:"diagnostics_absent"`
-	// SessionIdentityPresent counts samples whose writer stamped a session
-	// identity. A sample without one cannot have its cold status decided, so the
-	// cause partition reports it as undiagnosed rather than as a cold start.
+	// SessionPresent counts samples that named the session they were observed in.
+	// A sample without one was published outside a turn, so it cannot be grouped
+	// into a session: its absence is a coverage gap, never a session of its own.
+	SessionPresent int `json:"session_present"`
+	SessionAbsent  int `json:"session_absent"`
+	// SessionIdentityPresent counts samples whose writer stamped a hashed session
+	// identity and a request sequence. Only these can tell a rotation's first
+	// request from a growing session's; SessionPresent answers a different one.
 	SessionIdentityPresent int `json:"session_identity_present"`
 	SessionIdentityAbsent  int `json:"session_identity_absent"`
 	// MessageShapeComparable counts samples that could compare their conversation
@@ -87,6 +92,11 @@ func (c *CacheReportCoverage) observe(rec MemberCacheRequest) {
 		c.DiagnosticsPresent++
 	} else {
 		c.DiagnosticsAbsent++
+	}
+	if strings.TrimSpace(rec.SessionID) == "" {
+		c.SessionAbsent++
+	} else {
+		c.SessionPresent++
 	}
 	if strings.TrimSpace(rec.SessionIDHash) == "" || rec.SessionRequestSeq <= 0 {
 		c.SessionIdentityAbsent++

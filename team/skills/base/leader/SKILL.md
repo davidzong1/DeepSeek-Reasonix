@@ -89,6 +89,8 @@ not chat text and not the deprecated discussion tools.
   do not mutate its role or backend merely to force progress.
 - Record blockers with the affected task and generation. A stale-generation
   result must not be merged or used to wake a new execution window.
+- Members' shared conclusions do not reach you through `leader_wait` or through
+  member status. Read them with `leader_read_conclusions` when you need them.
 
 ## Knowledge And Defects
 

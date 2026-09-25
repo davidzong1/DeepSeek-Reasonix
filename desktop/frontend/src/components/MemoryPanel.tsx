@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { SettingsSelect } from "./SettingsSelect";
 import { Activity, AlertTriangle, ArchiveRestore, Check, ChevronDown, ChevronRight, FileText, History, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -234,8 +235,7 @@ function memoryDocHint(scope: string, t: ReturnType<typeof useT>): string {
 }
 
 function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err || "Unknown error");
+  return err instanceof Error ? err.message : String(err || "Unknown error");
 }
 
 function suggestionTotal(view: MemorySuggestionsView | null): number {
@@ -494,7 +494,7 @@ export function MemoryPanel({
                   ))}
                 </div>
               </div>
-              {error && <div className="mem-error" role="alert">{error}</div>}
+              {error && <div className="mem-error" role="alert"><ErrorMessage error={error} /></div>}
               {facts.length === 0 ? (
                 <div className="mem-empty">{t("memory.noFacts")}</div>
               ) : filteredFacts.length === 0 ? (
@@ -1304,7 +1304,7 @@ export function MemorySettingsPage() {
 						))}
 					</div>
 				</div>}
-				{error && <div className="mem-error" role="alert">{error}</div>}
+				{error && <div className="mem-error" role="alert"><ErrorMessage error={error} /></div>}
 				{facts.length === 0 ? (
 					<div className="mem-empty mem-empty--cta">
 						<strong>{t("memory.emptySavedTitle")}</strong>
@@ -1482,7 +1482,7 @@ export function MemorySettingsPage() {
 						</button>
 					</div>
 				</div>
-				{error && <div className="mem-error" role="alert">{error}</div>}
+				{error && <div className="mem-error" role="alert"><ErrorMessage error={error} /></div>}
 				{!suggestions ? (
 					<div className="mem-empty mem-empty--cta">
 						<strong>{t("memory.suggestionsEmptyTitle")}</strong>

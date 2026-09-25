@@ -174,7 +174,7 @@ export function registerRendererIpc(deps: RendererIpcDeps): void {
       try {
         return { ok: true, value: await run(...args) };
       } catch (error) {
-        return { ok: false, message: errorText(error) };
+        return { ok: false, message: errorText(error), ...(error instanceof RpcError ? {code:error.code,data:error.data} : {}) };
       }
     });
   };

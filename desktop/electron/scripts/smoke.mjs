@@ -177,6 +177,8 @@ try {
     shell.openExternal = async (url) => { globalThis.__reasonixSmokeOpenExternal.calls.push(url); };
   });
   const projectTab = await page.evaluate((rootPath) => window.reasonixDesktop.invoke("EnsureBlankTab", ["project", rootPath]), previewProject);
+	const modelRejection = await page.evaluate(async (tabId) => window.reasonixDesktop.invokeResult("StartTurnWithModelApplication", [tabId, "native-stale-model-choice", { input: "do not execute", display: "do not execute", invocations: [], attachments: [] }, { mode: "applied_once", expectedAppliedRevision: "stale", expectedDesiredRevision: "stale", expectedRuntimeIdentity: "stale" }]), projectTab.id);
+	check("native context bridge preserves definite rejection and model recovery data", modelRejection.ok === false && modelRejection.data?.submissionOutcome === "not_accepted" && modelRejection.data?.modelApplication?.code === "model_choice_stale", JSON.stringify(modelRejection).slice(0, 240));
   const openPreview = async (operationId) => {
     try {
       return await page.evaluate(({ tabId, generation, operation }) => window.reasonixDesktop.invoke("OpenFileBrowserPreviewForTab", [tabId, {

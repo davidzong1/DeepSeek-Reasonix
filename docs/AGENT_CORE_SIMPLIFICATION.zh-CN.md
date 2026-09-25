@@ -10,11 +10,16 @@
   → provider stream
   → clean final:结束
   → tool call:执行并进入下一 step
-  → request error:统一 retry
+  → 连接、服务或空响应错误：返回失败，由用户决定重试
   → 未处理错误:明确失败
 ```
 
 ## 产品取舍
+
+- 连接失败、HTTP 错误（包括 429/5xx）、流中断和空响应直接结束本次请求。
+  主会话、子任务及辅助搜索/摘要请求都不自动退避、不等待网络恢复，也不原样
+  重发失败请求。保留原始错误、已经收到的部分内容和实际请求用量；用户再次
+  提交时可以重试。针对明确协议或上下文问题的有界修正与传输重试分开处理。
 
 - 普通请求默认 executor-only;planner 改为显式启用(`planner_model`)。
 - 普通 Agent 默认关闭 synthetic continuation;Goal、review、guardian、
@@ -63,12 +68,13 @@
 |---|---|
 | clean final 恰好一次模型请求 | `TestContractCleanFinalMakesOneModelRequest` |
 | tool call 执行后进入下一 step | `TestContractToolCallAdvancesToNextStep` |
-| thinking 在统一 retry 中保留(冻结请求) | `TestContractThinkingSurvivesUnifiedRetry` |
-| retry 耗尽后不残留长期 fallback 状态 | `TestContractNoLongLivedFallbackStateAfterRetryExhaustion` |
+| 用户手动重试保留正常 thinking，不残留降级状态 | `TestContractExplicitRetryPreservesThinking` |
+| 所有 Agent 角色遇到服务失败均只请求一次 | `TestProviderFailureReturnsWithoutWaitingOrRetrying` |
+| 流中断保留部分内容，等待用户决定重试 | `TestInterruptedStreamStopsUntilUserRetries` |
 | clean final 不追加 synthetic continuation | `TestContractCleanFinalAddsNoSyntheticContinuation` |
 | reasoning-only clean stop 直接完成 | `TestRunAcceptsReasoningOnlyFinalAnswer` |
-| 完全零内容走统一 `EMPTY_RESPONSE` retry | `TestRunRetriesZeroContentWithTheSameFrozenRequest` |
-| retry 耗尽返回明确协议错误 | `TestRunStopsAfterExhaustedZeroContentRetriesWithoutCommittingEmptyMessages` |
+| 空响应由用户决定是否重试 | `TestEmptyResponseLeavesRetryToUser` |
+| 空响应直接报错，不提交空消息 | `TestRunStopsOnZeroContentWithoutCommittingEmptyMessages` |
 | strict provider 缺失 reasoning 只做一次冻结请求重试 | `TestRunSilentlyRecoversMissingToolCallReasoning` 及 `loop_e2e_test.go`/`retry_e2e_test.go` 的 replay 套件(#9776 修复) |
 | incomplete-read 门 | `incomplete_read_test.go` |
 | final readiness | `final_readiness_test.go` |

@@ -90,7 +90,7 @@ func fullCacheUsageEvent() event.Event {
 	return event.Event{
 		Kind: event.Usage, ModelRef: "deepseek/deepseek-v4-flash",
 		UsageSource: event.UsageSourceExecutor,
-		TurnID:      "turn-7", Sequence: 42,
+		TurnID:      "turn-7", Sequence: 42, SessionID: "session-3",
 		Usage: &provider.Usage{
 			PromptTokens: 1000, ContextPromptTokens: 900, CompletionTokens: 40,
 			CacheHitTokens: 700, CacheMissTokens: 300, CacheWriteTokens: 120,
@@ -124,6 +124,13 @@ func TestObservedRequestMapsEveryUsageField(t *testing.T) {
 	}
 	if got.RequestID != "turn:turn-7:42" || got.RequestIDSource != "turn_event" {
 		t.Fatalf("request identity = (%q, %q), want the turn sequence", got.RequestID, got.RequestIDSource)
+	}
+	// The session identity is the only field that groups requests into a session,
+	// and it travels straight from the event: a record whose session was not
+	// observed carries an empty value rather than a synthesized one.
+	if got.SessionID != "session-3" || got.TurnID != "turn-7" || got.SessionSequence != 42 {
+		t.Fatalf("turn identity = (%q, %q, %d), want the event's own session, turn and sequence",
+			got.SessionID, got.TurnID, got.SessionSequence)
 	}
 	if got.PromptTokens != 1000 || got.ContextPromptTokens != 900 || got.CacheHitTokens != 700 ||
 		got.CacheMissTokens != 300 || got.CacheWriteTokens != 120 || got.CompletionTokens != 40 || got.RequestCount != 1 {

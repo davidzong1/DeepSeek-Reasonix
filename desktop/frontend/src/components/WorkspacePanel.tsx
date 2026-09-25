@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAbsoluteDisplayPath, formatWorkspaceSource } from "../lib/workspacePanelFormat";
 import type { WorkspaceChangeRevealRequest, WorkspaceVerificationRevealRequest, WorkspaceFileListRequest, WorkspaceChangeListRequest, WorkspaceChangeListEntry } from "../lib/dockDelivery";
@@ -10,8 +11,7 @@ export type { WorkspaceVerificationRevealRequest } from "../lib/dockDelivery";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   CSSProperties,
-  DragEvent as ReactDragEvent,
-  KeyboardEvent,
+  DragEvent as ReactDragEvent, KeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
@@ -1874,7 +1874,7 @@ export function WorkspacePanel({
               )}
               {overviewResourceStatus && (
                 <div className={`workspace-resource-status${overviewResourceStatus.error ? " workspace-resource-status--error" : ""}`} role={overviewResourceStatus.error ? "alert" : "status"}>
-                  {overviewResourceStatus.text}
+                  {overviewResourceStatus.error ? <ErrorMessage error={overviewResourceStatus.text} /> : overviewResourceStatus.text}
                 </div>
               )}
               {groupedChangesLayout ? (
@@ -1888,7 +1888,7 @@ export function WorkspacePanel({
                     <div className="workspace-empty">{t("workspace.loadingChanges")}</div>
                   )}
                   {workspaceChangesErr && !workspaceChanges && (
-                    <div className="workspace-empty workspace-empty--error">{t("workspace.changesUnavailable")}: {workspaceChangesErr}</div>
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.changesUnavailable")}: <ErrorMessage error={workspaceChangesErr} /></div>
                   )}
                   <section className={`workspace-commit-history${commitHistoryOpen ? " workspace-commit-history--open" : ""}`}>
                       <button
@@ -1907,7 +1907,7 @@ export function WorkspacePanel({
                       {commitHistoryOpen && (loadingHistory && gitHistory.length === 0 ? (
                         <div className="workspace-empty">{t("workspace.loading")}</div>
                       ) : gitHistoryErr && gitHistory.length === 0 ? (
-                        <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                        <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: <ErrorMessage error={gitHistoryErr} /></div>
                       ) : gitHistory.length === 0 ? (
                         <div className="workspace-empty">{t("workspace.noCommitHistory")}</div>
                       ) : (
@@ -1965,7 +1965,7 @@ export function WorkspacePanel({
                   {loadingHistory && gitHistory.length === 0 ? (
                     <div className="workspace-empty">{t("workspace.loading")}</div>
                   ) : gitHistoryErr && gitHistory.length === 0 ? (
-                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: <ErrorMessage error={gitHistoryErr} /></div>
                   ) : gitHistory.length === 0 && !hasFileChanges ? (
                     <div className="workspace-empty">{workspaceGitWarning ? t("workspace.gitChangesUnknown") : t("workspace.noChanges")}</div>
                   ) : (
@@ -2036,11 +2036,11 @@ export function WorkspacePanel({
                 </header>
                 <div className="workspace-current-change__body">
                   {loadingChangeDetail && changeDetail && <div className="workspace-resource-status" role="status">{t("workspace.loading")}</div>}
-                  {changeDetailErr && changeDetail && <div className="workspace-resource-status workspace-resource-status--error">{t("workspace.changeDetailUnavailable")}: {changeDetailErr}</div>}
+                  {changeDetailErr && changeDetail && <div className="workspace-resource-status workspace-resource-status--error">{t("workspace.changeDetailUnavailable")}: <ErrorMessage error={changeDetailErr} /></div>}
                   {loadingChangeDetail && !changeDetail ? (
                     <div className="workspace-empty">{t("workspace.loading")}</div>
                   ) : changeDetailErr && !changeDetail ? (
-                    <div className="workspace-empty workspace-empty--error">{t("workspace.changeDetailUnavailable")}: {changeDetailErr}</div>
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.changeDetailUnavailable")}: <ErrorMessage error={changeDetailErr} /></div>
                   ) : changeDetail?.truncated ? (
                     <div className="workspace-empty">{t("workspace.changeDetailTooLarge")}</div>
                   ) : changeDetail?.binary ? (
@@ -2074,7 +2074,7 @@ export function WorkspacePanel({
                   loadingHistory && gitHistory.length === 0 ? (
                     <div className="workspace-empty">{t("workspace.loading")}</div>
                   ) : gitHistoryErr && gitHistory.length === 0 ? (
-                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: {gitHistoryErr}</div>
+                    <div className="workspace-empty workspace-empty--error">{t("workspace.historyUnavailable")}: <ErrorMessage error={gitHistoryErr} /></div>
                   ) : gitHistory.length === 0 ? (
                     <div className="workspace-empty">{t("workspace.noCommitHistory")}</div>
                   ) : (
@@ -2117,7 +2117,7 @@ export function WorkspacePanel({
             <div className="workspace-empty">{t("workspace.loading")}</div>
           ) : preview?.err || (previewErr && !preview) ? (
             <div className="workspace-empty workspace-empty--error">
-              {/no such file|not found|enoent/i.test(previewErr || preview?.err || "") ? t("workspace.fileDeleted") : (previewErr || preview?.err)}
+              <ErrorMessage error={previewErr || preview?.err} />
             </div>
           ) : preview?.kind ? (
             <>
@@ -2128,7 +2128,7 @@ export function WorkspacePanel({
                 </div>
               )}
               {loadingPreview && <div className="workspace-resource-status" role="status">{t("workspace.loading")}</div>}
-              {previewErr && <div className="workspace-resource-status workspace-resource-status--error">{previewErr}</div>}
+              {previewErr && <div className="workspace-resource-status workspace-resource-status--error"><ErrorMessage error={previewErr} /></div>}
               <WorkspaceMediaPreview preview={preview} />
             </>
           ) : preview?.binary ? (
@@ -2142,11 +2142,11 @@ export function WorkspacePanel({
                 </div>
               )}
               {loadingPreview && <div className="workspace-resource-status" role="status">{t("workspace.loading")}</div>}
-              {previewErr && <div className="workspace-resource-status workspace-resource-status--error">{previewErr}</div>}
+              {previewErr && <div className="workspace-resource-status workspace-resource-status--error"><ErrorMessage error={previewErr} /></div>}
               {preview.truncated && !presentedTextPaginationAvailable && <div className="workspace-note">{t("workspace.truncated")}</div>}
               {presentedTextPaginationAvailable && (
                 <div className="workspace-note workspace-note--pagination">
-                  {activePresentedTextTail?.error && <span className="workspace-resource-status--error">{activePresentedTextTail.error}</span>}
+                  {activePresentedTextTail?.error && <span className="workspace-resource-status--error"><ErrorMessage error={activePresentedTextTail.error} /></span>}
                   {(activePresentedTextTail?.hasMore ?? preview.truncated) ? (
                     <button
                       type="button"

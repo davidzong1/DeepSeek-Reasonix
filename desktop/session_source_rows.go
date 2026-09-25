@@ -1,20 +1,39 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
+	"reasonix/internal/store"
 	"sync"
 )
 
 type sourceHeadObservation struct {
-	stamp string
-	heads []agent.SessionHead
-	err   error
+	info  os.FileInfo
+	index *agent.SessionHeadIndex
 }
 
 var sourceHeadRows sync.Map
+
+// A mapped DAG head must not return as an unidentified path placeholder while
+// its index is unavailable. This is a display filter, not an ownership alias:
+// independently identified siblings remain eligible for their own rows.
+func adoptedSourceRows(state workspacestate.State, workspaceID string) map[string]bool {
+	adopted := map[string]bool{}
+	for _, mapping := range state.SourceMappings {
+		if workspaceID != "" && mapping.WorkspaceID != workspaceID {
+			continue
+		}
+		for _, key := range state.SourceKeys(mapping.SourceKey) {
+			adopted["source\x00local\x00"+key] = true
+		}
+		adopted["source\x00local\x00"+desktopSourceKey(mapping.Path, "")] = true
+		if sourceMappingHasPathAlias(mapping) {
+			adopted[sessionRuntimeKey(mapping.Path)] = true
+		}
+	}
+	return adopted
+}
 
 // A single-head DAG is displayed by path, while upgrades record its head ID.
 // Use the same path alias in every projection so retained originals cannot
@@ -48,22 +67,41 @@ func sourceMappingHasPathAlias(mapping workspacestate.SourceMapping) bool {
 // would make sidebar pagination perform content work and contend with writers.
 // Missing/stale indices degrade to one path row and are repaired separately.
 func sessionSourceHeads(path string) ([]agent.SessionHead, error) {
-	info, err := os.Stat(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil {
+		sourceHeadRows.Delete(path)
 		return nil, err
 	}
-	stamp := fmt.Sprint(info.Size(), ":", info.ModTime().UnixNano())
-	if cached, ok := sourceHeadRows.Load(path); ok && cached.(sourceHeadObservation).stamp == stamp {
+	info, err := os.Stat(store.SessionEventIndex(path))
+	if err != nil {
+		sourceHeadRows.Delete(path)
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	// The checkpoint, event log, and head index are published independently.
+	// Cache only the decoded index, keyed by that file's own identity, and
+	// validate its log coverage on every read. A transient missing/stale index
+	// must not survive publication merely because the checkpoint is unchanged.
+	var index *agent.SessionHeadIndex
+	if cached, ok := sourceHeadRows.Load(path); ok {
 		entry := cached.(sourceHeadObservation)
-		return entry.heads, entry.err
+		if os.SameFile(entry.info, info) && entry.info.Size() == info.Size() && entry.info.ModTime().Equal(info.ModTime()) {
+			index = entry.index
+		}
 	}
-	index, err := agent.ReadSessionHeadIndex(path)
-	var heads []agent.SessionHead
-	if err == nil && index != nil && index.Current(path) {
-		heads = index.Heads
+	if index == nil {
+		index, err = agent.ReadSessionHeadIndex(path)
+		if err != nil || index == nil {
+			sourceHeadRows.Delete(path)
+			return nil, err
+		}
+		sourceHeadRows.Store(path, sourceHeadObservation{info: info, index: index})
 	}
-	sourceHeadRows.Store(path, sourceHeadObservation{stamp, heads, err})
-	return heads, err
+	if !index.Current(path) {
+		return nil, nil
+	}
+	return index.Heads, nil
 }
 
 func expandSessionSourceRows(node ProjectNode) []ProjectNode {
@@ -73,7 +111,6 @@ func expandSessionSourceRows(node ProjectNode) []ProjectNode {
 	heads, err := sessionSourceHeads(node.SessionPath)
 	if err != nil {
 		node.Health = "degraded"
-		return []ProjectNode{node}
 	}
 	live := []agent.SessionHead{}
 	for _, head := range heads {

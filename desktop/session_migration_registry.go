@@ -29,7 +29,38 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 	if err != nil {
 		return err
 	}
-	if state.SessionStates[id].Lifecycle == workspacestate.Deleted {
+	if lifecycle := state.SessionStates[id].Lifecycle; lifecycle == workspacestate.Deleted || lifecycle == workspacestate.Archived {
+		if lifecycle == workspacestate.Archived {
+			if _, err := a.desktopSessionService("").Query().Snapshot(ctx, session.SessionRef{HostID: localDesktopHostID, SessionID: id}); err != nil {
+				return err
+			}
+		}
+		fingerprint, err := desktopSourceFingerprint(path)
+		if err != nil {
+			return err
+		}
+		// Verify the frozen input before publishing a receipt. The final ledger
+		// update remains independently retryable after the registry commit.
+		if err := cp.verify(); err != nil {
+			return err
+		}
+		mapping := workspacestate.SourceMapping{SourceKey: source.mappingKey(path), Path: path, HeadID: source.headID,
+			Format: format, Fingerprint: fingerprint, SessionID: id, WorkspaceID: desktopWorkspaceOwnerID(state, source.scope, source.workspaceRoot)}
+		if old, ok, err := state.ResolveSource(mapping.SourceKey); err != nil {
+			return err
+		} else if ok {
+			if old.SessionID != id {
+				return workspacestate.ErrMutationConflict
+			}
+			return cp.complete(id, digest)
+		}
+		mapping.RetainedArtifacts, err = retainedDesktopArtifacts(path)
+		if err != nil {
+			return err
+		}
+		if err := a.workspaceRegistry().RecordRetiredSource(ctx, mapping, state.Generation); err != nil {
+			return err
+		}
 		return cp.complete(id, digest)
 	}
 	ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
@@ -142,9 +173,6 @@ func (a *App) checkAdoptedMigrationSource(ctx context.Context, source desktopMig
 	state, err := a.workspaceRegistry().Load(ctx)
 	if err != nil {
 		return true, err
-	}
-	if state.SessionStates[cp.record.TargetSessionID].Lifecycle == workspacestate.Deleted {
-		return true, nil
 	}
 	mapping, exists, err := state.ResolveSource(source.mappingKey(path))
 	if err != nil {

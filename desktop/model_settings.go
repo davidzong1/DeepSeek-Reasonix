@@ -84,14 +84,21 @@ func (a *App) modelSettingsSaved(setting string) {
 	a.mu.RLock()
 	count, active := len(a.tabs), a.activeTabID != ""
 	var retry []*WorkspaceTab
+	var apply []string
 	for _, tab := range a.tabs {
 		if tab != nil && tab.Ctrl == nil && tab.modelApplication.startupRetry {
 			retry = append(retry, tab)
+		}
+		if tab != nil && tab.Ctrl != nil {
+			apply = append(apply, tab.ID)
 		}
 	}
 	a.mu.RUnlock()
 	slog.Debug("model settings persisted", "setting", setting, "visibleSessions", count, "hasActiveSession", active)
 	a.refreshActiveTabMetaExtras()
+	for _, id := range apply {
+		a.scheduleDeferredRebuild(id, "saved model settings")
+	}
 	if a.ctx != nil {
 		for _, tab := range retry {
 			a.scheduleDeferredStartupBuild(tab.ID)
@@ -122,18 +129,28 @@ func (a *App) refreshTabModelSettings(tab *WorkspaceTab) error {
 		if applied == attempted {
 			return nil
 		}
+		a.mu.RLock()
+		failure := tab.modelApplication.failure
+		a.mu.RUnlock()
+		if failure != nil && failure.controller == current && failure.revision == attempted {
+			return newModelApplicationError(current, errors.New(failure.message))
+		}
 		if err := a.rebuildSettingTurnLocked("saved model settings", tab, false, true); err != nil {
 			if errors.Is(err, errModelSettingsSuperseded) {
 				continue
 			}
-			if current != nil {
+			var busy *rebuildBusyError
+			if errors.As(err, &busy) {
+				a.scheduleDeferredRebuild(tab.ID, "saved model settings")
+			}
+			if current != nil && !errors.As(err, &busy) {
 				a.mu.Lock()
 				if a.ownsRuntimeTabLocked(tab) && tab.Ctrl == current {
 					tab.modelApplication.failure = &modelSettingsApplyFailure{current, attempted, modelSettingsIssue("apply_failed", err).Message}
 				}
 				a.mu.Unlock()
 			}
-			return fmt.Errorf("model settings were saved but this session could not apply them: %w", err)
+			return newModelApplicationError(current, err)
 		}
 		return nil
 	}

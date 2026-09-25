@@ -16,7 +16,7 @@ import (
 	"reasonix/internal/provider/responses"
 )
 
-func TestTruncatedJSONStreamRecoversWithoutExecutingPartialTools(t *testing.T) {
+func TestTruncatedJSONStreamFailsWithoutRetryOrExecutingPartialTools(t *testing.T) {
 	for _, protocol := range []string{"chat", "anthropic"} {
 		for _, cut := range []bool{true, false} {
 			name := protocol + "/malformed_line"
@@ -70,7 +70,7 @@ func TestTruncatedJSONStreamRecoversWithoutExecutingPartialTools(t *testing.T) {
 				sink := &recordSink{}
 				a := New(p, echoRegistry(), NewSession(""), Options{MissingReasoningWarnStateDir: t.TempDir()}, sink)
 				err = a.Run(withNoClosedLoop(context.Background()), "go")
-				if (err == nil) != cut {
+				if err == nil {
 					t.Fatalf("cut=%v error=%v", cut, err)
 				}
 				if len(sink.kinds(event.ToolResult)) != 0 {
@@ -78,17 +78,11 @@ func TestTruncatedJSONStreamRecoversWithoutExecutingPartialTools(t *testing.T) {
 				}
 				mu.Lock()
 				defer mu.Unlock()
-				if !cut {
-					if len(bodies) != 1 {
-						t.Fatal("malformed complete event retried")
-					}
-					return
-				}
-				if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) {
-					t.Fatal("retry lost frozen request")
+				if len(bodies) != 1 {
+					t.Fatalf("failed stream retried: %d requests", len(bodies))
 				}
 				usages := sink.kinds(event.Usage)
-				if len(usages) != 1 || usages[0].Usage == nil || !usages[0].Usage.Unknown || usages[0].Usage.RequestCount != 2 {
+				if len(usages) != 1 || usages[0].Usage == nil || !usages[0].Usage.Unknown || usages[0].Usage.RequestCount != 1 {
 					t.Fatalf("usage=%+v", usages)
 				}
 			})

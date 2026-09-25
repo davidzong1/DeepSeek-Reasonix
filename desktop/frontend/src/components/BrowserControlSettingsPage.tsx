@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Cookie, Globe, ShieldCheck, Trash2 } from "lucide-react";
 import { SettingsField, SettingsSection } from "./SettingsForm";
@@ -112,7 +113,7 @@ export function BrowserControlSettingsPage() {
 
   return (
     <>
-      {error && <div className="banner banner--error" role="alert"><span>{error}</span></div>}
+      {error && <div className="banner banner--error" role="alert"><span><ErrorMessage error={error} /></span></div>}
       {notice && <div className="banner banner--success" role="status"><span>{notice}</span></div>}
       {state.warning && <div className="banner banner--warning" role="status"><span>{t(WARNING_KEYS[state.warning])}</span></div>}
       <SettingsSection title={t("settings.browser.basics")} description={t("settings.browser.basicsHint")}>

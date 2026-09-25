@@ -200,6 +200,23 @@ func projectedShellOrganization(workspace workspacestate.Workspace, state worksp
 
 func workspaceSourceAliases(state workspacestate.State, workspaceID string) map[string][]string {
 	result := map[string][]string{}
+	// A topic aliases its initial placeholder only while it has one owner.
+	// Build this once per workspace, not once per row of a large history page.
+	owners := map[string]string{}
+	for _, id := range state.Workspaces[workspaceID].SessionIDs {
+		if topic := state.Presentation[id].TopicID; topic != "" {
+			if _, seen := owners[topic]; seen {
+				owners[topic] = ""
+			} else {
+				owners[topic] = id
+			}
+		}
+	}
+	for topic, id := range owners {
+		if id != "" {
+			result[id] = append(result[id], "topic\x00"+topic)
+		}
+	}
 	for _, m := range state.SourceMappings {
 		if m.WorkspaceID != workspaceID {
 			continue
@@ -208,30 +225,22 @@ func workspaceSourceAliases(state workspacestate.State, workspaceID string) map[
 			result[m.SessionID] = append(result[m.SessionID], "source\x00local\x00"+key)
 		}
 		if sourceMappingHasPathAlias(m) {
-			result[m.SessionID] = append(result[m.SessionID], "path\x00"+m.Path)
+			// Lazy catalog pages use a path source key even for a single-head
+			// DAG. Include both displayed identities in runtime merges and
+			// lifecycle receipts, without claiming independent sibling heads.
+			result[m.SessionID] = append(result[m.SessionID], "path\x00"+m.Path,
+				"source\x00local\x00"+desktopSourceKey(m.Path, ""))
 		}
 	}
-	for _, aliases := range result {
+	for id, aliases := range result {
 		slices.Sort(aliases)
+		result[id] = slices.Compact(aliases)
 	}
 	return result
 }
 
 func sourceAliases(state workspacestate.State, workspaceID, sessionID string) []string {
-	aliases := []string{}
-	for _, m := range state.SourceMappings {
-		if m.WorkspaceID != workspaceID || m.SessionID != sessionID {
-			continue
-		}
-		for _, key := range state.SourceKeys(m.SourceKey) {
-			aliases = append(aliases, "source\x00local\x00"+key)
-		}
-		if sourceMappingHasPathAlias(m) {
-			aliases = append(aliases, "path\x00"+m.Path)
-		}
-	}
-	slices.Sort(aliases)
-	return aliases
+	return append([]string{}, workspaceSourceAliases(state, workspaceID)[sessionID]...)
 }
 
 func (a *App) GetSessionOrganization(workspace SessionOrganizationWorkspace) (SessionOrganizationSnapshot, error) {

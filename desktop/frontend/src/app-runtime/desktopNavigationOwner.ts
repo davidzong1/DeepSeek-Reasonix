@@ -1,4 +1,5 @@
 import { CommandCancelled } from "../lib/commandOutcome";
+import { sessionTitleErrorKey } from "../lib/sessionTitleOperation";
 import type { SessionRef } from "../lib/sessionRef";
 import type { RemoteTabOpenOptions, RemoteTabRefView, SessionMeta, TabMeta } from "../lib/types";
 import type { useAppRuntimeAdapter } from "./useAppRuntimeAdapter";
@@ -63,7 +64,7 @@ export function reconcileHistoricalPreparation(expected: HistoricalPreparationSu
 }
 export type NavigationNotice = {
   key: "history.failedOpenSession" | "history.missingWorkspaceRoot" | "history.failedOpenProject" | "sidebar.imWaiting" | "sidebar.imOpenFailed"
-    | "projectTree.worktreeCreated" | "projectTree.worktreeCreatedDirty";
+    | "projectTree.worktreeCreated" | "projectTree.worktreeCreatedDirty" | ReturnType<typeof sessionTitleErrorKey>;
   params?: Record<string, string>;
   tone?: "error" | "warn" | "info";
   durationMs?: number;
@@ -193,13 +194,7 @@ export async function executeDesktopNavigation(input: DesktopNavigationCapture, 
     const message = error instanceof Error ? error.message : String(error ?? "");
     if (/no such file|cannot find the file|file does not exist|session is pending cleanup|session .*not found/i.test(message)) return;
     ports.closeHistory();
-    const session = request.session;
-    const scope = session.scope || (session.workspaceRoot ? "project" : "global");
-    if (scope === "project" && session.workspaceRoot) {
-      const parts = session.workspaceRoot.split(/[/\\]/).filter(Boolean);
-      ports.notice({ key: "history.failedOpenProject", params: {
-        name: parts[parts.length - 1] || session.workspaceRoot, path: session.workspaceRoot,
-      } });
-    } else ports.notice(error instanceof InvalidSessionTarget ? { key: error.key } : { message });
+    ports.notice(error instanceof InvalidSessionTarget ? { key: error.key }
+      : { key: sessionTitleErrorKey(error), tone: "error" });
   }
 }

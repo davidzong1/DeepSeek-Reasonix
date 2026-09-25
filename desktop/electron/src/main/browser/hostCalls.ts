@@ -283,7 +283,10 @@ export function buildBrowserHostCalls(deps: BrowserHostDeps): HostCallTable {
       const grant = grants.verify(str(params, "grantId"));
       const tab = await surfaces.open(str(params, "url"), { taskId: grant.taskId, sessionId: grant.sessionId, temporary: bool(params, "temporary") }, signal);
       try { grants.verifyTab(str(params, "grantId"), tab.taskId, tab.sessionId); if (surfaces.get(tab.id) !== tab || tab.mode !== "agent") throw new Error("page ownership changed"); }
-      catch { throw browserFailure("cancelled", "open was dispatched but its task changed; outcome is unknown"); }
+      catch {
+        if (surfaces.get(tab.id) === tab && tab.mode === "agent") surfaces.close(tab.id);
+        throw browserFailure("cancelled", "open was dispatched but its task changed; outcome is unknown");
+      }
       return hostTab(surfaces, tab);
     }),
     "host/browser.tabs.navigate": params => navigation(params, async signal => {

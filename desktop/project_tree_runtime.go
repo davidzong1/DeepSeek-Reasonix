@@ -124,6 +124,7 @@ func cloneRuntimeTopics(topics []ProjectRuntimeTopic) []ProjectRuntimeTopic {
 func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []ProjectRuntimeTopic {
 	bySession := map[string]ProjectRuntimeTopic{}
 	state, _ := a.workspaceRegistry().LoadProjection(a.bootContext())
+	workspaceAliases := map[string]map[string][]string{}
 	for _, snapshot := range snapshots {
 		scope, root := normalizeDesktopTopicScope(snapshot.scope, snapshot.workspaceRoot)
 		snapshot.scope, snapshot.workspaceRoot = scope, root
@@ -149,13 +150,22 @@ func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []Pro
 			node.SessionPath, node.Key = path, projectSessionNodeKey(scope, path)
 		}
 		if node.Session != nil {
-			node.IdentityAliases = sourceAliases(state, desktopWorkspaceOwnerID(state, scope, root), node.Session.SessionID)
+			workspaceID := desktopWorkspaceOwnerID(state, scope, root)
+			aliases, exists := workspaceAliases[workspaceID]
+			if !exists {
+				aliases = workspaceSourceAliases(state, workspaceID)
+				workspaceAliases[workspaceID] = aliases
+			}
+			node.IdentityAliases = append([]string{}, aliases[node.Session.SessionID]...)
 			node.LifecycleGeneration = state.SessionStates[node.Session.SessionID].Generation
 			if snapshot.tabID != "" {
 				node.IdentityAliases = append(node.IdentityAliases, "tab\x00local\x00"+snapshot.tabID)
 			}
 		} else if path == "" && snapshot.tabID != "" {
 			node.Key = "tab_" + snapshot.tabID
+			// This tab was opened from an unbacked topic. Publish that exact
+			// placeholder binding instead of asking the renderer to guess by title.
+			node.IdentityAliases = []string{"topic\x00" + snapshot.topicID}
 		}
 		key := scope + "\x00" + root + "\x00" + node.Key
 		bySession[key] = ProjectRuntimeTopic{Scope: scope, WorkspaceRoot: root, Node: node}

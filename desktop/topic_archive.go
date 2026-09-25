@@ -28,6 +28,20 @@ type topicArchiveTrace struct {
 }
 
 func (a *App) TrashTopic(topicID string) error {
+	if key, historical := strings.CutPrefix(topicID, "historical-"); historical {
+		if _, err := a.ListHistoricalSessions(); err != nil {
+			return err
+		}
+		c := &a.historicalImports
+		c.mu.Lock()
+		source, found := c.sources[key]
+		c.mu.Unlock()
+		if !found {
+			return newSessionOperationError(sessionOperationTargetNotFound, "The historical source is unavailable.")
+		}
+		_, err := a.ArchiveSessionTarget(SessionSelector{Source: &SessionSourceRef{Path: source.path, SourceKey: key, HeadID: source.head}})
+		return err
+	}
 	return friendlySessionFileError(a.archiveCompatibleTopic(topicID))
 }
 

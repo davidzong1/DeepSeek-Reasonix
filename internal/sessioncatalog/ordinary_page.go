@@ -133,7 +133,7 @@ func (c *Catalog) ListOrdinarySessions(ctx context.Context, req OrdinaryPageRequ
 		activity = `COALESCE(NULLIF(s.created_at,0),s.last_activity_at)`
 		index = `idx_catalog_sessions_flat_created`
 	}
-	where := `s.scope=? AND s.workspace_root_key=? AND s.missing_since=0 AND s.health<>'missing' AND s.ordinary_visible=1`
+	where := `s.scope=? AND s.workspace_root_key=? AND s.missing_since=0 AND s.health<>'missing' AND s.health<>'corrupt' AND s.ordinary_visible=1`
 	args := []any{req.Scope, c.workspaceRootKey(req.Scope, req.WorkspaceRoot)}
 	if req.MinActivity > 0 {
 		where += ` AND max(s.created_at,s.last_activity_at)>=?`

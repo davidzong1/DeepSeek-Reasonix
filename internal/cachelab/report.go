@@ -56,6 +56,11 @@ func renderArm(stats ArmStats) string {
 		stats.Rate*100, stats.HitTokens, stats.MissTokens, stats.PromptTokens)
 	fmt.Fprintf(&b, "  request_rate p25=%.3f p50=%.3f p75=%.3f\n", stats.P25, stats.P50, stats.P75)
 	fmt.Fprintf(&b, "  latency_ms p50=%d p95=%d\n", stats.LatencyP50MS, stats.LatencyP95MS)
+	// The oracle is reported as coverage, never as a rate: a route whose
+	// responses only sometimes carry the gateway's own block cannot have an
+	// agreement rate, and a sample without one is undecided rather than agreeing.
+	fmt.Fprintf(&b, "  oracle_coverage=%d/%d eligible (agree=%d disagree=%d)\n",
+		stats.OraclePresent, stats.Eligible, stats.OracleAgrees, stats.OracleDisagrees)
 	fmt.Fprintf(&b, "  quality: pass=%d fail=%d unchecked=%d\n", stats.QualityPass, stats.QualityFail, stats.QualityUnchecked)
 	if stats.CostKnown {
 		fmt.Fprintf(&b, "  cost=%.4f USD\n", stats.CostUSD)

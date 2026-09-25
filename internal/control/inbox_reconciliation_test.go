@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/sessioninbox"
 	"reasonix/internal/tool"
+	"reasonix/internal/transcript"
 )
 
 func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
@@ -18,6 +19,7 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 	prov := &inboxSteerProvider{started: make(chan struct{}), release: make(chan struct{})}
 	exec := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
 	observed := make(chan sessioninbox.InboxState, 1)
+	steerEvents := make(chan event.Event, 1)
 	done := make(chan struct{})
 	var c *Controller
 	sink := event.FuncSink(func(e event.Event) {
@@ -30,6 +32,7 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 				}
 			}
 			observed <- state
+			steerEvents <- e
 		}
 		if e.Kind == event.TurnDone {
 			select {
@@ -72,6 +75,22 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for turn completion")
+	}
+	e := <-steerEvents
+	if e.MessageID == "" || e.ItemID != rec.ItemID {
+		t.Fatalf("steer receipt lacks message/inbox identity: %+v", e)
+	}
+	var count int
+	for _, row := range transcript.History(exec.Session().Snapshot(), transcript.HistoryOptions{}) {
+		if row.MessageID == e.MessageID {
+			count++
+			if row.RecordID != "m:"+e.MessageID || row.Role != "notice" || row.Content != "↪ durable steer" {
+				t.Fatalf("steer receipt and history disagree: %+v", row)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("steer receipt owns %d canonical rows, want 1", count)
 	}
 }
 

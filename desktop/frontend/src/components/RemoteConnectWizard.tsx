@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, FileText, Folder, Plus } from "lucide-react";
@@ -12,7 +13,6 @@ type WizardStep = "config" | "connecting" | "workspace";
 const STEP_ORDER: WizardStep[] = ["config", "connecting", "workspace"];
 const HOST_INPUT_ID = "remote-wizard-host-input";
 const HOST_MENU_ID = "remote-wizard-host-menu";
-
 const blankInput: RemoteHostInput = {
   label: "",
   host: "",
@@ -660,7 +660,7 @@ export function RemoteConnectWizard({
                 {connectErr ? (
                   <>
                     <div className="remote-wizard__error" role="alert">
-                      {connectErr}
+                      <ErrorMessage error={connectErr} />
                     </div>
                     <div className="remote-wizard__connecting-actions">
                       <button type="button" className="btn btn--small" onClick={() => setStep("config")}>
@@ -706,7 +706,7 @@ export function RemoteConnectWizard({
                   {entries === null && !listErr ? <div className="remote-wizard__empty">{t("common.loading")}</div> : null}
                   {listErr ? (
                     <div className="remote-wizard__error" role="alert">
-                      {listErr}
+                      <ErrorMessage error={listErr} />
                     </div>
                   ) : null}
                   {entries?.length === 0 && !listErr ? <div className="remote-wizard__empty">{t("remoteWizard.emptyDir")}</div> : null}
@@ -767,7 +767,7 @@ export function RemoteConnectWizard({
           {error ? (
             <div className="remote-wizard__error" role="alert">
               <span className="remote-wizard__error-mark" aria-hidden="true">⚠</span>
-              {error}
+              <ErrorMessage error={error} />
             </div>
           ) : (
             <div className="remote-wizard__error" />

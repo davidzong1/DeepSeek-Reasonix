@@ -23,11 +23,9 @@ import (
 // (team_member_cockpit.go), and read for the transcript's own off-goroutine
 // history read (commitBackendReplay) — neither is a tick of its own.
 //
-// tick marks a genuine timer tick, and gen names the chain it belongs to. Only
-// a tick re-arms the next one: a delivered result used to reach the end of
-// refreshTeamRoster and arm a chain of its own, so every replay bundle and
-// history sync the team produced left one more poll loop running, each paying
-// the tick's registry read (see rosterTick).
+// tick marks a genuine timer tick, and gen names the chain it belongs to: a
+// delivered result used to reach the end of refreshTeamRoster and arm a chain
+// of its own, leaving one more poll loop per replay bundle and history sync.
 type teamRosterRefreshMsg struct {
 	sync   *historySyncDone
 	replay *teamReplayReadyMsg
@@ -140,21 +138,16 @@ func (m *chatTUI) refreshTeamRoster(msg teamRosterRefreshMsg) tea.Cmd {
 	// must be rebound before its owner is read, or the window reads the fingerprint
 	// of a member it is about to leave and reports its own rebind as a remote clear.
 	work = batchCmds(work, m.refreshTeamRosterView())
-	// Both owner consumers are then served from ONE read. They need the same
-	// fingerprint on the same tick — the ambient usage channel and the cross-window
-	// history poll — and it is a disk read, so resolving it here (after the roster
-	// settled, so it names the member now bound) is what makes sharing it safe:
-	// reading it inside each consumer let the roster rebind between them, and the
-	// second consumer would then have compared the incoming member's stamp against
-	// the outgoing member's fingerprint and read that difference as a history change.
+	// Both owner consumers are then served from ONE read: they need the same
+	// fingerprint on the same tick, and resolving it after the roster settled is
+	// what makes sharing it safe (see syncBoundHistory).
 	fingerprint, fingerprintOK := m.boundOwnerFingerprint()
 	m.syncAmbientOwnerUsage(fingerprint, fingerprintOK)
 	work = batchCmds(work, m.syncBoundHistory(fingerprint, fingerprintOK))
 	work = batchCmds(work, m.refreshBoundMemberUsage(), m.collectCockpitResults())
-	// Only a genuine tick continues the chain. A result that rode this message
-	// (a replay bundle, a history sync, a transcript read) must not: arming here
-	// as well left one extra poll loop per delivered result, so the overlay's
-	// tick rate grew with every history change the team produced.
+	// Only a genuine tick continues the chain: a result that rode this message
+	// (a replay bundle, a history sync, a transcript read) must not, or the
+	// overlay's tick rate grows with every history change the team produces.
 	if msg.tick {
 		work = batchCmds(work, m.rosterTick())
 	}

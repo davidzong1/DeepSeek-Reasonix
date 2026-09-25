@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"strconv"
@@ -15,35 +14,16 @@ import (
 	"time"
 )
 
-// MaxRetries is the number of times SendWithRetry re-attempts the connection +
-// header phase after the initial try (so up to MaxRetries+1 total attempts).
-const MaxRetries = 10
-
-const maxBackoff = 15 * time.Second
-
-// maxRetryAfter bounds a server-supplied Retry-After. Rate-limit windows are
-// routinely longer than our own backoff cap, and clamping to it just spends
-// attempts re-hitting the same closed window; the sleep is cancellable, so a
-// longer honest wait costs nothing the user can't interrupt.
-const maxRetryAfter = 60 * time.Second
-
 // errorBodyReadTimeout bounds how long draining a non-OK response body may
 // block. Proxies and gateways under load (502/524 storms) can send headers and
 // then stall the body on a half-open connection; http.Client has no Timeout
 // and ResponseHeaderTimeout no longer applies once headers arrive, so without
-// this deadline the retry loop blocks in io.ReadAll indefinitely with no
+// this deadline error reporting blocks in io.ReadAll indefinitely with no
 // user-visible progress — the turn looks frozen until the process is killed
 // (#6607). A var, not a const, so tests can shrink it.
 var errorBodyReadTimeout = 10 * time.Second
 
-// maxAuthRetries bounds how many times a 401/403 is retried for a key that has
-// authenticated before: a transient server-side rejection (quota/gateway/rate)
-// usually clears in a couple of attempts, whereas a key that never worked is a
-// real config error and fails fast.
-const maxAuthRetries = 2
-
-// SendOptions carries the per-request context SendWithRetry needs to label
-// errors and decide whether a 401 is worth retrying.
+// SendOptions carries the per-request identity used to label failures.
 type SendOptions struct {
 	Provider            string // stable provider instance id
 	ProviderDisplayName string // user-editable display label
@@ -51,11 +31,10 @@ type SendOptions struct {
 	KeyEnv              string // api_key_env the key is read from, when known
 	KeySource           string // human-readable source of KeyEnv, when known
 	KeyPresent          bool   // a non-empty key is being sent — separates "rejected" from "missing"
-	RetryAuth           bool   // the key has authenticated before — retry transient 401s instead of failing fast
+	RetryAuth           bool   // retained for compatibility; authentication failures are terminal
 }
 
-// RetryInfo describes a backoff about to happen: Attempt is the 1-based retry
-// number (of Max) and Delay is how long SendWithRetry will wait before it.
+// RetryInfo is retained for callers of the retired transport retry callback.
 type RetryInfo struct {
 	Attempt int
 	Max     int
@@ -73,8 +52,8 @@ type requestAttemptCounter struct {
 	count atomic.Int64
 }
 
-// WithRetryNotify attaches a callback that SendWithRetry invokes before each
-// backoff sleep, so the agent can surface a transient "retrying (n/m)" status.
+// WithRetryNotify retains compatibility with older callers. HTTP requests no
+// longer retry automatically, so the callback is never invoked.
 func WithRetryNotify(ctx context.Context, fn RetryNotify) context.Context {
 	if fn == nil {
 		return ctx
@@ -82,17 +61,11 @@ func WithRetryNotify(ctx context.Context, fn RetryNotify) context.Context {
 	return context.WithValue(ctx, retryNotifyKey{}, fn)
 }
 
-func retryNotifyFromContext(ctx context.Context) RetryNotify {
-	fn, _ := ctx.Value(retryNotifyKey{}).(RetryNotify)
-	return fn
-}
-
 // WithRequestAttemptCounter returns a context that counts every HTTP request
 // SendWithRetry starts. An existing counter is reused so a caller can observe
 // attempts even when the provider returns before producing a Usage chunk.
-// Provider implementations use one counter for a logical stream (including
-// header retries and safe reconnects), then attach the final count to the
-// stream's Usage record.
+// Provider implementations attach the count to usage, including explicit
+// protocol/context repair requests made within the same logical model round.
 func WithRequestAttemptCounter(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -203,21 +176,9 @@ func RetryableStatus(s int) bool {
 	return s == http.StatusRequestTimeout || s == http.StatusTooManyRequests || (s >= 500 && s <= 599)
 }
 
-func transientErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	return true
-}
-
-// IsConnReset reports whether err is a connection-level drop (peer reset,
-// truncated body, closed socket) as opposed to a protocol or caller error. A
-// stream cut this way mid-body can be replayed from scratch, unlike a decode or
-// 4xx error. The common trigger is a local proxy (v2rayN/sing-box) idle-closing
-// the long-lived SSE connection during a reasoner's first-token gap.
+// IsConnReset distinguishes connection failures (peer reset, truncated body,
+// closed socket) from protocol or caller errors for failure reporting. A common
+// trigger is a proxy idle-closing SSE during a reasoner's first-token gap.
 func IsConnReset(err error) bool {
 	if err == nil {
 		return false
@@ -230,19 +191,16 @@ func IsConnReset(err error) bool {
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
 		return true
 	}
-	var netErr net.Error
-	return errors.As(err, &netErr)
-}
-
-func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
-	if retryAfter > 0 {
-		if retryAfter > maxRetryAfter {
-			return maxRetryAfter
-		}
-		return retryAfter
+	// net.Error alone does not prove a network failure: url.Error wraps every
+	// HTTP client error, and filesystem errors/syscall.Errno can implement it.
+	// Require a socket/DNS cause or an actual timeout to label a network failure.
+	var op *net.OpError
+	var dns *net.DNSError
+	if errors.As(err, &op) || errors.As(err, &dns) {
+		return true
 	}
-	d := min(time.Duration(1<<(attempt-1))*500*time.Millisecond, maxBackoff)
-	return d + time.Duration(rand.Intn(250))*time.Millisecond
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func parseRetryAfter(resp *http.Response) time.Duration {
@@ -282,103 +240,52 @@ func readErrorBody(resp *http.Response) []byte {
 	return msg
 }
 
-// SendWithRetry POSTs a streaming request built by newReq and returns the OK
-// response. It retries the connection+header phase up to MaxRetries times on
-// transient network errors and retryable statuses with capped exponential
-// backoff + jitter, honoring Retry-After. A 401/403 becomes *AuthError: it
-// fails fast for a key that has never authenticated (opts.RetryAuth false), but
-// for a previously-good key it backs off and retries up to maxAuthRetries —
-// MiMo and similar gateways return a transient 401 under load. Other non-OK
-// statuses become *APIError. A RetryNotify in ctx fires before each sleep.
-// Retries cover only the header phase — once the body streams, mid-stream
-// failures are not retried (the model has already emitted tokens).
+// SendWithRetry retains its historical name but sends exactly one HTTP request.
+// Transport, authentication, and upstream failures return to the caller without
+// backoff or automatic resubmission; the user decides whether to try again.
 func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
-	notify := retryNotifyFromContext(ctx)
 	identity := RequestIdentity{Provider: opts.Provider, DisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol}
-	var lastErr error
-	var retryAfter time.Duration
-	authRetries := 0
-
-	limit := MaxRetries
-	if ManagedRecovery(ctx) {
-		limit = 0
+	requestCtx, observation := observeRequest(ctx)
+	req, err := newReq(requestCtx)
+	if err != nil {
+		observation.finish(err, "build_error")
+		return nil, &RequestFailure{Identity: identity, Operation: "build request", Err: err}
 	}
-	for attempt := 0; attempt <= limit; attempt++ {
-		if attempt > 0 {
-			delay := backoffDelay(attempt, retryAfter)
-			if notify != nil {
-				notify(RetryInfo{Attempt: attempt, Max: MaxRetries, Delay: delay, Err: lastErr})
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-		retryAfter = 0
-
-		requestCtx, observation := observeRequest(ctx)
-		req, err := newReq(requestCtx)
-		if err != nil {
-			observation.finish(err, "build_error")
-			return nil, &RequestFailure{Identity: identity, Operation: "build request", Err: err}
-		}
-		recordRequestAttempt(ctx)
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			observation.finish(err, "request_error")
-			if !transientErr(err) {
-				return nil, &RequestFailure{Identity: identity, Operation: "request failed", Err: err}
-			}
-			lastErr = &RequestFailure{Identity: identity, Operation: "request failed", Err: err}
-			continue
-		}
-		observation.response(resp)
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		msg := readErrorBody(resp)
-		retryAfter = parseRetryAfter(resp)
-		if quota := QuotaErrorFromResponseWithIdentity(opts.Provider, opts.ProviderDisplayName, opts.Protocol, resp.StatusCode, string(msg)); quota != nil {
-			return nil, quota
-		}
-
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			authErr := &AuthError{Provider: opts.Provider, ProviderDisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol, KeyEnv: opts.KeyEnv, KeySource: opts.KeySource, Status: resp.StatusCode, HasKey: opts.KeyPresent, Body: strings.TrimSpace(string(msg))}
-			if !ManagedRecovery(ctx) && opts.RetryAuth && authRetries < maxAuthRetries {
-				authRetries++
-				lastErr = authErr
-				continue
-			}
-			return nil, authErr
-		}
-		apiErr := &APIError{
-			RetryAfter:          retryAfter,
-			ShouldRetry:         resp.Header.Get("x-should-retry"),
-			Provider:            opts.Provider,
-			ProviderDisplayName: opts.ProviderDisplayName,
-			Protocol:            opts.Protocol,
-			Status:              resp.StatusCode,
-			Body:                strings.TrimSpace(string(msg)),
-			TraceID:             responseTraceID(resp.Header),
-			RequestPath:         responseRequestPath(resp),
-		}
-		if !RetryableStatus(resp.StatusCode) {
-			if limitErr := ParseOutputLimitError(apiErr); limitErr != nil {
-				return nil, limitErr
-			}
-			if limitErr := ParseContextLimitError(apiErr); limitErr != nil {
-				return nil, limitErr
-			}
-			if replayErr := ParseReasoningReplayError(apiErr); replayErr != nil {
-				return nil, replayErr
-			}
-			return nil, apiErr
-		}
-		lastErr = apiErr
+	recordRequestAttempt(ctx)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		observation.finish(err, "request_error")
+		return nil, &RequestFailure{Identity: identity, Operation: "request failed", Err: err}
 	}
-	return nil, lastErr
+	observation.response(resp)
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	msg := readErrorBody(resp)
+	if quota := QuotaErrorFromResponseWithIdentity(opts.Provider, opts.ProviderDisplayName, opts.Protocol, resp.StatusCode, string(msg)); quota != nil {
+		return nil, quota
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, &AuthError{Provider: opts.Provider, ProviderDisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol, KeyEnv: opts.KeyEnv, KeySource: opts.KeySource, Status: resp.StatusCode, HasKey: opts.KeyPresent, Body: strings.TrimSpace(string(msg))}
+	}
+	apiErr := &APIError{
+		RetryAfter: parseRetryAfter(resp), ShouldRetry: resp.Header.Get("x-should-retry"),
+		Provider: opts.Provider, ProviderDisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol,
+		Status: resp.StatusCode, Body: strings.TrimSpace(string(msg)),
+		TraceID: responseTraceID(resp.Header), RequestPath: responseRequestPath(resp),
+	}
+	if !RetryableStatus(resp.StatusCode) {
+		if limitErr := ParseOutputLimitError(apiErr); limitErr != nil {
+			return nil, limitErr
+		}
+		if limitErr := ParseContextLimitError(apiErr); limitErr != nil {
+			return nil, limitErr
+		}
+		if replayErr := ParseReasoningReplayError(apiErr); replayErr != nil {
+			return nil, replayErr
+		}
+	}
+	return nil, apiErr
 }
 
 func responseRequestPath(resp *http.Response) string {

@@ -15,6 +15,7 @@ export interface RemoteProjectBindings {
   CloseRemoteTab(tabId: string): Promise<void>;
   SubmitRemoteTab(tabId: string, text: string): Promise<void>;
 	SubmitRemoteTabWithSubmission?(tabId: string, text: string, submissionId: string): Promise<void>;
+	SubmitRemoteTabWithModelApplication?(tabId: string, text: string, submissionId: string, choice: import("./modelApplication").ModelApplicationChoice): Promise<void>;
   ClearRemoteTabSession(tabId: string): Promise<void>;
   CancelRemoteTab(tabId: string): Promise<void>;
   ReclaimRemoteTabSession(tabId: string): Promise<void>;

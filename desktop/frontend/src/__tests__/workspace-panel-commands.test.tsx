@@ -34,6 +34,7 @@ function Probe({ workspace, visible, sessionId }: { workspace: string; visible: 
     activeTab: { id: "fixture", scope: workspace === globalRoot ? "global" : "project", workspaceRoot: workspace },
     closeTransientOverlays: closeOverlays, clearImDetail: () => {}, prepareBlankWorkspace: commands.prepareBlankWorkspace,
     enterConversation: () => {},
+    beginNavigationSurface: () => {}, settleNavigationSurface: () => {},
     noteNavigationIntent:()=>++intent, isNavigationIntentCurrent:(seq:number)=>seq===intent, markProjectChanged:()=>{}, showToast:(error:string)=>{throw Error(error);},
     navigation: { enqueueNavigationWithIntent: async request => { navigationRequest = request; } },
   } as SessionNavigationCommandsInput);

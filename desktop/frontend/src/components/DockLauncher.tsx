@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 // DockLauncher is the floating card over the transcript's top-right corner. It
 // lists the dock's entry points (overview / files / changed) and the active
 // git branch; clicking an entry expands the dock to that tab. Its own toggle
@@ -125,7 +126,7 @@ export function DockLauncher({ tabId, scopeKey, workspaceRoot, visible, onSelect
               <div className="dock-launcher__branch-section">{t("rightDock.branchSection")}</div>
               <div className="dock-launcher__branch-list">
                 {branch.branchesLoading ? <div className="dock-launcher__branch-menu-note">{t("rightDock.branchMenuLoading")}</div> : null}
-                {!branch.branchesLoading && branch.branchesErr ? <div className="dock-launcher__branch-menu-note dock-launcher__branch-menu-note--err">{branch.branchesErr}</div> : null}
+                {!branch.branchesLoading && branch.branchesErr ? <div className="dock-launcher__branch-menu-note dock-launcher__branch-menu-note--err"><ErrorMessage error={branch.branchesErr} /></div> : null}
                 {!branch.branchesLoading && !branch.branchesErr && branch.filteredBranches.length === 0 ? (
                   <div className="dock-launcher__branch-menu-note">{t("rightDock.branchNoMatch")}</div>
                 ) : null}
@@ -149,7 +150,7 @@ export function DockLauncher({ tabId, scopeKey, workspaceRoot, visible, onSelect
                   </button>
                 ))}
               </div>
-              {branch.branchSwitchErr ? <div className="dock-launcher__branch-menu-note dock-launcher__branch-menu-note--err">{branch.branchSwitchErr}</div> : null}
+              {branch.branchSwitchErr ? <div className="dock-launcher__branch-menu-note dock-launcher__branch-menu-note--err"><ErrorMessage error={branch.branchSwitchErr} /></div> : null}
               <div className="dock-launcher__branch-create">
                 <button
                   type="button"

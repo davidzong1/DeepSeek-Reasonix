@@ -252,6 +252,7 @@ func (s *Server) buildTaggedMode(ctx context.Context, ref string, inheritTemp, n
 		opts.WorkspaceRoot = cur.WorkspaceRoot()
 		if inheritTemp {
 			opts.SessionTemp = cur.SessionTemp()
+			opts.PersistentShell = cur.PersistentShell()
 			// Model/effort switches rebuild the Agent, not the logical session:
 			// without the bound runtime the rebuilt controller's first submit
 			// allocates a new ID while the desktop fences the old one (HTTP 409).
@@ -263,18 +264,7 @@ func (s *Server) buildTaggedMode(ctx context.Context, ref string, inheritTemp, n
 		}
 	}
 
-	var (
-		ctrl *control.Controller
-		err  error
-	)
-	switch {
-	case s.buildControllerWithOptions != nil:
-		ctrl, err = s.buildControllerWithOptions(ctx, ref, opts)
-	case s.buildController != nil:
-		ctrl, err = s.buildController(ctx, ref)
-	default:
-		ctrl, err = boot.Build(ctx, opts)
-	}
+	ctrl, err := s.buildModelCandidate(ctx, ref, opts, inheritTemp)
 	if err != nil {
 		return nil, nil, err
 	}

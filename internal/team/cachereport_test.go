@@ -16,6 +16,7 @@ func reportSample(member string, contextPrompt int, hit, miss int) MemberCacheRe
 		ObservedAt: time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
 		TeamID:     "alpha", MemberID: member,
 		ModelRef:            "deepseek/deepseek-v4-flash",
+		SessionID:           "session-1",
 		PromptTokens:        hit + miss,
 		ContextPromptTokens: contextPrompt,
 		CacheHitTokens:      hit, CacheMissTokens: miss,
@@ -367,6 +368,7 @@ func TestCacheReportCoverageDescribesTheScopedPopulation(t *testing.T) {
 	full.UsageSource, full.RouteBucket = "executor", "anthropic/aaaa"
 	bare := reportSample("m2", 1_000, 900, 100)
 	bare.DiagnosticsAvailable = false
+	bare.SessionID = ""
 	outside := reportSample("m3", 1_000, 900, 100)
 	outside.ObservedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	unowned := reportSample("m4", 1_000, 900, 100)
@@ -390,6 +392,11 @@ func TestCacheReportCoverageDescribesTheScopedPopulation(t *testing.T) {
 	}
 	if c.ModelRefPresent != 2 {
 		t.Fatalf("model coverage = %+v, want both scoped samples located", c)
+	}
+	// A sample published outside a turn names no session. It is disclosed as an
+	// absence so a reader never groups it into a session of its own.
+	if c.SessionPresent != 1 || c.SessionAbsent != 1 {
+		t.Fatalf("session coverage = %+v, want one named and one absent", c)
 	}
 	// The session identity is what decides a sample's cold status, so its absence
 	// is disclosed here rather than silently deciding the sample was warm.

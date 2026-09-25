@@ -4,15 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net"
 	"time"
 )
 
 type managedRecoveryKey struct{}
 
-// WithManagedRecovery gives the caller sole ownership of retries. It does not
-// change wire bytes and is intentionally opt-in for standalone provider users.
+// WithManagedRecovery gives the caller sole ownership of protocol/context
+// repairs. It does not enable transport retries or change request bytes.
 func WithManagedRecovery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, managedRecoveryKey{}, true)
 }
@@ -85,8 +83,7 @@ func ClassifyRecovery(err error) RecoveryFailure {
 		f.Phase, f.Retryable = "empty", true
 		return f
 	}
-	var ne net.Error
-	if errors.As(err, &ne) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || IsConnReset(err) {
+	if IsConnReset(err) {
 		f.Phase, f.Retryable = "connect", true
 	}
 	return f

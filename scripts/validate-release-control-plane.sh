@@ -24,6 +24,7 @@ required=(
 	scripts/release-publication-ledger.mjs
 	scripts/check-release-public-access.sh
 	scripts/fetch-stable-release-manifest.sh
+	scripts/release-manifest-fetch/main.go
 	scripts/resolve-release-candidate.mjs
 	scripts/sign-certum.ps1
 	scripts/test-windows-installer-startup.ps1

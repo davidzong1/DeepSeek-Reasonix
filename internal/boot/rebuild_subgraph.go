@@ -300,7 +300,7 @@ func registerControllerDrainCancel(owner *extension.RuntimeOwner, gen uint64, ct
 		owner = extension.RuntimeOwnerOrDefault(nil)
 	}
 	owner.Gate.RegisterDrainCancel(gen, func() {
-		if ctrl.RuntimeGeneration() == gen || ctrl.RuntimeGeneration() == 0 {
+		if ctrl.Running() && (ctrl.RuntimeGeneration() == gen || ctrl.RuntimeGeneration() == 0) {
 			ctrl.Cancel()
 		}
 	})

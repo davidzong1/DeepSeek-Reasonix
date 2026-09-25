@@ -710,6 +710,9 @@ func (a *App) openSessionWithNavigation(ref session.SessionRef, navigationSequen
 	if err != nil {
 		return HistoryPage{}, err
 	}
+	if opened, err := a.openManualCreationSurface(ref, navigationSequence); opened || err != nil {
+		return HistoryPage{Messages: []HistoryMessage{}}, err
+	}
 	tab, ctrl, created, err := a.surfaceForCanonicalSession(ref, workspace)
 	if err != nil {
 		return HistoryPage{}, err

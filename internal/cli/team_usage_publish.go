@@ -432,17 +432,21 @@ func memberCacheRequest(e event.Event, key team.OwnerKey, route string, obs memb
 		providerName, _, _ = strings.Cut(strings.TrimSpace(route), "/")
 	}
 	rec := team.MemberCacheRequest{
-		RequestID:              cacheRequestID(e, key, obs.seq),
-		RequestIDSource:        cacheRequestIDSource(e),
-		ObservedAt:             now.UTC().Format(time.RFC3339Nano),
-		TeamID:                 key.TeamID,
-		MemberID:               key.MemberID,
-		Provider:               providerName,
-		ModelRef:               modelRef,
-		RouteBucket:            strings.TrimSpace(route),
-		TurnID:                 e.TurnID,
-		SessionSequence:        e.Sequence,
-		SessionRequestSeq:      obs.seq,
+		RequestID:         cacheRequestID(e, key, obs.seq),
+		RequestIDSource:   cacheRequestIDSource(e),
+		ObservedAt:        now.UTC().Format(time.RFC3339Nano),
+		TeamID:            key.TeamID,
+		MemberID:          key.MemberID,
+		Provider:          providerName,
+		ModelRef:          modelRef,
+		RouteBucket:       strings.TrimSpace(route),
+		TurnID:            e.TurnID,
+		SessionID:         e.SessionID,
+		SessionSequence:   e.Sequence,
+		SessionRequestSeq: obs.seq,
+		// The writer's own session state, distinct from SessionID: that one is
+		// the event's display-routing identity, these are what the writer
+		// observed.
 		SessionIDHash:          obs.sessionIDHash,
 		SessionOrdinal:         obs.sessionOrdinal,
 		SessionFirstRequestSeq: obs.sessionFirstSeq,

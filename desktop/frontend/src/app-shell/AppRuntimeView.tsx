@@ -306,11 +306,11 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
             shell,
             banners: session.bannerCommands,
             onboarding: navigation.onboardingCommands,
-          })} historical={core.remoteSurfaceActive ? undefined : { tab: activeTab, navigate: session.desktopNavigation.enqueueNavigation,
+          })} startupError={navigationCommands.manualCreation && navigationCommands.manualCreation.operation?.phase !== "ready" ? undefined : state.meta?.startupErr}
+          historical={core.remoteSurfaceActive ? undefined : { tab: activeTab, navigate: session.desktopNavigation.enqueueNavigation,
             captureNavigation: () => { const intent = runtime.navigation.currentNavigationIntent(); return () => runtime.navigation.isNavigationIntentCurrent(intent); },
           }} />
 
-          <Suspense fallback={null}><ManualSessionRecovery /></Suspense>
           <ChatPaneRegion
             // Local navigation is now history-first: keep the transcript
             // mounted while the controller is rebuilt in the background.  The
@@ -374,6 +374,16 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
           />
           <DecisionFooterRegion
             hidden={Boolean(sidebarImDetailConnection)}
+            creationNotice={!core.remoteSurfaceActive && !sidebarImDetailConnection ? <Suspense fallback={null}>
+              <ManualSessionRecovery
+                key={`${runtime.navigation.currentNavigationIntent()}:${activeTab?.session?.sessionId ?? ""}`}
+                sessionId={core.surface.surface?.phase === "source-retained" ? undefined : activeTab?.session?.sessionId}
+                attempt={navigationCommands.manualCreation}
+                onRetry={navigationCommands.retryCreation}
+                onNew={navigationCommands.handleNewTab}
+                onChooseProject={navigation.projectTopicCommands.onAddProject}
+              />
+            </Suspense> : null}
             className={["footer", terminalSurfaceOpen ? "footer--compact" : "", visibleDecisionSurface ? "footer--decision" : "", presentationTransitioning ? "footer--navigation-hidden" : ""].filter(Boolean).join(" ")}
             footerRef={footerRef}
             style={core.surface.surface?.phase === "source-retained" && footerHeight > 0 ? { height: footerHeight, minHeight: footerHeight, boxSizing: "border-box" } : undefined}
@@ -385,6 +395,8 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
               view: {
                 hidden: composerSurfaceHidden,
                 inert: runtimeTransitioning,
+                targetInputReady: Boolean(activeTab?.session) && core.surface.surface?.phase === "target-masked"
+                  && !state.backendActivationPending,
                 hero: session.transcript.emptyHero,
                 headline: t("welcome.creation.title"),
                 remote: core.remoteSurfaceActive,

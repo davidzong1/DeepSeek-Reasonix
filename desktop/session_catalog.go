@@ -65,12 +65,13 @@ type SessionCatalogStatus struct {
 }
 
 type ProjectTreeSnapshot struct {
-	Revision     uint64               `json:"revision"`
-	Projects     []ProjectNode        `json:"projects"`
-	Catalog      SessionCatalogStatus `json:"catalog"`
-	Indexed      int64                `json:"indexed"`
-	Total        int64                `json:"total"`
-	IndexingDone bool                 `json:"indexingDone"`
+	Revision            uint64               `json:"revision"`
+	WorkspaceGeneration *uint64              `json:"workspaceGeneration,omitempty"`
+	Projects            []ProjectNode        `json:"projects"`
+	Catalog             SessionCatalogStatus `json:"catalog"`
+	Indexed             int64                `json:"indexed"`
+	Total               int64                `json:"total"`
+	IndexingDone        bool                 `json:"indexingDone"`
 }
 
 type ProjectTopicPageRequest struct {
@@ -582,7 +583,13 @@ func (a *App) requestSessionCatalogMetadataSync() {
 	}
 }
 
-func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
+func (a *App) GetProjectTreeSnapshot() (ProjectTreeSnapshot, error) {
+	// Membership/visibility and its generation come from one verified registry
+	// snapshot. Never silently replace it with legacy membership on read failure.
+	state, versions, err := a.workspaceRegistry().LoadProjectionWithVersions(a.bootContext())
+	if err != nil {
+		return ProjectTreeSnapshot{Projects: []ProjectNode{}}, err
+	}
 	f := loadProjectsFile()
 	deleted := make(map[string]bool, len(f.DeletedTopics))
 	for _, topicID := range f.DeletedTopics {
@@ -617,18 +624,14 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 	if remoteNodes, err := a.remoteProjectNodes(); err == nil {
 		projects = append(projects, remoteNodes...)
 	}
-	registryGeneration := uint64(0)
-	if state, versions, err := a.workspaceRegistry().LoadProjectionWithVersions(a.bootContext()); err == nil {
-		registryGeneration = state.Generation
-		projects = a.mergeCanonicalWorkspaceShellsFromProjection(projects, state, versions)
-	}
+	projects = a.mergeCanonicalWorkspaceShellsFromProjection(projects, state, versions)
 	projects = applyPinnedProjectOrder(applyProjectTreeOrder(projects, f.SidebarOrder), f.PinnedProjects)
 	status := a.currentSessionCatalogStatus()
 	return ProjectTreeSnapshot{
-		Revision: status.Revision + registryGeneration, Projects: projects, Catalog: status,
+		Revision: status.Revision + state.Generation, WorkspaceGeneration: &state.Generation, Projects: projects, Catalog: status,
 		Indexed: status.Indexed, Total: status.Total,
 		IndexingDone: a.catalogIndexingDone(status),
-	}
+	}, nil
 }
 
 // pinnedTopicShells keeps pinned conversations available in the metadata-only

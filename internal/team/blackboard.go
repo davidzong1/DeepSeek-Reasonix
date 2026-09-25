@@ -87,6 +87,8 @@ type ConclusionUpdate struct {
 }
 
 // Conclusion is one topic's current revision (route §1.3 board_conclusions).
+// MemberID is the author of that revision, carried from the event the row
+// points at so a reader can attribute a conclusion without a second lookup.
 type Conclusion struct {
 	BoardID  string
 	TaskID   TaskID
@@ -95,6 +97,7 @@ type Conclusion struct {
 	EventSeq int64
 	Digest   string
 	Summary  string
+	MemberID string
 }
 
 // BoardEvent is one immutable fact on a board (route §1.1). The store

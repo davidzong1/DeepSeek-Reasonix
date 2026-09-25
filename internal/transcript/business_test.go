@@ -120,6 +120,32 @@ func TestToolResultEventThenCanonicalRecordKeepsOneStableRow(t *testing.T) {
 	}
 }
 
+func TestUnappliedSteerNoticeAndCanonicalRecordShareOneRow(t *testing.T) {
+	for _, eventFirst := range []bool{false, true} {
+		p, err := NewProjection(testIdentity, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const recordID = "m:queued:notice:0"
+		warning := event.Event{Kind: event.Notice, Code: event.NoticeCodeUnappliedSteer,
+			MessageID: "queued", Level: event.LevelWarn, Text: "Guidance was not applied:\nUse plan B"}
+		formal := []Message{{RecordID: recordID, MessageID: "queued", Role: "notice", Code: event.NoticeCodeUnappliedSteer,
+			Level: "warn", Content: warning.Text}}
+		if eventFirst {
+			businessFrame(t, p, 0, warning)
+			p.AcceptBusiness(formal, 1, "turn", false)
+		} else {
+			p.AcceptBusiness(formal, 1, "turn", false)
+			businessFrame(t, p, 1, warning)
+		}
+		businessFrame(t, p, 1, warning)
+		cut := snapshot(t, p)
+		if len(cut.Records) != 1 || cut.Records[0].ID != recordID || cut.Records[0].Message.MessageID != "queued" {
+			t.Fatalf("eventFirst=%v duplicated unapplied steer: %+v", eventFirst, cut.Records)
+		}
+	}
+}
+
 func TestBusinessRowsWithoutCanonicalIdentityReceiveDistinctViewIdentity(t *testing.T) {
 	p, err := NewProjection(testIdentity, nil, 0)
 	if err != nil {

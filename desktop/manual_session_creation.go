@@ -34,6 +34,7 @@ type ManualSessionCreationView struct {
 	Error         string                  `json:"error,omitempty"`
 	Settings      SessionDraftSettings    `json:"settings"`
 	Progress      *ManualCreationProgress `json:"progress,omitempty"`
+	SurfaceReady  bool                    `json:"surfaceReady,omitempty"`
 }
 
 func (a *App) sessionUIStore() *sessionui.Store {
@@ -55,6 +56,18 @@ func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (resu
 	if len(id) < 8 || len(id) > 128 {
 		return ManualSessionCreationView{}, errors.New("invalid creation operation identity")
 	}
+	store := a.sessionUIStore()
+	existing, err := store.Get(a.bootContext(), "creation", id)
+	if err != nil {
+		return ManualSessionCreationView{}, err
+	}
+	if existing.Revision != "0" {
+		view, err := decodeManualCreation(existing)
+		if err != nil {
+			return view, err
+		}
+		return a.replayManualCreation(req, view)
+	}
 	workspaceID := req.WorkspaceID
 	if workspaceID == "" {
 		var err error
@@ -68,26 +81,15 @@ func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (resu
 		return ManualSessionCreationView{}, err
 	}
 	w, ok := state.Workspaces[workspaceID]
+	if !ok && req.WorkspaceRoot != "" {
+		w, err = workspacestate.ResolveCreationWorkspace(state, workspaceID, req.WorkspaceRoot)
+		if err != nil {
+			return ManualSessionCreationView{}, manualCreationTargetError(err)
+		}
+		workspaceID, ok = w.ID, true
+	}
 	if !ok {
-		return ManualSessionCreationView{}, workspacestate.ErrWorkspaceNotFound
-	}
-	store := a.sessionUIStore()
-	existing, err := store.Get(a.bootContext(), "creation", id)
-	if err != nil {
-		return ManualSessionCreationView{}, err
-	}
-	if existing.Revision != "0" {
-		var view ManualSessionCreationView
-		if err := json.Unmarshal(existing.Payload, &view); err != nil {
-			return view, err
-		}
-		if view.WorkspaceID != workspaceID {
-			return view, workspacestate.ErrMutationConflict
-		}
-		if view.Phase == "reserved" || view.Phase == "starting" {
-			a.creationManager().Ensure(id, "begin", "")
-		}
-		return view, nil
+		return ManualSessionCreationView{}, manualCreationTargetError(workspacestate.ErrWorkspaceNotFound)
 	}
 	scope, root := canonicalWorkspaceScope(w), w.Root
 	if scope == "global" {
@@ -104,14 +106,11 @@ func (a *App) BeginManualSessionCreation(req ManualSessionCreationRequest) (resu
 	}
 	record, err := store.Save(a.bootContext(), "creation", id, "0", payload)
 	if errors.Is(err, sessionui.ErrConflict) {
-		err = json.Unmarshal(record.Payload, &view)
-		if err == nil && view.WorkspaceID != workspaceID {
-			err = workspacestate.ErrMutationConflict
+		view, err = decodeManualCreation(record)
+		if err != nil {
+			return view, err
 		}
-		if err == nil && (view.Phase == "reserved" || view.Phase == "starting") {
-			a.creationManager().Ensure(id, "begin", "")
-		}
-		return view, err
+		return a.replayManualCreation(req, view)
 	}
 	if err != nil {
 		return view, err
@@ -182,19 +181,19 @@ func (a *App) reserveManualSessionTab(ctx context.Context, view ManualSessionCre
 		return nil, errors.New("application is shutting down")
 	}
 	report("preparing_storage")
-	state, err := a.workspaceRegistry().Load(ctx)
+	root := desktopWorkspaceRoot(view.Scope, view.WorkspaceRoot)
+	if view.Scope != "project" {
+		if _, err := ensureGlobalWorkspaceRoot(); err != nil {
+			return nil, err
+		}
+	}
+	w, err := a.workspaceRegistry().BeginCreateAtRoot(ctx, workspacestate.PendingCreate{OperationID: view.OperationID, WorkspaceID: view.WorkspaceID, SessionID: view.Ref.SessionID}, root)
 	if err != nil {
-		return nil, err
+		return nil, manualCreationTargetError(err)
 	}
-	if lifecycle := state.SessionStates[view.Ref.SessionID].Lifecycle; lifecycle == workspacestate.Archived || lifecycle == workspacestate.Deleted {
-		return nil, workspacestate.ErrMutationConflict
-	}
-	w, ok := state.Workspaces[view.WorkspaceID]
-	if !ok || !sameProjectRoot(w.Root, desktopWorkspaceRoot(view.Scope, view.WorkspaceRoot)) {
-		return nil, workspacestate.ErrMutationConflict
-	}
-	if err := a.workspaceRegistry().BeginCreate(ctx, workspacestate.PendingCreate{OperationID: view.OperationID, WorkspaceID: view.WorkspaceID, SessionID: view.Ref.SessionID}); err != nil {
-		return nil, err
+	view.WorkspaceID, view.Scope, view.WorkspaceRoot = w.ID, canonicalWorkspaceScope(w), w.Root
+	if view.Scope == "global" {
+		view.WorkspaceRoot = ""
 	}
 	service := a.desktopSessionService("")
 	if _, err := service.Query().Stat(ctx, view.Ref); errors.Is(err, session.ErrSessionNotFound) {
@@ -211,11 +210,19 @@ func (a *App) reserveManualSessionTab(ctx context.Context, view ManualSessionCre
 	} else if err != nil {
 		return nil, err
 	}
-	if err := a.validateDesktopWorkspaceMembership(ctx, view.WorkspaceID, view.Ref); err != nil {
+	info, err := service.Query().Stat(ctx, view.Ref)
+	if err != nil {
 		return nil, err
 	}
-	if err := a.workspaceRegistry().AttachSession(ctx, view.OperationID, view.WorkspaceID, view.Ref.SessionID, ""); err != nil {
-		return nil, err
+	same, err := sameDesktopPathStrict(info.CWD, root)
+	if err != nil {
+		return nil, manualCreationTargetError(workspacestate.ErrCreationWorkspaceUnavailable)
+	}
+	if !same || info.Origin == "" {
+		return nil, manualCreationTargetError(workspacestate.ErrCreationWorkspaceChanged)
+	}
+	if err := a.workspaceRegistry().AttachCreatedSessionAtRoot(ctx, view.OperationID, view.WorkspaceID, view.Ref.SessionID, root); err != nil {
+		return nil, manualCreationTargetError(err)
 	}
 	if err := a.workspaceRegistry().EnsureSessionTopic(ctx, view.Ref.SessionID, view.TopicID, ""); err != nil {
 		return nil, err
@@ -233,6 +240,7 @@ func (a *App) reserveManualSessionTab(ctx context.Context, view ManualSessionCre
 		PendingCreateOperationID: view.OperationID, model: settings.Model, qualityFloor: settings.QualityFloor,
 		mode:             tabModeFromAxes(tabModeHasPlan(settings.Mode), settings.ToolApprovalMode == control.ToolApprovalDangerFullAccess),
 		toolApprovalMode: settings.ToolApprovalMode, disabledMCP: cloneServerViewMap(settings.DisabledMCP), mcpOrder: append([]string(nil), settings.MCPOrder...)}
+	tab.SessionWorkspace.ID = view.WorkspaceID
 	if settings.Effort != "" {
 		effort := settings.Effort
 		tab.effort = &effort

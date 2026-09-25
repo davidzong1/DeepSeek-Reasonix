@@ -57,6 +57,7 @@ if (process.env.REASONIX_BROWSER_TRACE_RPC === "1") {
   };
 }
 const view = factory.create("native-browser-test");
+let releaseInitialObservation: (() => void) | undefined;
 let targetAttachments = 0;
 const originalSend = view.page.debugger.sendCommand.bind(view.page.debugger);
 view.page.debugger.sendCommand = async (method, params, sessionId) => {
@@ -69,12 +70,12 @@ try {
   await view.page.loadURL(`http://127.0.0.1:${address.port}`);
   const id = view.page.id;
   // Match the host's observation lease before reading a hidden macOS page.
-  const releaseInitialObservation = view.prepareObservation?.();
-  try {
-    const snapshot = await takeSnapshot(view.page, "test", 1, "", new DocumentRegistry());
-    assert.match(snapshot.tree, /Save/);
-    await view.page.mainFrame.executeJavaScript(`Promise.all(["http://127.0.0.1:${address.port}/child", "http://localhost:${address.port}/child"].map(url => new Promise(resolve => { const frame = document.createElement("iframe"); frame.onload = resolve; frame.src = url; document.body.append(frame); }))).then(() => true)`);
-  } finally { releaseInitialObservation?.(); }
+  // Keep the observation lease through input, as hostCalls does. iframe load
+  // completion is not a painted-frame boundary, especially for the OOPIF.
+  releaseInitialObservation = view.prepareObservation?.();
+  const snapshot = await takeSnapshot(view.page, "test", 1, "", new DocumentRegistry());
+  assert.match(snapshot.tree, /Save/);
+  await view.page.mainFrame.executeJavaScript(`Promise.all(["http://127.0.0.1:${address.port}/child", "http://localhost:${address.port}/child"].map(url => new Promise(resolve => { const frame = document.createElement("iframe"); frame.onload = resolve; frame.src = url; document.body.append(frame); }))).then(() => true)`);
   const frameLease = await view.prepareCapture!(new AbortController().signal);
   const frameDocuments = new DocumentRegistry();
   const frames = await takeSnapshot(view.page, "test", 1, "", frameDocuments);
@@ -105,6 +106,8 @@ try {
   assert.equal(uploadDispatches, 1);
   assert.equal(await clickedFrame.executeJavaScript("window.uploaded"), "fixture.txt");
   assert.equal(targetAttachments, 1, "snapshot, ref resolution, input and upload must share one OOPIF session");
+  releaseInitialObservation?.();
+  releaseInitialObservation = undefined;
   console.log("cross-origin file upload through bounded frame runtime: passed");
   await clickedFrame.executeJavaScript(`new Promise(resolve => { const frame = document.createElement('iframe'); frame.style.cssText = 'display:block;width:180px;height:70px;margin:8px'; frame.onload = resolve; frame.src = 'http://localhost:${address.port}/child'; document.body.append(frame); }).then(() => true)`);
   for (const frame of clickedFrame.framesInSubtree) await frame.executeJavaScript(`window.fixtureEvents = []; for (const type of ['mousedown', 'mouseup', 'click']) document.addEventListener(type, e => window.fixtureEvents.push({type, x:e.clientX, y:e.clientY, tag:e.target.tagName}));`);
@@ -278,6 +281,7 @@ try {
   }
   console.log(`native browser: ${cycles} lifecycle cycles released all pages`);
 } finally {
+  releaseInitialObservation?.();
   view.destroy(); win.destroy(); server.close();
   await rm(directory, { recursive: true, force: true });
   const deadline = Date.now() + 5000;

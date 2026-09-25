@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,6 +99,13 @@ func TestMissingProjectDoesNotResurrectDeletedTopic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := catalog.Close(closeCtx); err != nil {
+				t.Errorf("close catalog fixture: %v", err)
+			}
+		})
 		app.sessionCatalog.Store(catalog)
 		for _, id := range []string{"deleted", "retained"} {
 			if err := catalog.UpsertSession(t.Context(), sessioncatalog.SessionRecord{Path: filepath.Join(desktopSessionDir(root), id+".jsonl"), Directory: desktopSessionDir(root), Scope: "project", WorkspaceRoot: root, TopicID: id, TopicTitle: id, OrdinaryVisible: true, Health: sessioncatalog.HealthOK}); err != nil {
@@ -113,6 +121,14 @@ func TestMissingProjectDoesNotResurrectDeletedTopic(t *testing.T) {
 		}
 		app.ReleaseReadSnapshot(page.SnapshotID)
 		app.stopSessionCatalog(time.Second)
+		// stopSessionCatalog has a bounded shutdown window; join the catalog's
+		// actual close before TempDir cleanup removes its SQLite file on Windows.
+		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = catalog.Close(closeCtx)
+		cancel()
+		if err != nil {
+			t.Fatalf("close catalog fixture: %v", err)
+		}
 	}
 }
 

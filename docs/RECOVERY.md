@@ -17,6 +17,31 @@ reasonix crash report   # when available in your build
 - **doctor repair** applies safe, explicit repairs the user opts into.
 - Crash reports remain opt-in and never force a degraded product mode.
 
+## When a conversation cannot continue
+
+In `transcript gate ... at message N`, `N` is an index in the model request,
+not the user's message number. Keep the complete error for diagnosis.
+
+- Invalid tool arguments are recovered using recorded execution evidence.
+  Calls that cannot be safely reconstructed become historical records for the
+  model. Original arguments, results and chat history stay intact; recovery
+  never executes the tools again.
+- Missing or damaged local images from earlier turns are marked unavailable;
+  text and remaining usable images continue. The model is told to request a
+  replacement if needed. A failed image in the current turn must be reattached.
+- Invalid requests from optional extensions are skipped. Required extensions
+  and explicit blocking decisions still pause the operation with guidance.
+- If summarization fails and recent tool results exceed the window, the
+  request copy is abbreviated; the original stays in session history. If the
+  request still cannot fit, shorten the latest message or select a model with
+  a larger context window.
+- On save failures, keep the conversation open, export a backup if available,
+  and check disk space and write permissions. Model requests and tool execution
+  remain paused until the required save has been confirmed.
+
+These recovery paths do not require deleting chat history or editing session
+files. Derived recovery caches are rebuilt when needed.
+
 ## Install layout (v1.20+)
 
 Windows and Linux use a versioned install root:

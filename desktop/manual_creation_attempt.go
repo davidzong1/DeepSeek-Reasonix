@@ -55,7 +55,7 @@ func manualCreationRetryable(err error) bool {
 	return false
 }
 
-// attempt returns retry=true only before runtime execution. Result-save retries
+// Target availability can be retried with the same identity. Result-save retries
 // retain the lock and the computed result, never re-entering the runtime builder.
 func (m *manualCreationManager) attempt(t *manualCreationTask) (bool, error) {
 	r, err := m.store.Get(m.ctx, "creation", t.id)
@@ -70,7 +70,7 @@ func (m *manualCreationManager) attempt(t *manualCreationTask) (bool, error) {
 	m.mu.Lock()
 	t.sessionID, t.revision = v.Ref.SessionID, r.Revision
 	m.mu.Unlock()
-	if v.Phase == "ready" || (v.Phase == "failed" && !m.mayRetryFailure(t, r.Revision)) {
+	if v.Phase == "ready" || (v.Phase == "failed" && !legacyManualCreationConflict(v) && !m.mayRetryFailure(t, r.Revision)) {
 		return false, nil
 	}
 	lockRoot := filepath.Join(filepath.Dir(m.a.sessionUIStore().Path()), "manual-creation-locks")
@@ -95,7 +95,7 @@ func (m *manualCreationManager) attempt(t *manualCreationTask) (bool, error) {
 	if err != nil || fresh.Ref != v.Ref || fresh.WorkspaceID != v.WorkspaceID {
 		return false, errManualCreationIdentity
 	}
-	if fresh.Phase == "ready" || (fresh.Phase == "failed" && !m.mayRetryFailure(t, current.Revision)) {
+	if fresh.Phase == "ready" || (fresh.Phase == "failed" && !legacyManualCreationConflict(fresh) && !m.mayRetryFailure(t, current.Revision)) {
 		return false, nil
 	}
 	if err := m.ctx.Err(); err != nil {
@@ -114,6 +114,11 @@ func (m *manualCreationManager) attempt(t *manualCreationTask) (bool, error) {
 	// Shutdown interruption is recoverable on the next start, not a user failure.
 	if m.ctx.Err() != nil || m.a.shuttingDown.Load() {
 		return false, context.Canceled
+	}
+	var targetErr *SessionOperationError
+	if errors.As(err, &targetErr) && targetErr.Code == "workspace_unavailable" {
+		m.setStage(t, "waiting_workspace", "preparing_storage")
+		return true, nil
 	}
 	phase, message := "ready", ""
 	if err != nil {

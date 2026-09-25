@@ -9,10 +9,11 @@ let status = "waiting_lock";
 let retries = 0;
 let exports = 0;
 let release: (() => void) | undefined;
-const item = () => ({ operationId: "browser-creation", scope: "global", phase: "starting",
+const item = () => ({ operationId: "browser-creation", scope: "global", phase: "starting", ref: { hostId: "local", sessionId: "current" },
   progress: { status, stage: "building_runtime", stageStartedAt: Date.now(), elapsedMs: 0, slow: false } });
 installDesktopHostStub({
-  ListManualSessionCreations: async () => [item()],
+  ListManualSessionCreations: async () => [item(), { ...item(), operationId: "old", ref: { hostId: "local", sessionId: "other" }, workspaceRoot: "/private/old-project", phase: "failed" }],
+  GetManualSessionCreation: async () => item(),
   RetryManualSessionCreation: async () => {
     retries++;
     await new Promise<void>(resolve => { release = resolve; });
@@ -21,5 +22,5 @@ installDesktopHostStub({
   },
   ExportManualCreationDiagnostics: async () => { exports++; return "creation-diagnostics.json"; },
 });
-Object.assign(window, { creationFixture: { finish: () => release?.(), counts: () => ({ retries, exports }) } });
-createRoot(document.getElementById("root")!).render(<LocaleProvider><ManualSessionRecovery /></LocaleProvider>);
+Object.assign(window, { creationFixture: { finish: () => release?.(), setStatus: (next: string) => { status = next; }, counts: () => ({ retries, exports }) } });
+createRoot(document.getElementById("root")!).render(<LocaleProvider><ManualSessionRecovery sessionId="current" /></LocaleProvider>);

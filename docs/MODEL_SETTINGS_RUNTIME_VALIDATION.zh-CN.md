@@ -35,13 +35,37 @@
 ```sh
 go test -p 4 ./...
 go test -race ./internal/config ./internal/boot ./internal/control ./internal/bot ./internal/serve
-(cd desktop && go test -p 2 ./...)
+(cd desktop && node ../scripts/desktop-windows-go-tests.mjs --all)
 (cd desktop && go test -race . -run 'TestModelSettings|TestRemoteModel|TestCredentialProxy|TestDeferred')
 (cd desktop/frontend && pnpm typecheck && pnpm test:all && pnpm build)
 go run ./tools/repolint
 ```
 
 前端测试包含回执恢复、延迟保存草稿、远程行为和长历史性能。结果不明的写入先回读，不自动重做。候选保留机制保护构建过程，Serve 全局有序的所有权回执阻止旧状态撤销已发布路由。候选释放与路由回收原子完成；已接受的旧请求在完成时释放自己的引用。
+
+## 后台进程跨配置重建与发送恢复
+
+后台资源归属改造新增以下回归测试。本地实现验证与后文历史版本的发布验收分别记录。
+
+| 不变量 | 回归测试归属 |
+| --- | --- |
+| 网关跨多次切换保留进程身份、输出、停止能力和历史 | Desktop `TestModelSettingsGatewaySurvivesReplacementAndFailure`，真实子进程和本地 HTTP 模型 |
+| 依赖运行时的任务真正退出前持续阻塞；只取消选中的任务 | jobs scope 测试与 control `TestModelApplicationCancelOnlySelectedRuntimeTasks` |
+| 失败或丢弃候选保留旧进程和扩展执行代次 | boot `TestRebuildBackgroundCandidateFailurePreservesOwner`、`TestModelCandidateDiscardPreservesLiveExtensionManager` |
+| 候选初始化及旧 Controller 的延迟回调不影响新所有者 | control `TestModelReplacementFencesCandidateAndRetiredCallbacks` |
+| 旧配置发送逐提交检查全部路由、凭证和限制 | config continuation 测试与 Desktop model-application 测试 |
+| 远程过期候选不发布，完成回执丢失后可以核实恢复 | Serve `TestModelSettingsSourceFencesOvertakenBuildAndUncertainFinish` |
+| 重连后读取状态不能重新激活旧确认 | Desktop `TestRemoteModelConfirmationExpiresOnReconnectAndNewRuntime` |
+| 拒收保留正文与附件，应用设置不会自动重发 | 前端 submission 测试与 `node bench/model-application.mjs` |
+| 结构化拒收详情穿过真实 Electron context bridge | `desktop/electron/scripts/smoke.mjs`，使用 Go 服务和生产渲染器 |
+
+Desktop 完整测试使用校验测试清单的分区 runner：
+`cd desktop && node ../scripts/desktop-windows-go-tests.mjs --all`。
+同时执行定向 Go race、根模块 `go test ./...`、仓库 lint、宿主接口与命令清单生成一致性、前端类型检查和构建、浏览器与原生 Electron 验证。并发回归通过 channel 和发布边界控制交错，不依赖 sleep。
+
+本次具备 macOS 执行验证及 Windows 交叉编译检查；Windows 原生 PowerShell 进程树取消、文件句柄释放和 Linux 原生进程生命周期仍是发布验证缺口。后文历史 Windows 验收结果**不能直接用于本次生命周期改造**。本地验证不发布安装包。
+
+2026-09-23 本地验证已通过：根模块 `go test -p 2 ./...`、Desktop 全部 11 个经清单校验的分区、所有权与提交恢复的定向 race、两个 Go 模块的 lint（v2.12.2）、仓库 lint、接口和命令清单生成检查、前端生产构建／类型／恢复测试、浏览器恢复操作及原生 Electron RPC 冒烟。Windows jobs 和内置 Shell 测试二进制交叉编译成功。测试包总时限与功能失败分别诊断：根模块降低并发后保留默认总时限通过；Desktop 两个最大分区使用本地 30 分钟总预算，未修改单项断言或等待边界。
 
 ## Windows 原生发布门槛
 

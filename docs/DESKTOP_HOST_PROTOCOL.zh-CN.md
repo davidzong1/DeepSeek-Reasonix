@@ -13,6 +13,24 @@ React 渲染进程 ──preload 类型化 IPC──▶ Electron 主进程 ─�
                                           └────── host/* 反向请求 ────────────┘
 ```
 
+## 历史会话归档回执
+
+`ArchiveSessionTarget` 对历史来源直接暂存归档内容，不先发布活动会话。
+canonical 选择器仍指向已登记的会话；source 选择器明确指向保留的来源文件。
+经验证相同的转换副本沿用原目标的生命周期，发生内容变化的副本以独立身份完整归档。
+原目标的删除记录不会被复用或撤销。
+
+`SessionMutationResult.outcome` 为可选字段：`archived` 表示归档完成，
+`archived_copy` 表示独立副本已归档，`already_removed` 表示已为原来删除的
+会话补齐经过验证的残留来源登记。最后一种结果不会恢复会话内容。
+字段缺失或值未知时，客户端沿用普通提交结果的处理；只有 `committed: true`
+才应用身份别名及列表生命周期屏障。
+
+归档复用现有 `archive-import` 子操作和 `archive` 父操作日志。
+尚未发布的导入预留可在观察状态校验通过后转交归档；孤立子操作不会发布活动成员。
+`source_unavailable`、`source_ambiguous` 分别表示来源无法验证、迁移证据冲突，
+都会保留来源并返回不含私有路径的错误说明。此次 RPC 扩展不改变会话内容格式或模型请求。
+
 ## 传输
 
 - 帧格式：按行分隔的 JSON-RPC 2.0（`rpcwire` 严格模式）。一行一帧，UTF-8，不允许批量数组。
@@ -231,6 +249,10 @@ interface ReasonixDesktopHost {
   readonly contract: { protocolVersion: number; digest: string; commands: readonly string[] };
   readonly platform: { os: "darwin" | "windows" | "linux"; arch: string; versions: Record<string, string> };
   invoke(method: string, args: unknown[]): Promise<unknown>;
+  // 可选：跨 Electron contextBridge 保留结构化 RPC 错误。
+  invokeResult?(method: string, args: unknown[]): Promise<
+    { ok: true; value: unknown } | { ok: false; message: string; code?: number; data?: unknown }
+  >;
   on(name: string, cb: (...args: unknown[]) => void): () => void;
   native: {
     openExternal(url: string): Promise<void>;

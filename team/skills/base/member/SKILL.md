@@ -53,6 +53,13 @@ team task, reassign yourself, or act as the leader.
   it on demand with `team_knowledge_recall`: pass only a `query` — the read is
   team-scoped and returns at most 8 hits. Read first; guess only when the
   recall has no match.
+- When you find a fact that would change the next step of the main task, post it
+  with `member_post_conclusion`: one topic, one sentence. It is not a progress
+  report, not a place for file contents, and not a substitute for
+  `member_report_result`. Long text goes in `member_publish_deliverable`, with
+  its id quoted in the summary. Other members' new conclusions reach you as a
+  short delta before your next thinking step; nothing appears when there is no
+  update, so do not poll the board to look at it.
 
 ## Blockers And Communication
 

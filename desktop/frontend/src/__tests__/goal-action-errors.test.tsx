@@ -9,6 +9,7 @@ import { createRoot } from "react-dom/client";
 import { useGoalActionHandler } from "../lib/goalAction";
 import { useComposerGoalCommands } from "../app-runtime/useComposerGoalCommands";
 import { ToastProvider } from "../lib/toast";
+import { LocaleProvider } from "../lib/i18n";
 
 let passed = 0;
 let failed = 0;
@@ -70,7 +71,7 @@ const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("missing root");
 const root = createRoot(rootElement);
 await act(async () => {
-  root.render(<ToastProvider><Probe /></ToastProvider>);
+  root.render(<LocaleProvider><ToastProvider><Probe /></ToastProvider></LocaleProvider>);
 });
 
 for (const action of ["stop", "mode", "resync"]) {

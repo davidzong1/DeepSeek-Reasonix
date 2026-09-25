@@ -52,7 +52,7 @@ export function useRemoteComposerSend(
   collaborationMode: CollaborationMode,
   goal: string,
   session: RemoteSessionApi,
-  send: (displayText: string, submitText?: string) => Promise<void>,
+  send: (displayText: string, submitText?: string, choice?: import("./modelApplication").ModelApplicationChoice) => Promise<void>,
   applyGoal: (tabId: string, goal: string) => Promise<unknown>,
   requestClear: () => void,
   ownership: { target: SessionResource; operations: ReturnType<typeof useSessionOperations>; navigateRemote: RemoteNavigationCommand },
@@ -60,10 +60,11 @@ export function useRemoteComposerSend(
   const ports = { compact: session.compact, runManagementCommand: session.runManagementCommand,
     setModel: session.setModel, setEffort: session.setEffort,
     send, applyGoal, requestClear, newSession: ownership.navigateRemote };
-  return useCommittedCommand(async (displayText: string, submitText = displayText): Promise<void> => {
+  return useCommittedCommand(async (displayText: string, submitText = displayText, _tabId?: string, structured?: import("./invocationDisplay").StructuredInvocationSubmit): Promise<void> => {
     const trimmed = (submitText || displayText).trim();
     const outcome = await ownership.operations(ownership.target, "send", {
       tabId: activeTabId ?? "", remote: activeRemote, display: displayText, submit: submitText, commandText: trimmed,
+      choice: structured?.modelApplicationChoice,
       command: remoteRuntimeCommand(trimmed), activateGoal: collaborationMode === "goal" && !goal.trim() && Boolean(trimmed), ports,
     }, executeRemoteSend);
     if (outcome.status === "failed") throw outcome.error;

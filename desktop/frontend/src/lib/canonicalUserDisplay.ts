@@ -46,6 +46,25 @@ function legacyText(content: string): string {
   return text.trim();
 }
 
+export function canonicalSteerGuidance(content: string): string | undefined {
+  let framed = content;
+  for (let depth = 0; depth < 24; depth++) {
+    if (framed.startsWith(steerPrefix)) {
+      let text = framed.slice(steerPrefix.length);
+      if (text.startsWith("\n")) text = text.slice(1);
+      if (text.endsWith(`\n\n${deliveryMarker}`)) text = text.slice(0, -(`\n\n${deliveryMarker}`).length);
+      return text;
+    }
+    const trimmed = framed.replace(/^[ \t\r\n]+/, "");
+    const tag = ["response-language", "reasoning-language"].find(value => trimmed.startsWith(`<${value}>`) || trimmed.startsWith(`<${value} `));
+    if (!tag) return undefined;
+    const end = trimmed.indexOf(`</${tag}>`);
+    if (end < 0) return undefined;
+    framed = trimmed.slice(end + tag.length + 3).replace(/^[ \t\r\n]+/, "");
+  }
+  return undefined;
+}
+
 export function canonicalUserDisplay(raw: Record<string, unknown>, fallback: string): { role: string; content: string } {
   // An explicit origin wins over text heuristics. A user's quoted XML stays
   // visible, while host snapshots stay hidden even when they have RawContent.

@@ -50,6 +50,7 @@ const { createElement } = await import("react");
 const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { ToastProvider } = await import("../lib/toast");
+const { LocaleProvider } = await import("../lib/i18n");
 const { RichMarkdownLink } = await import("../components/githubLink");
 
 // Every rendered root is unmounted before the summary so the toast
@@ -63,7 +64,7 @@ async function renderLink(href: string, label?: string): Promise<{ anchor: HTMLA
   roots.push(root);
   const link = createElement(RichMarkdownLink, { href, children: label ?? href });
   await act(async () => {
-    root.render(createElement(ToastProvider, null, link));
+    root.render(createElement(LocaleProvider, null, createElement(ToastProvider, null, link)));
   });
   return { anchor: container.querySelector("a") as HTMLAnchorElement, container };
 }

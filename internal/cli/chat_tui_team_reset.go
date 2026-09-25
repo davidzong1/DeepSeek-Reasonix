@@ -38,10 +38,8 @@ type leaderResetState struct {
 	buf    string
 	errMsg string
 	// dirCount is the directory count the list stage shows, resolved once when
-	// that stage is armed. Counting it in the renderer made every frame list the
-	// member context directories; the overlay renders several times per frame
-	// (bottomRows), so the count is a property of the confirmation, not of the
-	// frame that happens to paint it.
+	// that stage is armed: counting it in the renderer listed the member context
+	// directories on every frame, and the overlay renders several times per frame.
 	dirCount int
 	entered  time.Time // stage entry; a stale stage cancels on the next key
 }

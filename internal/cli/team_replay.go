@@ -117,20 +117,16 @@ const (
 //
 // The replay bundle is rendered — then wrapped — as one document, so rendering
 // it on the Update goroutine freezes the frame for as long as a long-running
-// member's whole history takes; that is why switching across a team of members
-// felt stuck (decoupling plan §36). Let the bound be per frame instead: a
-// history that fits replayInlineMessages renders inline exactly as before, and
-// a longer one commits its newest window and hands back a render of the whole
-// bundle, done on a goroutine that also wraps it at the same content width.
-// installWrappedBlock adopts that wrap, so neither the markdown pass nor the
-// wrap ever runs on the Update goroutine. The window is real history, not a
-// placeholder, so a paint whose bundle never arrives still shows a transcript.
-//
-// The read is the remaining half (replayDeferred): bounding the paint still left
-// backend.History() on this goroutine, and for a follower that read is O(history)
-// off disk, so the frame still stalled — on every refresh, not just a bind. The
-// refresh path therefore reads off the loop; a bind reads inline, because it
-// cannot show a stale transcript and must not blank the window to wait.
+// member's whole history takes (decoupling plan §36). Let the bound be per frame
+// instead: a history that fits replayInlineMessages renders inline as before,
+// and a longer one commits its newest window and hands back a render of the
+// whole bundle, done on a goroutine that also wraps it at the same content
+// width. installWrappedBlock adopts that wrap, so neither the markdown pass nor
+// the wrap runs on the Update goroutine; the window is real history, so a paint
+// whose bundle never arrives still shows a transcript. The read is the remaining
+// half (replayDeferred): bounding the paint still left backend.History() on this
+// goroutine, and for a follower that read is O(history) off disk, so the frame
+// stalled on every refresh — the refresh path reads off the loop, a bind inline.
 func (m *chatTUI) commitBackendReplay(backend control.SessionAPI, mode replayMode) tea.Cmd {
 	label, raw := m.label, ""
 	if mode == replayDeferred {
@@ -186,10 +182,9 @@ func (m *chatTUI) handleReplayReadReady(msg replayReadReady) tea.Cmd {
 	}
 	history := msg.history
 	label, raw := m.label, load.raw
-	// The stream state is reset with the install, not only when the read was
-	// armed: a delta that arrived while the read was in flight is superseded by
-	// the durable history this paints, and leaving it pending would render it on
-	// top of the replayed transcript as a duplicate.
+	// The stream state is reset with the install: a delta that arrived while the
+	// read was in flight is superseded by the durable history this paints, and
+	// leaving it pending would render it on top of the replay as a duplicate.
 	m.pending.Reset()
 	m.reasoning.Reset()
 	m.clearTranscriptDisplay()

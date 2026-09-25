@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { SettingsSelect } from "./SettingsSelect";
 import { Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -127,7 +128,7 @@ export function RemoteHostsPage() {
             </button>
           </div>
         </div>
-        {pageError && <p className="remote-host-form__error" role="alert">{pageError}</p>}
+        {pageError && <p className="remote-host-form__error" role="alert"><ErrorMessage error={pageError} /></p>}
         {hosts.length === 0 ? (
           <p className="remote-hosts__empty">{t("remote.hosts.empty")}</p>
         ) : (
@@ -405,7 +406,7 @@ function RemoteHostForm(props: {
           <option value="local-proxy">{t("remote.host.credentialModeLocalProxy")}</option>
         </SettingsSelect>
       </label>
-      {err && <p className="remote-host-form__error" role="alert">{err}</p>}
+      {err && <p className="remote-host-form__error" role="alert"><ErrorMessage error={err} /></p>}
       <div className="remote-host-form__actions">
         <button className="btn" onClick={props.onCancel}>{t("remote.host.cancel")}</button>
         <button className="btn btn--primary" disabled={busy || !form.label.trim() || !form.host.trim() || (!form.useSSHConfig && form.port < 1) || form.port > 65535} onClick={() => void submit()}>
@@ -444,7 +445,7 @@ function RemoteSSHConfigImport(props: { onDone: () => void; onCancel: () => void
 
   return (
     <div className="remote-import">
-      {err && <p className="remote-host-form__error" role="alert">{err}</p>}
+      {err && <p className="remote-host-form__error" role="alert"><ErrorMessage error={err} /></p>}
       {candidates.length === 0 ? (
         <p className="remote-hosts__empty">{t("remote.hosts.importEmpty")}</p>
       ) : (

@@ -330,40 +330,7 @@ func (a *App) StartTurnForAttachmentTarget(token, submissionID string, req contr
 	if receipt, found, err := c.LookupSubmissionContext(a.attachmentOperationContext(target), req); found || err != nil {
 		return TurnStartView{TurnID: receipt.TurnID, SubmissionID: submissionID, Status: event.TurnQueued, Disposition: control.SubmitTurnStarted}, err
 	}
-	prepared, err := c.PrepareSubmission(a.attachmentOperationContext(target), req)
-	if err != nil {
-		return TurnStartView{}, err
-	}
-	admission, ctrl, err := a.beginTabTurn(target.tabID, true, submissionID)
-	if err != nil {
-		return TurnStartView{}, err
-	}
-	defer admission.abort()
-	if ctrl != target.ctrl || !a.attachmentTargetCurrent(target) {
-		return TurnStartView{}, fmt.Errorf("attachment target changed; please retry")
-	}
-	setup := func() error {
-		if req.Goal != "" {
-			if err := syncTabGoalToController(ctrl, req.Goal); err != nil {
-				return err
-			}
-			a.mu.Lock()
-			target.tab.goal = req.Goal
-			target.tab.toolApprovalMode = normalizeToolApprovalMode(req.ToolApprovalMode)
-			target.tab.mode = tabModeFromAxes(false, target.tab.toolApprovalMode == control.ToolApprovalYolo)
-			a.saveTabsLocked()
-			a.mu.Unlock()
-			ctrl.SetPlanMode(false)
-			applyTabToolApprovalModeToController(ctrl, normalizeToolApprovalMode(req.ToolApprovalMode))
-		}
-		return a.ensureTabTopicIndexedForUserTurn(target.tab)
-	}
-	receipt, err := c.SubmitPreparedWithSetup(a.attachmentOperationContext(target), prepared, setup)
-	if err != nil {
-		return TurnStartView{}, err
-	}
-	admission.finish(ctrl)
-	return TurnStartView{TurnID: receipt.TurnID, SubmissionID: submissionID, Status: event.TurnQueued, Disposition: control.SubmitTurnStarted}, nil
+	return a.startModelApplicationTurn(target.tabID, submissionID, req, nil, &target)
 }
 
 func (a *App) EnqueueForAttachmentTarget(token, submissionID, input, display string, invocations []control.InvocationRequest, attachments []control.SubmissionAttachment) (InboxReceiptView, error) {

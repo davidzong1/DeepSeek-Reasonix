@@ -23,7 +23,31 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
       - name: Inspect the public manifest and its challenge policy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/inspect-cloudflare-download-access.mjs
+      - name: Probe the shipped updater HTTP client
+        run: go run scripts/inspect-cloudflare-download-access.go 1.38.11 1.38.12
+      - name: Probe the public site with headless Chromium
+        run: |
+          browser="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          for path in '?download=desktop&release-postflight=v1.38.12' 'changelog/v1.38.12/'; do
+            for profile in default updater browser; do
+              output="$(mktemp)"
+              profile_dir="$(mktemp -d)"
+              flags=()
+              case "$profile" in
+                updater) flags+=(--user-agent='Reasonix-Updater/v1.38.12 (linux/amd64; build=stable; update=stable)') ;;
+                browser) flags+=(--user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36') ;;
+              esac
+              "$browser" --headless=new --disable-gpu --no-sandbox --virtual-time-budget=10000 \
+                "--user-data-dir=$profile_dir" "${flags[@]}" \
+                --dump-dom "https://reasonix.io/$path" >"$output" 2>/dev/null || true
+              node -e 'const fs=require("fs"); const body=fs.readFileSync(process.argv[1],"utf8"); console.log(JSON.stringify({kind:"chromium-site",profile:process.argv[2],path:process.argv[3],hasHydratedDesktopVersion:body.includes("data-release-version=\"desktop\">v1.38.12<"),hasDesktopAsset:body.includes("data-desktop-asset="),looksChallenged:body.includes("Just a moment...")}))' "$output" "$profile" "$path"
+              rm -rf "$output" "$profile_dir"
+            done
+          done

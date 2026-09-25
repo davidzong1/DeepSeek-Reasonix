@@ -44,6 +44,7 @@ export type DecisionFooterRegionProps = {
   className: string;
   style?: CSSProperties;
   footerRef: ComponentProps<"footer">["ref"];
+  creationNotice?: ReactNode;
   todo?: { identity: string; props: TodoProps };
   undo?: { identity: string; props: UndoProps };
   decision?: DecisionFooterSurface;
@@ -80,6 +81,7 @@ export function DecisionFooterRegion({
   className,
   style,
   footerRef,
+  creationNotice,
   todo,
   undo,
   decision,
@@ -107,6 +109,7 @@ export function DecisionFooterRegion({
         aria-hidden={composer.hidden ? true : undefined}
       >
         {composer.hero && composer.headline ? <h2 className="welcome-creation__headline">{composer.headline}</h2> : null}
+        {creationNotice}
         {composer.empty ? <div className="welcome-creation">
           <button className="btn btn--primary" onClick={composer.empty.onCreate}>{t("topbar.newSession")}</button>
           <button className="btn" onClick={composer.empty.onChooseProject}>{t("projectTree.addProjectTooltip")}</button>

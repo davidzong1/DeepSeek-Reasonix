@@ -116,6 +116,7 @@ func (h SessionTeardown) DoneChannels() []<-chan struct{} {
 // terminal fields; the run goroutine writes them, readers (Output/Wait/snapshots)
 // take the same lock.
 type Job struct {
+	lifetime  Lifetime
 	ID        string
 	Kind      string // "bash" | "pwsh" | "task"
 	Label     string
@@ -145,6 +146,12 @@ type Job struct {
 
 // Manager is the session's background-job table. It is safe for concurrent use.
 type Manager struct {
+	eventMu          sync.Mutex
+	eventQueue       []event.Event
+	eventPaused      bool
+	eventDraining    bool
+	bindingMu        sync.RWMutex
+	replacing        bool // guarded by mu; seals registration during replacement
 	runtimeObservers runtimeObservers
 	sink             event.Sink
 	root             context.Context
@@ -237,7 +244,11 @@ func WithTaskRecorder(r TaskRecorder) Option {
 // SetTaskRecorder installs (or clears, with nil) the lifecycle recorder after
 // construction. Controllers that assemble their job manager before the
 // recorder's dependencies (workspace root, session id) are known use this.
-func (m *Manager) SetTaskRecorder(r TaskRecorder) { m.taskRecorder = r }
+func (m *Manager) SetTaskRecorder(r TaskRecorder) {
+	m.bindingMu.Lock()
+	m.taskRecorder = r
+	m.bindingMu.Unlock()
+}
 
 // TeardownGrace reports the manager's configured close/destroy wait window.
 func (m *Manager) TeardownGrace() time.Duration { return m.teardownGrace }
@@ -643,8 +654,8 @@ func (m *Manager) recordCompletion(j *Job, st Status, err error) string {
 	shouldEmit = active == "" || parentSession == "" || active == parentSession
 	m.mu.Unlock()
 
-	if !nilutil.IsNil(m.taskRecorder) {
-		m.taskRecorder.RecordDone(id, st, err)
+	if recorder := m.boundRecorder(); !nilutil.IsNil(recorder) {
+		recorder.RecordDone(id, st, err)
 	}
 
 	level, text := event.LevelInfo, fmt.Sprintf("background %s finished: %s", kind, id)
@@ -657,7 +668,7 @@ func (m *Manager) recordCompletion(j *Job, st Status, err error) string {
 		text = fmt.Sprintf("background %s killed: %s", kind, id)
 	}
 	if shouldEmit {
-		m.sink.Emit(event.Event{Kind: event.Notice, Code: event.NoticeCodeBackgroundJobFinished, Level: level, Text: text, Detail: detail})
+		m.boundSink().Emit(event.Event{Kind: event.Notice, Code: event.NoticeCodeBackgroundJobFinished, Level: level, Text: text, Detail: detail})
 	}
 	return parentSession
 }
@@ -683,7 +694,7 @@ func (m *Manager) recordStalled(parentSession, id, kind, label string) {
 		Detail: "A quiet long-running job can look like this, so this is a heads-up, not an error. If it should have finished, inspect with job_output, or stop it with job_kill. Set tools.background_jobs.stalled_warning_seconds to 0 in your config to disable this notice."}
 	m.mu.Unlock()
 	if shouldEmit {
-		m.sink.Emit(notice)
+		m.boundSink().Emit(notice)
 	}
 }
 
@@ -1109,7 +1120,7 @@ func (m *Manager) SetActiveSessionPath(parentSession, sessionPath string) {
 		delete(m.artifactDirs, parentSession)
 		delete(m.loaded, parentSession)
 		m.mu.Unlock()
-		m.sink.Emit(event.Event{
+		m.boundSink().Emit(event.Event{
 			Kind:   event.Notice,
 			Level:  event.LevelWarn,
 			Text:   "Ignoring SetActiveSessionPath with invalid session path",
@@ -1228,7 +1239,7 @@ func (m *Manager) recordArtifactMigrationError(parentSession string, err error) 
 	active := m.active
 	m.mu.Unlock()
 	if active == "" || active == parentSession {
-		m.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Job artifact migration failed.", Detail: text})
+		m.boundSink().Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Job artifact migration failed.", Detail: text})
 	}
 }
 
@@ -1474,7 +1485,7 @@ func (m *Manager) loadSessionArtifacts(parentSession, sessionPath, dir string) {
 		})
 	}
 	if len(repairErrors) > 0 {
-		m.sink.Emit(event.Event{
+		m.boundSink().Emit(event.Event{
 			Kind:   event.Notice,
 			Level:  event.LevelWarn,
 			Text:   "Background job recovery did not complete.",
@@ -1593,50 +1604,6 @@ func (m *Manager) purgeSessionLocked(parentSession string) {
 	m.order = kept
 }
 
-// Close cancels the session context and waits briefly for every background job
-// goroutine to return before unblocking. If a non-cooperative job ignores
-// cancellation, cleanup of the temporary artifact root continues in the
-// background after the goroutines eventually unwind.
-func (m *Manager) Close() {
-	_ = m.CloseWithGrace(m.teardownGrace)
-}
-
-// CloseAsync cancels the manager and returns immediately. It is used when a
-// caller has already begun session-specific teardown and owns the delayed
-// persistent cleanup, but still needs the manager's root context and temporary
-// artifact root released eventually.
-func (m *Manager) CloseAsync() {
-	m.cancel()
-	go func() {
-		m.wg.Wait()
-		m.releaseOwner()
-		m.removeTempRoot()
-	}()
-}
-
-// CloseWithGrace is Close with an explicit wait window, used by tests and
-// callers that need to surface non-cooperative jobs.
-func (m *Manager) CloseWithGrace(grace time.Duration) TeardownResult {
-	m.cancel()
-	done := make(chan struct{})
-	go func() {
-		m.wg.Wait()
-		m.releaseOwner()
-		close(done)
-	}()
-	result, timedOut := waitTeardownTargets(context.Background(), m.closeTargets(), grace, done)
-	if timedOut {
-		m.emitTeardownTimeout("close", result)
-		go func() {
-			<-done
-			m.removeTempRoot()
-		}()
-		return result
-	}
-	m.removeTempRoot()
-	return result
-}
-
 func waitTeardownTargets(ctx context.Context, targets []teardownTarget, grace time.Duration, allDone ...<-chan struct{}) (TeardownResult, bool) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1732,7 +1699,7 @@ func (m *Manager) emitTeardownTimeout(action string, result TeardownResult) {
 			fmt.Fprintf(&b, " waited=%s", job.Waited.Round(time.Millisecond))
 		}
 	}
-	m.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Background job teardown timed out.", Detail: b.String()})
+	m.boundSink().Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Background job teardown timed out.", Detail: b.String()})
 }
 
 func (m *Manager) removeTempRoot() {
@@ -1755,7 +1722,7 @@ func (m *Manager) emitIfActive(parentSession string, ev event.Event) {
 	active := m.active
 	m.mu.Unlock()
 	if active == "" || strings.TrimSpace(parentSession) == "" || active == strings.TrimSpace(parentSession) {
-		m.sink.Emit(ev)
+		m.boundSink().Emit(ev)
 	}
 }
 

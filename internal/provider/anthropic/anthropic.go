@@ -102,6 +102,9 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	case "none":
 		deepSeekReplay = false
 	}
+	// The accounting convention is the route's, never the reasoning protocol's;
+	// see streamUsage for why the two are separate.
+	inclusiveUsage := officialDeepSeek
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
 	keySource, _ := cfg.Extra["api_key_source"].(string)
 	thinking, _ := cfg.Extra["thinking"].(string)
@@ -167,6 +170,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			mimo:   provider.IsMiMoEndpoint(root),
 		},
 		deepseek:         deepSeekReplay,
+		inclusiveUsage:   inclusiveUsage,
 		thinking:         thinking,
 		effort:           effort,
 		vision:           vision,
@@ -235,6 +239,10 @@ type client struct {
 	http             *http.Client
 	idleTimeout      time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
 	authed           atomic.Bool   // a request has succeeded — gate transient-401 retry
+	// inclusiveUsage is the route's declared cache-accounting convention: true
+	// when input_tokens already covers the cache counters. See streamUsage for
+	// why it is not derived from deepseek, which is a replay obligation.
+	inclusiveUsage bool
 }
 
 func (c *client) Name() string { return c.name }
@@ -255,7 +263,10 @@ func (c *client) deepSeekThinkingEnabled() bool {
 // inclusiveInput reports whether this endpoint's input_tokens already covers
 // its cache counters. DeepSeek's Anthropic-compatible route reports the whole
 // input there; the native API reports only the uncached part. See messagesUsage.
-func (c *client) inclusiveInput() bool { return c != nil && c.deepseek }
+//
+// Deliberately not derived from c.deepseek: that flag is a replay obligation,
+// and the two were coupled only because the official endpoint needs both.
+func (c *client) inclusiveInput() bool { return c != nil && c.inclusiveUsage }
 
 func (c *client) RequiresAssistantReasoningReplay(m provider.Message) bool {
 	if c == nil {

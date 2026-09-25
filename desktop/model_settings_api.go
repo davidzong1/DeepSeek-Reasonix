@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/secrets"
 )
 
@@ -39,11 +40,12 @@ type ModelSettingsIssue struct {
 }
 
 type ModelSettingsTarget struct {
-	TabID           string `json:"tabId"`
-	Title           string `json:"title,omitempty"`
-	Application     string `json:"application"`
-	AppliedRevision string `json:"appliedRevision"`
-	DesiredRevision string `json:"desiredRevision"`
+	Details         *ModelApplicationDetails `json:"details,omitempty"`
+	TabID           string                   `json:"tabId"`
+	Title           string                   `json:"title,omitempty"`
+	Application     string                   `json:"application"`
+	AppliedRevision string                   `json:"appliedRevision"`
+	DesiredRevision string                   `json:"desiredRevision"`
 }
 
 type ModelSettingsResult struct {
@@ -540,7 +542,16 @@ func (a *App) GetModelSettingsApplication() ModelSettingsResult {
 				result.Application = "pending"
 			}
 		}
-		result.Targets = append(result.Targets, ModelSettingsTarget{TabID: tab.ID, Title: titles[i], Application: state, AppliedRevision: applied, DesiredRevision: desired})
+		target := ModelSettingsTarget{TabID: tab.ID, Title: titles[i], Application: state, AppliedRevision: applied, DesiredRevision: desired}
+		if state != "applied" {
+			if ctrl, ok := snapshot.(control.SessionAPI); ok {
+				target.Details = modelApplicationDetails(ctrl)
+				if state == "failed" {
+					target.Details.Code = "model_settings_apply_failed"
+				}
+			}
+		}
+		result.Targets = append(result.Targets, target)
 	}
 	a.appendRemoteModelSettingsStatus(&result)
 	if result.Application == "not_required" && len(result.Targets) > 0 {
@@ -557,14 +568,22 @@ func (a *App) RetryModelSettingsApplication(tabID string) ModelSettingsResult {
 		_, _, err := a.ensureRemoteModelSettings(tabID)
 		result := a.GetModelSettingsApplication()
 		if err != nil {
-			result.Application = "failed"
-			result.Issues = append(result.Issues, modelSettingsIssue("apply_failed", err))
+			var application *modelApplicationError
+			if errors.As(err, &application) && application.details != nil && application.details.Code == "model_settings_pending" {
+				result.Application = "pending"
+			} else {
+				result.Application = "failed"
+				result.Issues = append(result.Issues, modelSettingsIssue("apply_failed", err))
+			}
 		}
 		return result
 	}
-	a.mu.RLock()
+	a.mu.Lock()
 	tab := a.tabByEventSinkIDLocked(tabID)
-	a.mu.RUnlock()
+	if tab != nil {
+		tab.modelApplication.failure = nil
+	}
+	a.mu.Unlock()
 	var err error
 	if tab == nil || tab.ID != tabID {
 		err = fmt.Errorf("session is no longer available")
@@ -573,8 +592,13 @@ func (a *App) RetryModelSettingsApplication(tabID string) ModelSettingsResult {
 	}
 	result := a.GetModelSettingsApplication()
 	if err != nil {
-		result.Application = "failed"
-		result.Issues = append(result.Issues, modelSettingsIssue("apply_failed", err))
+		var busy *rebuildBusyError
+		if errors.As(err, &busy) {
+			result.Application = "pending"
+		} else {
+			result.Application = "failed"
+			result.Issues = append(result.Issues, modelSettingsIssue("apply_failed", err))
+		}
 	}
 	return result
 }

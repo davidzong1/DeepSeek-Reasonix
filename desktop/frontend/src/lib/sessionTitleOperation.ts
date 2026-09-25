@@ -38,6 +38,8 @@ export function sessionTitleErrorKey(error: unknown): DictKey {
     operation_busy: "projectTree.sessionError.operationBusy", provider_unavailable: "projectTree.sessionError.providerUnavailable",
     stale_cursor: "projectTree.sessionError.staleCursor", unsupported: "projectTree.sessionError.unsupported",
     operation_failed: "projectTree.sessionError.failed",
+    source_unavailable: "projectTree.sessionError.sourceUnavailable",
+    source_ambiguous: "projectTree.sessionError.sourceAmbiguous",
   };
   // Providers, disk errors and older hosts can return paths or credentials.
   // Never render unclassified backend details in the product toast.
