@@ -125,7 +125,10 @@ func ToWire(e event.Event) Event {
 				ResultTokens: m.ResultTokens, SavedTokens: m.SavedTokens,
 				AffectedToolResults: m.AffectedToolResults,
 				ProjectionVersion:   m.ProjectionVersion, CacheBreak: m.CacheBreak,
-				Reason: m.Reason,
+				Reason:           m.Reason,
+				MaintenanceState: m.MaintenanceState,
+				HeadroomTokens:   m.HeadroomTokens,
+				ReductionRatio:   m.ReductionRatio,
 			}
 		}
 	case event.SessionOperation:
@@ -604,17 +607,20 @@ var kindNames = map[event.Kind]string{
 
 // ContextMaintenance is the JSON form of event.ContextMaintenance.
 type ContextMaintenance struct {
-	Status              string `json:"status,omitempty"`
-	Action              string `json:"action,omitempty"`
-	Trigger             string `json:"trigger,omitempty"`
-	OperationID         string `json:"operationId,omitempty"`
-	InputTokens         int    `json:"inputTokens,omitempty"`
-	ResultTokens        int    `json:"resultTokens,omitempty"`
-	SavedTokens         int    `json:"savedTokens,omitempty"`
-	AffectedToolResults int    `json:"affectedToolResults,omitempty"`
-	ProjectionVersion   uint64 `json:"projectionVersion,omitempty"`
-	CacheBreak          bool   `json:"cacheBreak,omitempty"`
-	Reason              string `json:"reason,omitempty"`
+	Status              string  `json:"status,omitempty"`
+	Action              string  `json:"action,omitempty"`
+	Trigger             string  `json:"trigger,omitempty"`
+	OperationID         string  `json:"operationId,omitempty"`
+	InputTokens         int     `json:"inputTokens,omitempty"`
+	ResultTokens        int     `json:"resultTokens,omitempty"`
+	SavedTokens         int     `json:"savedTokens,omitempty"`
+	AffectedToolResults int     `json:"affectedToolResults,omitempty"`
+	ProjectionVersion   uint64  `json:"projectionVersion,omitempty"`
+	CacheBreak          bool    `json:"cacheBreak,omitempty"`
+	Reason              string  `json:"reason,omitempty"`
+	MaintenanceState    string  `json:"maintenanceState,omitempty"`
+	HeadroomTokens      int     `json:"headroomTokens,omitempty"`
+	ReductionRatio      float64 `json:"reductionRatio,omitempty"`
 }
 
 // ExtensionSurface is the JSON form of an event.ExtensionSurfacePayload.

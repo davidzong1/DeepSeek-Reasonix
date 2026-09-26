@@ -1974,7 +1974,10 @@ func (m chatTUI) View() tea.View {
 	// prevents stale cells.
 	if working != "" {
 		parts = append(parts, workingStyle.Width(boxW).MaxWidth(boxW).Render(wrapStatusLine(working, boxW)))
-		rowsAboveBox++
+		// The working line wraps to multiple terminal rows on narrow terminals;
+		// rowsAboveBox must count the wrapped rows or the composer cursor is
+		// placed above the input box (see #7537).
+		rowsAboveBox += workingLineRows(working, boxW)
 	}
 	if footer := m.renderMainManagerFooter(); footer != "" {
 		parts = append(parts, footer)

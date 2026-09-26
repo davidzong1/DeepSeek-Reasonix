@@ -14,6 +14,20 @@ import (
 	"reasonix/internal/turnevent"
 )
 
+// explainStreamFailure explains a failure of the response body itself, or
+// returns nil when err is not one.
+func explainStreamFailure(err error) error {
+	switch {
+	case errors.Is(err, provider.ErrNonStreamingResponse):
+		return &explainedError{msg: fmt.Sprintf(i18n.M.ProviderErrNonStreamingFmt, err.Error()), cause: err}
+	case provider.IsStreamInterrupted(err):
+		return &explainedError{msg: fmt.Sprintf(i18n.M.ProviderErrStreamInterruptedFmt, err.Error()), cause: err}
+	case provider.IsConnReset(err):
+		return &explainedError{msg: fmt.Sprintf(i18n.M.ProviderErrDisconnectedFmt, err.Error()), cause: err}
+	}
+	return nil
+}
+
 // explainError maps a provider HTTP failure to an actionable, localized message
 // so the turn-done error the UI shows is never a bare status code or silent
 // failure. Unknown errors (and nil) pass through unchanged.
@@ -32,11 +46,8 @@ func explainError(err error) error {
 	if wait := provider.AsRecoveryWaitExhausted(err); wait != nil {
 		return &explainedError{msg: explainRecoveryWait(wait), cause: err}
 	}
-	if provider.IsStreamInterrupted(err) {
-		return &explainedError{msg: fmt.Sprintf(i18n.M.ProviderErrStreamInterruptedFmt, err.Error()), cause: err}
-	}
-	if provider.IsConnReset(err) {
-		return &explainedError{msg: fmt.Sprintf(i18n.M.ProviderErrDisconnectedFmt, err.Error()), cause: err}
+	if explained := explainStreamFailure(err); explained != nil {
+		return explained
 	}
 	// An overflow without token numbers has nothing to quote; the generic 400
 	// branch below keeps the provider's own reason instead of zeros.

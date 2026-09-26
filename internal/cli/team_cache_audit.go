@@ -441,6 +441,7 @@ func renderCacheAudit(report team.CacheReport, quality ledgerQuality, dir, clock
 	fmt.Fprintf(&b, "  - member attribution: %s is a route label derived from the model ref, never a Team member id\n", ledgerTeamID)
 	fmt.Fprintf(&b, "  - the request prompt of a multi-request row: its prompt is an aggregate over attempts, so only single-request rows carry a bucket key\n")
 	fmt.Fprintf(&b, "  - a per-request rate over rows whose count is unverified: such a row may describe one request or several, so it is excluded from the per-request baseline and booked into the all-samples total instead\n")
+	fmt.Fprintf(&b, "  - a miss cause: the cause partition needs the writer's own session state, which a route-level row never carried, so every row here is reported as undiagnosed rather than attributed\n")
 	b.WriteString("\n")
 	b.WriteString(renderCacheReport(report))
 	return b.String()

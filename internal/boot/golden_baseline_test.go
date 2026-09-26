@@ -239,6 +239,9 @@ func TestGoldenBaselineNoExtensions(t *testing.T) {
 	}
 	shapeJSON = append(shapeJSON, '\n')
 
+	// The cache contract in prefix_shape.json is four values: SystemHash,
+	// ToolsHash, PrefixHash and ToolSchemaTokens. Diagnostic additions such as
+	// Messages carry no prompt bytes, so only those four moving is real drift.
 	artifacts := map[string][]byte{
 		"system_prompt.txt":     []byte(first.SystemPrompt),
 		"tool_schemas.json":     first.ToolSchemas,

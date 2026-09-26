@@ -46,6 +46,16 @@ type CacheReportCoverage struct {
 	// into a session: its absence is a coverage gap, never a session of its own.
 	SessionPresent int `json:"session_present"`
 	SessionAbsent  int `json:"session_absent"`
+	// SessionIdentityPresent counts samples whose writer stamped a hashed session
+	// identity and a request sequence. Only these can tell a rotation's first
+	// request from a growing session's; SessionPresent answers a different one.
+	SessionIdentityPresent int `json:"session_identity_present"`
+	SessionIdentityAbsent  int `json:"session_identity_absent"`
+	// MessageShapeComparable counts samples that could compare their conversation
+	// array against the previous request's. It is what gates the rewrite class: a
+	// sample without it is not evidence that nothing was rewritten.
+	MessageShapeComparable   int `json:"message_shape_comparable"`
+	MessageShapeUncomparable int `json:"message_shape_uncomparable"`
 }
 
 // observe files one scoped sample into the coverage ledger.
@@ -87,6 +97,16 @@ func (c *CacheReportCoverage) observe(rec MemberCacheRequest) {
 		c.SessionAbsent++
 	} else {
 		c.SessionPresent++
+	}
+	if strings.TrimSpace(rec.SessionIDHash) == "" || rec.SessionRequestSeq <= 0 {
+		c.SessionIdentityAbsent++
+	} else {
+		c.SessionIdentityPresent++
+	}
+	if rec.MessagesComparable {
+		c.MessageShapeComparable++
+	} else {
+		c.MessageShapeUncomparable++
 	}
 }
 
@@ -207,6 +227,34 @@ func nearestRank(sorted []float64, fraction float64) float64 {
 	return sorted[min(max(rank, 1), len(sorted))-1]
 }
 
+// CacheSessionMaintenance is one member's published cumulative maintenance
+// spend: what the session paid the summarizer, what it installed, how many
+// rescues it certified and how many repeats it blocked. A cache rate alone
+// cannot show this cost, so the session ledger carries it.
+type CacheSessionMaintenance struct {
+	SummaryRequests    int `json:"summary_requests"`
+	ProjectionInstalls int `json:"projection_installs"`
+	RescueCount        int `json:"rescue_count"`
+	RepeatBlocks       int `json:"repeat_blocks"`
+}
+
+// CacheSessionTotals is one member's published session cache ledger: the input
+// to the session-cumulative rate, which is a different number from any
+// per-request rate.
+type CacheSessionTotals struct {
+	TeamID       string `json:"team_id"`
+	MemberID     string `json:"member_id"`
+	CacheHit     int    `json:"session_cache_hit"`
+	CacheMiss    int    `json:"session_cache_miss"`
+	LastTurnHit  int    `json:"last_turn_cache_hit"`
+	LastTurnMiss int    `json:"last_turn_cache_miss"`
+	// Maintenance is the member's published maintenance spend, meaningful only
+	// when MaintenancePublished is true: a document written before the field
+	// existed reports no spend, which is unknown rather than zero.
+	Maintenance          CacheSessionMaintenance `json:"maintenance"`
+	MaintenancePublished bool                    `json:"maintenance_published"`
+}
+
 // buildCacheSessionReport folds the published session ledgers. The session rate
 // describes how a whole session's input tokens were served, so it is a
 // different metric from every per-request rate in the report.
@@ -227,6 +275,15 @@ func buildCacheSessionReport(sessions []CacheSessionTotals) CacheSessionReport {
 		lastMiss += session.LastTurnMiss
 		report.Totals.HitTokens += session.CacheHit
 		report.Totals.MissTokens += session.CacheMiss
+		// Summed only over members that published, and the count travels with the
+		// sum: an omitted member would otherwise read as having spent nothing.
+		if session.MaintenancePublished {
+			report.Maintenance.SummaryRequests += session.Maintenance.SummaryRequests
+			report.Maintenance.ProjectionInstalls += session.Maintenance.ProjectionInstalls
+			report.Maintenance.RescueCount += session.Maintenance.RescueCount
+			report.Maintenance.RepeatBlocks += session.Maintenance.RepeatBlocks
+			report.MaintenanceMembers++
+		}
 	}
 	slices.SortFunc(report.Members, func(l, r CacheMemberRate) int { return strings.Compare(l.MemberID, r.MemberID) })
 	report.Totals.Requests, report.Totals.Members = len(report.Members), len(report.Members)

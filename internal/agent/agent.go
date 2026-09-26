@@ -844,6 +844,12 @@ type Options struct {
 	VisibleWindowTokens int
 	// CacheAwareCompaction defers an automatic fold to hardInputCeiling while warm.
 	CacheAwareCompaction bool
+	// DisableLowYieldLatch lets a view pay for another summary after a fold
+	// already failed to give it headroom. Default on.
+	DisableLowYieldLatch bool
+	// DisableShapeDiagnosis leaves the message array unfingerprinted, so a rewrite
+	// of already-read bytes cannot be told from an append. Default on.
+	DisableShapeDiagnosis bool
 	// EnableContextRescue opts this build into the cross-session continuation
 	// rescue: an unrecoverable fold certifies a plan instead of falling back to
 	// a lossy truncation. Off by default — acting on the plan rotates.
@@ -1057,11 +1063,13 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			// Both knobs are config-reachable (agent.visible_window_tokens,
 			// agent.cache_aware_compaction) and both were dropped here, leaving
 			// every build on the defaults regardless of what the host asked for.
-			visibleWindowTokens:  opts.VisibleWindowTokens,
-			cacheAwareCompaction: opts.CacheAwareCompaction,
-			contextRescue:        opts.EnableContextRescue,
-			recentKeep:           opts.RecentKeep,
-			archiveDir:           opts.ArchiveDir,
+			visibleWindowTokens:   opts.VisibleWindowTokens,
+			cacheAwareCompaction:  opts.CacheAwareCompaction,
+			lowYieldLatch:         !opts.DisableLowYieldLatch,
+			messageShapeDiagnosis: !opts.DisableShapeDiagnosis,
+			contextRescue:         opts.EnableContextRescue,
+			recentKeep:            opts.RecentKeep,
+			archiveDir:            opts.ArchiveDir,
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -1621,7 +1629,7 @@ func upsertPartialToolCall(calls []provider.ToolCall, call provider.ToolCall) []
 }
 
 func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
-	return captureTurnContextShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion(), a.modelVisibleMessages())
+	return captureTurnContextShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion(), a.modelVisibleMessages(), a.messageShapeDiagnosis)
 }
 
 func (a *Agent) systemPrompt() string {

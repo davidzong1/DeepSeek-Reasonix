@@ -55,6 +55,10 @@ type Options struct {
 	HelperCommand func(ctx context.Context) (helperProcess, error)
 	// ForceHelper routes every platform through the helper backend. Test-only.
 	ForceHelper bool
+	// ScanOnly serves subscriptions from backoff scanning and never starts a
+	// helper. Test-only: it lets a caller hold a real, closable service without
+	// spawning a child (which in a test binary is the test binary itself).
+	ScanOnly bool
 }
 
 // Diagnostics snapshots the resource counters. Healthy idle state keeps scans
@@ -159,6 +163,11 @@ func NewService(opts Options) *Service {
 		// in the cancel-on-reregister bookkeeping.
 		nextID: 1,
 	}
+	if opts.ScanOnly {
+		// No platform backend, so no helper process on any platform.
+		svc.backend, svc.backendKind = scanOnlyBackend{}, "scan-only"
+		return svc
+	}
 	svc.backend, svc.backendKind, svc.helper = newPlatformBackend(svc, opts)
 	return svc
 }
@@ -207,10 +216,10 @@ func (s *Service) Subscribe(root string, maxDepth int, scope ScopeFunc, hash Has
 	regDone := state.regDone
 	kind := s.backendKind
 	s.mu.Unlock()
-	// Preserve register-before-scan ordering. Native registration is local and
-	// must settle before Subscribe returns. Helper confirmation travels over a
-	// pipe, so only that path needs a timeout to keep a wedged child bounded.
-	if regDone != nil && kind == "native" {
+	// Preserve register-before-scan ordering. Native and scan-only registration
+	// are local and settle before Subscribe returns; helper confirmation travels
+	// over a pipe, so only that path needs a timeout for a wedged child.
+	if regDone != nil && (kind == "native" || kind == "scan-only") {
 		<-regDone
 	}
 	if regDone != nil && kind == "helper" {

@@ -1,11 +1,6 @@
 name: Deploy crash worker
 
 on:
-  push:
-    branches: [main-v2]
-    paths:
-      - 'workers/crash-report/**'
-      - '.github/workflows/deploy-crash-worker.yml'
   workflow_dispatch:
     inputs:
       firebase_data_action:

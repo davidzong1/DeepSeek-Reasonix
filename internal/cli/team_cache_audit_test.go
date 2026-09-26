@@ -238,6 +238,7 @@ func TestCacheAuditStatesWhatItCannotEstablish(t *testing.T) {
 		"a confirmed cold start",
 		"a prefix-change cause",
 		"never a Team member id",
+		"a miss cause",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the audit must disclose %q; got:\n%s", want, text)

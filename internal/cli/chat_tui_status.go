@@ -326,6 +326,17 @@ func completionSummaryWarning(c *event.CompletionSummaryInfo) string {
 	return i18n.M.CompletionSummaryNeedsAttention
 }
 
+// workingLineRows returns the number of terminal rows the working (spinner)
+// line occupies after wrapping to `width` (0 when the line is hidden). It
+// mirrors the wrapped render in View() so rowsAboveBox (cursor placement) and
+// computeStatusLineCount (bottomRows height) reserve the same row count.
+func workingLineRows(working string, width int) int {
+	if working == "" || width <= 0 {
+		return 0
+	}
+	return strings.Count(wrapStatusLine(working, width), "\n") + 1
+}
+
 // computeStatusLineCount returns the number of terminal rows the status block
 // (working line + first status line + optional data band) will occupy after
 // wrapping to `width`. It mirrors the construction in View() so the reserved
@@ -357,7 +368,7 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 	var lines int
 	if working != "" {
 		// working (spinner) line — wraps independently of the status block below.
-		lines += strings.Count(wrapStatusLine(working, width), "\n") + 1
+		lines += workingLineRows(working, width)
 	}
 	lines += strings.Count(statusBlock, "\n") + 1
 	return lines

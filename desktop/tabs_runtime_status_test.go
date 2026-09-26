@@ -308,6 +308,25 @@ func TestTopicActivityStatusPresentsReadinessSeparatelyFromPause(t *testing.T) {
 	}
 }
 
+func TestTopicActivityStatusClearsOnCompactionDone(t *testing.T) {
+	if status, ok := topicActivityStatusFromEvent(event.Event{Kind: event.CompactionStarted}); !ok || status != topicStatusThinking {
+		t.Fatalf("compaction start = (%q, %v), want (%q, true)", status, ok, topicStatusThinking)
+	}
+	manual := event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{Trigger: agent.CompactionTriggerManual}}
+	if status, ok := topicActivityStatusFromEvent(manual); !ok || status != "" {
+		t.Fatalf("manual compaction done = (%q, %v), want cleared status (no thinking spinner)", status, ok)
+	}
+}
+
+func TestTopicActivityStatusKeepsThinkingAfterAutomaticCompaction(t *testing.T) {
+	for _, trigger := range []string{agent.CompactionTriggerPressure, agent.CompactionTriggerOverflow, agent.CompactionTriggerTool, "auto", ""} {
+		done := event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{Trigger: trigger}}
+		if status, ok := topicActivityStatusFromEvent(done); !ok || status != topicStatusThinking {
+			t.Fatalf("compaction done (trigger %q) = (%q, %v), want (%q, true): the turn is still running", trigger, status, ok, topicStatusThinking)
+		}
+	}
+}
+
 func TestCatalogRuntimeStatusPreservesDeliveryCheckWhenIdle(t *testing.T) {
 	got := catalogRuntimeStatus(topicStatusAwaitingDelivery, control.RuntimeStatus{})
 	if got != topicStatusAwaitingDelivery {

@@ -262,7 +262,8 @@ func (a *Agent) compressVisibleRange(
 		transcriptVersion: snap.transcriptVersion, projectionVersion: snap.projectionVersion, generation: snap.generation,
 		activeTurn: a.activeTurnCreatedAt.Load(), trigger: trigger, summary: summary,
 		inputHash: inputHash, outputHash: outputHash, sourceTokens: result.SourceTokens, projectionTokens: projectionTokens,
-		covered: len(snap.canonical),
+		covered:     len(snap.canonical),
+		foldTrigger: a.compactTrigger(), hardCeiling: a.hardInputCeiling(),
 	})
 	if err != nil {
 		if errors.Is(err, errCompressStaleContext) {
@@ -591,6 +592,7 @@ func (a *Agent) compactToProjectionLocked(ctx context.Context, trigger, instruct
 		generation: startGeneration, activeTurn: activeTurn, trigger: trigger,
 		summary: summary, inputHash: viewInputHash, outputHash: viewOutputHash,
 		sourceTokens: sourceTokens, projectionTokens: projTokens, covered: covered,
+		foldTrigger: a.compactTrigger(), hardCeiling: a.hardInputCeiling(),
 	})
 	if err != nil {
 		a.emitCompactionAborted(trigger)

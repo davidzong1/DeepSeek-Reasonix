@@ -194,7 +194,7 @@ export const WINDOWS_FLAT_PAYLOAD = Object.freeze([
   "reasonix-uninstall.exe",
 ]);
 
-const APP_RESOURCES = ["resources/app.asar", "resources/app/index.html", "resources/build.json", "resources/icons/appicon.png"];
+const APP_RESOURCES = ["resources/app.asar", "resources/app/index.html", "resources/build.json", "resources/icons/appicon.png", "resources/icons/trayTemplate.png", "resources/icons/trayTemplate@2x.png"];
 
 function darwinBundleMembers() {
   const helper = (kind) => `Contents/Frameworks/${PRODUCT.name} Helper (${kind}).app/Contents/MacOS/${PRODUCT.name} Helper (${kind})`;
@@ -211,6 +211,8 @@ function darwinBundleMembers() {
     "Contents/Resources/app/index.html",
     "Contents/Resources/build.json",
     "Contents/Resources/icons/appicon.png",
+    "Contents/Resources/icons/trayTemplate.png",
+    "Contents/Resources/icons/trayTemplate@2x.png",
     "Contents/Frameworks/Electron Framework.framework/Electron Framework",
     helper("Renderer"),
     helper("GPU"),

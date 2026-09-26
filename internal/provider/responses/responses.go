@@ -157,11 +157,7 @@ func New(cfg Config) provider.Provider {
 	if cfg.HTTPClient != nil {
 		httpClient = cfg.HTTPClient
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	requestURL := strings.TrimSpace(cfg.RequestURL)
-	if requestURL == "" {
-		requestURL = baseURL + "/responses"
-	}
+	baseURL, requestURL := resolveEndpoints(cfg.BaseURL, cfg.RequestURL)
 	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
 	if cfg.ModelInfo != nil {
 		modelInfo = *cfg.ModelInfo

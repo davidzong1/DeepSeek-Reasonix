@@ -16,6 +16,10 @@ type summaryProjectionCommit struct {
 	activeTurn                                       int64
 	trigger, summary, inputHash, outputHash          string
 	sourceTokens, projectionTokens                   int
+	// foldTrigger and hardCeiling are the boundaries in force when this fold was
+	// taken, so the receipt reports the room it bought against them rather than
+	// against whatever the window looks like after the install.
+	foldTrigger, hardCeiling int
 	// covered is the canonical length the frozen projection body represents;
 	// messages past it splice live from the transcript.
 	covered int
@@ -74,6 +78,7 @@ func (a *Agent) commitSummaryProjection(ctx context.Context, commit summaryProje
 	}
 	receipt := state.LastReceipt
 	a.sess.compactionMu.Unlock()
+	a.noteProjectionInstall()
 	a.noteProjectionRewrite(receipt)
 	a.emitContextMaintenance(receipt)
 	return state, nil
@@ -122,13 +127,17 @@ func (a *Agent) summaryProjectionState(commit summaryProjectionCommit) Compactio
 	now := time.Now().UTC()
 	summaryHash := summaryContentHash(commit.summary)
 	coveredHash := coveredPrefixHash(commit.canonical, commit.covered)
+	decision := a.maintenanceDecisionFor(commit.sourceTokens, commit.projectionTokens, commit.foldTrigger, commit.hardCeiling)
 	receipt := &ContextMaintenanceReceipt{
 		OperationID: fmt.Sprintf("summary-%d-%s", projectionVersion, commit.outputHash), Status: "applied",
 		Action: maintenanceActionSummary, Trigger: commit.trigger, SourceProjection: commit.projectionVersion,
 		ProjectionVersion: projectionVersion, CoveredCount: commit.covered, CoveredPrefixHash: coveredHash,
 		InputHash: commit.inputHash, OutputHash: commit.outputHash, InputTokens: commit.sourceTokens,
 		ResultTokens: commit.projectionTokens, SavedTokens: max(0, commit.sourceTokens-commit.projectionTokens),
-		SummaryHash: summaryHash, CacheBreak: true, CreatedAt: now,
+		HeadroomTokens: decision.Headroom(), FoldTriggerTokens: commit.foldTrigger,
+		HardCeilingTokens: commit.hardCeiling, ReductionRatio: decision.Reduction(),
+		MaintenanceState: decision.State(),
+		SummaryHash:      summaryHash, CacheBreak: true, CreatedAt: now,
 	}
 	// LastReceipt is authoritative; do not mirror last_trigger/last_mode/token
 	// counters or top-level blocked_* fields (stripped again on save).

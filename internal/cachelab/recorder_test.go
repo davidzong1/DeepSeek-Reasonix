@@ -192,9 +192,11 @@ func TestRecorderRecordsUsageGaps(t *testing.T) {
 		want      string
 		wantClass Class
 	}{
-		"no usage at all":       {body: `{"type":"message_stop"}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
-		"unknown vocabulary":    {body: `{"usage":{"total_token_count":42}}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
-		"prompt but no cache":   {body: `{"usage":{"input_tokens":42,"output_tokens":2}}`, want: UsageProblemNoCacheRead, wantClass: ClassNoCacheSplit},
+		"no usage at all":     {body: `{"type":"message_stop"}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
+		"unknown vocabulary":  {body: `{"usage":{"total_token_count":42}}`, want: UsageProblemNoUsage, wantClass: ClassUsageMissing},
+		"prompt but no cache": {body: `{"usage":{"input_tokens":42,"output_tokens":2}}`, want: UsageProblemNoCacheRead, wantClass: ClassNoCacheSplit},
+		// One object carrying two dialects: which one describes how the request
+		// was served is not decidable, so no split is claimed.
 		"mixed vocabularies":    {body: `{"usage":{"input_tokens":42,"prompt_tokens":42}}`, want: UsageProblemUnresolved, wantClass: ClassNoCacheSplit},
 		"negative openai split": {body: `{"usage":{"prompt_tokens":10,"cached_tokens":50}}`, want: UsageProblemNegativeSplit, wantClass: ClassNoCacheSplit},
 	}

@@ -110,6 +110,16 @@ type ContextMaintenanceReceipt struct {
 	Reason              string    `json:"reason,omitempty"`
 	BlockedInputHash    string    `json:"blocked_input_hash,omitempty"`
 	CreatedAt           time.Time `json:"created_at,omitempty"`
+	// HeadroomTokens, FoldTriggerTokens and HardCeilingTokens are the room the
+	// installed view left and the boundaries it was measured against, so the
+	// decision's claim can be recomputed from the receipt.
+	HeadroomTokens    int     `json:"headroom_tokens,omitempty"`
+	FoldTriggerTokens int     `json:"fold_trigger_tokens,omitempty"`
+	HardCeilingTokens int     `json:"hard_ceiling_tokens,omitempty"`
+	ReductionRatio    float64 `json:"reduction_ratio,omitempty"`
+	// MaintenanceState names which of the seven decision outcomes this was. It
+	// is finer than Status, which consumers already switch on.
+	MaintenanceState string `json:"maintenance_state,omitempty"`
 }
 
 // CompactionOutcome reports whether compactToProjection installed a projection.
@@ -410,60 +420,96 @@ func migrateLegacyCoveredPrefixHash(st *CompactionState, current, preRepair []pr
 	return true
 }
 
+// wireCall and wireMsg are the provider-visible subset of one message: the
+// fields that actually reach the wire, with everything local-only left out.
+// Their JSON tags are part of a persisted fingerprint — a projection sidecar
+// stores the hash of this encoding — so a tag must never be renamed.
+type wireCall struct {
+	ID               string `json:"id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Arguments        string `json:"args,omitempty"`
+	ThoughtSignature string `json:"ts,omitempty"`
+}
+
+type wireMsg struct {
+	Role               string                      `json:"r"`
+	Content            string                      `json:"c,omitempty"`
+	Images             []string                    `json:"img,omitempty"`
+	ImageInputs        []attachment.ImageInput     `json:"ii,omitempty"`
+	ReasoningContent   string                      `json:"rc,omitempty"`
+	ReasoningID        string                      `json:"rid,omitempty"`
+	ReasoningStatus    string                      `json:"rst,omitempty"`
+	ReasoningSignature string                      `json:"rsig,omitempty"`
+	ToolCallID         string                      `json:"tid,omitempty"`
+	Name               string                      `json:"n,omitempty"`
+	ToolCalls          []wireCall                  `json:"tc,omitempty"`
+	ThinkingBlocks     []provider.ThinkingBlock    `json:"tb,omitempty"`
+	ResponsesItems     []json.RawMessage           `json:"ri,omitempty"`
+	ServerSearch       []provider.ServerSearchCall `json:"ss,omitempty"`
+}
+
+// providerWireMessageOf projects one message onto the fields a provider sees.
+func providerWireMessageOf(m provider.Message) wireMsg {
+	wm := wireMsg{
+		Role:               string(m.Role),
+		Content:            m.Content,
+		Images:             append([]string(nil), m.Images...),
+		ImageInputs:        attachment.CloneImageInputs(m.ImageInputs),
+		ReasoningContent:   m.ReasoningContent,
+		ReasoningID:        m.ReasoningID,
+		ReasoningStatus:    m.ReasoningStatus,
+		ReasoningSignature: m.ReasoningSignature,
+		ThinkingBlocks:     m.ThinkingBlocks,
+		ToolCallID:         m.ToolCallID,
+		Name:               m.Name,
+	}
+	for _, tc := range m.ToolCalls {
+		wm.ToolCalls = append(wm.ToolCalls, wireCall{
+			ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments, ThoughtSignature: tc.ThoughtSignature,
+		})
+	}
+	if len(m.ResponsesItems) > 0 {
+		wm.ResponsesItems = make([]json.RawMessage, len(m.ResponsesItems))
+		for i, item := range m.ResponsesItems {
+			wm.ResponsesItems[i] = append(json.RawMessage(nil), item...)
+		}
+	}
+	if len(m.ServerSearch) > 0 {
+		wm.ServerSearch = append([]provider.ServerSearchCall(nil), m.ServerSearch...)
+	}
+	return wm
+}
+
+// providerVisibleMessageDigests fingerprints each message separately, in message
+// order, so two requests can be compared message by message instead of only by
+// a whole-array hash. It covers exactly the fields providerVisibleFingerprint
+// covers — a local-only change must not move a digest, and a provider-visible
+// one must — because both encode the same wireMsg.
+//
+// The cost is one JSON encode per message, which is the same order as the
+// whole-array fingerprint the projection checks already compute.
+func providerVisibleMessageDigests(msgs []provider.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		b, err := json.Marshal(providerWireMessageOf(m))
+		if err != nil {
+			// A message that cannot be encoded is not silently treated as
+			// unchanged: an empty digest differs from every real one, so the
+			// comparison reports the divergence instead of hiding it.
+			out = append(out, "")
+			continue
+		}
+		sum := sha256.Sum256(b)
+		out = append(out, hex.EncodeToString(sum[:8]))
+	}
+	return out
+}
+
 // providerVisibleFingerprint is the stable hash of fields that reach a provider.
 func providerVisibleFingerprint(msgs []provider.Message) string {
-	type wireCall struct {
-		ID               string `json:"id,omitempty"`
-		Name             string `json:"name,omitempty"`
-		Arguments        string `json:"args,omitempty"`
-		ThoughtSignature string `json:"ts,omitempty"`
-	}
-	type wireMsg struct {
-		Role               string                      `json:"r"`
-		Content            string                      `json:"c,omitempty"`
-		Images             []string                    `json:"img,omitempty"`
-		ImageInputs        []attachment.ImageInput     `json:"ii,omitempty"`
-		ReasoningContent   string                      `json:"rc,omitempty"`
-		ReasoningID        string                      `json:"rid,omitempty"`
-		ReasoningStatus    string                      `json:"rst,omitempty"`
-		ReasoningSignature string                      `json:"rsig,omitempty"`
-		ToolCallID         string                      `json:"tid,omitempty"`
-		Name               string                      `json:"n,omitempty"`
-		ToolCalls          []wireCall                  `json:"tc,omitempty"`
-		ThinkingBlocks     []provider.ThinkingBlock    `json:"tb,omitempty"`
-		ResponsesItems     []json.RawMessage           `json:"ri,omitempty"`
-		ServerSearch       []provider.ServerSearchCall `json:"ss,omitempty"`
-	}
 	wire := make([]wireMsg, 0, len(msgs))
 	for _, m := range msgs {
-		wm := wireMsg{
-			Role:               string(m.Role),
-			Content:            m.Content,
-			Images:             append([]string(nil), m.Images...),
-			ImageInputs:        attachment.CloneImageInputs(m.ImageInputs),
-			ReasoningContent:   m.ReasoningContent,
-			ReasoningID:        m.ReasoningID,
-			ReasoningStatus:    m.ReasoningStatus,
-			ReasoningSignature: m.ReasoningSignature,
-			ThinkingBlocks:     m.ThinkingBlocks,
-			ToolCallID:         m.ToolCallID,
-			Name:               m.Name,
-		}
-		for _, tc := range m.ToolCalls {
-			wm.ToolCalls = append(wm.ToolCalls, wireCall{
-				ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments, ThoughtSignature: tc.ThoughtSignature,
-			})
-		}
-		if len(m.ResponsesItems) > 0 {
-			wm.ResponsesItems = make([]json.RawMessage, len(m.ResponsesItems))
-			for i, item := range m.ResponsesItems {
-				wm.ResponsesItems[i] = append(json.RawMessage(nil), item...)
-			}
-		}
-		if len(m.ServerSearch) > 0 {
-			wm.ServerSearch = append([]provider.ServerSearchCall(nil), m.ServerSearch...)
-		}
-		wire = append(wire, wm)
+		wire = append(wire, providerWireMessageOf(m))
 	}
 	b, err := json.Marshal(wire)
 	if err != nil {

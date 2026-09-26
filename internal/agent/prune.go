@@ -104,6 +104,7 @@ func (a *Agent) pruneToolResultsToProjectionLocked(ctx context.Context, trigger 
 		trigger: trigger, action: maintenanceActionPrune, state: stateSnapshot,
 		canonical: canonical, transcriptVersion: transcriptVersion,
 		visible: visible, projected: projected, affected: affected,
+		foldTrigger: a.compactTrigger(), hardCeiling: a.hardInputCeiling(),
 	})
 }
 

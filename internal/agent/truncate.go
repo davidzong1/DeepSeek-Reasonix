@@ -40,6 +40,7 @@ func (a *Agent) truncateToProjectionLocked(ctx context.Context, trigger string, 
 		trigger: trigger, action: maintenanceActionTruncate, state: stateSnapshot,
 		canonical: canonical, transcriptVersion: transcriptVersion,
 		visible: visible, projected: projected, affected: affected,
+		foldTrigger: target, hardCeiling: a.hardInputCeiling(),
 	})
 }
 

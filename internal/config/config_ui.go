@@ -356,6 +356,25 @@ func (c *Config) ColdResumePruneEnabled() bool {
 	return *c.Agent.ColdResumePrune
 }
 
+// LowYieldLatchEnabled reports whether a view a fold failed to give headroom is
+// barred from another summary. Default true.
+func (c *Config) LowYieldLatchEnabled() bool {
+	if c == nil || c.Agent.LowYieldLatch == nil {
+		return true
+	}
+	return *c.Agent.LowYieldLatch
+}
+
+// ShapeDiagnosisEnabled reports whether the provider-visible message array is
+// fingerprinted. Default true: it is the only local signal that tells an append
+// from a rewrite of bytes the provider already read.
+func (c *Config) ShapeDiagnosisEnabled() bool {
+	if c == nil || c.Agent.ShapeDiagnosis == nil {
+		return true
+	}
+	return *c.Agent.ShapeDiagnosis
+}
+
 // ResponseLanguage normalizes the top-level language preference for final
 // answers. Empty means auto: replies follow the current user turn.
 func (c *Config) ResponseLanguage() string {

@@ -300,6 +300,12 @@ type AgentConfig struct {
 	// its default 16% of the context window. Zero keeps the default behavior.
 	VisibleWindowTokens  int  `toml:"visible_window_tokens"`
 	CacheAwareCompaction bool `toml:"cache_aware_compaction"`
+	// LowYieldLatch bars a view from another summary once a fold has failed to
+	// give it headroom. nil = default enabled. See Options.DisableLowYieldLatch.
+	LowYieldLatch *bool `toml:"low_yield_latch"`
+	// ShapeDiagnosis fingerprints the provider-visible message array, which is
+	// what tells an append from a rewrite. nil = default enabled.
+	ShapeDiagnosis *bool `toml:"message_shape_diagnosis"`
 	// ContextRescue lets a fold that cannot recover the window certify a
 	// continuation into a fresh session instead of degrading to a lossy
 	// truncation. Off by default: acting on it rotates the session.

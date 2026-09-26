@@ -4,5 +4,9 @@
   "PrefixHash": "f3a96cb2ef7f9c39",
   "LogRewriteVersion": 0,
   "ToolSchemaTokens": 3355,
-  "SessionContextDigest": ""
+  "SessionContextDigest": "",
+  "Messages": {
+    "Hash": "",
+    "Count": 0
+  }
 }

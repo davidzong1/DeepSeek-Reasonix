@@ -22,6 +22,73 @@ type PrefixShape struct {
 	LogRewriteVersion    int
 	ToolSchemaTokens     int
 	SessionContextDigest string
+	// Messages fingerprints the conversation: the one part that grows every
+	// turn, and therefore where "appended to what was already sent" and
+	// "rewrote bytes the provider had already read" are told apart.
+	Messages MessageShape
+}
+
+// MessageShape fingerprints one request's provider-visible conversation — the
+// messages minus the system prompt — without keeping a body, argument or
+// credential. The system prompt is excluded on purpose: it and the tool schemas
+// have their own hash, and folding them in would report one change as two.
+type MessageShape struct {
+	// Hash identifies the whole conversation and is what gets published.
+	Hash string
+	// Count is how many conversation messages the array carried; the system
+	// prompt is not one of them.
+	Count int
+	// digests is one fingerprint per message, at the message's own index. It
+	// places the first divergence between two requests and is local-only: no
+	// caller outside this package reads it.
+	digests []string
+}
+
+// CaptureMessageShape fingerprints the provider-visible conversation of one
+// request. Its callers pass the same list they hand the provider, so the shape
+// describes what was actually sent; every role=system message is skipped so this
+// shape and SystemHash never report the same change.
+func CaptureMessageShape(messages []provider.Message) MessageShape {
+	digests := providerVisibleMessageDigests(conversationMessages(messages))
+	return MessageShape{Hash: shortHash(digests), Count: len(digests), digests: digests}
+}
+
+// conversationMessages drops the system prompt from a provider-bound list, at
+// any position, so the remaining indices are the conversation's own.
+func conversationMessages(messages []provider.Message) []provider.Message {
+	conversation := make([]provider.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == provider.RoleSystem {
+			continue
+		}
+		conversation = append(conversation, m)
+	}
+	return conversation
+}
+
+// messageDivergence places the first message at which two consecutive requests
+// disagree, which is the whole point of keeping per-message digests.
+//
+// comparable is false when there is no previous request to compare against — a
+// session's first request, or a shape captured before this field existed. An
+// incomparable pair reports nothing rather than inventing an append-only
+// verdict it cannot support.
+//
+// offset is the index of the first differing message, and on an append-only
+// request it equals the previous request's message count. rewritten is how many
+// messages of the previous request this one did not reuse: zero for append-only,
+// positive when bytes the provider had already read were rewritten in place.
+// A shorter array than the previous one reports the truncation as a rewrite of
+// everything past the new end, which is what the provider re-reads.
+func messageDivergence(prev, cur MessageShape) (offset, rewritten int, comparable bool) {
+	if prev.Hash == "" {
+		return -1, 0, false
+	}
+	common := 0
+	for common < len(prev.digests) && common < len(cur.digests) && prev.digests[common] == cur.digests[common] {
+		common++
+	}
+	return common, max(len(prev.digests)-common, 0), true
 }
 
 // CacheDiagnostics is a type alias for event.CacheDiagnostics so the agent
@@ -115,15 +182,27 @@ func CompareShape(prev, cur PrefixShape, usage *provider.Usage, contentReasons [
 		reasons = append(reasons, cachereason.SessionContext)
 	}
 	reasons = append(reasons, contentReasons...)
+	// A rewrite something already explains — a system refresh, a tool-surface
+	// change, a session-context revision, a claimed fold — is read as that
+	// reason. One nothing explains is named, not passed as an ordinary append.
+	divergenceOffset, rewritten, comparable := messageDivergence(prev.Messages, cur.Messages)
+	if rewritten > 0 && len(reasons) == 0 {
+		reasons = append(reasons, cachereason.Messages)
+	}
 	var miss, hit int
 	if usage != nil {
 		miss = usage.CacheMissTokens
 		hit = usage.CacheHitTokens
 	}
 	return CacheDiagnostics{
-		PrefixHash:          cur.PrefixHash,
-		PrefixChanged:       len(reasons) > 0,
-		PrefixChangeReasons: reasons,
+		PrefixHash:            cur.PrefixHash,
+		PrefixChanged:         len(reasons) > 0,
+		PrefixChangeReasons:   reasons,
+		MessagePrefixHash:     cur.Messages.Hash,
+		MessageCount:          cur.Messages.Count,
+		FirstDivergenceOffset: divergenceOffset,
+		MessagesRewritten:     rewritten,
+		MessagesComparable:    comparable,
 		// The stable prefix (system + tools) is what a provider cache keys on.
 		// prev.PrefixHash cannot report it: it also folds in the turn tail's
 		// digest, so a tail-only change moves it.

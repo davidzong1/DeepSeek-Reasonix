@@ -234,6 +234,18 @@ func cacheSessionTotals(key team.OwnerKey, usage team.OwnerUsage) team.CacheSess
 		out.LastTurnHit = usage.LastTurn.CacheHitTokens
 		out.LastTurnMiss = usage.LastTurn.CacheMissTokens
 	}
+	// The writer's maintenance spend is the session's own cumulative count, so it
+	// travels with the session ledger rather than with any one request. Absent on
+	// a document written before it existed, which is unknown rather than zero.
+	out.MaintenancePublished = usage.Maintenance != nil
+	if usage.Maintenance != nil {
+		out.Maintenance = team.CacheSessionMaintenance{
+			SummaryRequests:    usage.Maintenance.SummaryRequests,
+			ProjectionInstalls: usage.Maintenance.ProjectionInstalls,
+			RescueCount:        usage.Maintenance.RescueCount,
+			RepeatBlocks:       usage.Maintenance.RepeatBlocks,
+		}
+	}
 	return out
 }
 
@@ -309,7 +321,78 @@ func renderCacheCoverage(report team.CacheReport) string {
 		c.RouteBucketPresent, c.Scoped, c.ModelRefPresent, c.Scoped,
 		c.UsageSourcePresent, c.Scoped, c.DiagnosticsPresent, c.Scoped,
 		c.SessionPresent, c.Scoped)
+	fmt.Fprintf(&b, "  session_identity=%d/%d (present/scoped); a sample without one cannot have its cold status decided\n",
+		c.SessionIdentityPresent, c.Scoped)
+	fmt.Fprintf(&b, "  message_shape_comparable=%d/%d (scoped); a sample without it cannot be told apart from a rewrite\n",
+		c.MessageShapeComparable, c.Scoped)
 	return b.String()
+}
+
+// renderCacheMissCauses renders the partition of received samples by the local
+// event that can explain each miss. It is the report's answer to "which of these
+// misses did this repository cause", and its last rows are the classes that say
+// "none of the above" — which is the honest answer more often than not.
+func renderCacheMissCauses(report team.CacheReport) string {
+	causes := report.MissCauses
+	if len(causes.Causes) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "miss causes over %d scoped samples (partition; append allowance %d tok):\n",
+		causes.ScopedRequests, causes.AppendBlockAllowance)
+	for _, stat := range causes.Causes {
+		share := 0.0
+		if causes.ScopedMissTokens > 0 {
+			share = float64(stat.MissTokens) / float64(causes.ScopedMissTokens)
+		}
+		fmt.Fprintf(&b, "  %-30s requests=%-6d eligible=%-6d miss=%-10d (%.0f%% of scoped miss)\n",
+			stat.Cause, stat.Requests, stat.BaselineEligible, stat.MissTokens, share*100)
+	}
+	if causes.UncheckedAppendSamples > 0 {
+		fmt.Fprintf(&b, "  note: %d residual samples had no predecessor prompt, so the append split could not be made for them\n",
+			causes.UncheckedAppendSamples)
+	}
+	return b.String()
+}
+
+// renderCacheTurnCost renders the per-turn cost ledger, the maintenance cost and
+// the list of what this dataset cannot measure. Every per-turn figure prints n/a
+// rather than a fabricated zero when the samples carried no turn identity, and
+// the unobservable list travels with the numbers so an absent metric is never
+// read as a zero one.
+func renderCacheTurnCost(turns team.CacheTurnTotals, maintenance team.CacheMaintenanceCost) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "per logical turn (turns=%d requests=%d requests_without_turn=%d)\n",
+		turns.Turns, turns.Requests, turns.RequestsWithoutTurn)
+	fmt.Fprintf(&b, "  prompt/turn=%s hit/turn=%s miss/turn=%s completion/turn=%s requests/turn=%s\n",
+		formatPerTurn(turns.PromptTokensPerTurn()), formatPerTurn(turns.HitTokensPerTurn()),
+		formatPerTurn(turns.MissTokensPerTurn()), formatPerTurn(turns.CompletionTokensPerTurn()),
+		formatPerTurn(turns.RequestsPerTurn()))
+	fmt.Fprintf(&b, "maintenance cost (announcement counts, not operation counts)\n")
+	fmt.Fprintf(&b, "  rewrite_requests=%d structural_requests=%d rotations=%d rotations_per_100_turns=%s rewrite_requests_per_turn=%s\n",
+		maintenance.RewriteRequests, maintenance.StructuralRequests, maintenance.Rotations,
+		formatPerTurn(maintenance.RotationsPer100Turns(turns.Turns)),
+		formatPerTurn(maintenance.RewriteRequestsPerTurn(turns.Turns)))
+	fmt.Fprintf(&b, "  cold_start_miss_tokens=%d (first session %d, rotations %d)\n",
+		maintenance.ColdStartMissTokens, maintenance.FirstSessionColdMissTokens,
+		maintenance.ColdStartMissTokens-maintenance.FirstSessionColdMissTokens)
+	if len(maintenance.FinishReasons) > 0 {
+		fmt.Fprintf(&b, "  finish reasons (a completion signal, not a task-quality verdict): %s\n",
+			strings.Join(maintenance.FinishReasons, ", "))
+	}
+	b.WriteString("what this dataset cannot measure (stated here, never reported as zero)\n")
+	for _, line := range team.CacheReportUnobservable() {
+		fmt.Fprintf(&b, "  - %s\n", line)
+	}
+	return b.String()
+}
+
+// formatPerTurn renders a per-turn figure that may have no denominator.
+func formatPerTurn(value float64, ok bool) string {
+	if !ok {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.0f", value)
 }
 
 // renderCacheAllSamples renders the whole-input token ledger beside the
@@ -353,6 +436,8 @@ func renderCacheReport(report team.CacheReport) string {
 		report.Exclusions.UnverifiedRequestCount)
 	b.WriteString(renderCacheCoverage(report))
 	b.WriteString(renderCacheAllSamples(report))
+	b.WriteString(renderCacheMissCauses(report))
+	b.WriteString(renderCacheTurnCost(report.TurnCost, report.MaintenanceCost))
 	fmt.Fprint(&b, "\noverall (request-level, eligible samples only)\n")
 	b.WriteString(renderCacheGroup(report.Overall))
 	b.WriteString("\nby prompt bucket\n")
@@ -381,6 +466,10 @@ func renderCacheReport(report team.CacheReport) string {
 		formatCacheRate(report.Sessions.MemberSimpleMean, report.Sessions.HasMemberMean))
 	fmt.Fprintf(&b, "  last turn across members: token_weighted=%s\n",
 		formatCacheRate(report.Sessions.LastTurnWeightedRate, report.Sessions.HasLastTurnRate))
+	m := report.Sessions.Maintenance
+	fmt.Fprintf(&b, "  maintenance spend: summary_requests=%d projection_installs=%d rescues=%d repeat_blocks=%d (published by %d of %d members)\n",
+		m.SummaryRequests, m.ProjectionInstalls, m.RescueCount, m.RepeatBlocks,
+		report.Sessions.MaintenanceMembers, report.Sessions.Totals.Members)
 	return b.String()
 }
 

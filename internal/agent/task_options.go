@@ -21,27 +21,29 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
 	return &TaskTool{
-		imageInput:           opts.ImageInput,
-		prov:                 opts.Provider,
-		pricing:              opts.Pricing,
-		quoteContext:         opts.QuoteContext,
-		parentReg:            opts.ParentRegistry,
-		maxSteps:             opts.MaxSteps,
-		contextWindow:        opts.ContextWindow,
-		visibleWindowTokens:  opts.VisibleWindowTokens,
-		cacheAwareCompaction: opts.CacheAwareCompaction,
-		recentKeep:           opts.RecentKeep,
-		compactRatio:         opts.CompactRatio,
-		temperature:          opts.Temperature,
-		archiveDir:           opts.ArchiveDir,
-		keepPolicy:           opts.KeepPolicy,
-		sysPrompt:            sysPrompt,
-		gate:                 opts.Gate,
-		subagentModel:        opts.SubagentModel,
-		subagentEffort:       opts.SubagentEffort,
-		resolveProvider:      opts.ResolveProvider,
-		maxSubagentDepth:     DefaultMaxSubagentDepth,
-		imageResolver:        opts.ImageRequestResolver,
+		imageInput:            opts.ImageInput,
+		prov:                  opts.Provider,
+		pricing:               opts.Pricing,
+		quoteContext:          opts.QuoteContext,
+		parentReg:             opts.ParentRegistry,
+		maxSteps:              opts.MaxSteps,
+		contextWindow:         opts.ContextWindow,
+		visibleWindowTokens:   opts.VisibleWindowTokens,
+		cacheAwareCompaction:  opts.CacheAwareCompaction,
+		lowYieldLatch:         !opts.DisableLowYieldLatch,
+		messageShapeDiagnosis: !opts.DisableShapeDiagnosis,
+		recentKeep:            opts.RecentKeep,
+		compactRatio:          opts.CompactRatio,
+		temperature:           opts.Temperature,
+		archiveDir:            opts.ArchiveDir,
+		keepPolicy:            opts.KeepPolicy,
+		sysPrompt:             sysPrompt,
+		gate:                  opts.Gate,
+		subagentModel:         opts.SubagentModel,
+		subagentEffort:        opts.SubagentEffort,
+		resolveProvider:       opts.ResolveProvider,
+		maxSubagentDepth:      DefaultMaxSubagentDepth,
+		imageResolver:         opts.ImageRequestResolver,
 	}
 }
 
@@ -51,27 +53,29 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 // must stay uniform across those paths — add new fields here, not at call sites.
 func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string, mutationObserver *checkpoint.MutationObserver) Options {
 	opts := Options{
-		ImageInput:           t.imageInput,
-		MaxSteps:             maxSteps,
-		MaxOutputTokens:      childOutputBudgetFrom(ctx),
-		Temperature:          t.temperature,
-		Pricing:              pricing,
-		QuoteContext:         t.quoteContext,
-		UsageSource:          event.UsageSourceSubagent,
-		Gate:                 t.gate,
-		ContextWindow:        ctxWin,
-		VisibleWindowTokens:  t.visibleWindowTokens,
-		CacheAwareCompaction: t.cacheAwareCompaction,
-		RecentKeep:           t.recentKeep,
-		CompactRatio:         t.compactRatio,
-		ArchiveDir:           t.archiveDir,
-		KeepPolicy:           t.keepPolicy,
-		ResponseLanguage:     ResponseLanguageFromContext(ctx),
-		ReasoningLanguage:    ReasoningLanguageFromContext(ctx),
-		SubagentDepth:        childDepth,
-		MaxSubagentDepth:     t.maxDepth(),
-		Ablation:             t.ablation,
-		WorkspaceLease:       t.workspaceLease,
+		ImageInput:            t.imageInput,
+		MaxSteps:              maxSteps,
+		MaxOutputTokens:       childOutputBudgetFrom(ctx),
+		Temperature:           t.temperature,
+		Pricing:               pricing,
+		QuoteContext:          t.quoteContext,
+		UsageSource:           event.UsageSourceSubagent,
+		Gate:                  t.gate,
+		ContextWindow:         ctxWin,
+		VisibleWindowTokens:   t.visibleWindowTokens,
+		CacheAwareCompaction:  t.cacheAwareCompaction,
+		DisableLowYieldLatch:  !t.lowYieldLatch,
+		DisableShapeDiagnosis: !t.messageShapeDiagnosis,
+		RecentKeep:            t.recentKeep,
+		CompactRatio:          t.compactRatio,
+		ArchiveDir:            t.archiveDir,
+		KeepPolicy:            t.keepPolicy,
+		ResponseLanguage:      ResponseLanguageFromContext(ctx),
+		ReasoningLanguage:     ReasoningLanguageFromContext(ctx),
+		SubagentDepth:         childDepth,
+		MaxSubagentDepth:      t.maxDepth(),
+		Ablation:              t.ablation,
+		WorkspaceLease:        t.workspaceLease,
 		// WriteIntentGate is deliberately not inherited: a child queued behind
 		// the intent its parent holds would wait for a release that only lands
 		// when the child returns. Children keep the lease — the authority.
@@ -115,6 +119,8 @@ type TaskToolOptions struct {
 	ContextWindow                         int
 	VisibleWindowTokens                   int
 	CacheAwareCompaction                  bool
+	DisableLowYieldLatch                  bool
+	DisableShapeDiagnosis                 bool
 	RecentKeep                            int
 	SoftCompactRatio                      float64
 	ToolResultSnipRatio                   float64

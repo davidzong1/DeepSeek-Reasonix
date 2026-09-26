@@ -2002,6 +2002,7 @@ func (a *App) buildSettingReplacementController(tab *WorkspaceTab, snap tabRunti
 		EffortOverride:       cloneStringPtr(snap.effort),
 		EffortModel:          snap.model,
 		SharedHost:           a.lookupSharedHost(snap.sharedHostKey), BrowserExecutor: a.browserExecutorForRuntime(tab.ID, snap.sink),
+		SharedSkillWatchService:  a.sharedSkillWatchService(),
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SubagentParentLive:       a.subagentParentProbeForBuild(tab),
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),

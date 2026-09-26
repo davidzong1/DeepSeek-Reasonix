@@ -393,3 +393,108 @@ func TestLastTurnSnapshotCarriesTheLatestDiagnosis(t *testing.T) {
 		t.Fatalf("last turn = %+v, want the additive request-shape fields mapped through", doc.LastTurn)
 	}
 }
+
+// cacheMaintenanceEvent is one decision as the agent emits it, carrying only the
+// diagnosis fields this projection reads.
+func cacheMaintenanceEvent(state string, headroom int, reduction float64) event.Event {
+	return event.Event{Kind: event.ContextMaintenanceEvent, Maintenance: &event.ContextMaintenance{
+		Status: "applied", Action: "summary", MaintenanceState: state,
+		HeadroomTokens: headroom, ReductionRatio: reduction,
+	}}
+}
+
+// A request recorded after a decision carries that decision, so the diagnosis
+// can be verified per sample rather than only as a session total.
+func TestObservedRequestCarriesThePrecedingMaintenanceDecision(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	f.sink.Emit(cacheMaintenanceEvent("low_yield", 2801, 0.42))
+	f.sink.Emit(fullCacheUsageEvent())
+	got := f.observedCacheRequests(t)[0]
+
+	if !got.MaintenanceObserved {
+		t.Fatalf("record = %+v, want the preceding decision observed", got)
+	}
+	if got.MaintenanceState != "low_yield" || got.HeadroomTokens != 2801 || got.ReductionRatio != 0.42 {
+		t.Fatalf("maintenance = (%q,%d,%v), want the emitted decision", got.MaintenanceState, got.HeadroomTokens, got.ReductionRatio)
+	}
+}
+
+// The absence of a decision must survive as unobserved. The distinction is the
+// whole point of the gate: a fold can buy no headroom, so a zero headroom is a
+// real measurement and cannot double as "nothing happened".
+func TestObservedRequestWithoutADecisionLeavesTheDiagnosisUnobserved(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	f.sink.Emit(fullCacheUsageEvent())
+	got := f.observedCacheRequests(t)[0]
+
+	if got.MaintenanceObserved || got.MaintenanceState != "" {
+		t.Fatalf("record = %+v, want an unobserved diagnosis", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"maintenance_state", `"headroom_tokens"`, `"reduction_ratio"`, `"maintenance_observed"`} {
+		if strings.Contains(string(encoded), key) {
+			t.Fatalf("an unobserved diagnosis wrote %s: %s", key, encoded)
+		}
+	}
+}
+
+// A recorded zero must be readable as a measurement, not as a gap: a fold that
+// exactly met its boundary leaves no headroom, and that is a fact.
+func TestObservedRequestKeepsARecordedZero(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	f.sink.Emit(cacheMaintenanceEvent("recovered", 0, 0))
+	f.sink.Emit(fullCacheUsageEvent())
+	got := f.observedCacheRequests(t)[0]
+
+	if !got.MaintenanceObserved || got.MaintenanceState != "recovered" {
+		t.Fatalf("record = %+v, want the observed decision", got)
+	}
+	if got.HeadroomTokens != 0 || got.ReductionRatio != 0 {
+		t.Fatalf("headroom/reduction = %d/%v, want the recorded zeros", got.HeadroomTokens, got.ReductionRatio)
+	}
+}
+
+// The decision is stamped on the requests that follow it, and an event carrying
+// no state is not a decision that undid the last one.
+func TestMaintenanceDecisionStampsFollowingRequestsOnly(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	first := fullCacheUsageEvent()
+	f.sink.Emit(first)
+	f.sink.Emit(cacheMaintenanceEvent("at_ceiling", 12, 0.9))
+	f.sink.Emit(event.Event{Kind: event.ContextMaintenanceEvent, Maintenance: &event.ContextMaintenance{Status: "noop"}})
+	second := fullCacheUsageEvent()
+	second.Sequence = 43
+	f.sink.Emit(second)
+
+	waitForCondition(t, func() bool {
+		recs, _ := f.owners.ReadCacheRequests(context.Background(), team.OwnerKey{TeamID: f.teamName, MemberID: f.memberID})
+		return len(recs) == 2
+	})
+	recs, err := f.owners.ReadCacheRequests(context.Background(), team.OwnerKey{TeamID: f.teamName, MemberID: f.memberID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].MaintenanceObserved {
+		t.Fatalf("the request before the decision carries it: %+v", recs[0])
+	}
+	if !recs[1].MaintenanceObserved || recs[1].MaintenanceState != "at_ceiling" {
+		t.Fatalf("the request after the decision = %+v, want it observed", recs[1])
+	}
+}
+
+// The frame the frontend sees must not change shape because the record gained a
+// field: the maintenance event is still forwarded, diagnosis included.
+func TestMaintenanceEventStillReachesTheFrontend(t *testing.T) {
+	f := newCacheObservationFixture(t)
+	f.sink.Emit(cacheMaintenanceEvent("blocked", 7, 0.1))
+	if len(f.forwarded) != 1 {
+		t.Fatalf("forwarded %d events, want the maintenance event forwarded too", len(f.forwarded))
+	}
+	m := f.forwarded[0].Maintenance
+	if m == nil || m.MaintenanceState != "blocked" || m.HeadroomTokens != 7 || m.ReductionRatio != 0.1 {
+		t.Fatalf("forwarded maintenance = %+v, want the decision unchanged", m)
+	}
+}

@@ -278,18 +278,6 @@ func (r CacheReport) AllSamplesTotals() CacheTokenTotals {
 	return totals
 }
 
-// CacheSessionTotals is one member's published session cache ledger: the input
-// to the session-cumulative rate, which is a different number from any
-// per-request rate.
-type CacheSessionTotals struct {
-	TeamID       string `json:"team_id"`
-	MemberID     string `json:"member_id"`
-	CacheHit     int    `json:"session_cache_hit"`
-	CacheMiss    int    `json:"session_cache_miss"`
-	LastTurnHit  int    `json:"last_turn_cache_hit"`
-	LastTurnMiss int    `json:"last_turn_cache_miss"`
-}
-
 // CacheReportInput is one reproduction of the baseline: the samples, the
 // session ledgers, and the window and thresholds they were selected under. All
 // of it is recorded in the output, so a result can be re-run and not merely
@@ -352,6 +340,16 @@ type CacheReport struct {
 	// Coverage is the field-coverage ledger over the member-scoped samples: how
 	// much of the report rests on a dimension that was actually present.
 	Coverage CacheReportCoverage `json:"coverage"`
+	// MissCauses partitions the same scoped population by the local event that can
+	// explain each request's miss: it separates "the turn rewrote its own prefix"
+	// from "nothing local changed and the provider still missed".
+	MissCauses CacheMissCauseReport `json:"miss_causes"`
+	// TurnCost is the plan's per-logical-turn cost ledger and its compaction-cost
+	// telemetry, both derived from the same scoped samples as everything above.
+	TurnCost CacheTurnTotals `json:"turn_cost"`
+	// MaintenanceCost is the announcement-count view of what maintenance did to
+	// the scoped samples, including rescue rotations and cold-start miss tokens.
+	MaintenanceCost CacheMaintenanceCost `json:"maintenance_cost"`
 	// Diagnosis holds the findings that compare strata with each other, which no
 	// single stratum can state on its own.
 	Diagnosis []CacheFinding `json:"diagnosis,omitempty"`
@@ -372,6 +370,11 @@ type CacheSessionReport struct {
 	HasMemberMean        bool              `json:"has_member_mean"`
 	LastTurnWeightedRate float64           `json:"last_turn_token_weighted_rate"`
 	HasLastTurnRate      bool              `json:"has_last_turn_rate"`
+	// Maintenance is the summed published maintenance spend, and
+	// MaintenanceMembers is how many members published one. The count travels
+	// with the sum so a partial total is never read as a whole-session one.
+	Maintenance        CacheSessionMaintenance `json:"maintenance"`
+	MaintenanceMembers int                     `json:"maintenance_members"`
 }
 
 // BuildCacheReport aggregates one reproducible baseline. Every received sample
@@ -406,6 +409,8 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 	members := map[string]bool{}
 	models := map[string]bool{}
 	routes := map[string]bool{}
+	missCauses := newCacheMissCauseTracker()
+	turnCost := newCacheTurnReport()
 	for _, rec := range in.Requests {
 		report.Exclusions.Received++
 		if !in.windowContains(rec) {
@@ -418,7 +423,11 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 		}
 		report.Coverage.observe(rec)
 		bucket := in.bucketKeyOf(rec, &report.PromptBasis)
-		if eligible := cacheRequestIsBaselineEligible(rec); !eligible {
+		cause := missCauses.observe(rec)
+		eligible := cacheRequestIsBaselineEligible(rec)
+		report.MissCauses.add(cause, eligible)
+		turnCost.add(rec, classifyCacheMiss(cause))
+		if !eligible {
 			countCacheExclusions(rec, &report.Exclusions)
 			bookExcludedTokens(rec, &report.Exclusions)
 			groups.buckets[bucket].exclude(rec)
@@ -442,6 +451,8 @@ func BuildCacheReport(in CacheReportInput) CacheReport {
 	report.Stages = renderGroupStats(cacheRequestStages, groups.stages, gates)
 	report.Intervals = renderGroupStats(cacheRequestIntervals, groups.intervals, gates)
 	report.Diagnosis = diagnoseCacheReport(report.Buckets, report.Intervals)
+	report.MissCauses.order()
+	report.TurnCost, report.MaintenanceCost = turnCost.result()
 	return report
 }
 

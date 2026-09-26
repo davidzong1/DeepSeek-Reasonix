@@ -469,6 +469,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 // runSummaryRequest admits, sends, and drains one summary request.
 // Named returns so defer can attach RequestCount and still return usage.
 func (a *Agent) runSummaryRequest(ctx context.Context, req provider.Request) (summary string, usage *provider.Usage, err error) {
+	a.noteSummaryRequest()
 	req.Messages, err = a.resolveRequestImages(ctx, req.Messages)
 	if err != nil {
 		return "", nil, err

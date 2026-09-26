@@ -261,8 +261,16 @@ func eventSessionContextDiagnostics(observed turnContextDiagnostics) *event.Sess
 	}
 }
 
-func captureTurnContextShape(system string, schemas []provider.ToolSchema, rewriteVersion int, messages []provider.Message) PrefixShape {
+// captureTurnContextShape fingerprints the request's cacheable prefix. With
+// diagnoseMessages off the array is not fingerprinted at all, so CompareShape
+// reports every message offset as unmeasured rather than as zero.
+func captureTurnContextShape(system string, schemas []provider.ToolSchema, rewriteVersion int, messages []provider.Message, diagnoseMessages bool) PrefixShape {
 	shape := CaptureShape(system, schemas, rewriteVersion)
+	// ModelMessages first: the shape must describe the array the provider is
+	// handed, or a decision receipt it never saw would read as a divergence.
+	if diagnoseMessages {
+		shape.Messages = CaptureMessageShape(provider.ModelMessages(messages))
+	}
 	if snapshot, ok := latestTurnContextSnapshot(messages); ok {
 		shape.SessionContextDigest = snapshot.Digest
 		shape.PrefixHash = shortHash(map[string]string{

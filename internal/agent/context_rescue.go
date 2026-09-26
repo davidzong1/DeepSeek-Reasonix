@@ -253,6 +253,7 @@ func (m ContextManager) rescueOverCeiling(ctx context.Context, policy ContextPre
 		// discards this struct the moment err is non-nil.
 		prepared := m.currentPrepared()
 		prepared.Recovery = &plan
+		m.agent.noteMaintenanceDecision(maintenanceStateRescued)
 		return prepared, &ContextRescueRequired{Plan: plan}
 	case errors.Is(err, errContextRescueNotEligible):
 		return m.rescueByTruncation(ctx, policy, hard, cause)

@@ -385,7 +385,6 @@ func (r *Recorder) finishSample(idx, status int, body []byte, readErr error) {
 		// contract excludes from baselines instead of pooling it as warm.
 		r.attempt[pending.attemptKey] = sample.Attempt
 	}
-	r.samples = append(r.samples, sample)
 	journal := r.journal
 	r.mu.Unlock()
 	if journal != nil {
@@ -393,6 +392,11 @@ func (r *Recorder) finishSample(idx, status int, body []byte, readErr error) {
 		// reports the loss instead.
 		_ = journal.Append(sample)
 	}
+	// Publish the sample only after the journal attempt: a reader that waits for
+	// the sample and then reads the journal back would otherwise race its own line.
+	r.mu.Lock()
+	r.samples = append(r.samples, sample)
+	r.mu.Unlock()
 }
 
 // capturingWriter notes the status the proxy wrote before the body starts.

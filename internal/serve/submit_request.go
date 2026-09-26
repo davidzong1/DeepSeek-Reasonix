@@ -57,5 +57,16 @@ func decodeSubmitRequest(w http.ResponseWriter, r *http.Request) (submitRequest,
 		http.Error(w, "shell commands are unavailable over HTTP", http.StatusForbidden)
 		return submitRequest{}, "", false
 	}
+	if namesMigrationSource(trimmed) {
+		http.Error(w, "a migration source directory is unavailable over HTTP", http.StatusForbidden)
+		return submitRequest{}, "", false
+	}
 	return body, trimmed, true
+}
+
+// namesMigrationSource reports a /migrate that picks its own source: a host
+// directory to read and import, which only a local frontend may choose.
+func namesMigrationSource(input string) bool {
+	fields := strings.Fields(input)
+	return len(fields) > 1 && (fields[0] == "/migrate" || fields[0] == "/migration")
 }

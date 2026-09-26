@@ -25,6 +25,13 @@ const (
 	System         = "system"
 	Tools          = "tools"
 	SessionContext = "session_context"
+	// Messages is also reported by that comparison, for the one case the
+	// drained reasons cannot describe: the message array rewrote bytes it had
+	// already sent and no operation claimed the rewrite. A rewrite a caller did
+	// claim (compact_auto, prune, rewind_truncate, guardian_merge) reports that
+	// reason instead, so this value is the unexplained case and nothing else —
+	// which is what makes it worth alerting on rather than routine.
+	Messages = "messages"
 
 	// The authoritative leading system prompt was refreshed. All four are
 	// structural: the cache-stable system prefix is exactly what moved.
@@ -68,6 +75,11 @@ var kinds = map[string]Kind{
 	RewindTruncate: Rewrite,
 	RewindRestore:  Rewrite,
 	GuardianMerge:  Rewrite,
+
+	// Rewrite, not Structural: the framing is what it is, but an unexplained
+	// rewrite of the body is exactly the change a fold boundary could act on —
+	// and the change a reader must not mistake for a tail append.
+	Messages: Rewrite,
 }
 
 // KindOf returns what one reason value means. ok is false for a value outside
