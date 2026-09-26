@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"reasonix/internal/event"
@@ -13,10 +14,10 @@ type contextRecoveryBudget struct {
 	retries int
 }
 
-func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest, err error, budget *contextRecoveryBudget) (samplingRequest, bool, string) {
+func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest, err error, budget *contextRecoveryBudget) (samplingRequest, bool, string, error) {
 	limit := provider.AsContextLimitError(err)
 	if a == nil || limit == nil || budget == nil {
-		return samplingRequest{}, false, contextRecoveryFailed
+		return samplingRequest{}, false, contextRecoveryFailed, nil
 	}
 	omitted := frozen.req.MaxTokens == 0
 	if limit.PromptTokens > 0 {
@@ -69,39 +70,48 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 		a.emitContextRecoveryNotice(contextRecoveryLearnedRetry, limit, next.MaxTokens)
 		shape := a.requestCalibrationShape(next)
 		a.sess.output.activeReqShape.Store(&shape)
-		return samplingRequest{req: next}, true, contextRecoveryLearnedRetry
+		return samplingRequest{req: next}, true, contextRecoveryLearnedRetry, nil
 	}
 	if physical <= 0 && budget.retries == 0 {
 		startProjectionVersion := a.currentProjectionVersion()
 		if _, perr := a.contextManager().Prepare(ctx, ContextPreparePolicy{
 			Trigger: CompactionTriggerOverflow,
 			Force:   true,
+			// Keep the rescue policy across the provider-rejection recovery
+			// path. This call used to omit the opt-in and therefore converted
+			// an enabled rescue into truncation exactly at the hard boundary.
+			AllowContextRescue: a.contextRescue,
 		}); perr != nil {
+			// A rescue plan means the over-ceiling request must not be retried
+			// in this session. Return it intact so the controller can rotate.
+			if errors.Is(perr, ErrContextRescuePlanned) {
+				return samplingRequest{}, false, contextRecoveryFailed, perr
+			}
 			a.setLastRecovery(contextRecoveryFailed)
-			return samplingRequest{}, false, contextRecoveryFailed
+			return samplingRequest{}, false, contextRecoveryFailed, nil
 		}
 		if a.currentProjectionVersion() <= startProjectionVersion {
 			a.setLastRecovery(contextRecoveryFailed)
-			return samplingRequest{}, false, contextRecoveryFailed
+			return samplingRequest{}, false, contextRecoveryFailed, nil
 		}
 		rebuilt, rerr := a.buildSamplingRequest(ctx, CompactionTriggerPressure)
 		if rerr != nil {
 			a.setLastRecovery(contextRecoveryFailed)
-			return samplingRequest{}, false, contextRecoveryFailed
+			return samplingRequest{}, false, contextRecoveryFailed, nil
 		}
 		if aerr := a.applyAdmissionToRequest(&rebuilt.req); aerr != nil {
 			a.setLastRecovery(contextRecoveryFailed)
-			return samplingRequest{}, false, contextRecoveryFailed
+			return samplingRequest{}, false, contextRecoveryFailed, nil
 		}
 		budget.retries++
 		a.setLastRecovery(contextRecoveryCompacted)
 		a.emitContextRecoveryNotice(contextRecoveryCompacted, limit, rebuilt.req.MaxTokens)
 		shape := a.requestCalibrationShape(rebuilt.req)
 		a.sess.output.activeReqShape.Store(&shape)
-		return samplingRequest{req: freezeProviderRequest(rebuilt.req)}, true, contextRecoveryCompacted
+		return samplingRequest{req: freezeProviderRequest(rebuilt.req)}, true, contextRecoveryCompacted, nil
 	}
 	a.setLastRecovery(contextRecoveryFailed)
-	return samplingRequest{}, false, contextRecoveryFailed
+	return samplingRequest{}, false, contextRecoveryFailed, nil
 }
 
 func (a *Agent) emitContextRecoveryNotice(kind string, limit *provider.ContextLimitError, nextOutput int) {

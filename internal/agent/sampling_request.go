@@ -120,7 +120,18 @@ func (a *Agent) prepareSamplingRequest(ctx context.Context) (result samplingRequ
 		if _, perr := a.contextManager().Prepare(ctx, ContextPreparePolicy{
 			Trigger: CompactionTriggerOverflow,
 			Force:   true,
+			// Physical admission overflow is the last pre-send recovery
+			// boundary. Preserve the agent's rescue opt-in here; omitting it
+			// silently falls back to lossy truncation even when the normal
+			// pressure preflight was configured for cross-session rescue.
+			AllowContextRescue: a.contextRescue,
 		}); perr != nil {
+			// A certified rescue is a control-flow handoff. Preserve its
+			// carrier so the controller can rotate the session; returning the
+			// provider admission error here silently strands the plan.
+			if errors.Is(perr, ErrContextRescuePlanned) {
+				return samplingRequest{}, perr
+			}
 			return samplingRequest{}, err
 		}
 		if a.currentProjectionVersion() <= startProjectionVersion {

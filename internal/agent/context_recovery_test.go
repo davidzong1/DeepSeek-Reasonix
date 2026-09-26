@@ -183,6 +183,36 @@ func TestUnnumberedContextLimitSkipsIdenticalRetry(t *testing.T) {
 	}
 }
 
+func TestContextLimitRecoveryPropagatesContextRescuePlan(t *testing.T) {
+	msgs := rescueOverCeilingTranscript()
+	prov := &rescueProvider{
+		defaultReply: "## Goal\nfinish the pending refactor\n\n## Pending & next step\nrun the package tests",
+		failAt:       map[int]error{0: errors.New("summarizer unavailable")},
+	}
+	a := newRescueAgent(t, prov, msgs)
+	a.contextRescue = true
+	calibrateRescueEstimate(a, msgs)
+
+	// Make the provider's measured prompt exceed the learned window so the
+	// physical overflow branch must invoke ContextManager's rescue handoff.
+	limit := &provider.ContextLimitError{
+		APIError:         &provider.APIError{Provider: prov.Name(), Status: 400, Body: "context limit exceeded"},
+		WindowTokens:     rescueWindow,
+		PromptTokens:     a.hardInputCeiling() + 10_000,
+		CompletionTokens: 1_000,
+	}
+	_, ok, _, err := a.recoverContextLimit(context.Background(), samplingRequest{}, limit, &contextRecoveryBudget{})
+	if ok {
+		t.Fatal("a certified continuation plan must not be retried in the source session")
+	}
+	if !errors.Is(err, ErrContextRescuePlanned) {
+		t.Fatalf("recovery error = %v, want the rescue handoff", err)
+	}
+	if _, ok := ContextRescuePlanFromError(err); !ok {
+		t.Fatal("the recovery branch must preserve the certified plan for the controller")
+	}
+}
+
 func TestContextLimitRecoveryPublishesUnknownGatewayBudget(t *testing.T) {
 	limit := &provider.ContextLimitError{
 		APIError:         &provider.APIError{Provider: "compatible", Status: 400, Body: "context"},
