@@ -24,7 +24,9 @@ func (s *teamTaskService) translateCompleteError(target *team.Task, err error) e
 	if s.board == nil {
 		return fmt.Errorf("task %s changed state while this report was in flight: report again or ask the leader", target.ID)
 	}
-	row, loadErr := s.board.LoadTask(context.Background(), target.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	row, loadErr := s.board.LoadTask(ctx, target.ID)
 	if loadErr != nil && !errors.Is(loadErr, team.ErrTaskNotFound) {
 		return fmt.Errorf("task %s changed state while this report was in flight and its record could not be re-read: ask the leader for its status", target.ID)
 	}

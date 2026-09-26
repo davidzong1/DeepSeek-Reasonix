@@ -11,7 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 	"reasonix/internal/team"
 )
@@ -71,6 +73,40 @@ func TestTodoPanelScopedToBoundMember(t *testing.T) {
 	m.switchTeamMember("lead")
 	if got := ansi.Strip(m.renderTodoPanel()); !strings.Contains(got, "LEAD-LATE") {
 		t.Fatalf("switching back must replay the member's own list, got:\n%s", got)
+	}
+}
+
+// TestTodoPanelRestoresEachBoundSession pins the switch lifecycle: binding
+// clears the outgoing panel to prevent leakage, then restores the incoming
+// controller's committed projection. Returning to a member (including leader)
+// must show that member's existing list without needing a new todo_write event.
+func TestTodoPanelRestoresEachBoundSession(t *testing.T) {
+	writeTeamFixture(t, twoMemberTeam())
+	m := openTeamOverlay(t)
+	m.memberEvents = newMemberEventPump()
+	m.teamBackends = newTeamBackends(func(b team.MemberBinding) (control.SessionAPI, error) {
+		var todos []evidence.TodoItem
+		switch b.MemberID {
+		case "lead":
+			todos = []evidence.TodoItem{{Content: "LEAD-EXISTING", Status: "in_progress"}}
+		case "alice":
+			todos = []evidence.TodoItem{{Content: "ALICE-EXISTING", Status: "pending"}}
+		}
+		return stubBackend{label: b.MemberID, todos: todos}, nil
+	}, 4)
+	m = sized(t, m)
+
+	m.switchTeamMember("lead")
+	if got := ansi.Strip(m.renderTodoPanel()); !strings.Contains(got, "LEAD-EXISTING") {
+		t.Fatalf("binding leader must restore its committed list, got:\n%s", got)
+	}
+	m.switchTeamMember("alice")
+	if got := ansi.Strip(m.renderTodoPanel()); !strings.Contains(got, "ALICE-EXISTING") || strings.Contains(got, "LEAD-EXISTING") {
+		t.Fatalf("binding alice must show only her committed list, got:\n%s", got)
+	}
+	m.switchTeamMember("lead")
+	if got := ansi.Strip(m.renderTodoPanel()); !strings.Contains(got, "LEAD-EXISTING") || strings.Contains(got, "ALICE-EXISTING") {
+		t.Fatalf("switching back to leader must restore only the leader list, got:\n%s", got)
 	}
 }
 

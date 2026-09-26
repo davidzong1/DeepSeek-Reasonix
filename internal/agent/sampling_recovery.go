@@ -92,8 +92,13 @@ func (a *Agent) streamWithSamplingRecovery(parent context.Context, turn int) (te
 			}
 			return done
 		}
-		if attempt < maxSamplingAttempts && a.trySamplingRepair(ctx, &state, result, sink, attempt, id) {
-			continue
+		if attempt < maxSamplingAttempts {
+			retry, repairErr := a.trySamplingRepair(ctx, &state, result, sink, attempt, id)
+			if repairErr != nil {
+				result.err = repairErr
+			} else if retry {
+				continue
+			}
 		}
 		sink.Flush()
 		if !state.protocol {
@@ -166,30 +171,34 @@ func (a *Agent) recordRecoveredCandidate(result streamedTurn) {
 	event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: kind})
 }
 
-func (a *Agent) trySamplingRepair(ctx context.Context, s *samplingRecoveryState, result streamedTurn, sink *deferredStreamSink, attempt int, id string) bool {
+func (a *Agent) trySamplingRepair(ctx context.Context, s *samplingRecoveryState, result streamedTurn, sink *deferredStreamSink, attempt int, id string) (bool, error) {
 	if limit := provider.AsOutputLimitError(result.err); !s.output && limit != nil && s.frozen.req.MaxTokens > limit.MaxOutputTokens {
 		s.output = true
 		a.learnOutputBudget(limit.MaxOutputTokens)
 		s.frozen.req.MaxTokens = limit.MaxOutputTokens
 		sink.Discard()
 		a.emitStreamAttempt(id, event.StreamAttemptDiscard, attempt, "output_limit", result.err)
-		return true
+		return true, nil
 	}
-	if next, ok, _ := a.recoverContextLimit(ctx, s.frozen, result.err, &s.context); ok {
+	if next, ok, _, recoveryErr := a.recoverContextLimit(ctx, s.frozen, result.err, &s.context); recoveryErr != nil {
+		sink.Discard()
+		a.emitStreamAttempt(id, event.StreamAttemptDiscard, attempt, "context_rescue", recoveryErr)
+		return false, recoveryErr
+	} else if ok {
 		sink.Discard()
 		a.emitStreamAttempt(id, event.StreamAttemptDiscard, attempt, "context_limit", result.err)
 		s.frozen = next
-		return true
+		return true, nil
 	}
 	if s.protocol {
-		return false
+		return false, nil
 	}
 	next, ok := a.tryRecoverReasoningReplay400(sink, s.frozen, id, attempt, result.err, &s.replay)
 	if ok {
 		s.protocol = true
 		s.frozen = next
 	}
-	return ok
+	return ok, nil
 }
 
 func unmeteredHeaderFailure(result streamedTurn, httpRequests int) bool {

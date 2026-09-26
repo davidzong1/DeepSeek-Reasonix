@@ -407,7 +407,9 @@ func (s *teamTaskService) busyMembers() map[string]team.TaskID {
 	if s == nil || s.board == nil {
 		return busy
 	}
-	tasks, err := s.board.LoadLiveTasks(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	tasks, err := s.board.LoadLiveTasks(ctx)
 	if err != nil {
 		return busy
 	}
@@ -527,7 +529,9 @@ func (s *teamTaskService) memberTask(memberID string) (string, error) {
 	if err := s.ready(); err != nil {
 		return "", err
 	}
-	tasks, err := s.board.LoadLiveTasks(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	tasks, err := s.board.LoadLiveTasks(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -641,7 +645,9 @@ func (s *teamTaskService) report(memberID, taskID, result string) (string, error
 	if strings.TrimSpace(result) == "" {
 		return "", fmt.Errorf("result is required")
 	}
-	tasks, err := s.board.LoadLiveTasks(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	tasks, err := s.board.LoadLiveTasks(ctx)
 	if err != nil {
 		return "", err
 	}

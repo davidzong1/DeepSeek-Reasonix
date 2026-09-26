@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sessioninbox"
@@ -33,6 +34,7 @@ type stubBackend struct {
 	control.SessionAPI
 	label    string
 	history  []provider.Message
+	todos    []evidence.TodoItem
 	skills   []skill.Skill         // slash catalog bindBackend snapshots; nil for catalog-less stubs
 	all      []skill.Skill         // AllSkills catalog the picker lists; nil for catalog-less stubs
 	disabled []string              // names DisabledSkills reports against all
@@ -56,6 +58,7 @@ type stubBackend struct {
 func (s stubBackend) Label() string               { return s.label }
 func (s stubBackend) ModelRef() string            { return s.label + "/model" }
 func (s stubBackend) History() []provider.Message { return s.history }
+func (s stubBackend) Todos() []evidence.TodoItem  { return append([]evidence.TodoItem(nil), s.todos...) }
 func (s stubBackend) Commands() []command.Command { return nil }
 func (s stubBackend) SlashSkills() []skill.Skill  { return s.skills }
 func (s stubBackend) AllSkills() []skill.Skill    { return s.all }
