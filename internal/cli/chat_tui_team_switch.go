@@ -385,6 +385,11 @@ func (m *chatTUI) bindBackend(backend control.SessionAPI, owner ownerKey, mode r
 	// The pinned task panel is the outgoing session's: mounting it under the
 	// incoming owner would show one member's tasks as another's.
 	m.todo.bind(owner)
+	// A member switch clears the mounted view above, but each controller keeps
+	// its own committed todo projection. Restore that owner's snapshot so
+	// switching back does not make an existing list disappear until the next
+	// todo_write event.
+	m.todo.restore(owner, backend.Todos())
 	// A member-property draft was addressed to the member the editor opened on;
 	// the incoming session may be a different one, so it is discarded here
 	// rather than left to be published to the wrong member.

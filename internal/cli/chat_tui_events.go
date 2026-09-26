@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/i18n"
 	"strings"
 	"time"
@@ -82,6 +83,21 @@ func (v *todoView) mount(owner ownerKey, todos []event.Todo) {
 func (v *todoView) bind(owner ownerKey) {
 	v.owner = owner
 	v.todos = nil
+	v.dismissed = false
+}
+
+// restore loads the incoming session's committed To-do projection when the
+// window binds to it. The panel is intentionally cleared by bind to prevent
+// cross-member leakage; the controller remains the source of truth across
+// switches, so a member's list can be mounted again on return.
+func (v *todoView) restore(owner ownerKey, todos []evidence.TodoItem) {
+	if owner != v.owner {
+		return
+	}
+	v.todos = make([]event.Todo, len(todos))
+	for i, todo := range todos {
+		v.todos[i] = event.Todo{Content: todo.Content, Status: todo.Status}
+	}
 	v.dismissed = false
 }
 
