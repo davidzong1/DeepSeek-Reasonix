@@ -96,7 +96,9 @@ func (s *teamTaskService) readStatus(memberID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tasks, err := s.board.LoadLiveTasks(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), teamBoardTimeout)
+	defer cancel()
+	tasks, err := s.board.LoadLiveTasks(ctx)
 	if err != nil {
 		return "", err
 	}

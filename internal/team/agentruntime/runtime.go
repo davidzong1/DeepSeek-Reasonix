@@ -163,7 +163,7 @@ func (r *Runtime) Start(ctx context.Context, task team.Task, member team.Member)
 	// execution gate (§P1): a refused turn lands on failed durably and wakes the
 	// leader, never a persisted ghost the board reads as "working".
 	if r.store != nil {
-		if err := r.store.SaveTask(ctx, task); err != nil {
+		if err := r.saveTask(ctx, task); err != nil {
 			rollback()
 			return err
 		}
@@ -190,7 +190,7 @@ func (r *Runtime) Cancel(taskID team.TaskID) error {
 		return err
 	}
 	if r.store != nil {
-		if err := r.store.SaveTask(context.Background(), task); err != nil {
+		if err := r.saveTask(context.Background(), task); err != nil {
 			restore()
 			return err
 		}
@@ -242,7 +242,7 @@ func (r *Runtime) failDispatch(ctx context.Context, task team.Task, reason strin
 	}
 	task.Status = team.TaskStatusFailed
 	if r.store != nil {
-		_ = r.store.SaveTask(ctx, task) // best-effort: the refusal itself is the returned error
+		_ = r.saveTask(ctx, task) // best-effort: the refusal itself is the returned error
 	}
 	r.notifyAttention(AttentionDispatchFailed, string(task.ID),
 		"task "+string(task.ID)+" was refused by its member ("+reason+"); reassign or retry")
@@ -250,7 +250,7 @@ func (r *Runtime) failDispatch(ctx context.Context, task team.Task, reason strin
 	if err := team.TransitionTask(task.Status, team.TaskStatusAssigned); err == nil {
 		task.Status = team.TaskStatusAssigned
 		if r.store != nil {
-			_ = r.store.SaveTask(ctx, task)
+			_ = r.saveTask(ctx, task)
 		}
 	}
 	r.wakeAll("task " + string(task.ID) + " was refused by its member (" + reason + "); reassign or retry")
@@ -292,7 +292,7 @@ func (r *Runtime) Resume(ctx context.Context, task team.Task, member team.Member
 	// before the backend is touched, so a refused save aborts the resume before
 	// an agent can half-launch.
 	if r.store != nil {
-		if err := r.store.SaveTask(ctx, task); err != nil {
+		if err := r.saveTask(ctx, task); err != nil {
 			rollback()
 			return err
 		}
@@ -323,7 +323,7 @@ func (r *Runtime) Complete(taskID team.TaskID, summary string) error {
 		return err
 	}
 	if r.store != nil {
-		if err := r.store.SaveTask(context.Background(), task); err != nil {
+		if err := r.saveTask(context.Background(), task); err != nil {
 			restore()
 			return err
 		}
@@ -345,7 +345,7 @@ func (r *Runtime) CancelTask(ctx context.Context, task team.Task) error {
 	}
 	task.Status = team.TaskStatusCanceled
 	if r.store != nil {
-		if err := r.store.SaveTask(ctx, task); err != nil {
+		if err := r.saveTask(ctx, task); err != nil {
 			return err
 		}
 	}
@@ -353,6 +353,20 @@ func (r *Runtime) CancelTask(ctx context.Context, task team.Task) error {
 	r.record(ctx, task, "canceled", "leader cancel")
 	r.wakeAll("task " + string(task.ID) + " canceled")
 	return nil
+}
+
+// saveTask bounds every durable task-state write. Report and cancel are often
+// called after the member turn has returned and therefore have no caller
+// context; using the database's busy timeout alone can leave a runtime worker
+// stuck indefinitely when a board connection is wedged. A caller context still
+// wins immediately, while a live write gets the runtime's finite ceiling.
+func (r *Runtime) saveTask(ctx context.Context, task team.Task) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	writeCtx, cancel := r.writeContext(ctx)
+	defer cancel()
+	return r.store.SaveTask(writeCtx, task)
 }
 
 // Drain fetches one inbox batch for a member and acknowledges it only after

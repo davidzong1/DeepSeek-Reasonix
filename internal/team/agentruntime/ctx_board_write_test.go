@@ -42,6 +42,21 @@ func (b *blockingBoard) Append(ctx context.Context, _ team.AppendInput) (team.Bo
 	return team.BoardEvent{}, ctx.Err()
 }
 
+type blockingTaskStore struct {
+	team.TaskStore
+	got chan boardWrite
+}
+
+func (s *blockingTaskStore) SaveTask(ctx context.Context, _ team.Task) error {
+	ttl := time.Duration(-1)
+	if deadline, ok := ctx.Deadline(); ok {
+		ttl = time.Until(deadline)
+	}
+	s.got <- boardWrite{ctx: ctx, ttl: ttl}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 // TestRuntimeBoardWriteBorrowsTheCallersContext pins the cancellation half: the
 // task state write runs under the caller's context, so a window that stops its
 // turn abandons the write instead of waiting out the board.
@@ -93,5 +108,28 @@ func TestRuntimeBoardWriteIsBoundedWithoutACallerContext(t *testing.T) {
 	}
 	if got.ttl > rt.writeTimeout {
 		t.Fatalf("the report write was granted %v, want within the runtime's %v ceiling", got.ttl, rt.writeTimeout)
+	}
+}
+
+// TestRuntimeTaskStoreWriteIsBoundedWithoutACallerContext pins the durable
+// task row as well as the best-effort board event: Complete and Cancel have no
+// caller context, so their task-state write must still have a finite deadline.
+func TestRuntimeTaskStoreWriteIsBoundedWithoutACallerContext(t *testing.T) {
+	rt, _ := newTestRuntime(t, nil)
+	store := &blockingTaskStore{got: make(chan boardWrite, 1)}
+	rt.SetTaskStore(store)
+	rt.writeTimeout = 30 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.saveTask(context.Background(), team.Task{ID: "t1"})
+	}()
+
+	got := <-store.got
+	if got.ctx == context.Background() || got.ttl <= 0 || got.ttl > rt.writeTimeout {
+		t.Fatalf("task store write deadline = %v, want a positive deadline within %v", got.ttl, rt.writeTimeout)
+	}
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded task store write = %v, want deadline exceeded", err)
 	}
 }
